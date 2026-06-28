@@ -1,0 +1,14 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/core" },
+    { "path": "packages/adapter-discord" },
+    { "path": "packages/storage-sqlite" },
+    { "path": "packages/queue-local" },
+    { "path": "packages/vector-local" },
+    { "path": "packages/workspace-local" },
+    { "path": "packages/ai-cli" },
+    { "path": "packages/connectors" },
+    { "path": "apps/chunsik" }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "name": "chunsik-local",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Chunsik Local v1 — local-first Discord AI agent platform (modular, provider-abstracted).",
+  "packageManager": "pnpm@10.32.1",
+  "engines": {
+    "node": ">=18.18"
+  },
+  "scripts": {
+    "build": "tsc -b tsconfig.build.json",
+    "typecheck": "tsc -b tsconfig.build.json",
+    "clean": "tsc -b tsconfig.build.json --clean",
+    "start": "node apps/chunsik/dist/main.js",
+    "dev": "tsc -b tsconfig.build.json && node apps/chunsik/dist/main.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.7",
+    "typescript": "^5.4.5"
+  }
+}
