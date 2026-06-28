@@ -14,7 +14,9 @@ compiles and passes tests.
 
 ## 0. Before you touch anything
 
-1. Read `ARCHITECTURE.md` (rules) and `DECISIONS.md` (settled decisions).
+1. Read, in order: `ARCHITECTURE.md` (rules), `DECISIONS.md` (settled decisions),
+   `CURRENT_STATE.md` (where the repo is right now), and the relevant `ROADMAP.md`
+   entry (what the current sprint is for).
 2. Confirm your change is consistent with both. If it requires deviating from a
    settled decision, you must add a **new superseding ADR** first (see §8) — do
    not silently contradict one.
@@ -113,6 +115,8 @@ Rules:
 - Use the shared `clock`/`id` utilities (not `Date`/`crypto` directly) so tests
   stay deterministic.
 - Match the surrounding code's style, naming, and comment density.
+- Commits follow **Conventional Commits** (`feat:`, `fix:`, `chore:`, `docs:`,
+  `refactor:`, `test:`; optional scope, e.g. `feat(core): …`).
 
 ---
 
@@ -145,3 +149,28 @@ Rules:
   decision in `DECISIONS.md`.
 - **Never** expand scope silently. Make the smallest change that satisfies the
   task within these rules, and call out anything you intentionally left undone.
+
+---
+
+## 9. Collaboration model & change control
+
+Roles are defined by **function, not by AI vendor.** Any capable human or model
+may fill a role; no specific vendor (Claude, Codex, GPT, Gemini, …) is hard-coded
+into project governance. (ADR-0012)
+
+| Role | Responsibility |
+|---|---|
+| **Product Owner** | Vision, priorities, and the **final decision** on any architectural or product question. |
+| **Chief Architect** | Owns `ARCHITECTURE.md`; authors and curates ADR proposals. |
+| **Architecture Reviewer** | Independent critique of architecture proposals — ideally not the same actor that authored the proposal. |
+| **Implementation Engineer** | Implements per the active ADR/sprint; writes tests and docs. |
+| **Review Engineer** | Independent code review — **must not be the same actor that implemented** the change. |
+
+Rules:
+- **Any role may propose an ADR**; only the Product Owner ratifies it.
+- **Reviewer ≠ implementer** — independence is required, not optional.
+- **Repository documentation is the source of truth; prompts are temporary.** If a
+  prompt conflicts with the committed docs, the docs win.
+- **Architecture changes happen only through an approved ADR** — never via an
+  ad-hoc prompt, never silently in code. Use `docs/templates/ADR_TEMPLATE.md`.
+- Each sprint's definition-of-done updates `CURRENT_STATE.md` and `CHANGELOG.md`.

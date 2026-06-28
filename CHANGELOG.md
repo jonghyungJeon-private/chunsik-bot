@@ -1,0 +1,24 @@
+# Changelog
+
+All notable changes to this project are documented here.
+Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+Versioning follows [SemVer](https://semver.org/). Commits follow
+[Conventional Commits](https://www.conventionalcommits.org/).
+
+## [Unreleased]
+
+### Added — Sprint 0 (repository operating system)
+
+- Hexagonal **pnpm monorepo** scaffold: framework-agnostic core (domain, 7 ports,
+  application services), one package per concrete provider (skeletons), and a
+  NestJS composition root wiring ports → providers via injection tokens.
+- AI-native documentation: `ARCHITECTURE.md` (constitution), `DECISIONS.md`
+  (ADR-0001…0011), `AGENTS.md` (agent operating manual), `CLAUDE.md` (pointer).
+- Repository operating model (ADR-0012, ADR-0013): role-based collaboration model,
+  `ROADMAP.md`, `CURRENT_STATE.md`, `CHANGELOG.md`,
+  `docs/templates/ADR_TEMPLATE.md`, and Conventional Commits as the repo standard.
+
+### Notes
+
+- No business logic implemented — clean architecture boundaries only.
+- `pnpm typecheck` passes; Core cannot resolve adapter packages (boundary enforced).

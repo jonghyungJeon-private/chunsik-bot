@@ -339,3 +339,84 @@ which guarantees drift. `PROMPTS/*.md` are runtime data, not documentation.
 
 ### V1 / V2
 **V1:** the four-file minimum set + this log. **V2:** ROADMAP detail, CONTRIBUTING, populated `prompts/`.
+
+---
+
+## ADR-0012 — Repository operating model & Charter reconciliation
+
+- **Status:** ✅ Accepted (v1) — extends ADR-0011
+- **Date:** 2026-06-28
+
+### Context
+The Project Charter v1 proposed a collaboration/governance model and a larger
+documentation tree. A Principal-Architect review found three problems: (1) it
+hard-coded a specific AI vendor (ChatGPT) as Chief Architect/decision-maker —
+self-contradictory for a project whose first principle is "models are
+implementation details"; (2) a full `docs/{architecture,adr,sprints,reviews,…}`
+tree would create placeholders, violating ADR-0011; (3) ADRs were split across
+`docs/adr/` and `DECISIONS.md`. The Product Owner reviewed and approved a
+reconciled, minimal version.
+
+### Decision
+- **Collaboration model is role-based, not vendor-based** (in `AGENTS.md` §9):
+  Product Owner (final decision), Chief Architect, Architecture Reviewer,
+  Implementation Engineer, Review Engineer. No AI vendor is hard-coded into
+  governance. **Reviewer ≠ implementer**; any role may propose an ADR; only the PO
+  ratifies.
+- **Documentation = single source of truth; prompts are temporary.** Architecture
+  changes happen **only through an approved ADR**, never via an ad-hoc prompt or
+  silently in code.
+- **Add only immediately-useful docs** (no `docs/` subtree, no empty folders):
+  `ROADMAP.md`, `CURRENT_STATE.md`, `CHANGELOG.md` (Keep a Changelog), and a single
+  `docs/templates/ADR_TEMPLATE.md`. `DECISIONS.md` stays the canonical ADR log at
+  root (migrate to `docs/adr/` only if it grows; not now).
+- **Conventional Commits** is the repository commit standard.
+- Vision gains **Hosted/SaaS Edition**; multi-tenancy is a **v3** scope dimension
+  layered on Actor/Session — no multi-tenant abstractions now (YAGNI).
+
+### Consequences
+- + Governance is self-consistent with the product philosophy and tool-agnostic.
+- + Doc set stays minimal and maintainable; no placeholder rot.
+- + Clear change-control: docs win over prompts, ADR-gated changes.
+- − Requires discipline: every sprint updates `CURRENT_STATE.md` + `CHANGELOG.md`,
+  and architecture edits must carry an ADR.
+
+### V1 / V2
+**V1:** all of the above. **V2:** CONTRIBUTING.md, `docs/adr/` migration if volume warrants, populated `prompts/`.
+
+---
+
+## ADR-0013 — Sprint sequencing (split the first vertical slice) & YAGNI on seams
+
+- **Status:** ✅ Accepted (v1)
+- **Date:** 2026-06-28
+
+### Context
+The Charter's Sprint 1 lit up six still-stubbed components at once (Discord,
+Session, Intent, Planner, ContextBuilder, PromptComposer, Claude CLI, SQLite) — a
+high-blast-radius first real sprint. The Charter also proposed reserving seams for
+~11 future capabilities, most of which existing ports already absorb.
+
+### Decision
+- **Split Sprint 1** into thin slices:
+  - **Sprint 1a — walking skeleton:** Discord adapter + minimal Session + SQLite
+    persistence + **echo** reply. Validates I/O, persistence, and boundaries with
+    **no cognition**.
+  - **Sprint 1b — first cognitive flow:** Intent classification + Planner +
+    ContextBuilder + PromptComposer + capability routing + Claude CLI execution.
+    Natural language only; **provider chosen by the router, never hardcoded** even
+    in the skeleton.
+  - **Future sprint:** memory improvements, Codex, Ollama, connectors (read-only).
+- **YAGNI on reserved seams:** reserve a seam only when retrofit is expensive.
+  Future capabilities (MCP, plugins, multi-agent, remote workspace, local model
+  manager, multimodal, search, scheduler, notification, feedback learning, feature
+  registry) map onto **existing ports / prior ADRs** or require **no action now**
+  (see `ROADMAP.md` → Deferred capabilities). No new Core seams are added for them.
+
+### Consequences
+- + Lower risk per sprint; the skeleton proves the architecture before cognition.
+- + Avoids premature abstraction; existing ports carry future load.
+- − Two sprints to reach a full NL flow instead of one (intended trade-off).
+
+### V1 / V2
+**V1:** Sprint 1a then 1b. **V2:** the future sprint and beyond, per `ROADMAP.md`.
