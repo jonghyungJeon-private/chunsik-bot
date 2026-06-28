@@ -13,8 +13,9 @@ export class LocalVectorProvider implements VectorProvider {
   constructor(private readonly storePath: string) {}
 
   async init(): Promise<void> {
+    // No-op lifecycle in v1: the store is created lazily on first upsert.
+    // The actual upsert/query/delete operations remain unimplemented.
     void this.storePath;
-    throw new NotImplementedError('LocalVectorProvider.init');
   }
 
   async upsert(_collection: string, _records: VectorRecord[]): Promise<void> {

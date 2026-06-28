@@ -19,6 +19,10 @@ export interface Task {
 
   /** Where the request came from (channel/thread/user). Always present. */
   context: ConversationContext;
+  /** The acting principal (ADR-0009). */
+  actorId?: Id;
+  /** The conversation session this task belongs to (ADR-0001). */
+  sessionId?: Id;
   /** Optional link to a known Project. */
   projectId?: Id;
   /** The resolved working directory reference, once a workspace is prepared. */

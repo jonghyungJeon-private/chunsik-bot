@@ -1,8 +1,11 @@
-import { NotImplementedError } from '@chunsik/core';
+import { Client, Events, GatewayIntentBits } from 'discord.js';
+import type { Message } from 'discord.js';
+import { NotImplementedError, now } from '@chunsik/core';
 import type {
   ApprovalDecisionHandler,
   ApprovalRequest,
   ConversationContext,
+  InboundMessage,
   InboundMessageHandler,
   OutboundMessage,
   PlatformAdapter,
@@ -10,26 +13,24 @@ import type {
 
 export interface DiscordConfig {
   token: string;
+  /** If set, ignore messages from other guilds (useful for local dev). */
   guildId?: string;
 }
 
 /**
- * SKELETON. Implements the PlatformAdapter port for Discord.
+ * PlatformAdapter for Discord. discord.js types stay INSIDE this file; only
+ * normalized domain messages cross back into the core.
  *
- * TODO(impl): add `discord.js` and, inside this class ONLY:
- *   - construct a Client with the needed intents/partials
- *   - on 'messageCreate', map the Discord Message -> domain InboundMessage and
- *     call the stored handler (this is where the anti-corruption mapping lives)
- *   - map OutboundMessage/artifacts -> Discord sends/embeds/files
- *   - render ApprovalRequest as a message with Approve/Deny buttons and map the
- *     button interaction -> domain ApprovalDecision
+ * Sprint 1a: receive / send / typing are implemented. `requestApproval` is out
+ * of scope (no approval UI yet) and remains unimplemented.
  *
- * Boundary rule: Discord.js types stay inside this file. Nothing Discord-shaped
- * crosses back into @chunsik/core.
+ * Note: reading message text requires the privileged **Message Content Intent**
+ * to be enabled for the bot in the Discord Developer Portal.
  */
 export class DiscordPlatformAdapter implements PlatformAdapter {
   readonly platform = 'discord';
 
+  private client?: Client;
   private messageHandler?: InboundMessageHandler;
   private approvalHandler?: ApprovalDecisionHandler;
 
@@ -44,25 +45,88 @@ export class DiscordPlatformAdapter implements PlatformAdapter {
   }
 
   async start(): Promise<void> {
-    void this.config;
-    void this.messageHandler;
-    void this.approvalHandler;
-    throw new NotImplementedError('DiscordPlatformAdapter.start');
+    const client = new Client({
+      intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent,
+      ],
+    });
+    this.client = client;
+
+    client.on(Events.MessageCreate, (message) => {
+      void this.handleMessageCreate(message);
+    });
+
+    await client.login(this.config.token);
   }
 
   async stop(): Promise<void> {
-    throw new NotImplementedError('DiscordPlatformAdapter.stop');
+    await this.client?.destroy();
+    this.client = undefined;
   }
 
-  async sendMessage(_message: OutboundMessage): Promise<void> {
-    throw new NotImplementedError('DiscordPlatformAdapter.sendMessage');
+  async sendMessage(message: OutboundMessage): Promise<void> {
+    const target = message.context.threadId ?? message.context.channelId;
+    const channel = await this.fetchChannel(target);
+    if (channel?.isSendable()) {
+      await channel.send(message.text);
+    }
   }
 
-  async sendTyping(_context: ConversationContext): Promise<void> {
-    throw new NotImplementedError('DiscordPlatformAdapter.sendTyping');
+  async sendTyping(context: ConversationContext): Promise<void> {
+    const target = context.threadId ?? context.channelId;
+    const channel = await this.fetchChannel(target);
+    if (channel && channel.isTextBased() && 'sendTyping' in channel) {
+      await channel.sendTyping();
+    }
   }
 
   async requestApproval(_request: ApprovalRequest, _context: ConversationContext): Promise<void> {
+    // Out of scope for Sprint 1a (no approval UI yet). See ADR-0010 / risk policy.
+    void this.approvalHandler;
     throw new NotImplementedError('DiscordPlatformAdapter.requestApproval');
+  }
+
+  private async handleMessageCreate(message: Message): Promise<void> {
+    try {
+      if (message.author.bot) return;
+      if (this.config.guildId && message.guildId && message.guildId !== this.config.guildId) {
+        return;
+      }
+      const handler = this.messageHandler;
+      if (!handler) return;
+      await handler(this.toInbound(message));
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[discord] failed to handle message:', err);
+    }
+  }
+
+  /** Translate a Discord Message into a normalized InboundMessage. */
+  private toInbound(message: Message): InboundMessage {
+    const inThread = message.channel.isThread();
+    const channelId = inThread ? (message.channel.parentId ?? message.channelId) : message.channelId;
+    const threadId = inThread ? message.channelId : undefined;
+
+    const context: ConversationContext = {
+      platform: this.platform,
+      channelId,
+      userId: message.author.id,
+      ...(message.guildId ? { spaceId: message.guildId } : {}),
+      ...(threadId ? { threadId } : {}),
+    };
+
+    return {
+      id: message.id,
+      context,
+      text: message.content,
+      receivedAt: now(),
+    };
+  }
+
+  private async fetchChannel(id: string) {
+    if (!this.client) return null;
+    return this.client.channels.fetch(id).catch(() => null);
   }
 }

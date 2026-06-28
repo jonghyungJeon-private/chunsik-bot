@@ -2,7 +2,8 @@ import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 
 import {
-  ChunsikCore,
+  ActorManager,
+  SessionManager,
   PLATFORM_ADAPTER,
   STORAGE_PROVIDER,
   VECTOR_PROVIDER,
@@ -19,12 +20,13 @@ import { AppModule } from './app.module';
 
 /**
  * Boots Chunsik as a standalone Nest application context (no HTTP server —
- * Discord is the interface). Resolves the orchestrator + platform from the DI
- * container, wires the inbound handlers, and starts infrastructure.
+ * Discord is the interface). Resolves providers/services from DI, wires the
+ * inbound handler, and starts infrastructure.
  *
- * NOTE: v1 providers are skeletons that throw NotImplementedError, so the
- * init/start calls below will surface as a clear startup error until they are
- * implemented. The wiring and types, however, are real.
+ * Sprint 1a — WALKING SKELETON: the inbound handler resolves the Actor, opens a
+ * Session, persists it, and echoes the message. There is intentionally NO
+ * cognition (no Intent/Planner/PromptComposer/AI execution). Sprint 1b replaces
+ * this handler with `ChunsikCore.handleInboundMessage`.
  */
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.createApplicationContext(AppModule, {
@@ -35,11 +37,18 @@ async function bootstrap(): Promise<void> {
   const vector = app.get<VectorProvider>(VECTOR_PROVIDER);
   const queue = app.get<QueueProvider>(QUEUE_PROVIDER);
   const platform = app.get<PlatformAdapter>(PLATFORM_ADAPTER);
-  const core = app.get(ChunsikCore);
+  const actors = app.get(ActorManager);
+  const sessions = app.get(SessionManager);
 
-  // The platform delivers normalized messages; the core owns all logic.
-  platform.onMessage((message) => core.handleInboundMessage(message));
-  platform.onApprovalDecision((decision) => core.handleApprovalDecision(decision));
+  platform.onMessage(async (message) => {
+    const actor = await actors.resolveFromContext(message.context);
+    const session = await sessions.openForContext(message.context, actor.id);
+    await sessions.touch(session);
+    await platform.sendMessage({
+      context: message.context,
+      text: `🐹 echo: ${message.text}`,
+    });
+  });
 
   await storage.init();
   await vector.init();
@@ -57,7 +66,7 @@ async function bootstrap(): Promise<void> {
   process.on('SIGTERM', shutdown);
 
   // eslint-disable-next-line no-console
-  console.log('[chunsik] started');
+  console.log('[chunsik] started (Sprint 1a walking skeleton — echo mode)');
 }
 
 bootstrap().catch((err) => {

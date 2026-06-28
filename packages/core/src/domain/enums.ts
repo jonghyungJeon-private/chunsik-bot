@@ -16,6 +16,13 @@ export enum TaskStatus {
   NEEDS_REVIEW = 'NEEDS_REVIEW',
 }
 
+/** Lifecycle of a conversation Session (ADR-0001). */
+export enum SessionStatus {
+  ACTIVE = 'ACTIVE',
+  IDLE = 'IDLE',
+  CLOSED = 'CLOSED',
+}
+
 /** Status of a single execution attempt of a task. */
 export enum TaskRunStatus {
   STARTED = 'STARTED',

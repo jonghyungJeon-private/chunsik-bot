@@ -17,6 +17,10 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@chunsik/core": "workspace:*"
+    "@chunsik/core": "workspace:*",
+    "better-sqlite3": "^11.8.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12"
   }
 }

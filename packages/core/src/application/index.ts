@@ -1,4 +1,6 @@
 export * from './risk-policy';
+export * from './actor-manager';
+export * from './session-manager';
 export * from './ai-provider-manager';
 export * from './capability-router';
 export * from './intent-classifier';

@@ -17,6 +17,7 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@chunsik/core": "workspace:*"
+    "@chunsik/core": "workspace:*",
+    "discord.js": "14.16.3"
   }
 }

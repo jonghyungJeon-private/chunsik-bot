@@ -10,6 +10,8 @@ export interface MemoryScope {
   userId?: string;
   channelId?: string;
   threadId?: string;
+  /** Conversation session this memory belongs to (ADR-0001). */
+  sessionId?: Id;
   taskId?: Id;
   projectId?: Id;
 }

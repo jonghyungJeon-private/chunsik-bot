@@ -1,4 +1,5 @@
 import type {
+  Actor,
   Artifact,
   ApprovalRequest,
   Id,
@@ -6,6 +7,7 @@ import type {
   MemoryScope,
   MemoryType,
   Project,
+  Session,
   Task,
   TaskRun,
 } from '../domain';
@@ -38,6 +40,16 @@ export interface ArtifactRepository extends Repository<Artifact> {
   listByTask(taskId: Id): Promise<Artifact[]>;
 }
 
+export interface ActorRepository extends Repository<Actor> {
+  /** Resolve the actor a platform identity maps to, if any. */
+  findByExternalIdentity(platform: string, externalId: string): Promise<Actor | null>;
+}
+
+export interface SessionRepository extends Repository<Session> {
+  /** The most-recently-active ACTIVE session for a channel/thread, if any. */
+  findActiveByContext(channelId: string, threadId?: string): Promise<Session | null>;
+}
+
 /**
  * PORT: persistence. v1 implementation: SQLiteStorageProvider.
  *
@@ -50,6 +62,8 @@ export interface StorageProvider {
   /** Close handles on shutdown. */
   close(): Promise<void>;
 
+  readonly actors: ActorRepository;
+  readonly sessions: SessionRepository;
   readonly tasks: TaskRepository;
   readonly taskRuns: TaskRunRepository;
   readonly memories: MemoryRepository;

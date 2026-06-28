@@ -16,6 +16,8 @@ import {
   Planner,
   CapabilityRouter,
   AiProviderManager,
+  ActorManager,
+  SessionManager,
   TaskManager,
   MemoryManager,
   ArtifactManager,
@@ -87,6 +89,16 @@ const application: Provider[] = [
     provide: CapabilityRouter,
     useFactory: (manager: AiProviderManager) => new CapabilityRouter(manager),
     inject: [AiProviderManager],
+  },
+  {
+    provide: ActorManager,
+    useFactory: (storage: StorageProvider) => new ActorManager(storage),
+    inject: [STORAGE_PROVIDER],
+  },
+  {
+    provide: SessionManager,
+    useFactory: (storage: StorageProvider) => new SessionManager(storage),
+    inject: [STORAGE_PROVIDER],
   },
   {
     provide: TaskManager,

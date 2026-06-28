@@ -20,11 +20,12 @@ export class LocalQueueProvider implements QueueProvider {
   }
 
   async start(): Promise<void> {
+    // No-op lifecycle in v1: there is no worker loop yet. `enqueue` remains
+    // unimplemented, so nothing is dispatched until the queue is built.
     void this.handlers;
-    throw new NotImplementedError('LocalQueueProvider.start');
   }
 
   async stop(): Promise<void> {
-    throw new NotImplementedError('LocalQueueProvider.stop');
+    // No-op lifecycle in v1.
   }
 }

@@ -7,6 +7,20 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Sprint 1a (walking skeleton)
+
+- Domain: `Actor` + `ExternalIdentity` (ADR-0009), `Session` + `SessionStatus`
+  (ADR-0001). Reserved `MemoryScope.sessionId` and `Task.actorId`/`sessionId`.
+- `StorageProvider` extended with `actors` + `sessions` repositories.
+- Core services: `ActorManager`, `SessionManager`.
+- `SqliteStorageProvider` (better-sqlite3) implementing the `actors`/`sessions`
+  repositories; remaining repositories stay stubbed.
+- `DiscordPlatformAdapter` (discord.js): inbound normalization, send, typing.
+- Composition root wires a temporary echo flow: resolve Actor → open/touch
+  Session → echo reply. (Sprint 1b replaces it with `ChunsikCore`.)
+- `LocalQueueProvider`/`LocalVectorProvider` lifecycle methods made no-ops so the
+  app boots; their real operations remain unimplemented.
+
 ### Added — Sprint 0 (repository operating system)
 
 - Hexagonal **pnpm monorepo** scaffold: framework-agnostic core (domain, 7 ports,
