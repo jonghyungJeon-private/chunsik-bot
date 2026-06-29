@@ -50,6 +50,11 @@ export interface SessionRepository extends Repository<Session> {
   findActiveByContext(channelId: string, threadId?: string): Promise<Session | null>;
 }
 
+export interface ApprovalRepository extends Repository<ApprovalRequest> {
+  /** All approval requests governing a given ExecutionPlan (CAP-004). */
+  findByExecutionPlan(executionPlanId: Id): Promise<ApprovalRequest[]>;
+}
+
 /**
  * PORT: persistence. v1 implementation: SQLiteStorageProvider.
  *
@@ -69,5 +74,5 @@ export interface StorageProvider {
   readonly memories: MemoryRepository;
   readonly artifacts: ArtifactRepository;
   readonly projects: Repository<Project>;
-  readonly approvals: Repository<ApprovalRequest>;
+  readonly approvals: ApprovalRepository;
 }

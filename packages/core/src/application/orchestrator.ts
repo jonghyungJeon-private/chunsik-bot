@@ -1,11 +1,8 @@
 import { NotImplementedError } from '../errors';
-import { newId } from '../util/id';
-import { now } from '../util/clock';
 import { describeAiFailure } from './ai-failure';
 import { Capability, IntentType, TaskStatus } from '../domain';
 import type {
   ApprovalDecision,
-  ApprovalRequest,
   ConversationContext,
   Id,
   InboundMessage,
@@ -144,19 +141,12 @@ export class ChunsikCore {
     task = await this.deps.tasks.transition(task, TaskStatus.PLANNING);
     const plan = await this.deps.planner.plan(task, intent);
 
-    // (5) Approval gate.
+    // (5) Approval gate. Live approval wiring is deferred: CAP-004 (ADR-0025) delivers
+    // the Approval capability (ApprovalManager + persistence); wiring it into this flow
+    // (and the Discord approval UI) is a future integration slice. Unreachable today —
+    // no v1 capability is HIGH/CRITICAL risk — so this throws rather than half-running.
     if (this.deps.risk.requiresApproval(plan.overallRisk)) {
-      task = await this.deps.tasks.transition(task, TaskStatus.WAITING_APPROVAL);
-      const request: ApprovalRequest = {
-        id: newId(),
-        taskId: task.id,
-        riskLevel: plan.overallRisk,
-        summary: plan.summary,
-        requestedAt: now(),
-      };
-      // TODO(v1): persist `request` so handleApprovalDecision can resume.
-      await this.deps.platform.requestApproval(request, message.context);
-      return;
+      throw new NotImplementedError('approval flow wiring (deferred — see CAP-004 / ADR-0025)');
     }
 
     // (6) Run now. Exclude the just-recorded current message from recent context

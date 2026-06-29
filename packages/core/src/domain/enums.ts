@@ -123,3 +123,10 @@ export enum ExecutionStatus {
   COMPLETED = 'COMPLETED',
   FAILED = 'FAILED',
 }
+
+/** Lifecycle of an ApprovalRequest aggregate (CAP-004, ADR-0025). */
+export enum ApprovalStatus {
+  PENDING = 'PENDING',
+  APPROVED = 'APPROVED',
+  REJECTED = 'REJECTED',
+}

@@ -17,6 +17,8 @@ export * from './workspace-manager';
 export * from './git-manager';
 export * from './deterministic-planner';
 export * from './planning-manager';
+export * from './approval-policy';
+export * from './approval-manager';
 export * from './connector-manager';
 export * from './response-composer';
 export * from './orchestrator';

@@ -72,6 +72,16 @@ export const MIGRATIONS: readonly Migration[] = [
       }
     },
   },
+  {
+    version: 2,
+    name: 'approvals table (CAP-004)',
+    up(db) {
+      db.exec(
+        `CREATE TABLE IF NOT EXISTS approvals (
+           id TEXT PRIMARY KEY, execution_plan_id TEXT, status TEXT NOT NULL, data TEXT NOT NULL);`,
+      );
+    },
+  },
 ];
 
 /** The schema version this build targets (the highest migration version). */

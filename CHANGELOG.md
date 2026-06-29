@@ -7,6 +7,25 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Sprint 2d · CAP-004 Approval Capability (first persisted aggregate)
+
+- **`ApprovalRequest`** aggregate (Approval-owned), ExecutionPlan-based: references
+  `executionPlanRef`, with `ApprovalStatus` (PENDING/APPROVED/REJECTED), `ApprovalRef`,
+  and `ApprovalDecision`. **Approval never mutates `ExecutionPlan`** (Aggregate Ownership
+  Rule, ADR-0025); approval state lives only on `ApprovalRequest`.
+- **`ApprovalPolicy`** (deterministic; reuses `RiskPolicy`) + **`ApprovalManager`**
+  (`requestFor`/`decide`/`get`/`isApproved`; auto-approves when no approval is required).
+- **Persistence (first V2 aggregate):** `ApprovalRepository` port (`findByExecutionPlan`) +
+  `SqliteApprovalRepository`, created by **SQLite migration v2** (`approvals` table) via the
+  ADR-0020 runner. The generic `approvals` stub repository is removed.
+- **Aggregate Ownership Rule** recorded in ADR-0025: each capability owns exactly one
+  aggregate; only the owner mutates it; others reference/read/consume.
+- **Not in scope:** ExecutionPlan mutation, Discord approval UI, orchestrator wiring,
+  role-based authorization, expiry enforcement, Patch/Workspace Write (ADR-0025).
+- Tests (+11): ApprovalPolicy, ApprovalManager (incl. a no-ExecutionPlan-mutation test),
+  SqliteApprovalRepository round-trip, migration v2 — Vitest 22 files / 118 tests.
+  Capability doc `docs/capabilities/approval.md`.
+
 ### Added — Sprint 2c · CAP-003 Planning Capability (deterministic ExecutionPlan)
 
 - New cross-capability execution contract **`ExecutionPlan`** (+ `ExecutionStep`,

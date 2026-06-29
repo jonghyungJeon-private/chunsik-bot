@@ -31,6 +31,8 @@ import {
   GitManager,
   DeterministicPlanner,
   PlanningManager,
+  ApprovalPolicy,
+  ApprovalManager,
   ConnectorManager,
   ResponseComposer,
   RiskPolicy,
@@ -153,6 +155,19 @@ const application: Provider[] = [
     provide: PlanningManager,
     useFactory: (planner: ExecutionPlanner) => new PlanningManager(planner),
     inject: [EXECUTION_PLANNER],
+  },
+  // CAP-004 Approval (domain + policy + manager + persistence). Not wired into
+  // the orchestrator / Discord flow yet (deferred).
+  {
+    provide: ApprovalPolicy,
+    useFactory: (risk: RiskPolicy) => new ApprovalPolicy(risk),
+    inject: [RiskPolicy],
+  },
+  {
+    provide: ApprovalManager,
+    useFactory: (storage: StorageProvider, policy: ApprovalPolicy) =>
+      new ApprovalManager(storage, policy),
+    inject: [STORAGE_PROVIDER, ApprovalPolicy],
   },
   {
     provide: ConnectorManager,

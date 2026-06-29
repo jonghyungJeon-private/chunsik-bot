@@ -1015,3 +1015,64 @@ Docs: `docs/capabilities/planning.md`, `docs/execution-plan.md`.
 **This slice (2c):** `ExecutionPlan` contract + `DeterministicPlanner` + `PlanningManager`.
 **Later (separate ADRs/capabilities):** AIPlanner/HybridPlanner; persistence (CAP-004);
 per-step approval; orchestrator/Intent wiring.
+
+---
+
+## ADR-0025 — CAP-004 Approval Capability (+ Aggregate Ownership Rule)
+
+- **Status:** ✅ Accepted (v2, Sprint 2d)
+- **Date:** 2026-06-29
+- **Capability:** CAP-004 — Approval. The governance gate between an `ExecutionPlan`
+  (CAP-003) and any code-changing capability. **First persisted V2 aggregate.**
+
+### Aggregate Ownership Rule (project-wide principle)
+> Each capability owns exactly one aggregate.
+> Only the owning capability may mutate that aggregate.
+> Other capabilities may reference, read, or consume it, but must not modify it.
+
+For CAP-004: Approval owns `ApprovalRequest`; Approval may reference `ExecutionPlanRef`;
+Approval must **not** mutate `ExecutionPlan`. (Owners: Planning→ExecutionPlan,
+Approval→ApprovalRequest, Patch→PatchSet, Workspace Write→WorkspaceChange, Command
+Execution→CommandExecution.) An ARCHITECTURE.md write-up may follow in a doc-refinement
+sprint; the rule is binding from now.
+
+### Decision
+- **`ApprovalRequest` aggregate (Approval-owned), ExecutionPlan-based.** References the plan
+  via `executionPlanRef`; persists `id, executionPlanRef, status, riskLevel, reason,
+  requestedBy, decision?, decidedBy?, decidedAt?, comment?, createdAt, updatedAt` (+ optional
+  `taskId` for v1 compat — **not** task-first, Q2). `ApprovalRef { id, status }` is the Ref
+  handle; `ApprovalStatus = PENDING | APPROVED | REJECTED`.
+- **Approval never mutates `ExecutionPlan` (Q1).** `ExecutionPlan` is an immutable planning
+  output after creation; **approval state lives only on `ApprovalRequest`**. No
+  `PLANNED → APPROVED` mutation of the plan. A global execution-state projection, if ever
+  needed, is a separate model.
+- **Deterministic `ApprovalPolicy`** — reuses `RiskPolicy.requiresApproval` (HIGH/CRITICAL).
+  Required output: `requiresApproval, reason, riskLevel, requestedBy`. Reserved (NOT
+  implemented): `approverRole?, expiresAt?, policyVersion?` — no role-based authorization,
+  no expiry enforcement (Q4).
+- **`ApprovalManager`** owns the aggregate: `requestFor(plan, requestedBy)` (auto-APPROVED
+  when policy needs none, else PENDING), `decide(id, decision)`, `get`, `isApproved(planId)`.
+  Reads the plan; never mutates it. No imports of other capability managers.
+- **Persistence (first V2 aggregate):** `ApprovalRepository` port (`findByExecutionPlan`) +
+  `SqliteApprovalRepository`, created by **migration v2** (`approvals` table) via the
+  ADR-0020 runner. The old generic `approvals` stub is removed.
+- **No `ExecutionStatus` change (Q3)** — recorded as a follow-up doc/refinement task.
+- **No UI / orchestrator wiring (Q5)** — domain + policy + manager + persistence only. The
+  orchestrator's dead V1 approval branch is neutralized (un-wired) to compile, not rewired.
+
+### Consequences
+- + The governance backbone for all future writes; strict aggregate ownership prevents
+  drift; first real persisted V2 aggregate exercising the migration runner.
+- + ExecutionPlan stays a pure, immutable planning output.
+- − Approval state and plan state live in separate aggregates (by design) — consumers read
+  both. A unified execution-state projection is deferred.
+
+### Capability / Relations
+**CAP-004.** Relates: ADR-0024 (Planning/ExecutionPlan), ADR-0020 (migrations), ADR-0010.
+Docs: `docs/capabilities/approval.md`, `docs/execution-plan.md`.
+
+### V1 / V2
+**This slice (2d):** `ApprovalRequest`/`ApprovalRef`/`ApprovalStatus`, `ApprovalPolicy`,
+`ApprovalManager`, `ApprovalRepository` + SQLite + migration v2.
+**Later:** Discord approval UI + orchestrator wiring; approver roles; expiry; per-step
+approval; the Aggregate Ownership Rule in ARCHITECTURE.md.

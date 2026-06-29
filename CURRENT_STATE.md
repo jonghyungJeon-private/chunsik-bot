@@ -5,13 +5,13 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** **Version 2, Sprint 2c — CAP-003 Planning Capability** (ADR-0024):
-  deterministic `ExecutionPlan` contract + `ExecutionPlanner` port +
-  `DeterministicPlanner` + thin `PlanningManager`. AI-free; no execution/persistence/
-  orchestrator wiring; context arrives via `PlanningRequest`. **Planning precedes
-  Approval.** CAP-001 Workspace ✅ + CAP-002 Git ✅ merged. Baseline tag: `v1.0.0-rc1`.
-- **Next:** Chief Architect review of Sprint 2c; no merge until approved.
-- **Build/Test:** `pnpm typecheck` PASS (exit 0); `pnpm test` 19 files / 107 tests PASS.
+- **Phase:** **Version 2, Sprint 2d — CAP-004 Approval Capability** (ADR-0025):
+  `ApprovalRequest` aggregate + `ApprovalPolicy` (deterministic) + `ApprovalManager` +
+  `ApprovalRepository`/`SqliteApprovalRepository` + **migration v2** (first persisted V2
+  aggregate). Approval references `ExecutionPlanRef` and **never mutates `ExecutionPlan`**
+  (Aggregate Ownership Rule). No UI/orchestrator wiring. CAP-001/002/003 ✅ merged.
+- **Next:** Chief Architect review of Sprint 2d; no merge until approved.
+- **Build/Test:** `pnpm typecheck` PASS (exit 0); `pnpm test` 22 files / 118 tests PASS.
 
 ## Implemented
 
@@ -35,6 +35,10 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 - **CAP-003 Planning** — deterministic `ExecutionPlan` via `ExecutionPlanner` port +
   `DeterministicPlanner` + thin `PlanningManager` (reuses `RiskPolicy`). AI-free, no I/O,
   no persistence, not orchestrator-wired; the cross-capability execution contract (ADR-0024).
+- **CAP-004 Approval** — `ApprovalRequest` aggregate + `ApprovalPolicy` + `ApprovalManager`
+  + `SqliteApprovalRepository` (migration v2). Deterministic; references `ExecutionPlanRef`,
+  never mutates `ExecutionPlan` (Aggregate Ownership Rule); first persisted V2 aggregate.
+  Not UI/orchestrator-wired (ADR-0025).
 
 ## Deferred
 
@@ -70,7 +74,7 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 
 - **AI execution:** `CodexCliProvider`/`OllamaCliProvider` `execute`/`isAvailable`
   still stubbed (Claude is implemented).
-- **Storage:** `approvals` repository remains stubbed.
+- **Storage:** all repositories implemented (`approvals` landed in CAP-004 / migration v2).
 - **Platform:** `DiscordPlatformAdapter.requestApproval` (no approval UI yet); resume
   after approval is deferred (no current capability reaches the HIGH/CRITICAL path).
 - **Deferred:** repository-wide indexing, vector/semantic search, Workflow engine,
@@ -79,7 +83,7 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 
 ## Validation
 
-- `pnpm typecheck` — passes (exit 0). `pnpm test` — 19 files / 107 tests pass.
+- `pnpm typecheck` — passes (exit 0). `pnpm test` — 22 files / 118 tests pass.
 - Boundary enforced — Core cannot resolve adapter packages.
 - **Live (Sprint 1g):** real `node dist/main.js` Discord round-trip — register a
   project, then a structure question routed to PROJECT_ANALYSIS, read real files,

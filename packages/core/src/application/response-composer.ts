@@ -31,7 +31,7 @@ export class ResponseComposer {
   composeApprovalNotice(context: ConversationContext, request: ApprovalRequest): OutboundMessage {
     return {
       context,
-      text: `This action needs your approval (${request.riskLevel}):\n${request.summary}`,
+      text: `This action needs your approval (${request.riskLevel}):\n${request.reason}`,
     };
   }
 

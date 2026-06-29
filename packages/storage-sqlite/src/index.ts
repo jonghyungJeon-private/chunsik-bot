@@ -1,11 +1,11 @@
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
-import { NotImplementedError } from '@chunsik/core';
 import { runMigrations } from './migrations';
 import type {
   Actor,
   ActorRepository,
+  ApprovalRepository,
   ApprovalRequest,
   Artifact,
   ArtifactRepository,
@@ -195,6 +195,29 @@ class SqliteArtifactRepository extends JsonRepository<Artifact> implements Artif
   }
 }
 
+class SqliteApprovalRepository
+  extends JsonRepository<ApprovalRequest>
+  implements ApprovalRepository
+{
+  override async save(request: ApprovalRequest): Promise<ApprovalRequest> {
+    this.db
+      .prepare(
+        `INSERT INTO approvals (id, execution_plan_id, status, data) VALUES (?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET execution_plan_id = excluded.execution_plan_id,
+           status = excluded.status, data = excluded.data`,
+      )
+      .run(request.id, request.executionPlanRef.id, request.status, JSON.stringify(request));
+    return request;
+  }
+
+  async findByExecutionPlan(executionPlanId: Id): Promise<ApprovalRequest[]> {
+    const rows = this.db
+      .prepare(`SELECT data FROM approvals WHERE execution_plan_id = ?`)
+      .all(executionPlanId) as Row[];
+    return rows.map((r) => JSON.parse(r.data) as ApprovalRequest);
+  }
+}
+
 class SqliteMemoryRepository extends JsonRepository<MemoryRecord> implements MemoryRepository {
   override async save(record: MemoryRecord): Promise<MemoryRecord> {
     this.db
@@ -246,27 +269,10 @@ class SqliteMemoryRepository extends JsonRepository<MemoryRecord> implements Mem
   }
 }
 
-/** Repositories not yet needed (built in their own sprint). */
-class StubRepository<T> implements Repository<T> {
-  constructor(protected readonly entity: string) {}
-  async get(_id: Id): Promise<T | null> {
-    throw new NotImplementedError(`${this.entity}.get`);
-  }
-  async save(_entity: T): Promise<T> {
-    throw new NotImplementedError(`${this.entity}.save`);
-  }
-  async delete(_id: Id): Promise<void> {
-    throw new NotImplementedError(`${this.entity}.delete`);
-  }
-  async list(): Promise<T[]> {
-    throw new NotImplementedError(`${this.entity}.list`);
-  }
-}
-
 /**
  * StorageProvider over SQLite (better-sqlite3). All SQL stays in this package;
  * callers see only domain entities. Implemented: actors, sessions, tasks,
- * taskRuns, artifacts, memories. Stubbed until their sprint: projects, approvals.
+ * taskRuns, artifacts, memories, projects, approvals (CAP-004).
  */
 export class SqliteStorageProvider implements StorageProvider {
   private db?: Db;
@@ -279,8 +285,7 @@ export class SqliteStorageProvider implements StorageProvider {
   artifacts!: ArtifactRepository;
   memories!: MemoryRepository;
   projects!: Repository<Project>;
-
-  readonly approvals: Repository<ApprovalRequest> = new StubRepository<ApprovalRequest>('approvals');
+  approvals!: ApprovalRepository;
 
   constructor(private readonly config: SqliteConfig) {}
 
@@ -301,6 +306,7 @@ export class SqliteStorageProvider implements StorageProvider {
     this.artifacts = new SqliteArtifactRepository(db, 'artifacts');
     this.memories = new SqliteMemoryRepository(db, 'memories');
     this.projects = new JsonRepository<Project>(db, 'projects');
+    this.approvals = new SqliteApprovalRepository(db, 'approvals');
   }
 
   async close(): Promise<void> {
