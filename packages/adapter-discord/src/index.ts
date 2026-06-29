@@ -7,6 +7,7 @@ import type {
   ConversationContext,
   InboundMessage,
   InboundMessageHandler,
+  Logger,
   OutboundMessage,
   PlatformAdapter,
 } from '@chunsik/core';
@@ -34,7 +35,10 @@ export class DiscordPlatformAdapter implements PlatformAdapter {
   private messageHandler?: InboundMessageHandler;
   private approvalHandler?: ApprovalDecisionHandler;
 
-  constructor(private readonly config: DiscordConfig) {}
+  constructor(
+    private readonly config: DiscordConfig,
+    private readonly logger: Logger,
+  ) {}
 
   onMessage(handler: InboundMessageHandler): void {
     this.messageHandler = handler;
@@ -96,10 +100,16 @@ export class DiscordPlatformAdapter implements PlatformAdapter {
       }
       const handler = this.messageHandler;
       if (!handler) return;
+      this.logger.info('message received', {
+        messageId: message.id,
+        channelId: message.channelId,
+        userId: message.author.id,
+      });
       await handler(this.toInbound(message));
     } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error('[discord] failed to handle message:', err);
+      this.logger.error('message handling failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 

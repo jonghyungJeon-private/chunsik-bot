@@ -1,4 +1,5 @@
 export * from './tokens';
+export * from './logger.port';
 export * from './platform-adapter.port';
 export * from './storage-provider.port';
 export * from './queue-provider.port';

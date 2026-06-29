@@ -45,6 +45,7 @@ import { ClaudeCliProvider, CodexCliProvider, OllamaCliProvider } from '@chunsik
 import { V1_CONNECTORS } from '@chunsik/connectors';
 
 import { loadConfig } from './config';
+import { ConsoleLogger } from './console-logger';
 
 const config = loadConfig();
 
@@ -60,7 +61,10 @@ const infrastructure: Provider[] = [
     provide: WORKSPACE_PROVIDER,
     useFactory: () => new LocalCloneWorkspaceProvider({ workspaceRoot: config.workspace.workspaceRoot }),
   },
-  { provide: PLATFORM_ADAPTER, useFactory: () => new DiscordPlatformAdapter(config.discord) },
+  {
+    provide: PLATFORM_ADAPTER,
+    useFactory: () => new DiscordPlatformAdapter(config.discord, new ConsoleLogger('discord')),
+  },
   {
     provide: AI_PROVIDERS,
     useFactory: (): AiProvider[] => [

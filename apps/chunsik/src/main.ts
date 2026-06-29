@@ -17,6 +17,9 @@ import type {
 } from '@chunsik/core';
 
 import { AppModule } from './app.module';
+import { ConsoleLogger } from './console-logger';
+
+const log = new ConsoleLogger('chunsik');
 
 /**
  * Boots Chunsik as a standalone Nest application context (no HTTP server —
@@ -48,6 +51,7 @@ async function bootstrap(): Promise<void> {
       context: message.context,
       text: `🐹 echo: ${message.text}`,
     });
+    log.info('echo handled', { actorId: actor.id, sessionId: session.id });
   });
 
   await storage.init();
@@ -65,12 +69,10 @@ async function bootstrap(): Promise<void> {
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
-  // eslint-disable-next-line no-console
-  console.log('[chunsik] started (Sprint 1a walking skeleton — echo mode)');
+  log.info('started (Sprint 1a walking skeleton — echo mode)');
 }
 
 bootstrap().catch((err) => {
-  // eslint-disable-next-line no-console
-  console.error('[chunsik] failed to start:', err);
+  log.error('failed to start', { error: err instanceof Error ? err.message : String(err) });
   process.exit(1);
 });

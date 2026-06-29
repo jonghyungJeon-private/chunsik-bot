@@ -20,6 +20,9 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
   Session → echo reply. (Sprint 1b replaces it with `ChunsikCore`.)
 - `LocalQueueProvider`/`LocalVectorProvider` lifecycle methods made no-ops so the
   app boots; their real operations remain unimplemented.
+- Walking-skeleton observability: a thin `Logger` seam (`@chunsik/core`) with a
+  console-backed `ConsoleLogger` in the app; `[discord]`/`[chunsik]` namespaced,
+  structured, no secrets/content logged. Replaceable by a future LoggerProvider.
 
 ### Added — Sprint 0 (repository operating system)
 
