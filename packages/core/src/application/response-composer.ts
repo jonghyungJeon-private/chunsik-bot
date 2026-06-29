@@ -20,9 +20,10 @@ export class ResponseComposer {
     result: AiExecutionResult,
     artifacts: Artifact[] = [],
   ): OutboundMessage {
+    const text = result.text.trim() || '(빈 응답이에요. 다시 시도해 주세요.)';
     return {
       context,
-      text: result.text,
+      text,
       ...(artifacts.length ? { artifacts } : {}),
     };
   }

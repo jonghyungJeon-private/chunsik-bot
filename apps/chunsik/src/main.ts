@@ -72,7 +72,7 @@ async function bootstrap(): Promise<void> {
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
-  log.info('started (Sprint 1b-2 — core task pipeline, Claude CLI execution)');
+  log.info('started (Sprint 1d — Claude CLI + chunked Discord delivery)');
 }
 
 bootstrap().catch((err) => {

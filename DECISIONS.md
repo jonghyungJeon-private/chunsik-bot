@@ -505,3 +505,44 @@ unauthenticated, slow, or errors — not crash or go silent.
 ### V1 / V2
 **V1:** the above. **V2/V3:** isolated Claude-context mode; multi-provider fallback;
 `--output-format json` + token/cost usage.
+
+---
+
+## ADR-0016 — Discord response delivery policy
+
+- **Status:** ✅ Accepted (v1)
+- **Date:** 2026-06-29
+
+### Context
+Discord caps a message at 2000 chars; Claude answers are often longer (a smoke
+answer was 5351 chars). Sends can fail or be rate-limited, and the "is typing…"
+indicator only lasts ~10s while runs take ~50–70s. Delivery is a Discord-specific
+concern and must not leak into the core.
+
+### Decision
+- **Chunking (adapter):** split at `DISCORD_SAFE_LIMIT = 1900` (headroom under
+  2000), preferring newline → space boundaries; an over-long token is hard-cut.
+  Pure `chunkText` lives in the Discord adapter; the core stays Discord-free.
+- **Sequential delivery:** chunks are sent in order, awaiting each before the next.
+- **Send-failure handling:** on the first chunk failure, **stop** (partial delivery)
+  and report/log (secret-masked). **No resend** → no duplicate messages. Rate-limit
+  backoff is delegated to **discord.js's REST layer**. Task-level retry remains a
+  future RetryPolicy ADR.
+- **Typing indicator:** refresh every ~8s (under the ~10s TTL) while processing;
+  cleared by the next `sendMessage` to that target, or a safety cap (~128s).
+  Adapter-internal (the TTL is a Discord detail).
+- **Response format:** `ResponseComposer` trims and supplies a non-empty fallback.
+- **File attachment for very long responses:** **policy/seam only**
+  (`FILE_ATTACHMENT_CHUNK_THRESHOLD`) — DEFERRED; v1 still sends chunks and logs
+  when the threshold is exceeded.
+
+### Consequences
+- + Long responses are delivered reliably; the typing indicator stays continuous.
+- + No duplicate messages; partial delivery on failure is reported, not retried.
+- − On a mid-sequence send failure the user keeps the chunks already sent (logged;
+  the AI run itself is unaffected and remains COMPLETED).
+- − Very long responses produce many messages until the file-attachment seam is built.
+
+### V1 / V2
+**V1:** the above. **V2:** file-attachment delivery for long responses; optional
+chunk numbering; bounded delivery resend under a RetryPolicy ADR.

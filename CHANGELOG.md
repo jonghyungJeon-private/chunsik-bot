@@ -7,6 +7,20 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Sprint 1d (harden Discord response delivery)
+
+- Long responses are chunked under Discord's 2000-char limit (`DISCORD_SAFE_LIMIT`
+  = 1900; newline/space boundaries, hard-cut for over-long tokens) and sent
+  sequentially in order.
+- Send-failure handling: stop on first chunk failure (partial delivery reported +
+  masked log), no resend (no duplicates); rate-limit backoff delegated to discord.js.
+- Typing indicator refreshes every ~8s during long runs (cleared on reply / safety
+  cap), fixing the gap where "is typing…" expired after ~10s on ~50–70s runs.
+- `ResponseComposer` trims output + non-empty fallback. File-attachment for very
+  long responses is a documented seam only (deferred). ADR-0016.
+- Tests: `delivery.test.ts` (chunking boundaries/hard-cut/ordered send/stop-on-
+  failure). Vitest 7 files / 32 tests. Live smoke: 5351-char answer → 3 chunks.
+
 ### Added — Sprint 1c (harden CLI provider failure handling)
 
 - Provider-agnostic failure taxonomy `AiFailureKind` (UNAVAILABLE, AUTH_REQUIRED,
