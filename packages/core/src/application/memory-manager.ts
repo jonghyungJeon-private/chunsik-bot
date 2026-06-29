@@ -42,6 +42,15 @@ export class MemoryManager {
     return this.storage.memories.save(record);
   }
 
+  /** Most recent short-term memories for a scope, oldest → newest. */
+  async recentShortTerm(scope: MemoryScope, limit = 10): Promise<MemoryRecord[]> {
+    const records = await this.storage.memories.findByScope(scope, MemoryType.SHORT_TERM);
+    return records
+      .slice()
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      .slice(-limit);
+  }
+
   /**
    * Build the context files injected into a CLI run for a task. Renders the
    * relevant memory into the file layout the spec calls for:

@@ -7,6 +7,22 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Sprint 1b-1 (core task pipeline)
+
+- Discord inbound is now handled by `ChunsikCore.handleInboundMessage` (replacing
+  the temporary echo): resolve Actor → open Session → classify → create Task →
+  plan → ContextBuilder → PromptComposer → CapabilityRouter → provider → Artifact
+  → reply.
+- Minimal deterministic `IntentClassifier` (→ GENERAL_CHAT, requiresWork) and
+  `Planner` (single step, risk via RiskPolicy).
+- New domain contracts `PromptSpec` and `ContextBundle`; `ContextBuilder` (trivial)
+  and `PromptComposer` (minimal, layered) application services (ADR-0014).
+- `AiExecutionRequest.promptSpec?` added (additive); provider renders it.
+- SQLite persistence implemented for `tasks`, `taskRuns`, `artifacts`, `memories`.
+- `PlaceholderAiProvider` (app, Sprint 1b-1 only) returns a deterministic response
+  via the router — **no AI call yet**; Sprint 1b-2 swaps in the Claude CLI.
+- Component test: one inbound message flows Actor→Session→Task→TaskRun→Artifact→SQLite.
+
 ### Added — Sprint 1a (walking skeleton)
 
 - Domain: `Actor` + `ExternalIdentity` (ADR-0009), `Session` + `SessionStatus`

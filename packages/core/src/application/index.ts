@@ -5,6 +5,8 @@ export * from './ai-provider-manager';
 export * from './capability-router';
 export * from './intent-classifier';
 export * from './planner';
+export * from './context-builder';
+export * from './prompt-composer';
 export * from './task-manager';
 export * from './memory-manager';
 export * from './artifact-manager';

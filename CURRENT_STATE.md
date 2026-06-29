@@ -5,39 +5,40 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** Sprint 1a complete — walking skeleton (echo) wired end to end.
-- **Next:** Sprint 1b (first cognitive flow) — awaiting go-ahead.
+- **Phase:** Sprint 1b-1 complete — real `ChunsikCore` task pipeline wired with a
+  deterministic placeholder AI provider (no AI call yet).
+- **Next:** Sprint 1b-2 (Claude CLI execution) — awaiting go-ahead.
 
 ## What exists
 
 - pnpm monorepo; **framework-agnostic core** (domain, ports, application services).
 - NestJS composition root wiring ports → providers via injection tokens.
-- **Implemented (Sprint 1a):**
-  - Domain: `Actor` + `ExternalIdentity` (ADR-0009), `Session` + `SessionStatus`
-    (ADR-0001); `MemoryScope.sessionId` and `Task.actorId`/`sessionId` reserved.
-  - Core services: `ActorManager` (resolve/create), `SessionManager` (open/reuse/touch).
-  - `SqliteStorageProvider` (better-sqlite3): real `actors` + `sessions` repositories.
-  - `DiscordPlatformAdapter` (discord.js): receive → normalize, send, typing.
-  - Inbound flow (composition root, temporary): resolve Actor → open/touch Session → **echo** reply.
+- **Pipeline (Sprint 1b-1):** Discord inbound → `ChunsikCore` → resolve Actor →
+  open Session → `IntentClassifier` (minimal) → create Task → `Planner` (minimal)
+  → `ContextBuilder` (trivial) → `PromptComposer` (minimal `PromptSpec`) →
+  `CapabilityRouter` → AiProvider → Artifact → reply.
+- **SQLite (better-sqlite3):** `actors`, `sessions`, `tasks`, `taskRuns`,
+  `artifacts`, `memories` repositories implemented.
+- **AI:** `PlaceholderAiProvider` (deterministic, no AI call). Real CLI providers
+  remain stubbed until 1b-2.
+- **Observability:** `Logger` seam + `ConsoleLogger` (`[discord]`/`[chunsik]`).
 
 ## What is NOT implemented yet
 
-- **Cognition:** `IntentClassifier.classify`, `Planner.plan`, all `AiProvider.execute` /
-  `isAvailable` (Claude/Codex/Ollama), `ChunsikCore.handleApprovalDecision`.
-- **Storage:** `tasks`, `taskRuns`, `memories`, `artifacts`, `projects`, `approvals`
-  repositories remain stubbed (built in their sprint).
-- **Platform:** `DiscordPlatformAdapter.requestApproval` (no approval UI in 1a).
-- **Lifecycle no-ops:** `LocalQueueProvider` and `LocalVectorProvider` start/init are
-  no-ops; their real operations are unimplemented.
-- **Not yet introduced** (decisions recorded): `ContextBuilder`, `PromptComposer`,
-  domain events / `EventBus`, `ResourceRef`/`ResourceResolver`, `Usage`/cost,
-  `PolicyProvider`.
+- **AI execution:** `ClaudeCliProvider`/`Codex`/`Ollama` `execute`/`isAvailable`
+  still stubbed (Sprint 1b-2 implements Claude per ADR-0014).
+- **Storage:** `projects`, `approvals` repositories remain stubbed.
+- **Platform:** `DiscordPlatformAdapter.requestApproval` (no approval UI yet).
+- **Deferred:** Workflow engine, agent runtime, plugins, connectors, AI HTTP API,
+  PolicyProvider, `ContextBuilder` ranking/compression, per-provider prompt rendering.
 
 ## Validation
 
 - `pnpm typecheck` — passes (exit 0).
 - Boundary enforced — Core cannot resolve adapter packages.
-- Persistence smoke test (compiled output, no Discord): actor reuse, session reuse,
-  thread-scoped session isolation, and durability across reconnects all verified.
-- **Not yet validated live:** a real Discord round-trip (requires `DISCORD_BOT_TOKEN`
-  and the privileged **Message Content Intent** enabled for the bot).
+- Component test (Nest context + placeholder + real SQLite): one inbound message
+  flows Actor→Session→Task→TaskRun(SUCCEEDED)→Artifact→SQLite; actor/session reuse
+  verified across messages.
+- **Not yet validated live this sprint:** a real Discord round-trip through the new
+  pipeline (optional; 1a already proved Discord transport). Requires
+  `DISCORD_BOT_TOKEN` + Message Content Intent.

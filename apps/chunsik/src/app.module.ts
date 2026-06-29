@@ -18,6 +18,8 @@ import {
   AiProviderManager,
   ActorManager,
   SessionManager,
+  ContextBuilder,
+  PromptComposer,
   TaskManager,
   MemoryManager,
   ArtifactManager,
@@ -46,8 +48,10 @@ import { V1_CONNECTORS } from '@chunsik/connectors';
 
 import { loadConfig } from './config';
 import { ConsoleLogger } from './console-logger';
+import { PlaceholderAiProvider } from './placeholder-ai-provider';
 
 const config = loadConfig();
+const coreLogger = new ConsoleLogger('chunsik');
 
 /**
  * Port -> concrete bindings. Swapping an implementation (e.g. Postgres storage,
@@ -67,11 +71,10 @@ const infrastructure: Provider[] = [
   },
   {
     provide: AI_PROVIDERS,
-    useFactory: (): AiProvider[] => [
-      new ClaudeCliProvider(config.ai.claudeBin),
-      new CodexCliProvider(config.ai.codexBin),
-      new OllamaCliProvider({ bin: config.ai.ollamaBin, model: config.ai.ollamaModel }),
-    ],
+    // Sprint 1b-1: a single deterministic placeholder so the pipeline runs
+    // without any AI call. Sprint 1b-2 swaps this back to the CLI providers
+    // (ClaudeCliProvider/CodexCliProvider/OllamaCliProvider — still imported).
+    useFactory: (): AiProvider[] => [new PlaceholderAiProvider()],
   },
   { provide: CONNECTOR_PROVIDERS, useValue: V1_CONNECTORS },
 ];
@@ -140,13 +143,23 @@ const application: Provider[] = [
     inject: [CapabilityRouter, RiskPolicy],
   },
   {
+    provide: ContextBuilder,
+    useFactory: (memory: MemoryManager) => new ContextBuilder(memory),
+    inject: [MemoryManager],
+  },
+  { provide: PromptComposer, useFactory: () => new PromptComposer() },
+  {
     provide: ChunsikCore,
     useFactory: (
       classifier: IntentClassifier,
       planner: Planner,
       router: CapabilityRouter,
       tasks: TaskManager,
+      actors: ActorManager,
+      sessions: SessionManager,
       memory: MemoryManager,
+      contextBuilder: ContextBuilder,
+      promptComposer: PromptComposer,
       artifacts: ArtifactManager,
       workspace: WorkspaceManager,
       connectors: ConnectorManager,
@@ -159,20 +172,29 @@ const application: Provider[] = [
         planner,
         router,
         tasks,
+        actors,
+        sessions,
         memory,
+        contextBuilder,
+        promptComposer,
         artifacts,
         workspace,
         connectors,
         composer,
         platform,
         risk,
+        logger: coreLogger,
       }),
     inject: [
       IntentClassifier,
       Planner,
       CapabilityRouter,
       TaskManager,
+      ActorManager,
+      SessionManager,
       MemoryManager,
+      ContextBuilder,
+      PromptComposer,
       ArtifactManager,
       WorkspaceManager,
       ConnectorManager,

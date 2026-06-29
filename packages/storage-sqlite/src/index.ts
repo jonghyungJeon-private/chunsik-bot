@@ -32,7 +32,7 @@ export interface SqliteConfig {
 type Db = Database.Database;
 type Row = { data: string };
 
-/** A SQLite-backed JSON document store for one entity type. */
+/** A SQLite-backed JSON document store for one entity type (id + data). */
 class JsonRepository<T extends { id: Id }> implements Repository<T> {
   constructor(
     protected readonly db: Db,
@@ -136,6 +136,103 @@ class SqliteSessionRepository extends JsonRepository<Session> implements Session
   }
 }
 
+class SqliteTaskRepository extends JsonRepository<Task> implements TaskRepository {
+  override async save(task: Task): Promise<Task> {
+    this.db
+      .prepare(
+        `INSERT INTO tasks (id, channel_id, thread_id, data) VALUES (?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET channel_id = excluded.channel_id,
+           thread_id = excluded.thread_id, data = excluded.data`,
+      )
+      .run(task.id, task.context.channelId, task.context.threadId ?? null, JSON.stringify(task));
+    return task;
+  }
+
+  async listByContext(channelId: string, threadId?: string): Promise<Task[]> {
+    const rows = (
+      threadId === undefined
+        ? this.db.prepare(`SELECT data FROM tasks WHERE channel_id = ? AND thread_id IS NULL`).all(channelId)
+        : this.db.prepare(`SELECT data FROM tasks WHERE channel_id = ? AND thread_id = ?`).all(channelId, threadId)
+    ) as Row[];
+    return rows.map((r) => JSON.parse(r.data) as Task);
+  }
+}
+
+class SqliteTaskRunRepository extends JsonRepository<TaskRun> implements TaskRunRepository {
+  override async save(run: TaskRun): Promise<TaskRun> {
+    this.db
+      .prepare(
+        `INSERT INTO task_runs (id, task_id, data) VALUES (?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET task_id = excluded.task_id, data = excluded.data`,
+      )
+      .run(run.id, run.taskId, JSON.stringify(run));
+    return run;
+  }
+
+  async listByTask(taskId: Id): Promise<TaskRun[]> {
+    const rows = this.db
+      .prepare(`SELECT data FROM task_runs WHERE task_id = ? ORDER BY json_extract(data, '$.attempt')`)
+      .all(taskId) as Row[];
+    return rows.map((r) => JSON.parse(r.data) as TaskRun);
+  }
+}
+
+class SqliteArtifactRepository extends JsonRepository<Artifact> implements ArtifactRepository {
+  override async save(artifact: Artifact): Promise<Artifact> {
+    this.db
+      .prepare(
+        `INSERT INTO artifacts (id, task_id, data) VALUES (?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET task_id = excluded.task_id, data = excluded.data`,
+      )
+      .run(artifact.id, artifact.taskId ?? null, JSON.stringify(artifact));
+    return artifact;
+  }
+
+  async listByTask(taskId: Id): Promise<Artifact[]> {
+    const rows = this.db.prepare(`SELECT data FROM artifacts WHERE task_id = ?`).all(taskId) as Row[];
+    return rows.map((r) => JSON.parse(r.data) as Artifact);
+  }
+}
+
+class SqliteMemoryRepository extends JsonRepository<MemoryRecord> implements MemoryRepository {
+  override async save(record: MemoryRecord): Promise<MemoryRecord> {
+    this.db
+      .prepare(
+        `INSERT INTO memories (id, channel_id, thread_id, type, data) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET channel_id = excluded.channel_id,
+           thread_id = excluded.thread_id, type = excluded.type, data = excluded.data`,
+      )
+      .run(
+        record.id,
+        record.scope.channelId ?? null,
+        record.scope.threadId ?? null,
+        record.type,
+        JSON.stringify(record),
+      );
+    return record;
+  }
+
+  async findByScope(scope: MemoryScope, type?: MemoryType): Promise<MemoryRecord[]> {
+    const clauses: string[] = [];
+    const params: unknown[] = [];
+    if (scope.channelId !== undefined) {
+      clauses.push('channel_id = ?');
+      params.push(scope.channelId);
+    }
+    if (scope.threadId !== undefined) {
+      clauses.push('thread_id = ?');
+      params.push(scope.threadId);
+    }
+    if (type !== undefined) {
+      clauses.push('type = ?');
+      params.push(type);
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+    const rows = this.db.prepare(`SELECT data FROM memories ${where}`).all(...params) as Row[];
+    return rows.map((r) => JSON.parse(r.data) as MemoryRecord);
+  }
+}
+
 /** Repositories not yet needed (built in their own sprint). */
 class StubRepository<T> implements Repository<T> {
   constructor(protected readonly entity: string) {}
@@ -152,31 +249,11 @@ class StubRepository<T> implements Repository<T> {
     throw new NotImplementedError(`${this.entity}.list`);
   }
 }
-class StubTaskRepository extends StubRepository<Task> implements TaskRepository {
-  async listByContext(_channelId: string, _threadId?: string): Promise<Task[]> {
-    throw new NotImplementedError('tasks.listByContext');
-  }
-}
-class StubTaskRunRepository extends StubRepository<TaskRun> implements TaskRunRepository {
-  async listByTask(_taskId: Id): Promise<TaskRun[]> {
-    throw new NotImplementedError('taskRuns.listByTask');
-  }
-}
-class StubMemoryRepository extends StubRepository<MemoryRecord> implements MemoryRepository {
-  async findByScope(_scope: MemoryScope, _type?: MemoryType): Promise<MemoryRecord[]> {
-    throw new NotImplementedError('memories.findByScope');
-  }
-}
-class StubArtifactRepository extends StubRepository<Artifact> implements ArtifactRepository {
-  async listByTask(_taskId: Id): Promise<Artifact[]> {
-    throw new NotImplementedError('artifacts.listByTask');
-  }
-}
 
 /**
  * StorageProvider over SQLite (better-sqlite3). All SQL stays in this package;
- * callers see only domain entities. Sprint 1a implements `actors` + `sessions`;
- * the remaining repositories are stubbed until their sprint.
+ * callers see only domain entities. Implemented: actors, sessions, tasks,
+ * taskRuns, artifacts, memories. Stubbed until their sprint: projects, approvals.
  */
 export class SqliteStorageProvider implements StorageProvider {
   private db?: Db;
@@ -184,11 +261,11 @@ export class SqliteStorageProvider implements StorageProvider {
   // Built in init() once the connection exists.
   actors!: ActorRepository;
   sessions!: SessionRepository;
+  tasks!: TaskRepository;
+  taskRuns!: TaskRunRepository;
+  artifacts!: ArtifactRepository;
+  memories!: MemoryRepository;
 
-  readonly tasks: TaskRepository = new StubTaskRepository('tasks');
-  readonly taskRuns: TaskRunRepository = new StubTaskRunRepository('taskRuns');
-  readonly memories: MemoryRepository = new StubMemoryRepository('memories');
-  readonly artifacts: ArtifactRepository = new StubArtifactRepository('artifacts');
   readonly projects: Repository<Project> = new StubRepository<Project>('projects');
   readonly approvals: Repository<ApprovalRequest> = new StubRepository<ApprovalRequest>('approvals');
 
@@ -209,9 +286,30 @@ export class SqliteStorageProvider implements StorageProvider {
          id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, thread_id TEXT,
          status TEXT NOT NULL, data TEXT NOT NULL);`,
     );
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS tasks (
+         id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, thread_id TEXT, data TEXT NOT NULL);`,
+    );
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS task_runs (
+         id TEXT PRIMARY KEY, task_id TEXT NOT NULL, data TEXT NOT NULL);`,
+    );
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS artifacts (
+         id TEXT PRIMARY KEY, task_id TEXT, data TEXT NOT NULL);`,
+    );
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS memories (
+         id TEXT PRIMARY KEY, channel_id TEXT, thread_id TEXT, type TEXT NOT NULL, data TEXT NOT NULL);`,
+    );
+
     this.db = db;
     this.actors = new SqliteActorRepository(db, 'actors');
     this.sessions = new SqliteSessionRepository(db, 'sessions');
+    this.tasks = new SqliteTaskRepository(db, 'tasks');
+    this.taskRuns = new SqliteTaskRunRepository(db, 'task_runs');
+    this.artifacts = new SqliteArtifactRepository(db, 'artifacts');
+    this.memories = new SqliteMemoryRepository(db, 'memories');
   }
 
   async close(): Promise<void> {

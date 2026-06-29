@@ -2,8 +2,7 @@ import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 
 import {
-  ActorManager,
-  SessionManager,
+  ChunsikCore,
   PLATFORM_ADAPTER,
   STORAGE_PROVIDER,
   VECTOR_PROVIDER,
@@ -26,10 +25,11 @@ const log = new ConsoleLogger('chunsik');
  * Discord is the interface). Resolves providers/services from DI, wires the
  * inbound handler, and starts infrastructure.
  *
- * Sprint 1a — WALKING SKELETON: the inbound handler resolves the Actor, opens a
- * Session, persists it, and echoes the message. There is intentionally NO
- * cognition (no Intent/Planner/PromptComposer/AI execution). Sprint 1b replaces
- * this handler with `ChunsikCore.handleInboundMessage`.
+ * Sprint 1b-1 — the inbound handler is `ChunsikCore.handleInboundMessage`,
+ * which runs the real pipeline: resolve Actor → open Session → classify →
+ * create Task → plan → ContextBuilder → PromptComposer → route → provider →
+ * Artifact → reply. The AI provider is a deterministic placeholder in 1b-1;
+ * Sprint 1b-2 swaps in the real Claude CLI execution.
  */
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.createApplicationContext(AppModule, {
@@ -40,19 +40,22 @@ async function bootstrap(): Promise<void> {
   const vector = app.get<VectorProvider>(VECTOR_PROVIDER);
   const queue = app.get<QueueProvider>(QUEUE_PROVIDER);
   const platform = app.get<PlatformAdapter>(PLATFORM_ADAPTER);
-  const actors = app.get(ActorManager);
-  const sessions = app.get(SessionManager);
+  const core = app.get(ChunsikCore);
 
-  platform.onMessage(async (message) => {
-    const actor = await actors.resolveFromContext(message.context);
-    const session = await sessions.openForContext(message.context, actor.id);
-    await sessions.touch(session);
-    await platform.sendMessage({
-      context: message.context,
-      text: `🐹 echo: ${message.text}`,
-    });
-    log.info('echo handled', { actorId: actor.id, sessionId: session.id });
-  });
+  platform.onMessage((message) =>
+    core.handleInboundMessage(message).catch((err) =>
+      log.error('inbound handling failed', {
+        error: err instanceof Error ? err.message : String(err),
+      }),
+    ),
+  );
+  platform.onApprovalDecision((decision) =>
+    core.handleApprovalDecision(decision).catch((err) =>
+      log.error('approval handling failed', {
+        error: err instanceof Error ? err.message : String(err),
+      }),
+    ),
+  );
 
   await storage.init();
   await vector.init();
@@ -69,7 +72,7 @@ async function bootstrap(): Promise<void> {
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
-  log.info('started (Sprint 1a walking skeleton — echo mode)');
+  log.info('started (Sprint 1b-1 — core task pipeline, placeholder AI)');
 }
 
 bootstrap().catch((err) => {

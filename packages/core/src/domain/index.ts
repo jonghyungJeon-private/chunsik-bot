@@ -4,6 +4,7 @@ export * from './messaging';
 export * from './actor';
 export * from './session';
 export * from './planning';
+export * from './prompting';
 export * from './task';
 export * from './memory';
 export * from './artifact';

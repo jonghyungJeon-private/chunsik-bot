@@ -37,7 +37,11 @@ export class TaskManager {
 
   constructor(private readonly storage: StorageProvider) {}
 
-  async createTask(intent: Intent, context: ConversationContext, projectId?: Id): Promise<Task> {
+  async createTask(
+    intent: Intent,
+    context: ConversationContext,
+    opts: { actorId?: Id; sessionId?: Id; projectId?: Id } = {},
+  ): Promise<Task> {
     const ts = now();
     const task: Task = {
       id: newId(),
@@ -48,7 +52,9 @@ export class TaskManager {
       // Provisional; the Planner sets the real risk once the plan is known.
       riskLevel: RiskLevel.LOW,
       context,
-      ...(projectId ? { projectId } : {}),
+      ...(opts.actorId ? { actorId: opts.actorId } : {}),
+      ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
+      ...(opts.projectId ? { projectId: opts.projectId } : {}),
       createdAt: ts,
       updatedAt: ts,
     };

@@ -1,4 +1,11 @@
-import type { Artifact, Capability, ContextFile, Metadata, WorkspaceRef } from '../domain';
+import type {
+  Artifact,
+  Capability,
+  ContextFile,
+  Metadata,
+  PromptSpec,
+  WorkspaceRef,
+} from '../domain';
 
 /**
  * What a provider can do, and how strongly it should be preferred for it.
@@ -20,8 +27,13 @@ export interface AiCapabilityDescriptor {
 
 export interface AiExecutionRequest {
   capability: Capability;
-  /** The composed instruction for this run. */
-  prompt: string;
+  /**
+   * Layered, provider-agnostic prompt built by the PromptComposer. Preferred
+   * input; the provider RENDERS it to a CLI-ready form. (ADR-0003 / ADR-0014)
+   */
+  promptSpec?: PromptSpec;
+  /** Pre-rendered instruction string. Fallback when no promptSpec is supplied. */
+  prompt?: string;
   /**
    * Memory injected as files. The core generates these from Chunsik Memory;
    * the provider's only job is to ensure the CLI can see them (typically by

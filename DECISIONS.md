@@ -420,3 +420,44 @@ high-blast-radius first real sprint. The Charter also proposed reserving seams f
 
 ### V1 / V2
 **V1:** Sprint 1a then 1b. **V2:** the future sprint and beyond, per `ROADMAP.md`.
+
+---
+
+## ADR-0014 — Prompt/Context contracts, AiProvider promptSpec, and Claude CLI invocation
+
+- **Status:** ✅ Accepted (v1) — elaborates ADR-0002 / ADR-0003
+- **Date:** 2026-06-29
+
+### Context
+Sprint 1b needs concrete shapes for context assembly and prompting, and a defined
+way for the CLI provider to run. ADR-0002 (ContextBuilder) and ADR-0003
+(PromptComposer/PromptSpec) decided the seams; this records the concrete v1 contracts.
+
+### Decision
+- **ContextBundle (minimal):** `{ taskId, summary, recentMessages: string[] }`.
+  Ranking / compression / resources are deferred behind this shape.
+- **PromptSpec (minimal, layered):** `{ system, developer, context, task }`,
+  provider-agnostic. The PromptComposer (core) builds it; an AiProvider adapter
+  RENDERS it. The core NEVER renders provider-specific text.
+- **`AiExecutionRequest.promptSpec?` added** (additive, optional); `prompt?` becomes
+  the optional pre-rendered fallback. Providers prefer `promptSpec`.
+- **Claude CLI invocation contract** (implemented in Sprint 1b-2):
+  - Use `claude -p` (non-interactive print).
+  - Pass the prompt safely via **stdin** (never shell-interpolated into args).
+  - **Do NOT use `--bare`** — it requires `ANTHROPIC_API_KEY` and ignores OAuth;
+    we preserve authenticated-CLI usage.
+  - Run in a **neutral cwd** so the repo's `CLAUDE.md`/`AGENTS.md` are not auto-ingested.
+  - Apply a **timeout**; **capture stdout** as the response.
+- **v1 is CLI-only — no AI HTTP API path** anywhere.
+
+### Consequences
+- + Concrete, testable prompt/context contracts; provider rendering stays in adapters.
+- + The additive request field keeps existing call sites valid.
+- + Claude invocation is deterministic, leaks no repo context, and needs no API key.
+- − Both `prompt` and `promptSpec` optional means a caller must supply one (enforced by
+  usage/convention, not the type).
+
+### V1 / V2
+**V1:** the above; ClaudeCliProvider implements the invocation in Sprint 1b-2.
+**V2:** richer PromptSpec layers, ContextBuilder ranking/compression, per-provider
+rendering refinements.

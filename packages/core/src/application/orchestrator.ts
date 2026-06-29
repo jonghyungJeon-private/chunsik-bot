@@ -11,7 +11,7 @@ import type {
   Plan,
   Task,
 } from '../domain';
-import type { PlatformAdapter } from '../ports';
+import type { Logger, PlatformAdapter } from '../ports';
 import type { IntentClassifier } from './intent-classifier';
 import type { Planner } from './planner';
 import type { CapabilityRouter } from './capability-router';
@@ -22,6 +22,10 @@ import type { WorkspaceManager } from './workspace-manager';
 import type { ConnectorManager } from './connector-manager';
 import type { ResponseComposer } from './response-composer';
 import type { RiskPolicy } from './risk-policy';
+import type { ActorManager } from './actor-manager';
+import type { SessionManager } from './session-manager';
+import type { ContextBuilder } from './context-builder';
+import type { PromptComposer } from './prompt-composer';
 
 /** Everything the orchestrator needs, injected by the composition root. */
 export interface ChunsikCoreDeps {
@@ -29,57 +33,75 @@ export interface ChunsikCoreDeps {
   planner: Planner;
   router: CapabilityRouter;
   tasks: TaskManager;
+  actors: ActorManager;
+  sessions: SessionManager;
   memory: MemoryManager;
+  contextBuilder: ContextBuilder;
+  promptComposer: PromptComposer;
   artifacts: ArtifactManager;
   workspace: WorkspaceManager;
   connectors: ConnectorManager;
   composer: ResponseComposer;
   platform: PlatformAdapter;
   risk: RiskPolicy;
+  logger: Logger;
 }
 
 /**
  * ChunsikCore is the application orchestrator — the single entry the platform
- * calls. It expresses the v1 task flow as a coordination of the application
- * services. The deterministic plumbing here is real; the leaf cognition it
- * calls (classify, plan, AiProvider.execute) is stubbed until implemented.
+ * calls. It coordinates the application services into the v1 task flow.
  *
  * Boundary note: this file imports NOTHING concrete — no Discord, no SQLite,
- * no CLI. It only knows ports and application services.
+ * no CLI. It depends only on ports (incl. the Logger port) and application
+ * services. Provider selection is by capability; it never names a CLI.
  */
 export class ChunsikCore {
   constructor(private readonly deps: ChunsikCoreDeps) {}
 
   /**
-   * The end-to-end flow:
-   *   1. show typing + record short-term memory
-   *   2. classify intent (IntentClassifier)
-   *   3. fast path: no work needed -> route capability, execute, reply
-   *   4. work path: create Task -> PLANNING -> Planner builds Plan
-   *   5. risk gate: HIGH/CRITICAL -> WAITING_APPROVAL + ask the user, return
-   *   6. otherwise execute the task now
+   * Flow (Sprint 1b-1):
+   *   1. typing + resolve Actor + open/touch Session + record short-term memory
+   *   2. classify intent
+   *   3. fast path: no work -> route + execute + reply
+   *   4. work path: create Task (actor/session) -> PLANNING -> Plan
+   *   5. risk gate: HIGH/CRITICAL -> WAITING_APPROVAL + ask, return
+   *   6. execute: ContextBuilder -> PromptComposer -> route -> execute ->
+   *      Artifact -> COMPLETED -> reply
    */
   async handleInboundMessage(message: InboundMessage): Promise<void> {
     await this.deps.platform.sendTyping(message.context).catch(() => undefined);
+
+    const actor = await this.deps.actors.resolveFromContext(message.context);
+    const session = await this.deps.sessions.openForContext(message.context, actor.id);
+    await this.deps.sessions.touch(session);
     await this.deps.memory.recordShortTerm(message);
 
     const intent = await this.deps.classifier.classify(message);
+    this.deps.logger.info('intent classified', {
+      capability: intent.capability,
+      requiresWork: intent.requiresWork,
+    });
 
     // (3) Fast path — conversational, no Task needed.
     if (!intent.requiresWork) {
       const provider = await this.deps.router.route(intent.capability);
-      const result = await provider.execute({
-        capability: intent.capability,
-        prompt: message.text,
-      });
+      const result = await provider.execute({ capability: intent.capability, prompt: message.text });
       await this.deps.platform.sendMessage(
         this.deps.composer.compose(message.context, result, result.artifacts ?? []),
       );
       return;
     }
 
-    // (4) Work path — becomes a Task.
-    let task = await this.deps.tasks.createTask(intent, message.context);
+    // (4) Work path — becomes a Task anchored to the actor + session.
+    let task = await this.deps.tasks.createTask(intent, message.context, {
+      actorId: actor.id,
+      sessionId: session.id,
+    });
+    this.deps.logger.info('task created', {
+      taskId: task.id,
+      actorId: actor.id,
+      sessionId: session.id,
+    });
     task = await this.deps.tasks.transition(task, TaskStatus.PLANNING);
     const plan = await this.deps.planner.plan(task, intent);
 
@@ -103,15 +125,15 @@ export class ChunsikCore {
   }
 
   /**
-   * Resume after a user approves/denies a gated action. Stubbed: it requires
-   * persisting the ApprovalRequest -> Task -> Plan so the run can resume, which
-   * depends on Planner output that is not implemented yet.
+   * Resume after a user approves/denies a gated action. Deferred: requires
+   * persisting ApprovalRequest -> Task -> Plan to resume. Not reached by the
+   * LOW-risk chat path in Sprint 1b-1.
    */
   async handleApprovalDecision(_decision: ApprovalDecision): Promise<void> {
     throw new NotImplementedError('ChunsikCore.handleApprovalDecision');
   }
 
-  /** Execute a planned task: prepare workspace, inject memory, run, reply. */
+  /** Execute a planned task: build context, compose prompt, run, persist, reply. */
   private async executeTask(
     inputTask: Task,
     plan: Plan,
@@ -120,20 +142,20 @@ export class ChunsikCore {
     const task = await this.deps.tasks.transition(inputTask, TaskStatus.RUNNING);
     const capability: Capability = plan.steps[0]?.capability ?? task.intent.capability;
     const run = await this.deps.tasks.startRun(task, capability);
+    this.deps.logger.info('run started', { taskId: task.id, runId: run.id, capability });
 
     try {
       const workspace = await this.deps.workspace.prepare(task);
-      const contextFiles = await this.deps.memory.buildContextFiles(task);
-      if (workspace) {
-        await this.deps.workspace.injectContext(workspace, contextFiles);
-      }
+
+      // Context + prompt are assembled in the core; the provider only renders.
+      const bundle = await this.deps.contextBuilder.build(task);
+      const promptSpec = this.deps.promptComposer.compose(task, bundle);
 
       // Provider chosen purely by capability — no concrete CLI named here.
       const provider = await this.deps.router.route(capability);
       const result = await provider.execute({
         capability,
-        prompt: plan.summary,
-        contextFiles,
+        promptSpec,
         ...(workspace ? { workspace } : {}),
       });
 
@@ -144,6 +166,12 @@ export class ChunsikCore {
       );
       await this.deps.tasks.completeRun(run, { artifactIds, providerId: provider.id });
       await this.deps.tasks.transition(task, TaskStatus.COMPLETED);
+      this.deps.logger.info('task completed', {
+        taskId: task.id,
+        runId: run.id,
+        providerId: provider.id,
+        artifacts: artifactIds.length,
+      });
 
       await this.deps.platform.sendMessage(
         this.deps.composer.compose(context, result, result.artifacts ?? []),
@@ -151,6 +179,11 @@ export class ChunsikCore {
     } catch (err) {
       await this.deps.tasks.failRun(run, err instanceof Error ? err.message : String(err));
       await this.deps.tasks.transition(task, TaskStatus.FAILED);
+      this.deps.logger.error('task failed', {
+        taskId: task.id,
+        runId: run.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
       throw err;
     }
   }
