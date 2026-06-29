@@ -35,6 +35,7 @@ export class ClaudeCliProvider extends BaseCliAiProvider {
 
   readonly capabilities: readonly AiCapabilityDescriptor[] = [
     { capability: Capability.ARCHITECTURE_PLANNING, priority: 100 },
+    { capability: Capability.PROJECT_ANALYSIS, priority: 90 },
     { capability: Capability.CODE_REVIEW, priority: 90 },
     { capability: Capability.DOCUMENT_ANALYSIS, priority: 60 },
     { capability: Capability.CODE_IMPLEMENTATION, priority: 50 },

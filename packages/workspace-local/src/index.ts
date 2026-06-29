@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { NotImplementedError } from '@chunsik/core';
@@ -7,6 +7,8 @@ import type {
   ContextFile,
   GitStatus,
   Id,
+  ProjectFileEntry,
+  ProjectReadout,
   ProjectScan,
   ResolveOptions,
   RunCommandOptions,
@@ -14,8 +16,29 @@ import type {
   WorkspaceRef,
 } from '@chunsik/core';
 
-/** Directories excluded from the file-tree summary (ADR-0018). */
+/** Directories excluded from file-tree summaries / reads (ADR-0018/0019). */
 const TREE_EXCLUDE = new Set(['node_modules', 'dist', 'build', '.git', 'coverage']);
+
+/** Files whose full text may be read during gated analysis (ADR-0019). */
+const ANALYSIS_ALLOW = new Set([
+  'package.json',
+  'pnpm-workspace.yaml',
+  'README.md',
+  'ARCHITECTURE.md',
+  'DECISIONS.md',
+]);
+
+/** Per-file read cap for analysis. */
+const MAX_FILE_BYTES = 8000;
+
+/** Never read env / secret-looking files (ADR-0019). */
+function isSecretName(name: string): boolean {
+  return /\.env(\.|$)/i.test(name) || /(secret|token|key|credential|password)/i.test(name);
+}
+
+function isAnalysisAllowed(name: string): boolean {
+  return ANALYSIS_ALLOW.has(name) || /^tsconfig.*\.json$/.test(name);
+}
 
 export interface LocalCloneConfig {
   /** Absolute root path of the existing local clone. */
@@ -67,6 +90,62 @@ export class LocalCloneWorkspaceProvider implements WorkspaceProvider {
       packageManager: LocalCloneWorkspaceProvider.detectPackageManager(path),
       fileTreeSummary: LocalCloneWorkspaceProvider.summarizeTree(path),
     };
+  }
+
+  /** Read-only, size-limited read of an allow-listed file set (ADR-0019). */
+  async readProjectFiles(rootPath: string): Promise<ProjectReadout> {
+    const files: ProjectFileEntry[] = [];
+    let rootEntries: string[];
+    try {
+      rootEntries = readdirSync(rootPath);
+    } catch {
+      return { files, tree: '' };
+    }
+    for (const name of rootEntries.sort()) {
+      if (TREE_EXCLUDE.has(name) || isSecretName(name) || !isAnalysisAllowed(name)) continue;
+      const full = join(rootPath, name);
+      try {
+        const st = statSync(full);
+        if (!st.isFile()) continue;
+        let content = readFileSync(full, 'utf8');
+        const truncated = content.length > MAX_FILE_BYTES;
+        if (truncated) content = content.slice(0, MAX_FILE_BYTES);
+        files.push({ path: name, content, truncated });
+      } catch {
+        /* skip unreadable file */
+      }
+    }
+    return { files, tree: LocalCloneWorkspaceProvider.analysisTree(rootPath) };
+  }
+
+  /** Top-level tree (root + apps/ + packages/), excluding ignored/secret entries. */
+  private static analysisTree(rootPath: string): string {
+    const lines = LocalCloneWorkspaceProvider.listDir(rootPath);
+    for (const sub of ['apps', 'packages']) {
+      const subPath = join(rootPath, sub);
+      try {
+        if (statSync(subPath).isDirectory()) {
+          for (const child of LocalCloneWorkspaceProvider.listDir(subPath)) lines.push(`${sub}/${child}`);
+        }
+      } catch {
+        /* sub dir absent */
+      }
+    }
+    return lines.join('\n');
+  }
+
+  private static listDir(dir: string): string[] {
+    try {
+      return readdirSync(dir, { withFileTypes: true })
+        .filter((e) => !TREE_EXCLUDE.has(e.name) && !isSecretName(e.name))
+        .sort((a, b) =>
+          a.isDirectory() === b.isDirectory() ? a.name.localeCompare(b.name) : a.isDirectory() ? -1 : 1,
+        )
+        .slice(0, 60)
+        .map((e) => (e.isDirectory() ? `${e.name}/` : e.name));
+    } catch {
+      return [];
+    }
   }
 
   private static detectGitBranch(path: string): string {

@@ -19,6 +19,7 @@ import {
   ActorManager,
   SessionManager,
   ProjectManager,
+  ProjectAnalyzer,
   ContextBuilder,
   PromptComposer,
   TaskManager,
@@ -158,6 +159,12 @@ const application: Provider[] = [
     inject: [STORAGE_PROVIDER, WorkspaceManager, MemoryManager, SessionManager],
   },
   {
+    provide: ProjectAnalyzer,
+    useFactory: (storage: StorageProvider, workspace: WorkspaceManager) =>
+      new ProjectAnalyzer(storage, workspace),
+    inject: [STORAGE_PROVIDER, WorkspaceManager],
+  },
+  {
     provide: ChunsikCore,
     useFactory: (
       classifier: IntentClassifier,
@@ -167,6 +174,7 @@ const application: Provider[] = [
       actors: ActorManager,
       sessions: SessionManager,
       projects: ProjectManager,
+      analyzer: ProjectAnalyzer,
       memory: MemoryManager,
       contextBuilder: ContextBuilder,
       promptComposer: PromptComposer,
@@ -185,6 +193,7 @@ const application: Provider[] = [
         actors,
         sessions,
         projects,
+        analyzer,
         memory,
         contextBuilder,
         promptComposer,
@@ -204,6 +213,7 @@ const application: Provider[] = [
       ActorManager,
       SessionManager,
       ProjectManager,
+      ProjectAnalyzer,
       MemoryManager,
       ContextBuilder,
       PromptComposer,

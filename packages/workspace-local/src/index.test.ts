@@ -46,3 +46,58 @@ describe('LocalCloneWorkspaceProvider.scanProject (ADR-0018, read-only)', () => 
     expect(scan.fileTreeSummary).not.toContain('coverage');
   });
 });
+
+describe('LocalCloneWorkspaceProvider.readProjectFiles (ADR-0019, gated read-only)', () => {
+  it('reads only allow-listed metadata files; ignores non-allow-listed ones', async () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, 'package.json'), '{"name":"x"}');
+    writeFileSync(join(dir, 'tsconfig.json'), '{}');
+    writeFileSync(join(dir, 'README.md'), '# hi');
+    writeFileSync(join(dir, 'index.ts'), 'export const x = 1;');
+    const readout = await provider.readProjectFiles(dir);
+    const paths = readout.files.map((f) => f.path);
+    expect(paths).toContain('package.json');
+    expect(paths).toContain('tsconfig.json');
+    expect(paths).toContain('README.md');
+    expect(paths).not.toContain('index.ts'); // source code is not in the allow-list
+  });
+
+  it('never reads env / secret-looking files', async () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, 'package.json'), '{}');
+    writeFileSync(join(dir, '.env'), 'DISCORD_BOT_TOKEN=abc');
+    writeFileSync(join(dir, '.env.local'), 'SECRET=zzz');
+    writeFileSync(join(dir, 'my-secret.json'), '{"token":"zzz"}');
+    const readout = await provider.readProjectFiles(dir);
+    const blob = JSON.stringify(readout.files);
+    expect(blob).not.toContain('DISCORD_BOT_TOKEN');
+    expect(blob).not.toContain('SECRET=zzz');
+    expect(readout.files.map((f) => f.path)).not.toContain('my-secret.json');
+  });
+
+  it('caps each file at the size limit and flags truncation', async () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, 'package.json'), 'x'.repeat(20000));
+    const readout = await provider.readProjectFiles(dir);
+    const pkg = readout.files.find((f) => f.path === 'package.json');
+    expect(pkg?.truncated).toBe(true);
+    expect(pkg?.content.length).toBe(8000);
+  });
+
+  it('includes a 2-level tree (root + apps/ + packages/), excluding ignored dirs', async () => {
+    const dir = tempDir();
+    mkdirSync(join(dir, 'packages', 'core'), { recursive: true });
+    mkdirSync(join(dir, 'apps', 'chunsik'), { recursive: true });
+    mkdirSync(join(dir, 'node_modules'), { recursive: true });
+    writeFileSync(join(dir, 'package.json'), '{}');
+    const readout = await provider.readProjectFiles(dir);
+    expect(readout.tree).toContain('packages/core/');
+    expect(readout.tree).toContain('apps/chunsik/');
+    expect(readout.tree).not.toContain('node_modules');
+  });
+
+  it('returns an empty readout for a non-existent path (no throw)', async () => {
+    const readout = await provider.readProjectFiles('/definitely/not/here/chunsik-xyz');
+    expect(readout.files).toEqual([]);
+  });
+});

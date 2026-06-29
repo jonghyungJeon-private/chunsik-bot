@@ -18,6 +18,7 @@ export class RiskPolicy {
     [Capability.SUMMARIZATION]: RiskLevel.LOW,
     [Capability.DOCUMENT_ANALYSIS]: RiskLevel.LOW,
     [Capability.READONLY_LOOKUP]: RiskLevel.LOW,
+    [Capability.PROJECT_ANALYSIS]: RiskLevel.LOW,
     [Capability.EMBEDDING]: RiskLevel.LOW,
     [Capability.ARCHITECTURE_PLANNING]: RiskLevel.LOW,
     [Capability.CODE_REVIEW]: RiskLevel.LOW,

@@ -1,6 +1,6 @@
 import { WorkspaceNotSafeError } from '../errors';
 import type { ContextFile, GitStatus, Task, WorkspaceRef } from '../domain';
-import type { ProjectScan, WorkspaceProvider } from '../ports';
+import type { ProjectReadout, ProjectScan, WorkspaceProvider } from '../ports';
 
 /**
  * Thin orchestration over the WorkspaceProvider that enforces the safety rule:
@@ -14,6 +14,11 @@ export class WorkspaceManager {
   /** Read-only scan of a local directory for project registration (ADR-0018). */
   async scan(path: string): Promise<ProjectScan> {
     return this.provider.scanProject(path);
+  }
+
+  /** Read-only, size-limited project read for gated analysis (ADR-0019). */
+  async readProjectFiles(rootPath: string): Promise<ProjectReadout> {
+    return this.provider.readProjectFiles(rootPath);
   }
 
   /** Resolve a working directory for a task, if it targets a project. */

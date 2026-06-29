@@ -44,12 +44,17 @@ export class ProjectManager {
       };
     }
 
-    const project: Project = {
-      id: newId(),
-      name: scan.name,
-      rootPath: scan.rootPath,
-      createdAt: now(),
-    };
+    // Re-registering the same local path updates the existing Project (ADR-0018
+    // decision): one Project per normalized rootPath; the session's active
+    // project is (re)bound to it.
+    const normalized = ProjectManager.normalizePath(scan.rootPath);
+    const existing = (await this.storage.projects.list()).find(
+      (p) => ProjectManager.normalizePath(p.rootPath) === normalized,
+    );
+    const project: Project = existing
+      ? { ...existing, name: scan.name, rootPath: scan.rootPath }
+      : { id: newId(), name: scan.name, rootPath: scan.rootPath, createdAt: now() };
+
     await this.storage.projects.save(project);
     await this.memory.recordProjectMemory(this.renderSummary(scan), {
       projectId: project.id,
@@ -57,16 +62,22 @@ export class ProjectManager {
     });
     await this.sessions.setActiveProject(session, project.id);
 
+    const verb = existing ? '재등록(업데이트)' : '등록';
     return {
       ok: true,
       project,
       message:
-        `✅ 프로젝트 "${scan.name}" 등록 완료!\n` +
+        `✅ 프로젝트 "${scan.name}" ${verb} 완료!\n` +
         `- 경로: ${scan.rootPath}\n` +
         `- git branch: ${scan.gitBranch}\n` +
         `- 패키지 매니저: ${scan.packageManager}\n` +
         '이제 이 프로젝트 맥락으로 질문할 수 있어요. 🐹',
     };
+  }
+
+  /** Normalize a local path for dedup (trim + strip trailing slashes). */
+  private static normalizePath(path: string): string {
+    return path.trim().replace(/\/+$/, '');
   }
 
   /** The PROJECT memory body stored for the registered project. */

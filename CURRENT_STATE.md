@@ -5,56 +5,73 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** Sprint 1f complete — local project registration: a user registers a
-  local repo ("이 프로젝트 등록해줘: /path"), Chunsik scans it read-only, stores it +
-  a PROJECT memory, binds it to the session, and later answers use that project
-  context. Plus SHORT_TERM pruning (30/session) + current-message exclusion.
-- **Next:** TBD (e.g., deeper project read toward a coding agent, Codex/Ollama, retention).
+- **Phase:** Sprint 1g complete — **Gated Project Analysis** (ADR-0019): a structure
+  question about the active project triggers a gated, read-only read of allow-listed
+  **metadata** files (8 KB cap, 2-level tree, secrets never read) and returns a
+  grounded analysis, persisted as TOOL memory. This is **Project Analysis, not Deep
+  Project Indexing** — repository-wide indexing remains deferred.
+- **Next:** TBD (e.g., Codex/Ollama fallback, or memory retention/pruning).
+- **Build/Test:** `pnpm typecheck` PASS (exit 0); `pnpm test` 12 files / 62 tests PASS.
 
-## What exists
+## Implemented
+
+- **Discord** — gateway adapter (`PlatformAdapter`): receive, typing indicator,
+  chunked delivery of long replies (ADR-0016).
+- **Claude CLI** — `ClaudeCliProvider` via `claude -p` (non-interactive, neutral cwd,
+  timeout; ADR-0014), routed by Capability; product-grade failure handling (ADR-0015).
+- **Session** — actor + session resolution; tasks/runs anchored to actor/session.
+- **Short-term Memory** — SHORT_TERM conversation memory per session (cap 30, oldest
+  pruned; current message excluded from recall; ADR-0017).
+- **Project Registration** — "이 프로젝트 등록해줘: /path" → read-only scan → `Project`
+  + PROJECT memory + bound `session.activeProjectId`; idempotent re-registration (ADR-0018).
+- **Project Analysis** — gated, read-only analysis of allow-listed project metadata
+  files → grounded structural answer, persisted as TOOL memory (ADR-0019).
+
+## Deferred
+
+- **Codex** — `CodexCliProvider` not implemented (stub).
+- **Ollama** — `OllamaCliProvider` not implemented (stub); no local-model fallback.
+- **Workflow** — multi-step planning/execution beyond a single Task is not built.
+- **Agent Runtime** — no autonomous tool-using / coding agent.
+- **Vector Search** — `VectorProvider` is a local stub; no embeddings/retrieval/semantic search.
+- **Jira** — no connector.
+- **Slack** — no connector (Discord is the only platform).
+- **Confluence** — no connector.
+
+## What exists (detail)
 
 - pnpm monorepo; **framework-agnostic core** (domain, ports, application services).
 - NestJS composition root wiring ports → providers via injection tokens.
-- **Pipeline (Sprint 1b-1):** Discord inbound → `ChunsikCore` → resolve Actor →
-  open Session → `IntentClassifier` (minimal) → create Task → `Planner` (minimal)
-  → `ContextBuilder` (trivial) → `PromptComposer` (minimal `PromptSpec`) →
-  `CapabilityRouter` → AiProvider → Artifact → reply.
-- **SQLite (better-sqlite3):** `actors`, `sessions`, `tasks`, `taskRuns`,
-  `artifacts`, `memories` repositories implemented.
-- **AI:** `ClaudeCliProvider` executes via `claude -p` (stdin, neutral cwd, timeout;
-  ADR-0014). Codex/Ollama remain stubbed. `PlaceholderAiProvider` retained but unused.
-- **Failure handling (ADR-0015):** classified `AiFailureKind`; failures → friendly
-  Discord reply + `TaskRun` FAILED with error summary + `durationMs`; stderr masked.
-- **Discord delivery (ADR-0016):** long replies chunked under 2000 chars + sent
-  sequentially with `(i/N)` numbering; send-failure stop (no duplicates) + one-shot
-  partial-failure notice; typing indicator refreshed during long runs; file-attachment
-  is a deferred seam.
-- **Conversation memory (ADR-0017):** user + assistant turns stored as SHORT_TERM,
-  session-scoped (capped 30/session, current message excluded from recall);
-  `ContextBuilder` feeds recent N=10 (truncated) turns into the prompt.
-- **Project registration (ADR-0018):** "등록해줘: /path" → read-only scan → `Project`
-  (SQLite) + PROJECT memory + `session.activeProjectId`; later chats include the
-  project summary. Read-only; no deep indexing.
-- **Tests:** Vitest (10 files / 51 tests) — adds ProjectManager, workspace scanProject
-  (invalid/non-git/exclusion), memory pruning + PROJECT memory, context exclusion/project.
+- **Pipeline:** Discord inbound → `ChunsikCore` → resolve Actor → open Session →
+  `IntentClassifier` → (REGISTER_PROJECT | PROJECT_ANALYSIS | CHAT) → Task →
+  `Planner` → `ContextBuilder` → `PromptComposer` → `CapabilityRouter` → AiProvider →
+  Artifact → reply.
+- **SQLite (better-sqlite3):** `actors`, `sessions`, `tasks`, `taskRuns`, `artifacts`,
+  `memories`, `projects` repositories implemented.
+- **Project analysis (ADR-0019):** `ProjectAnalyzer.prepare` guards an active project,
+  then `WorkspaceProvider.readProjectFiles` reads an allow-list (package.json,
+  pnpm-workspace.yaml, README.md, ARCHITECTURE.md, DECISIONS.md, tsconfig*.json),
+  8 KB/file cap, 2-level tree, excludes node_modules/dist/build/.git/coverage, and
+  unconditionally skips `.env*`/secret-named files. `PromptComposer` renders it as a
+  read-only section; the result is stored as a TOOL memory (`kind: 'analysis'`).
 - **Observability:** `Logger` seam + `ConsoleLogger` (`[discord]`/`[chunsik]`).
 
 ## What is NOT implemented yet
 
 - **AI execution:** `CodexCliProvider`/`OllamaCliProvider` `execute`/`isAvailable`
-  still stubbed (Claude is implemented). Streaming/long-reply chunking not done.
-- **Storage:** `projects`, `approvals` repositories remain stubbed.
-- **Platform:** `DiscordPlatformAdapter.requestApproval` (no approval UI yet).
-- **Deferred:** Workflow engine, agent runtime, plugins, connectors, AI HTTP API,
-  PolicyProvider, `ContextBuilder` ranking/compression, per-provider prompt rendering.
+  still stubbed (Claude is implemented).
+- **Storage:** `approvals` repository remains stubbed.
+- **Platform:** `DiscordPlatformAdapter.requestApproval` (no approval UI yet); resume
+  after approval is deferred (no current capability reaches the HIGH/CRITICAL path).
+- **Deferred:** repository-wide indexing, vector/semantic search, Workflow engine,
+  agent runtime, connectors (Jira/Slack/Confluence), AI HTTP API, PolicyProvider,
+  `ContextBuilder` ranking/compression, PROJECT/TOOL memory retention.
 
 ## Validation
 
-- `pnpm typecheck` — passes (exit 0).
+- `pnpm typecheck` — passes (exit 0). `pnpm test` — 12 files / 62 tests pass.
 - Boundary enforced — Core cannot resolve adapter packages.
-- Component test (Nest context + placeholder + real SQLite): one inbound message
-  flows Actor→Session→Task→TaskRun(SUCCEEDED)→Artifact→SQLite; actor/session reuse
-  verified across messages.
-- **Not yet validated live this sprint:** a real Discord round-trip through the new
-  pipeline (optional; 1a already proved Discord transport). Requires
-  `DISCORD_BOT_TOKEN` + Message Content Intent.
+- **Live (Sprint 1g):** real `node dist/main.js` Discord round-trip — register a
+  project, then a structure question routed to PROJECT_ANALYSIS, read real files,
+  returned a grounded answer (7 ports, package→port map, tech stack), persisted as
+  TOOL memory; secrets never read. Requires `DISCORD_BOT_TOKEN` + Message Content Intent.

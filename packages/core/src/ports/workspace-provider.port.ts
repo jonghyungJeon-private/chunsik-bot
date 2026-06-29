@@ -11,6 +11,24 @@ export interface RunCommandOptions {
   env?: Record<string, string>;
 }
 
+/** One allow-listed file read during analysis (ADR-0019). */
+export interface ProjectFileEntry {
+  /** Path relative to the project root. */
+  path: string;
+  /** File content, capped to a size limit. */
+  content: string;
+  /** True when the content was truncated to the size limit. */
+  truncated: boolean;
+}
+
+/** Read-only, size-limited project readout for gated analysis (ADR-0019). */
+export interface ProjectReadout {
+  /** Allow-listed files that exist (package.json, tsconfig*, README/ARCHITECTURE…). */
+  files: ProjectFileEntry[];
+  /** Top-level tree (root + apps/ + packages/), excluding ignored/secret entries. */
+  tree: string;
+}
+
 /** Read-only scan of a local project directory (ADR-0018). */
 export interface ProjectScan {
   exists: boolean;
@@ -38,6 +56,13 @@ export interface WorkspaceProvider {
 
   /** Read-only scan of a local directory for project registration (ADR-0018). */
   scanProject(path: string): Promise<ProjectScan>;
+
+  /**
+   * Read-only, size-limited read of an allow-listed file set for analysis
+   * (ADR-0019). Excludes node_modules/dist/build/coverage/.git and env/secret
+   * files. Never runs shell or git commands.
+   */
+  readProjectFiles(rootPath: string): Promise<ProjectReadout>;
 
   /** Resolve (and prepare, if needed) a working directory for a project. */
   resolve(projectId: Id, options?: ResolveOptions): Promise<WorkspaceRef>;

@@ -7,6 +7,32 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Sprint 1g (gated project analysis)
+
+- New `PROJECT_ANALYSIS` intent + capability: a structure/analysis question
+  ("이 프로젝트가 어떤 구조인지 설명해줘") classifies deterministically (analysis verb ×
+  project/structure noun, either order; KO + EN) and runs as a LOW-risk Task.
+- `ProjectAnalyzer.prepare(session)` guards an active, resolvable project (else a
+  friendly "register first"), then performs a **read-only, size-limited** readout via
+  `WorkspaceProvider.readProjectFiles`: an **allow-list of project metadata files**
+  (package.json, pnpm-workspace.yaml, README.md, ARCHITECTURE.md, DECISIONS.md,
+  tsconfig*.json), 8 KB/file cap (`truncated` flagged), a 2-level tree
+  (root + apps/ + packages/), excluding node_modules/dist/build/.git/coverage.
+- **Secrets are never read** (`.env*` and secret/token/key/credential/password names
+  are skipped unconditionally); no shell/git commands run during analysis.
+- `PromptComposer.compose(task, bundle, readout?)` renders the readout as a read-only
+  section and instructs the model to summarize only from the shown files/tree.
+  The analysis result is persisted as a `TOOL` memory (`kind: 'analysis'`) for reuse.
+- Re-registering the same local path is now idempotent (one `Project` per normalized
+  rootPath; the session is rebound).
+- **Not in scope (ADR-0019 non-goals):** repository indexing, vector search, semantic
+  code search — repository-wide indexing remains deferred.
+- Tests: ProjectAnalyzer guard, intent classification (KO/EN, both orders),
+  readProjectFiles (allow-list / secret-skip / 8 KB cap / 2-level tree) — Vitest
+  12 files / 62 tests. Live smoke: a structure question answered from real
+  ARCHITECTURE.md/DECISIONS.md/package.json (7 ports, package→port map, tech stack).
+  ADR-0019 (Gated Project Analysis).
+
 ### Added — Sprint 1f (local project registration)
 
 - Natural-language project registration: "이 프로젝트 등록해줘: /path" →

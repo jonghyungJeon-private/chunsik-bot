@@ -630,3 +630,80 @@ its context flow into later answers — read-only, no deep indexing.
 ### V1 / V2
 **V1:** the above. **V2:** deeper (gated) project indexing, multiple projects per
 session, git-worktree workspaces, and tool-restricted execution.
+
+---
+
+## ADR-0019 — Gated Project Analysis
+
+- **Status:** ✅ Accepted (v1)
+- **Date:** 2026-06-29
+- **Scope boundary:** this ADR is **NOT** an approval of "Deep Project Indexing."
+  It delivers a narrow, gated, read-only *analysis* of allow-listed project
+  metadata files only. Repository-wide indexing remains deferred (see the explicit
+  non-goals in Decision below). It does not widen ADR-0018's V2.
+
+### Context
+After registering a project (ADR-0018), the only context available in chat is a
+**top-level file-tree summary** held as PROJECT memory. That is enough to name a
+project but not to describe its architecture. A user asking "what's the structure
+of this project?" gets a thin, often unhelpful answer because the model was never
+shown any file contents — and (by ADR-0018) it must not read files itself.
+
+### Decision
+
+**What this ADR is (and explicitly is not):**
+- This ADR introduces a gated read-only project analysis capability.
+- Only an allow-list of project metadata files may be read.
+- This ADR explicitly does **NOT** introduce repository indexing.
+- This ADR does **NOT** introduce vector search.
+- This ADR does **NOT** introduce semantic code search.
+- Repository-wide indexing remains deferred.
+
+The current implementation scope is **Project Analysis**, not **Deep Project
+Indexing**. The mechanics below stay strictly inside that boundary.
+
+**Mechanics:**
+- **A new intent + capability `PROJECT_ANALYSIS`.** A message that asks to
+  analyze/explain a project's structure classifies deterministically: an analysis
+  verb (분석/설명/알려/analyze/explain/describe/overview) co-occurring with a
+  project/structure noun (프로젝트/레포/패키지/구조/아키텍처/repo/project/structure/
+  architecture), in either order — or "분석/analyze" alone — maps to
+  `PROJECT_ANALYSIS` (risk LOW, `requiresWork: true` → runs as a Task). This is a
+  minimal v1 heuristic; AI-driven classification is deferred.
+- **Deterministic guard + gather, AI summarizes.** `ProjectAnalyzer.prepare(session)`
+  guards an **active, resolvable project** exists (else a friendly "register first"
+  message, nothing run). It then performs a **read-only, size-limited** read via
+  `WorkspaceProvider.readProjectFiles(rootPath)`. The AI summarization runs in the
+  normal task pipeline; the service does no AI work itself.
+- **Allow-list, not crawl.** Only specific files may be read in full:
+  `package.json`, `pnpm-workspace.yaml`, `README.md`, `ARCHITECTURE.md`,
+  `DECISIONS.md`, and `tsconfig*.json`. Each is capped at **8 KB** (`truncated`
+  flagged). A **2-level tree** (root + `apps/` + `packages/`, ≤60 entries/dir) is
+  included. `node_modules`/`dist`/`build`/`.git`/`coverage` are excluded.
+- **Never read secrets.** Any `.env*` or name matching
+  `secret|token|key|credential|password` is skipped unconditionally — independent
+  of the allow-list. No shell or git commands are run during analysis.
+- **Prompt seam.** `PromptComposer.compose(task, bundle, readout?)` renders the
+  readout as a clearly-delimited read-only section and instructs the model to
+  summarize **only** from the shown files/tree and not invent files.
+- **Reuse.** A completed analysis is persisted as a **TOOL-type** memory
+  (`kind: 'analysis'`) scoped by `projectId` (+ sessionId) for later reuse.
+- **No workspace resolution.** `PROJECT_ANALYSIS` is not filesystem-touching in the
+  workspace sense (no clone/cwd); `needsWorkspace` stays limited to
+  CODE_IMPLEMENTATION / TEST_EXECUTION (ADR-0018). The readout is the only file I/O.
+
+### Consequences
+- + Structural questions get a grounded answer from real files, still read-only and
+  bounded — no deep indexing, no tool execution, no secret exposure.
+- + The guard keeps the failure UX kind (no active project → ask to register).
+- − The allow-list is intentionally narrow; a project that documents itself
+  elsewhere (e.g. `docs/`) is summarized only from the listed files + tree. Widening
+  the list is a deliberate, reviewable change.
+- − 8 KB/file truncation can clip large manifests; acceptable for a summary, flagged
+  as `truncated` so the model knows.
+
+### V1 / V2
+**V1:** the above (fixed allow-list, 2-level tree, single active project).
+**Deferred (NOT approved by this ADR; each needs its own ADR):** repository-wide
+indexing, vector search, semantic code search, configurable/auto-discovered read
+sets, and tool-restricted live file reads under approval.

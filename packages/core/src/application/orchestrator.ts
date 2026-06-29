@@ -23,9 +23,11 @@ import type { WorkspaceManager } from './workspace-manager';
 import type { ConnectorManager } from './connector-manager';
 import type { ResponseComposer } from './response-composer';
 import type { RiskPolicy } from './risk-policy';
+import type { ProjectReadout } from '../ports';
 import type { ActorManager } from './actor-manager';
 import type { SessionManager } from './session-manager';
 import type { ProjectManager } from './project-manager';
+import type { ProjectAnalyzer } from './project-analyzer';
 import type { ContextBuilder } from './context-builder';
 import type { PromptComposer } from './prompt-composer';
 
@@ -38,6 +40,7 @@ export interface ChunsikCoreDeps {
   actors: ActorManager;
   sessions: SessionManager;
   projects: ProjectManager;
+  analyzer: ProjectAnalyzer;
   memory: MemoryManager;
   contextBuilder: ContextBuilder;
   promptComposer: PromptComposer;
@@ -103,6 +106,20 @@ export class ChunsikCore {
       return;
     }
 
+    // Gated project analysis (ADR-0019): guard there is an active project, then
+    // gather a read-only readout to feed the prompt.
+    let analysisReadout: ProjectReadout | undefined;
+    if (intent.capability === Capability.PROJECT_ANALYSIS) {
+      const prep = await this.deps.analyzer.prepare(session);
+      if (!prep.ready) {
+        const text = prep.message ?? '프로젝트 분석을 진행할 수 없어요.';
+        await this.deps.platform.sendMessage({ context: message.context, text });
+        await this.deps.memory.recordAssistant(text, message.context, session.id);
+        return;
+      }
+      analysisReadout = prep.readout;
+    }
+
     // (3) Fast path — conversational, no Task needed.
     if (!intent.requiresWork) {
       const provider = await this.deps.router.route(intent.capability);
@@ -144,7 +161,7 @@ export class ChunsikCore {
 
     // (6) Run now. Exclude the just-recorded current message from recent context
     // (it already appears in the task layer) — ADR-0017 decision.
-    await this.executeTask(task, plan, message.context, userMemory.id);
+    await this.executeTask(task, plan, message.context, userMemory.id, analysisReadout);
   }
 
   /**
@@ -162,6 +179,7 @@ export class ChunsikCore {
     plan: Plan,
     context: ConversationContext,
     excludeMemoryId?: Id,
+    readout?: ProjectReadout,
   ): Promise<void> {
     const task = await this.deps.tasks.transition(inputTask, TaskStatus.RUNNING);
     const capability: Capability = plan.steps[0]?.capability ?? task.intent.capability;
@@ -182,7 +200,7 @@ export class ChunsikCore {
         task,
         excludeMemoryId ? [excludeMemoryId] : [],
       );
-      const promptSpec = this.deps.promptComposer.compose(task, bundle);
+      const promptSpec = this.deps.promptComposer.compose(task, bundle, readout);
 
       // Provider chosen purely by capability — no concrete CLI named here.
       const provider = await this.deps.router.route(capability);
@@ -201,6 +219,13 @@ export class ChunsikCore {
       await this.deps.tasks.completeRun(run, { artifactIds, providerId: provider.id });
       // Persist the assistant turn so the next message in this session has context.
       await this.deps.memory.recordAssistant(result.text, context, task.sessionId);
+      // Keep a project analysis as TOOL memory for later reuse (ADR-0019).
+      if (capability === Capability.PROJECT_ANALYSIS && task.projectId) {
+        await this.deps.memory.recordToolMemory(result.text, {
+          projectId: task.projectId,
+          sessionId: task.sessionId,
+        });
+      }
       await this.deps.tasks.transition(task, TaskStatus.COMPLETED);
       this.deps.logger.info('task completed', {
         taskId: task.id,

@@ -102,6 +102,27 @@ export class MemoryManager {
     return this.storage.memories.save(record);
   }
 
+  /** Persist a TOOL-type memory (e.g. a project analysis result) (ADR-0019). */
+  async recordToolMemory(
+    content: string,
+    scope: { projectId?: Id; sessionId?: Id },
+  ): Promise<MemoryRecord> {
+    const ts = now();
+    const record: MemoryRecord = {
+      id: newId(),
+      type: MemoryType.TOOL,
+      scope: {
+        ...(scope.projectId ? { projectId: scope.projectId } : {}),
+        ...(scope.sessionId ? { sessionId: scope.sessionId } : {}),
+      },
+      content,
+      metadata: { kind: 'analysis' },
+      createdAt: ts,
+      updatedAt: ts,
+    };
+    return this.storage.memories.save(record);
+  }
+
   /** The latest PROJECT memory summary for a project, if any. */
   async projectMemory(projectId: Id): Promise<MemoryRecord | undefined> {
     const records = await this.storage.memories.findByScope({ projectId }, MemoryType.PROJECT);
