@@ -14,6 +14,8 @@ import type {
   MemoryRepository,
   MemoryScope,
   MemoryType,
+  PatchRepository,
+  PatchSet,
   Project,
   Repository,
   Session,
@@ -218,6 +220,26 @@ class SqliteApprovalRepository
   }
 }
 
+class SqlitePatchRepository extends JsonRepository<PatchSet> implements PatchRepository {
+  override async save(set: PatchSet): Promise<PatchSet> {
+    this.db
+      .prepare(
+        `INSERT INTO patches (id, execution_plan_id, status, data) VALUES (?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET execution_plan_id = excluded.execution_plan_id,
+           status = excluded.status, data = excluded.data`,
+      )
+      .run(set.id, set.executionPlanRef.id, set.status, JSON.stringify(set));
+    return set;
+  }
+
+  async findByExecutionPlan(executionPlanId: Id): Promise<PatchSet[]> {
+    const rows = this.db
+      .prepare(`SELECT data FROM patches WHERE execution_plan_id = ?`)
+      .all(executionPlanId) as Row[];
+    return rows.map((r) => JSON.parse(r.data) as PatchSet);
+  }
+}
+
 class SqliteMemoryRepository extends JsonRepository<MemoryRecord> implements MemoryRepository {
   override async save(record: MemoryRecord): Promise<MemoryRecord> {
     this.db
@@ -286,6 +308,7 @@ export class SqliteStorageProvider implements StorageProvider {
   memories!: MemoryRepository;
   projects!: Repository<Project>;
   approvals!: ApprovalRepository;
+  patches!: PatchRepository;
 
   constructor(private readonly config: SqliteConfig) {}
 
@@ -307,6 +330,7 @@ export class SqliteStorageProvider implements StorageProvider {
     this.memories = new SqliteMemoryRepository(db, 'memories');
     this.projects = new JsonRepository<Project>(db, 'projects');
     this.approvals = new SqliteApprovalRepository(db, 'approvals');
+    this.patches = new SqlitePatchRepository(db, 'patches');
   }
 
   async close(): Promise<void> {

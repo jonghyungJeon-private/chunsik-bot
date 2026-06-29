@@ -1076,3 +1076,56 @@ Docs: `docs/capabilities/approval.md`, `docs/execution-plan.md`.
 `ApprovalManager`, `ApprovalRepository` + SQLite + migration v2.
 **Later:** Discord approval UI + orchestrator wiring; approver roles; expiry; per-step
 approval; the Aggregate Ownership Rule in ARCHITECTURE.md.
+
+---
+
+## ADR-0026 — CAP-005 Patch Capability (generate, never apply)
+
+- **Status:** ✅ Accepted (v2, Sprint 2e)
+- **Date:** 2026-06-29
+- **Capability:** CAP-005 — Patch. Turns an approved plan's proposed changes into a
+  durable, reviewable, **immutable** `PatchSet`.
+
+### Most important rule (permanent separation)
+> **Patch represents modifications. Patch never applies modifications.
+> Workspace Write (CAP-006) applies approved `PatchSet`s.**
+These capabilities must never be merged.
+
+### Decision
+- **Patch owns `PatchSet`, `PatchOperation`, `PatchRef`.** It does **not** own filesystem,
+  repository, execution, approval, or workspace mutation.
+- **Generation only (Q1).** `PatchManager.generate` creates a `PatchSet`; it never applies it,
+  never writes files, never touches git. The `PatchSet` is **immutable** after creation
+  (no `updatedAt`).
+- **`PatchStatus` is minimal: `GENERATED` only (Q2).** `APPLIED`/`FAILED`/`EXECUTED` belong to
+  Workspace Write / Command Execution, never to Patch.
+- **Approval enforced on the passed Ref (Q3).** `generate` requires
+  `approvalRef.status === APPROVED` (deterministic check); `PatchManager` does **not** query
+  `ApprovalManager`. Composition happens above Patch; capability managers stay independent.
+- **Explicit inputs (Q4).** `changes: ProposedChange[]` and `diff: WorkspaceDiff` are received
+  **independently** (not pre-merged) so future generators can use them differently. v1 maps
+  each change to its `FileDiff` to build a `PatchOperation` (path, operation, diff, metadata?).
+- **`PatchOperation`** is a value object: `path`, `operation` (`add`/`update`/`delete`),
+  `diff` (unified text), optional `metadata` — no filesystem mechanics, no raw `newContent`.
+  CAP-001's `modify` maps to `update`.
+- **Persistence (Q5):** `PatchSet` persists exactly `id (PatchRef)`, `executionPlanRef`,
+  `approvalRef`, `operations[]`, `status`, `createdAt` — nothing more. `PatchRepository` +
+  `SqlitePatchRepository` + **migration v3** (`patches` table).
+- **Aggregate Ownership (ADR-0025):** Patch owns `PatchSet`; references `ExecutionPlanRef` /
+  `ApprovalRef` (read-only); never mutates them. Ref-based communication only.
+- **Immutability for downstream:** Workspace Write must consume the `PatchSet` exactly as
+  produced — never regenerate or reinterpret it — preserving deterministic execution.
+
+### Consequences
+- + Clean Patch/Write separation; an immutable, reviewable, persisted change unit; reuses
+  CAP-001's diff and the ADR-0020 migration runner.
+- + Patch performs no I/O beyond persistence; cannot mutate the workspace.
+- − A `PatchSet` carries unified diffs (not raw content); Workspace Write applies the diff.
+
+### Capability / Relations
+**CAP-005.** Relates: ADR-0022 (WorkspaceDiff), ADR-0024 (ExecutionPlan), ADR-0025
+(Approval + Aggregate Ownership), ADR-0020 (migrations). Docs: `docs/capabilities/patch.md`.
+
+### Out of Scope (deferred)
+Patch application, file writing, git apply/commit, workspace mutation, execution, rollback,
+AI provider integration, command execution — all later capabilities.

@@ -7,6 +7,25 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Sprint 2e · CAP-005 Patch Capability (generate, never apply)
+
+- **`PatchSet`** aggregate (Patch-owned, **immutable**) of `PatchOperation`s
+  (`{ path, operation: add/update/delete, diff, metadata? }`), with `PatchRef` and
+  `PatchStatus` (**`GENERATED` only**). References `ExecutionPlanRef` + `ApprovalRef`; never
+  mutates them (Aggregate Ownership Rule).
+- **`PatchManager.generate`** — deterministic; **requires an APPROVED `ApprovalRef`** (no
+  `ApprovalManager` query); merges `changes: ProposedChange[]` with their `diff:
+  WorkspaceDiff` (supplied independently) into operations; persists a `GENERATED` `PatchSet`.
+- **Patch generates, never applies** (Workspace Write, CAP-006, applies) — a permanent
+  architectural separation (ADR-0026). No file/git writes; no I/O beyond persistence.
+- **Persistence:** `PatchRepository` port (`findByExecutionPlan`) + `SqlitePatchRepository`
+  + **SQLite migration v3** (`patches` table) via the ADR-0020 runner.
+- **Not in scope:** patch application, file writes, git apply/commit, workspace mutation,
+  execution, rollback, AI integration, command execution, orchestrator/Discord wiring.
+- Tests (+9): PatchManager (generation, modify→update mapping, APPROVED-ref enforcement,
+  diff-mismatch, binary metadata, persistence, no-Ref-mutation), SqlitePatchRepository,
+  migration v3 — Vitest 24 files / 127 tests. Capability doc `docs/capabilities/patch.md`.
+
 ### Added — Sprint 2d · CAP-004 Approval Capability (first persisted aggregate)
 
 - **`ApprovalRequest`** aggregate (Approval-owned), ExecutionPlan-based: references

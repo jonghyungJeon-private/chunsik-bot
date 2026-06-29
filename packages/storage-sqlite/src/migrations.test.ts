@@ -18,19 +18,21 @@ describe('runMigrations (ADR-0020 — versioned schema)', () => {
     expect(res.from).toBe(0);
     expect(res.to).toBe(LATEST_SCHEMA_VERSION);
     expect(userVersion(db)).toBe(LATEST_SCHEMA_VERSION);
-    for (const t of ['actors', 'actor_identities', 'sessions', 'tasks', 'task_runs', 'artifacts', 'projects', 'memories', 'approvals']) {
+    for (const t of ['actors', 'actor_identities', 'sessions', 'tasks', 'task_runs', 'artifacts', 'projects', 'memories', 'approvals', 'patches']) {
       expect(tableNames(db)).toContain(t);
     }
     db.close();
   });
 
-  it('migration v2 adds the approvals table (CAP-004)', () => {
-    expect(LATEST_SCHEMA_VERSION).toBe(2);
+  it('migrations v2/v3 add the approvals and patches tables (CAP-004/005)', () => {
+    expect(LATEST_SCHEMA_VERSION).toBe(3);
     const db = new Database(':memory:');
     runMigrations(db);
-    expect(tableNames(db)).toContain('approvals');
-    const cols = (db.pragma('table_info(approvals)') as Array<{ name: string }>).map((c) => c.name);
-    expect(cols).toEqual(expect.arrayContaining(['id', 'execution_plan_id', 'status', 'data']));
+    for (const t of ['approvals', 'patches']) {
+      expect(tableNames(db)).toContain(t);
+      const cols = (db.pragma(`table_info(${t})`) as Array<{ name: string }>).map((c) => c.name);
+      expect(cols).toEqual(expect.arrayContaining(['id', 'execution_plan_id', 'status', 'data']));
+    }
     db.close();
   });
 

@@ -33,6 +33,7 @@ import {
   PlanningManager,
   ApprovalPolicy,
   ApprovalManager,
+  PatchManager,
   ConnectorManager,
   ResponseComposer,
   RiskPolicy,
@@ -168,6 +169,12 @@ const application: Provider[] = [
     useFactory: (storage: StorageProvider, policy: ApprovalPolicy) =>
       new ApprovalManager(storage, policy),
     inject: [STORAGE_PROVIDER, ApprovalPolicy],
+  },
+  // CAP-005 Patch (generation only). Not orchestrator/Discord wired.
+  {
+    provide: PatchManager,
+    useFactory: (storage: StorageProvider) => new PatchManager(storage),
+    inject: [STORAGE_PROVIDER],
   },
   {
     provide: ConnectorManager,

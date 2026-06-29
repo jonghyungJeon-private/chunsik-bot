@@ -5,13 +5,14 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** **Version 2, Sprint 2d — CAP-004 Approval Capability** (ADR-0025):
-  `ApprovalRequest` aggregate + `ApprovalPolicy` (deterministic) + `ApprovalManager` +
-  `ApprovalRepository`/`SqliteApprovalRepository` + **migration v2** (first persisted V2
-  aggregate). Approval references `ExecutionPlanRef` and **never mutates `ExecutionPlan`**
-  (Aggregate Ownership Rule). No UI/orchestrator wiring. CAP-001/002/003 ✅ merged.
-- **Next:** Chief Architect review of Sprint 2d; no merge until approved.
-- **Build/Test:** `pnpm typecheck` PASS (exit 0); `pnpm test` 22 files / 118 tests PASS.
+- **Phase:** **Version 2, Sprint 2e — CAP-005 Patch Capability** (ADR-0026):
+  `PatchSet` aggregate + `PatchManager.generate` (deterministic; requires APPROVED approval)
+  + `PatchRepository`/`SqlitePatchRepository` + **migration v3**. **Patch generates, never
+  applies** (Workspace Write applies); `PatchStatus = GENERATED` only; references
+  `ExecutionPlanRef`/`ApprovalRef`, never mutates them. No UI/orchestrator wiring.
+  CAP-001/002/003/004 ✅ merged.
+- **Next:** Chief Architect review of Sprint 2e; no merge until approved.
+- **Build/Test:** `pnpm typecheck` PASS (exit 0); `pnpm test` 24 files / 127 tests PASS.
 
 ## Implemented
 
@@ -39,6 +40,10 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   + `SqliteApprovalRepository` (migration v2). Deterministic; references `ExecutionPlanRef`,
   never mutates `ExecutionPlan` (Aggregate Ownership Rule); first persisted V2 aggregate.
   Not UI/orchestrator-wired (ADR-0025).
+- **CAP-005 Patch** — `PatchSet` aggregate (immutable) + `PatchManager.generate` (requires
+  APPROVED approval) + `SqlitePatchRepository` (migration v3). **Generates, never applies**;
+  `PatchOperation` carries unified diffs; references `ExecutionPlanRef`/`ApprovalRef` only.
+  Workspace Write (CAP-006) will apply (ADR-0026).
 
 ## Deferred
 
@@ -83,7 +88,7 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 
 ## Validation
 
-- `pnpm typecheck` — passes (exit 0). `pnpm test` — 22 files / 118 tests pass.
+- `pnpm typecheck` — passes (exit 0). `pnpm test` — 24 files / 127 tests pass.
 - Boundary enforced — Core cannot resolve adapter packages.
 - **Live (Sprint 1g):** real `node dist/main.js` Discord round-trip — register a
   project, then a structure question routed to PROJECT_ANALYSIS, read real files,

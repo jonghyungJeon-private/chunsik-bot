@@ -130,3 +130,12 @@ export enum ApprovalStatus {
   APPROVED = 'APPROVED',
   REJECTED = 'REJECTED',
 }
+
+/**
+ * Status of a PatchSet (CAP-005, ADR-0026). Intentionally minimal: Patch only
+ * GENERATES. Application/outcome states (APPLIED/FAILED/EXECUTED) belong to
+ * Workspace Write / Command Execution, never to Patch.
+ */
+export enum PatchStatus {
+  GENERATED = 'GENERATED',
+}

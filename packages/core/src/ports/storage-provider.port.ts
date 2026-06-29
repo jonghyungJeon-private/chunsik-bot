@@ -6,6 +6,7 @@ import type {
   MemoryRecord,
   MemoryScope,
   MemoryType,
+  PatchSet,
   Project,
   Session,
   Task,
@@ -55,6 +56,11 @@ export interface ApprovalRepository extends Repository<ApprovalRequest> {
   findByExecutionPlan(executionPlanId: Id): Promise<ApprovalRequest[]>;
 }
 
+export interface PatchRepository extends Repository<PatchSet> {
+  /** All patch sets generated for a given ExecutionPlan (CAP-005). */
+  findByExecutionPlan(executionPlanId: Id): Promise<PatchSet[]>;
+}
+
 /**
  * PORT: persistence. v1 implementation: SQLiteStorageProvider.
  *
@@ -75,4 +81,5 @@ export interface StorageProvider {
   readonly artifacts: ArtifactRepository;
   readonly projects: Repository<Project>;
   readonly approvals: ApprovalRepository;
+  readonly patches: PatchRepository;
 }
