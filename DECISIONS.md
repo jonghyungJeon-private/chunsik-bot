@@ -137,6 +137,14 @@ one-field change.
 ### V1 / V2
 **V1:** reserve `workflowId` + document the Plan-vs-Workflow distinction. **V2:** Workflow aggregate + execution engine.
 
+### Amendment (RC, 2026-06-29)
+The nullable `workflowId` field is **not** reserved on `Task` after all. Under
+ADR-0013 ("YAGNI on seams") and the JSON-blob storage model (entities serialize to
+a `data` column; adding a field needs **no migration**), a late add is free — so the
+reservation bought nothing. The **Plan-vs-Workflow conceptual boundary still holds**;
+only the empty placeholder field is dropped. Surfaced by the V1 architecture audit
+(drift W-2) and reconciled here.
+
 ---
 
 ## ADR-0005 — Resource abstraction, scoped to inputs
@@ -304,6 +312,14 @@ they can measure; unknown fields stay optional.
 
 ### V1 / V2
 **V1:** `Usage` on `TaskRun` (duration + provider at minimum) + `TelemetryProvider` port. **V2:** dashboards, budgets, per-actor cost.
+
+### Amendment (RC, 2026-06-29)
+Realized **minimally**: `TaskRun` records `providerId`, `durationMs`, and `error`
+(ADR-0015) — duration + provider, the stated v1 minimum. A structured `Usage` value
+object and a `TelemetryProvider` port are **not** built (no token/cost capture yet,
+and the CLIs don't expose token counts). Deferred to V2 under ADR-0013's YAGNI; the
+JSON storage model makes adding `usage` later migration-free. Surfaced by the V1
+architecture audit (drift W-3).
 
 ---
 
@@ -707,3 +723,76 @@ Indexing**. The mechanics below stay strictly inside that boundary.
 **Deferred (NOT approved by this ADR; each needs its own ADR):** repository-wide
 indexing, vector search, semantic code search, configurable/auto-discovered read
 sets, and tool-restricted live file reads under approval.
+
+---
+
+## ADR-0020 — SQLite schema versioning & a minimal migration runner
+
+- **Status:** ✅ Accepted (v1, RC)
+- **Date:** 2026-06-29
+
+### Context
+v1 applied schema at startup with `CREATE TABLE IF NOT EXISTS` plus defensive
+`ALTER TABLE … ADD COLUMN` wrapped in try/catch. There was **no schema version**, so
+the DB could not tell which changes it had seen, and the silent catch could mask a
+real `ALTER` error. The V1 architecture audit flagged this (W-9) as a freeze-blocker
+for safe future schema evolution.
+
+### Decision
+Introduce a **minimal, forward-only migration runner** in `@chunsik/storage-sqlite`
+(`migrations.ts`), keyed on SQLite's native `PRAGMA user_version`:
+- `MIGRATIONS` is an ordered list of `{ version, name, up(db) }`. **Version 1 is the
+  current baseline** — identical DDL to the pre-RC inline schema — so existing
+  databases are unchanged.
+- `runMigrations(db)` reads `user_version`, applies each migration with a higher
+  version **inside its own transaction**, advances `user_version`, and returns the
+  `{from, to, applied}` transition.
+- Each `up` MUST be **idempotent** (`IF NOT EXISTS`, column-existence-guarded
+  `ADD COLUMN`). A legacy DB (`user_version = 0`) re-runs the baseline as a no-op and
+  is stamped forward — **fully backward compatible**.
+
+This is **not** a persistence redesign: tables, columns, the JSON-`data` row model,
+and all queries are unchanged. It only changes *how* schema is applied and adds a
+version stamp. No new application functionality.
+
+### Consequences
+- + Schema evolution is ordered, versioned, transactional, and auditable.
+- + Backward compatible with every existing `chunsik.db`.
+- − Migrations must stay idempotent and append-only (forward-only; no down-migrations
+  in v1 — acceptable for a local, single-file DB).
+
+### V1 / V2
+**V1:** `user_version`-keyed runner + baseline migration. **V2:** indexed/FK
+migrations, and a richer migration history table if multi-node storage arrives.
+
+---
+
+## ADR-0021 — Logger / observability port
+
+- **Status:** ✅ Accepted (v1, RC)
+- **Date:** 2026-06-29
+
+### Context
+A `Logger` port (`info/warn/error(message, fields?)`) and a `ConsoleLogger` adapter
+were introduced during the Sprint 1a observability cleanup (structured logs, no
+`console.log`, secrets masked) but never recorded as a decision. §11.7 requires every
+architectural seam to have an ADR; the V1 audit flagged the gap (W-4).
+
+### Decision
+Record the existing seam: **`@chunsik/core` defines a `Logger` port**; core services
+log through it and never touch `console`. The composition root constructs a concrete
+`ConsoleLogger` and passes it in (core via `ChunsikCoreDeps.logger`; adapters receive
+their own instance). Logging is **structured** (message + typed fields), secrets are
+masked before they reach the logger (ADR-0015), and full prompts/tokens are never
+logged. The logger is wired by **direct construction**, not a DI token — acceptable
+for a leaf, always-present cross-cutting concern.
+
+### Consequences
+- + Observability is swappable (file/JSON/remote transport later) without touching core.
+- + No platform/console types leak into core.
+- − No `LOGGER` token yet; if a future provider needs token-based override, add one
+  then (cheap).
+
+### V1 / V2
+**V1:** `Logger` port + `ConsoleLogger`, direct-wired. **V2:** structured/JSON sink,
+correlation ids, and a `TelemetryProvider` (see ADR-0010) if metrics are added.

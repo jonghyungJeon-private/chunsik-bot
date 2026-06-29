@@ -5,13 +5,12 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** Sprint 1g complete — **Gated Project Analysis** (ADR-0019): a structure
-  question about the active project triggers a gated, read-only read of allow-listed
-  **metadata** files (8 KB cap, 2-level tree, secrets never read) and returns a
-  grounded analysis, persisted as TOOL memory. This is **Project Analysis, not Deep
-  Project Indexing** — repository-wide indexing remains deferred.
-- **Next:** TBD (e.g., Codex/Ollama fallback, or memory retention/pruning).
-- **Build/Test:** `pnpm typecheck` PASS (exit 0); `pnpm test` 12 files / 62 tests PASS.
+- **Phase:** **Version 1 Release Candidate prep** (`v1.0.0-rc1`). The V1 architecture
+  audit passed (`docs/audits/version-1-architecture-audit.md`); this RC pass resolved
+  documentation drift, removed dead code, and added a minimal SQLite migration runner
+  (ADR-0020). Prior feature work: Gated Project Analysis (ADR-0019).
+- **Next:** await Release Candidate approval. Do **not** start Version 2.
+- **Build/Test:** `pnpm typecheck` PASS (exit 0); `pnpm test` 13 files / 66 tests PASS.
 
 ## Implemented
 
@@ -47,7 +46,8 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   `Planner` → `ContextBuilder` → `PromptComposer` → `CapabilityRouter` → AiProvider →
   Artifact → reply.
 - **SQLite (better-sqlite3):** `actors`, `sessions`, `tasks`, `taskRuns`, `artifacts`,
-  `memories`, `projects` repositories implemented.
+  `memories`, `projects` repositories implemented. Schema applied by a versioned,
+  forward-only migration runner keyed on `PRAGMA user_version` (ADR-0020); WAL mode.
 - **Project analysis (ADR-0019):** `ProjectAnalyzer.prepare` guards an active project,
   then `WorkspaceProvider.readProjectFiles` reads an allow-list (package.json,
   pnpm-workspace.yaml, README.md, ARCHITECTURE.md, DECISIONS.md, tsconfig*.json),
@@ -69,7 +69,7 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 
 ## Validation
 
-- `pnpm typecheck` — passes (exit 0). `pnpm test` — 12 files / 62 tests pass.
+- `pnpm typecheck` — passes (exit 0). `pnpm test` — 13 files / 66 tests pass.
 - Boundary enforced — Core cannot resolve adapter packages.
 - **Live (Sprint 1g):** real `node dist/main.js` Discord round-trip — register a
   project, then a structure question routed to PROJECT_ANALYSIS, read real files,

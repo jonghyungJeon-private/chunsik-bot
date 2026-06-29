@@ -2,6 +2,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
 import { NotImplementedError } from '@chunsik/core';
+import { runMigrations } from './migrations';
 import type {
   Actor,
   ActorRepository,
@@ -287,43 +288,10 @@ export class SqliteStorageProvider implements StorageProvider {
     mkdirSync(dirname(this.config.dbPath), { recursive: true });
     const db = new Database(this.config.dbPath);
     db.pragma('journal_mode = WAL');
-    db.exec(`CREATE TABLE IF NOT EXISTS actors (id TEXT PRIMARY KEY, data TEXT NOT NULL);`);
-    db.exec(
-      `CREATE TABLE IF NOT EXISTS actor_identities (
-         platform TEXT NOT NULL, external_id TEXT NOT NULL, actor_id TEXT NOT NULL,
-         PRIMARY KEY (platform, external_id));`,
-    );
-    db.exec(
-      `CREATE TABLE IF NOT EXISTS sessions (
-         id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, thread_id TEXT,
-         status TEXT NOT NULL, data TEXT NOT NULL);`,
-    );
-    db.exec(
-      `CREATE TABLE IF NOT EXISTS tasks (
-         id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, thread_id TEXT, data TEXT NOT NULL);`,
-    );
-    db.exec(
-      `CREATE TABLE IF NOT EXISTS task_runs (
-         id TEXT PRIMARY KEY, task_id TEXT NOT NULL, data TEXT NOT NULL);`,
-    );
-    db.exec(
-      `CREATE TABLE IF NOT EXISTS artifacts (
-         id TEXT PRIMARY KEY, task_id TEXT, data TEXT NOT NULL);`,
-    );
-    db.exec(`CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, data TEXT NOT NULL);`);
-    db.exec(
-      `CREATE TABLE IF NOT EXISTS memories (
-         id TEXT PRIMARY KEY, session_id TEXT, project_id TEXT, channel_id TEXT, thread_id TEXT,
-         type TEXT NOT NULL, data TEXT NOT NULL);`,
-    );
-    // Defensive migrations for DBs created before these columns existed (ADR-0017/0018).
-    for (const col of ['session_id', 'project_id']) {
-      try {
-        db.exec(`ALTER TABLE memories ADD COLUMN ${col} TEXT;`);
-      } catch {
-        /* column already exists */
-      }
-    }
+    // Schema is applied by a versioned, forward-only migration runner (ADR-0020).
+    // Backward compatible: a legacy DB (user_version = 0) re-runs the idempotent
+    // baseline and is stamped forward; no behavior or table change.
+    runMigrations(db);
 
     this.db = db;
     this.actors = new SqliteActorRepository(db, 'actors');

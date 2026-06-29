@@ -74,18 +74,18 @@ fixed; the implementations are not.
 
 | Concept | Role | Status |
 |---|---|---|
-| `Actor` / `Principal` | Platform-independent identity authz hangs off | `[RESERVE]` |
-| `Session` | Conversation aggregate root (thin: identity, lifecycle, pointers) | `[RESERVE]` |
+| `Actor` / `Principal` | Platform-independent identity authz hangs off | `[NOW]` |
+| `Session` | Conversation aggregate root (thin: identity, lifecycle, pointers) | `[NOW]` |
 | `Task` | A unit of work within a session | `[NOW]` |
 | `TaskRun` | One execution attempt of a Task (+ `Usage`/cost) | `[NOW]` (Usage `[RESERVE]`) |
 | `Intent` | Classified meaning of a message → a `Capability` | `[NOW]` |
 | `Plan` / `PlanStep` | **Intra-task** decomposition | `[NOW]` |
-| `Workflow` | **Inter-task** orchestration (≠ Plan) | `[LATER]` (reserve `workflowId` on Task) |
+| `Workflow` | **Inter-task** orchestration (≠ Plan) | `[LATER]` (field not reserved — YAGNI per ADR-0013; JSON storage makes late-add free) |
 | `Capability` | The routing key from need → provider | `[NOW]` |
 | `AgentProfile` | Config bundling capability + prompt template + risk + allowed resources | `[RESERVE]` |
 | `MemoryRecord` (6 types) | Source-of-truth memory | `[NOW]` |
-| `ContextBundle` | Assembled, budgeted context for one run | `[RESERVE]` |
-| `PromptSpec` | Layered, provider-agnostic prompt | `[RESERVE]` |
+| `ContextBundle` | Assembled, budgeted context for one run | `[NOW]` |
+| `PromptSpec` | Layered, provider-agnostic prompt | `[NOW]` |
 | `ResourceRef` | Uniform **input** reference (PDF, URL, ticket, repo file) | `[RESERVE]` |
 | `Artifact` (8 kinds) | First-class **output** | `[NOW]` |
 | Domain `Event`s | `TaskCreated`, `TaskStatusChanged`, `RunCompleted`, `Approval*` | `[RESERVE]` |
@@ -126,8 +126,8 @@ fixed; the implementations are not.
    `TOOL`, `CONNECTOR`. Scope includes `sessionId` once Session lands.
 4. **Separation of duties** (do not conflate):
    - `MemoryManager` = system of record (CRUD, scope). `[NOW]`
-   - `ContextBuilder` = retrieve → rank → compress → budget → `ContextBundle`. `[RESERVE]`
-   - `PromptComposer` = layer (system + developer + context + task) → `PromptSpec`. `[RESERVE]`
+   - `ContextBuilder` = retrieve → (rank/compress/budget `[LATER]`) → `ContextBundle`. `[NOW]`
+   - `PromptComposer` = layer (system + developer + context + task) → `PromptSpec`. `[NOW]`
    - Context-file **materialization** belongs to the workspace layer, not the
      memory or context layer.
 5. Embedding **generation** is an `AiProvider` capability (e.g. Ollama), not a
