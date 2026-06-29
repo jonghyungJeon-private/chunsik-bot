@@ -796,3 +796,78 @@ for a leaf, always-present cross-cutting concern.
 ### V1 / V2
 **V1:** `Logger` port + `ConsoleLogger`, direct-wired. **V2:** structured/JSON sink,
 correlation ids, and a `TelemetryProvider` (see ADR-0010) if metrics are added.
+
+---
+
+## ADR-0022 — Workspace Capability (Read / Diff foundation)
+
+- **Status:** ✅ Accepted (v2, Sprint 2a)
+- **Date:** 2026-06-29
+
+### Context
+Version 2 is the first **architecture-first** capability work, and the foundation for
+all future coding capabilities is the **Workspace**. v1 left the filesystem surface
+(`resolve`/`readFile`/`listFiles`/`writeFile`/`gitStatus`/`runCommand`) as stubs. The
+target flow is `Read → Analyze → Plan → Diff → Approval → Write → Execute → Commit`;
+this ADR delivers only the **read-only Read + Diff** foundation. (Chief Architect review:
+APPROVED WITH CHANGES.)
+
+### Decision
+
+**Workspace Capability ≠ Git Capability.** The Workspace owns the **filesystem**
+abstraction; a future, separate **Git Capability** will own the **repository**
+abstraction. They stay independent. This ADR introduces **no git** at all.
+
+- **Read-only surface only:** implement `resolve`, `readFile`, `listFiles`, and a new
+  `diff` on `WorkspaceProvider`. `writeFile`, `writeContextFiles`, `runCommand`, and
+  `gitStatus` remain unimplemented stubs (write/exec are gated behind future approval
+  slices; `gitStatus` belongs to the future Git capability).
+- **`resolve(ref: WorkspaceRef)`** — the **core** (`WorkspaceManager.open(project)`)
+  builds the pure `WorkspaceRef` (id + projectId + rootPath + `kind` from the bound
+  provider). The provider receives only the ref and **never queries storage / resolves
+  project ids** (cross-adapter dependency stays forbidden). A worktree provider later
+  implements the same contract.
+- **No git, no `child_process`, no shell** in this capability. Read/list/diff use
+  `node:fs` only. (`scanProject`'s pre-existing git-branch probe is v1 registration code,
+  ADR-0018, and is out of this capability's scope.)
+- **Diff source = current file → proposed content → unified diff.** `diff(ref, changes)`
+  reads each current file (read-only) and emits a unified `WorkspaceDiff`. It does **not**
+  compare against git, repository history, or any repo state. This seam exists to feed the
+  **Approval** gate in a later slice.
+- **Diff engine is a mature library in the adapter** (`diff`/jsdiff), kept out of
+  `@chunsik/core` so the **core remains dependency-free** and the engine stays replaceable
+  with no provider-specific assumptions.
+- **Sandbox + guards:** every read/list/diff path is confined to the workspace root
+  (reject absolute paths, `..` traversal, and symlink escapes); secret-named and ignored
+  entries (`node_modules/dist/build/.git/coverage`, `.env*`, secret/token/key/...) are
+  excluded; per-file size guard (256 KB) and a list cap protect against large/runaway
+  inputs; binary files are flagged, not diffed.
+
+### Consequences
+- + A production-grade, read-only Workspace foundation; later capabilities (worktree,
+  patch, approval-gated write, Codex/Ollama execution) build on the same port.
+- + Core stays filesystem-agnostic and dependency-free; all fs work is in the adapter.
+- + `WorkspaceDiff` is the explicit pre-approval representation, designed before any write.
+- − `WorkspaceManager.prepare(task)` cannot build a ref (a `Task` carries no rootPath); it
+  is deferred (throws `NotImplementedError`) until the task→workspace wiring slice — callers
+  with a `Project` use `open(project)`. No live path depends on it.
+- − The read surface refuses secret-named files; a later capability may refine this.
+
+### V1 / V2
+**This slice (2a):** read-only `resolve`/`readFile`/`listFiles`/`diff`.
+**Later V2 slices (separate ADRs):** Git Capability (`gitStatus`/working-tree diff),
+worktree provider, approval-gated `writeFile`, `runCommand` execution, patch application.
+
+### Amendment (Sprint 2a review — APPROVED WITH MINOR CHANGES, 2026-06-29)
+Applied the Chief Architect's minor improvements (no scope added):
+- **`WorkspaceRef`** keeps its stable `id`; added optional `metadata` for future
+  providers (docker/ssh/remote). `kind` is the provider discriminator.
+- **`WorkspaceDiff.estimatedChangedLines`** — total added+removed lines, computed once
+  by the provider so future **Approval** workflows can size a change (5 vs 5000 lines)
+  without recomputation.
+- **`WorkspacePolicy`** value object (adapter; `DEFAULT_WORKSPACE_POLICY`) consolidates
+  readable/ignored/secret/maxFileBytes/binary rules in one place; per-project/core-level
+  configurable policies are a deliberate future extension.
+- **Capability independence** (must hold throughout V2): Workspace owns *filesystem*,
+  Git owns *repository*, Approval owns *authorization*, Patch owns *code transformation*
+  — kept independent. Capability doc: `docs/capabilities/workspace.md`.

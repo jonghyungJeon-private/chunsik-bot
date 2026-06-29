@@ -1,17 +1,20 @@
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { basename, isAbsolute, join, resolve, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createTwoFilesPatch } from 'diff';
 import { NotImplementedError } from '@chunsik/core';
 import type {
   CommandResult,
   ContextFile,
+  DiffChangeKind,
+  FileDiff,
   GitStatus,
-  Id,
   ProjectFileEntry,
   ProjectReadout,
   ProjectScan,
-  ResolveOptions,
+  ProposedChange,
   RunCommandOptions,
+  WorkspaceDiff,
   WorkspaceProvider,
   WorkspaceRef,
 } from '@chunsik/core';
@@ -40,6 +43,99 @@ function isAnalysisAllowed(name: string): boolean {
   return ANALYSIS_ALLOW.has(name) || /^tsconfig.*\.json$/.test(name);
 }
 
+// --- v2 Workspace capability (ADR-0022): read-only filesystem helpers. ---
+
+/** Large-file guard for read/diff (bytes). Oversized files are refused/skipped. */
+const MAX_READ_BYTES = 256_000;
+
+/** Upper bound on entries returned by listFiles, to avoid runaway walks. */
+const MAX_LIST_ENTRIES = 5000;
+
+/**
+ * Resolve `relPath` to an absolute path confined to `root` (ADR-0022 sandbox).
+ * Rejects absolute inputs, `..` traversal, and symlink escapes for existing
+ * targets. Never follows a path outside the workspace root.
+ */
+function resolveWithin(root: string, relPath: string): string {
+  if (isAbsolute(relPath)) throw new Error(`absolute paths are not allowed: ${relPath}`);
+  const rootAbs = resolve(root);
+  const abs = resolve(rootAbs, relPath);
+  if (abs !== rootAbs && !abs.startsWith(rootAbs + sep)) {
+    throw new Error(`path escapes the workspace root: ${relPath}`);
+  }
+  if (existsSync(abs)) {
+    const realRoot = realpathSync(rootAbs);
+    const real = realpathSync(abs);
+    if (real !== realRoot && !real.startsWith(realRoot + sep)) {
+      throw new Error(`path escapes the workspace root via symlink: ${relPath}`);
+    }
+  }
+  return abs;
+}
+
+/** Heuristic binary detection: a NUL byte in the first 8 KB. */
+function looksBinary(buf: Buffer): boolean {
+  const n = Math.min(buf.length, 8000);
+  for (let i = 0; i < n; i++) if (buf[i] === 0) return true;
+  return false;
+}
+
+/** Minimal, zero-dependency glob matcher supporting `*`, `**`, and `?`. */
+function matchGlob(path: string, glob: string): boolean {
+  const pattern = glob
+    .split(/(\*\*|\*|\?)/)
+    .map((seg) => {
+      if (seg === '**') return '.*';
+      if (seg === '*') return '[^/]*';
+      if (seg === '?') return '[^/]';
+      return seg.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+    })
+    .join('');
+  return new RegExp(`^${pattern}$`).test(path);
+}
+
+/**
+ * Centralized read-only access rules for the Workspace capability (ADR-0022) — a
+ * dedicated value object so ignore/secret/size/binary rules live in one place,
+ * keeping the provider focused on filesystem mechanics. Per-project / core-level
+ * configurable policies are a deliberate future extension (not in Sprint 2a).
+ */
+export interface WorkspacePolicy {
+  /** Directory names never descended into or listed. */
+  isIgnoredDir(name: string): boolean;
+  /** Names that must never be read (env/secret-looking). */
+  isSecret(name: string): boolean;
+  /** Convenience: readable = not ignored and not secret. */
+  isReadable(name: string): boolean;
+  /** Maximum bytes read per file; larger files are refused (read) / skipped (diff). */
+  readonly maxFileBytes: number;
+  /** Heuristic binary detection. */
+  isBinary(buf: Buffer): boolean;
+}
+
+/** The default policy: the existing ignore/secret/size/binary rules, consolidated. */
+export const DEFAULT_WORKSPACE_POLICY: WorkspacePolicy = {
+  isIgnoredDir: (name) => TREE_EXCLUDE.has(name),
+  isSecret: isSecretName,
+  isReadable: (name) => !TREE_EXCLUDE.has(name) && !isSecretName(name),
+  maxFileBytes: MAX_READ_BYTES,
+  isBinary: looksBinary,
+};
+
+/** Count added+removed lines in a unified diff (excludes ---/+++/@@ headers). */
+function countChangedLines(unified: string): number {
+  let n = 0;
+  for (const line of unified.split('\n')) {
+    if (
+      (line.startsWith('+') && !line.startsWith('+++')) ||
+      (line.startsWith('-') && !line.startsWith('---'))
+    ) {
+      n++;
+    }
+  }
+  return n;
+}
+
 export interface LocalCloneConfig {
   /** Absolute root path of the existing local clone. */
   workspaceRoot: string;
@@ -61,6 +157,9 @@ export interface LocalCloneConfig {
  */
 export class LocalCloneWorkspaceProvider implements WorkspaceProvider {
   readonly kind = 'local-clone';
+
+  /** Read-only access rules (ADR-0022). Configurable policies are a future slice. */
+  private readonly policy: WorkspacePolicy = DEFAULT_WORKSPACE_POLICY;
 
   constructor(private readonly config: LocalCloneConfig) {}
 
@@ -185,25 +284,111 @@ export class LocalCloneWorkspaceProvider implements WorkspaceProvider {
     }
   }
 
-  async resolve(_projectId: Id, _options?: ResolveOptions): Promise<WorkspaceRef> {
+  // --- v2 Workspace capability (ADR-0022): read-only filesystem. node:fs only,
+  //     no child_process, no git, no writes. ---
+
+  /** Validate the core-built ref points at an existing directory; return it. */
+  async resolve(ref: WorkspaceRef): Promise<WorkspaceRef> {
     void this.config;
-    throw new NotImplementedError('LocalCloneWorkspaceProvider.resolve');
+    let isDir = false;
+    try {
+      isDir = existsSync(ref.rootPath) && statSync(ref.rootPath).isDirectory();
+    } catch {
+      isDir = false;
+    }
+    if (!isDir) throw new Error(`workspace root is not a directory: ${ref.rootPath}`);
+    return ref;
   }
+
+  /** Read one file's text, sandboxed to the root; refuses secrets/binary/oversized. */
+  async readFile(ref: WorkspaceRef, relPath: string): Promise<string> {
+    if (this.policy.isSecret(basename(relPath))) {
+      throw new Error(`refusing to read a secret file: ${relPath}`);
+    }
+    const abs = resolveWithin(ref.rootPath, relPath);
+    const st = statSync(abs);
+    if (!st.isFile()) throw new Error(`not a file: ${relPath}`);
+    if (st.size > this.policy.maxFileBytes) {
+      throw new Error(`file too large (${st.size} > ${this.policy.maxFileBytes} bytes): ${relPath}`);
+    }
+    const buf = readFileSync(abs);
+    if (this.policy.isBinary(buf)) throw new Error(`binary file is not readable as text: ${relPath}`);
+    return buf.toString('utf8');
+  }
+
+  /** List relative file paths under the root (read-only); excludes ignored/secret. */
+  async listFiles(ref: WorkspaceRef, glob?: string): Promise<string[]> {
+    const out: string[] = [];
+    const walk = (dirAbs: string, relBase: string): void => {
+      if (out.length >= MAX_LIST_ENTRIES) return;
+      let entries;
+      try {
+        entries = readdirSync(dirAbs, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const e of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+        if (out.length >= MAX_LIST_ENTRIES) return;
+        if (!this.policy.isReadable(e.name) || e.isSymbolicLink()) continue;
+        const childRel = relBase ? `${relBase}/${e.name}` : e.name;
+        if (e.isDirectory()) walk(join(dirAbs, e.name), childRel);
+        else if (e.isFile()) out.push(childRel);
+      }
+    };
+    walk(resolveWithin(ref.rootPath, '.'), '');
+    return glob ? out.filter((p) => matchGlob(p, glob)) : out;
+  }
+
+  /** Read-only unified diff: current file content → proposed content (ADR-0022). */
+  async diff(ref: WorkspaceRef, changes: ProposedChange[]): Promise<WorkspaceDiff> {
+    const files: FileDiff[] = [];
+    let truncated = false;
+    let estimatedChangedLines = 0;
+    for (const change of changes) {
+      const abs = resolveWithin(ref.rootPath, change.path);
+      const exists = existsSync(abs) && statSync(abs).isFile();
+      const wantDelete = change.delete === true;
+      const changeKind: DiffChangeKind = wantDelete ? 'delete' : exists ? 'modify' : 'add';
+
+      let current = '';
+      let currentBinary = false;
+      let oldSize: number | undefined;
+      if (exists) {
+        oldSize = statSync(abs).size;
+        const buf = readFileSync(abs);
+        currentBinary = this.policy.isBinary(buf);
+        current = buf.toString('utf8');
+      }
+
+      const proposed = wantDelete ? '' : (change.newContent ?? '');
+      const newSize = wantDelete ? undefined : Buffer.byteLength(proposed, 'utf8');
+      const newBinary = !wantDelete && this.policy.isBinary(Buffer.from(proposed, 'utf8'));
+
+      if ((oldSize ?? 0) > this.policy.maxFileBytes || (newSize ?? 0) > this.policy.maxFileBytes) {
+        truncated = true;
+        files.push({ path: change.path, changeKind, unified: '', binary: false, oldSize, newSize });
+        continue;
+      }
+      if (currentBinary || newBinary) {
+        files.push({ path: change.path, changeKind, unified: '', binary: true, oldSize, newSize });
+        continue;
+      }
+      const unified = createTwoFilesPatch(change.path, change.path, current, proposed, '', '');
+      estimatedChangedLines += countChangedLines(unified);
+      files.push({ path: change.path, changeKind, unified, binary: false, oldSize, newSize });
+    }
+    return { refId: ref.id, files, estimatedChangedLines, truncated };
+  }
+
+  // --- NOT part of the v2 Workspace capability. Workspace ≠ Git (ADR-0022);
+  //     write/exec are gated behind future approval slices. Stubs for now. ---
 
   async gitStatus(_ref: WorkspaceRef): Promise<GitStatus> {
     throw new NotImplementedError('LocalCloneWorkspaceProvider.gitStatus');
   }
 
-  async readFile(_ref: WorkspaceRef, _relPath: string): Promise<string> {
-    throw new NotImplementedError('LocalCloneWorkspaceProvider.readFile');
-  }
-
   async writeFile(_ref: WorkspaceRef, _relPath: string, _content: string): Promise<void> {
     throw new NotImplementedError('LocalCloneWorkspaceProvider.writeFile');
-  }
-
-  async listFiles(_ref: WorkspaceRef, _glob?: string): Promise<string[]> {
-    throw new NotImplementedError('LocalCloneWorkspaceProvider.listFiles');
   }
 
   async writeContextFiles(_ref: WorkspaceRef, _files: ContextFile[]): Promise<void> {

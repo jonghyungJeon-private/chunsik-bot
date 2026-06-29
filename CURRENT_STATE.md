@@ -5,12 +5,13 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** **Version 1 Release Candidate prep** (`v1.0.0-rc1`). The V1 architecture
-  audit passed (`docs/audits/version-1-architecture-audit.md`); this RC pass resolved
-  documentation drift, removed dead code, and added a minimal SQLite migration runner
-  (ADR-0020). Prior feature work: Gated Project Analysis (ADR-0019).
-- **Next:** await Release Candidate approval. Do **not** start Version 2.
-- **Build/Test:** `pnpm typecheck` PASS (exit 0); `pnpm test` 13 files / 66 tests PASS.
+- **Phase:** **Version 2, Sprint 2a — Workspace Capability (Read/Diff foundation)**
+  (ADR-0022): read-only `resolve`/`readFile`/`listFiles`/`diff` in the workspace-local
+  adapter; `node:fs` only (no git, no child_process); diff = current file → proposed
+  content. Tagged baseline: `v1.0.0-rc1`.
+- **Next:** Chief Architect review of Sprint 2a; no merge until approved. **Workspace ≠
+  Git** — a Git capability is a separate, later slice.
+- **Build/Test:** `pnpm typecheck` PASS (exit 0); `pnpm test` 14 files / 81 tests PASS.
 
 ## Implemented
 
@@ -25,6 +26,9 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   + PROJECT memory + bound `session.activeProjectId`; idempotent re-registration (ADR-0018).
 - **Project Analysis** — gated, read-only analysis of allow-listed project metadata
   files → grounded structural answer, persisted as TOOL memory (ADR-0019).
+- **Workspace (read-only)** — `resolve`/`readFile`/`listFiles`/`diff` on the
+  workspace-local adapter; sandboxed `node:fs` (no git/child_process); diff = current
+  file → proposed content (pre-approval seam). Not yet wired to a user-facing flow (ADR-0022).
 
 ## Deferred
 
@@ -69,7 +73,7 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 
 ## Validation
 
-- `pnpm typecheck` — passes (exit 0). `pnpm test` — 13 files / 66 tests pass.
+- `pnpm typecheck` — passes (exit 0). `pnpm test` — 14 files / 81 tests pass.
 - Boundary enforced — Core cannot resolve adapter packages.
 - **Live (Sprint 1g):** real `node dist/main.js` Discord round-trip — register a
   project, then a structure question routed to PROJECT_ANALYSIS, read real files,

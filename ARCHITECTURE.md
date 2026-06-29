@@ -169,6 +169,12 @@ fixed; the implementations are not.
    unaffected. `[LATER]`
 5. All command execution is risk-assessed (`RiskPolicy.assessCommand`) before it
    runs.
+6. **Workspace ≠ Git (ADR-0022).** The Workspace owns the **filesystem** abstraction;
+   a future **Git Capability** owns the **repository** abstraction — they stay
+   independent. The v2 read-only Workspace slice (`resolve`/`readFile`/`listFiles`/
+   `diff`) uses `node:fs` only — no git, no `child_process`. `diff` compares
+   **current file → proposed content** (never repo history); it is the pre-approval
+   seam for the future Write slice. `[NOW]` (read-only)
 
 ---
 

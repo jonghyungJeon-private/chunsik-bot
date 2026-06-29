@@ -12,11 +12,14 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -b"
   },
   "dependencies": {
-    "@chunsik/core": "workspace:*"
+    "@chunsik/core": "workspace:*",
+    "diff": "^9.0.0"
   }
 }

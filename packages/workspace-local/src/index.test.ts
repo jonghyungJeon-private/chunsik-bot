@@ -2,6 +2,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { WorkspaceRef } from '@chunsik/core';
 import { LocalCloneWorkspaceProvider } from './index';
 
 const provider = new LocalCloneWorkspaceProvider({ workspaceRoot: tmpdir() });
@@ -99,5 +100,121 @@ describe('LocalCloneWorkspaceProvider.readProjectFiles (ADR-0019, gated read-onl
   it('returns an empty readout for a non-existent path (no throw)', async () => {
     const readout = await provider.readProjectFiles('/definitely/not/here/chunsik-xyz');
     expect(readout.files).toEqual([]);
+  });
+});
+
+describe('LocalCloneWorkspaceProvider — v2 Workspace capability (ADR-0022, read-only)', () => {
+  function ref(rootPath: string): WorkspaceRef {
+    return { id: 'w1', rootPath, kind: 'local-clone' };
+  }
+
+  it('resolve() returns the ref for a real directory and rejects a non-directory', async () => {
+    const dir = tempDir();
+    await expect(provider.resolve(ref(dir))).resolves.toMatchObject({ rootPath: dir });
+    await expect(provider.resolve(ref('/definitely/not/here/xyz'))).rejects.toThrow();
+  });
+
+  it('readFile() reads a file within the root', async () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, 'a.txt'), 'hello');
+    expect(await provider.readFile(ref(dir), 'a.txt')).toBe('hello');
+  });
+
+  it('readFile() rejects path traversal and absolute paths', async () => {
+    const dir = tempDir();
+    await expect(provider.readFile(ref(dir), '../../../etc/passwd')).rejects.toThrow(/escapes|not a file/);
+    await expect(provider.readFile(ref(dir), '/etc/passwd')).rejects.toThrow(/absolute/);
+  });
+
+  it('readFile() refuses secret-named files', async () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, '.env'), 'DISCORD_BOT_TOKEN=zzz');
+    await expect(provider.readFile(ref(dir), '.env')).rejects.toThrow(/secret/);
+  });
+
+  it('readFile() enforces the large-file guard', async () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, 'big.txt'), 'x'.repeat(300_000));
+    await expect(provider.readFile(ref(dir), 'big.txt')).rejects.toThrow(/too large/);
+  });
+
+  it('readFile() refuses binary content', async () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, 'bin'), Buffer.from([0x41, 0x00, 0x42]));
+    await expect(provider.readFile(ref(dir), 'bin')).rejects.toThrow(/binary/);
+  });
+
+  it('listFiles() returns relative files, excluding ignored dirs and secrets', async () => {
+    const dir = tempDir();
+    mkdirSync(join(dir, 'src'));
+    mkdirSync(join(dir, 'node_modules'));
+    writeFileSync(join(dir, 'src', 'index.ts'), '1');
+    writeFileSync(join(dir, 'README.md'), '#');
+    writeFileSync(join(dir, '.env'), 'SECRET=1');
+    writeFileSync(join(dir, 'node_modules', 'dep.js'), '1');
+    const files = await provider.listFiles(ref(dir));
+    expect(files).toContain('src/index.ts');
+    expect(files).toContain('README.md');
+    expect(files).not.toContain('.env');
+    expect(files.some((f) => f.includes('node_modules'))).toBe(false);
+  });
+
+  it('listFiles() applies a glob filter', async () => {
+    const dir = tempDir();
+    mkdirSync(join(dir, 'src'));
+    writeFileSync(join(dir, 'src', 'a.ts'), '1');
+    writeFileSync(join(dir, 'src', 'b.js'), '1');
+    const ts = await provider.listFiles(ref(dir), '**/*.ts');
+    expect(ts).toEqual(['src/a.ts']);
+  });
+
+  it('diff() generates a unified diff for add / modify / delete', async () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, 'mod.txt'), 'old line\n');
+    writeFileSync(join(dir, 'del.txt'), 'gone\n');
+    const out = await provider.diff(ref(dir), [
+      { path: 'new.txt', newContent: 'fresh\n' },
+      { path: 'mod.txt', newContent: 'new line\n' },
+      { path: 'del.txt', delete: true },
+    ]);
+    expect(out.truncated).toBe(false);
+    expect(out.estimatedChangedLines).toBeGreaterThan(0); // add+modify+delete all change lines
+    const byPath = Object.fromEntries(out.files.map((f) => [f.path, f]));
+    expect(byPath['new.txt'].changeKind).toBe('add');
+    expect(byPath['new.txt'].unified).toContain('+fresh');
+    expect(byPath['mod.txt'].changeKind).toBe('modify');
+    expect(byPath['mod.txt'].unified).toContain('-old line');
+    expect(byPath['mod.txt'].unified).toContain('+new line');
+    expect(byPath['del.txt'].changeKind).toBe('delete');
+    expect(byPath['del.txt'].unified).toContain('-gone');
+  });
+
+  it('diff() flags binary and large files instead of diffing them', async () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, 'bin'), Buffer.from([0x00, 0x01, 0x02]));
+    writeFileSync(join(dir, 'big.txt'), 'x'.repeat(300_000));
+    const out = await provider.diff(ref(dir), [
+      { path: 'bin', newContent: 'still\nbinary?' },
+      { path: 'big.txt', newContent: 'small' },
+    ]);
+    expect(out.files.find((f) => f.path === 'bin')?.binary).toBe(true);
+    expect(out.truncated).toBe(true);
+    expect(out.files.find((f) => f.path === 'big.txt')?.unified).toBe('');
+    expect(out.estimatedChangedLines).toBe(0); // binary + oversized contribute nothing
+  });
+
+  it('diff() estimates changed lines from the unified hunks', async () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, 'a.txt'), 'one\ntwo\nthree\n');
+    const out = await provider.diff(ref(dir), [{ path: 'a.txt', newContent: 'one\nTWO\nthree\nfour\n' }]);
+    // one line changed (two→TWO) = -1/+1, plus one added (four) = +1 → 3 changed lines
+    expect(out.estimatedChangedLines).toBe(3);
+  });
+
+  it('diff() rejects paths escaping the workspace root', async () => {
+    const dir = tempDir();
+    await expect(provider.diff(ref(dir), [{ path: '../evil.txt', newContent: 'x' }])).rejects.toThrow(
+      /escapes|absolute/,
+    );
   });
 });

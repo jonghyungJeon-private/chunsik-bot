@@ -1,5 +1,15 @@
-import { WorkspaceNotSafeError } from '../errors';
-import type { ContextFile, GitStatus, Task, WorkspaceRef } from '../domain';
+import { NotImplementedError, WorkspaceNotSafeError } from '../errors';
+import { newId } from '../util/id';
+import type {
+  ContextFile,
+  GitStatus,
+  Id,
+  ProposedChange,
+  Task,
+  WorkspaceDiff,
+  WorkspaceKind,
+  WorkspaceRef,
+} from '../domain';
 import type { ProjectReadout, ProjectScan, WorkspaceProvider } from '../ports';
 
 /**
@@ -21,10 +31,46 @@ export class WorkspaceManager {
     return this.provider.readProjectFiles(rootPath);
   }
 
-  /** Resolve a working directory for a task, if it targets a project. */
+  /**
+   * Open a read-only workspace for a registered project (ADR-0022). The core
+   * builds the pure `WorkspaceRef` (the provider never queries storage); the
+   * provider validates/prepares it. The ref's `kind` comes from the bound
+   * provider, so swapping in a worktree provider needs no change here.
+   */
+  async open(project: { id: Id; rootPath: string }): Promise<WorkspaceRef> {
+    const ref: WorkspaceRef = {
+      id: newId(),
+      projectId: project.id,
+      rootPath: project.rootPath,
+      kind: this.provider.kind as WorkspaceKind,
+    };
+    return this.provider.resolve(ref);
+  }
+
+  /** Read one file's text from the workspace (read-only, sandboxed). */
+  async read(ref: WorkspaceRef, relPath: string): Promise<string> {
+    return this.provider.readFile(ref, relPath);
+  }
+
+  /** List file paths in the workspace (read-only); optional glob filter. */
+  async list(ref: WorkspaceRef, glob?: string): Promise<string[]> {
+    return this.provider.listFiles(ref, glob);
+  }
+
+  /** Read-only unified diff of proposed changes vs current content (ADR-0022). */
+  async diff(ref: WorkspaceRef, changes: ProposedChange[]): Promise<WorkspaceDiff> {
+    return this.provider.diff(ref, changes);
+  }
+
+  /**
+   * Resolve a working directory for a task. Deferred: building a `WorkspaceRef`
+   * needs the project's root path, which a `Task` does not carry. The
+   * task→workspace wiring (and the capabilities that need it) arrive in a later
+   * slice; callers with a `Project` should use {@link open}.
+   */
   async prepare(task: Task): Promise<WorkspaceRef | undefined> {
     if (!task.projectId) return undefined;
-    return this.provider.resolve(task.projectId);
+    throw new NotImplementedError('WorkspaceManager.prepare (use open(project); wiring deferred)');
   }
 
   async status(ref: WorkspaceRef): Promise<GitStatus> {

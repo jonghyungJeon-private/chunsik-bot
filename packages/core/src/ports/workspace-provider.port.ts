@@ -1,8 +1,11 @@
-import type { CommandResult, ContextFile, GitStatus, Id, WorkspaceRef } from '../domain';
-
-export interface ResolveOptions {
-  branch?: string;
-}
+import type {
+  CommandResult,
+  ContextFile,
+  GitStatus,
+  ProposedChange,
+  WorkspaceDiff,
+  WorkspaceRef,
+} from '../domain';
 
 export interface RunCommandOptions {
   /** Subdirectory relative to the workspace root. */
@@ -64,15 +67,37 @@ export interface WorkspaceProvider {
    */
   readProjectFiles(rootPath: string): Promise<ProjectReadout>;
 
-  /** Resolve (and prepare, if needed) a working directory for a project. */
-  resolve(projectId: Id, options?: ResolveOptions): Promise<WorkspaceRef>;
+  // --- v2 Workspace capability (ADR-0022): read-only filesystem surface. ---
 
-  /** Inspect git state — the core checks this BEFORE modifying code. */
+  /**
+   * Prepare/validate a working directory described by a core-built `WorkspaceRef`
+   * and return it (ADR-0022). The provider receives ONLY the ref — a pure domain
+   * value object — and never resolves project ids or queries storage. For the
+   * local clone this validates the root path; a future worktree provider would
+   * create the worktree here under the SAME contract.
+   */
+  resolve(ref: WorkspaceRef): Promise<WorkspaceRef>;
+
+  /** Read one file's text, sandboxed to the workspace root (read-only). */
+  readFile(ref: WorkspaceRef, relPath: string): Promise<string>;
+
+  /** List file paths under the workspace root (read-only); optional glob filter. */
+  listFiles(ref: WorkspaceRef, glob?: string): Promise<string[]>;
+
+  /**
+   * Generate a read-only unified diff for proposed changes (ADR-0022): current
+   * file content → proposed content. No write, no git, no repository history.
+   * This is the pre-Approval seam, NOT a git capability.
+   */
+  diff(ref: WorkspaceRef, changes: ProposedChange[]): Promise<WorkspaceDiff>;
+
+  // --- NOT part of the v2 Workspace capability. Workspace ≠ Git (ADR-0022),
+  //     and write/exec are gated behind future approval slices. Stubs for now. ---
+
+  /** Inspect git state. Future Git capability — unimplemented stub. */
   gitStatus(ref: WorkspaceRef): Promise<GitStatus>;
 
-  readFile(ref: WorkspaceRef, relPath: string): Promise<string>;
   writeFile(ref: WorkspaceRef, relPath: string, content: string): Promise<void>;
-  listFiles(ref: WorkspaceRef, glob?: string): Promise<string[]>;
 
   /** Materialize memory context files (CLAUDE.md, .chunsik/context.md, ...). */
   writeContextFiles(ref: WorkspaceRef, files: ContextFile[]): Promise<void>;
