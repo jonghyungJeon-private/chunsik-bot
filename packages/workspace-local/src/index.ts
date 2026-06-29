@@ -8,7 +8,6 @@ import type {
   ContextFile,
   DiffChangeKind,
   FileDiff,
-  GitStatus,
   ProjectFileEntry,
   ProjectReadout,
   ProjectScan,
@@ -142,18 +141,16 @@ export interface LocalCloneConfig {
 }
 
 /**
- * SKELETON. Implements WorkspaceProvider against an existing local clone.
+ * Implements WorkspaceProvider against an existing local clone — the **filesystem**
+ * abstraction only (CAP-001). Workspace ≠ Git: git inspection lives in
+ * `@chunsik/git-local` (CAP-002), never here.
  *
- * TODO(impl): use node:fs/promises + node:child_process. resolve() returns a
- * WorkspaceRef pointing at workspaceRoot (kind: 'local-clone'). gitStatus()
- * shells `git status --porcelain -b`. writeContextFiles() writes CLAUDE.md /
- * .chunsik/*.md. runCommand() spawns in the ref's directory.
+ * Read-only methods are implemented (`resolve`/`readFile`/`listFiles`/`diff`).
+ * `writeFile`/`writeContextFiles`/`runCommand` remain stubs until their
+ * approval-gated capabilities land.
  *
  * Safety: NEVER auto-commit, auto-push, or auto-delete. Those are HIGH/CRITICAL
- * and only run via runCommand AFTER the core's approval gate.
- *
- * v2: GitWorktreeWorkspaceProvider implements this SAME interface (kind:
- * 'git-worktree') — the core is unaffected.
+ * and only run via approval-gated capabilities later.
  */
 export class LocalCloneWorkspaceProvider implements WorkspaceProvider {
   readonly kind = 'local-clone';
@@ -380,12 +377,9 @@ export class LocalCloneWorkspaceProvider implements WorkspaceProvider {
     return { refId: ref.id, files, estimatedChangedLines, truncated };
   }
 
-  // --- NOT part of the v2 Workspace capability. Workspace ≠ Git (ADR-0022);
-  //     write/exec are gated behind future approval slices. Stubs for now. ---
-
-  async gitStatus(_ref: WorkspaceRef): Promise<GitStatus> {
-    throw new NotImplementedError('LocalCloneWorkspaceProvider.gitStatus');
-  }
+  // --- NOT part of the v2 Workspace capability. Workspace ≠ Git (ADR-0022/0023):
+  //     git lives in @chunsik/git-local (CAP-002), never here. Write/exec are
+  //     gated behind future approval slices. Stubs for now. ---
 
   async writeFile(_ref: WorkspaceRef, _relPath: string, _content: string): Promise<void> {
     throw new NotImplementedError('LocalCloneWorkspaceProvider.writeFile');

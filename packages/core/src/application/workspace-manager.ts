@@ -1,8 +1,7 @@
-import { NotImplementedError, WorkspaceNotSafeError } from '../errors';
+import { NotImplementedError } from '../errors';
 import { newId } from '../util/id';
 import type {
   ContextFile,
-  GitStatus,
   Id,
   ProposedChange,
   Task,
@@ -13,10 +12,10 @@ import type {
 import type { ProjectReadout, ProjectScan, WorkspaceProvider } from '../ports';
 
 /**
- * Thin orchestration over the WorkspaceProvider that enforces the safety rule:
- * check git status BEFORE modifying code, and never auto-commit/push/delete.
- * Swapping LocalCloneWorkspaceProvider -> GitWorktreeWorkspaceProvider later
- * requires no change here.
+ * Thin orchestration over the WorkspaceProvider — the **filesystem** abstraction
+ * (read/list/diff). Git lives in the separate GitProvider/GitManager (CAP-002):
+ * Workspace ≠ Git. Swapping LocalCloneWorkspaceProvider -> a worktree provider
+ * later requires no change here.
  */
 export class WorkspaceManager {
   constructor(private readonly provider: WorkspaceProvider) {}
@@ -71,20 +70,6 @@ export class WorkspaceManager {
   async prepare(task: Task): Promise<WorkspaceRef | undefined> {
     if (!task.projectId) return undefined;
     throw new NotImplementedError('WorkspaceManager.prepare (use open(project); wiring deferred)');
-  }
-
-  async status(ref: WorkspaceRef): Promise<GitStatus> {
-    return this.provider.gitStatus(ref);
-  }
-
-  /** Guard invoked before any code mutation. Throws if the tree is dirty. */
-  async ensureSafe(ref: WorkspaceRef): Promise<void> {
-    const status = await this.provider.gitStatus(ref);
-    if (!status.clean) {
-      throw new WorkspaceNotSafeError(
-        `branch ${status.branch} has uncommitted changes (${status.unstaged.length} unstaged, ${status.untracked.length} untracked)`,
-      );
-    }
   }
 
   /** Materialize memory context files into the workspace before a CLI run. */

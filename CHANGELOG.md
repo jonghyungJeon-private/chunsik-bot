@@ -7,6 +7,28 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Sprint 2b · CAP-002 Git Capability (read-only)
+
+- New **`GitProvider`** port (+ `GIT_PROVIDER` token), **`@chunsik/git-local`** adapter
+  (`LocalGitProvider`), and **`GitManager`** core service: read-only `isRepository`,
+  `info` (`RepositoryInfo`: branch/HEAD/detached), `status` (`GitStatus`).
+- Git runs **adapter-only** via argument-array `spawn` (no shell string, no `shell:true`),
+  with a timeout, cwd = repository root, and **sanitized stderr**. **Core stays
+  `child_process`-free** and provider-agnostic. Composes with Workspace via `rootPath`.
+- **Git ≠ Workspace:** the `gitStatus` stub is removed from `WorkspaceProvider`; `GitStatus`
+  moves to `domain/git.ts`; `WorkspaceManager.ensureSafe/status` → `GitManager`.
+- **Not in scope:** no commit/checkout/branch/merge/reset/stash/push/pull/fetch/tag, no
+  worktree, **no remote-URL exposure** (credential safety), no Approval/Patch (ADR-0023).
+- Tests (+15): non-repo, detached HEAD, dirty/clean, untracked/staged, argument-array spawn,
+  timeout/spawn-failure, no-remote-URL, porcelain/stderr parsers — Vitest 16 files / 96 tests.
+
+### Added — Sprint 2a · CAP-001 Workspace Capability (read-only)
+
+- Read-only Workspace foundation (ADR-0022): `resolve`/`readFile`/`listFiles`/`diff` on the
+  `workspace-local` adapter; `node:fs` only; diff = current file → proposed content
+  (pre-approval seam). `WorkspacePolicy`, `WorkspaceDiff.estimatedChangedLines`. Core
+  dependency-free (jsdiff is adapter-only). Capability docs under `docs/capabilities/`.
+
 ### Added — Sprint 1g (gated project analysis)
 
 - New `PROJECT_ANALYSIS` intent + capability: a structure/analysis question

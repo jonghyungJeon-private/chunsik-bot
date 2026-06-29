@@ -26,15 +26,6 @@ export interface WorkspaceRef {
   metadata?: Metadata;
 }
 
-/** Git state, surfaced generically so the core can gate edits on cleanliness. */
-export interface GitStatus {
-  clean: boolean;
-  branch: string;
-  staged: string[];
-  unstaged: string[];
-  untracked: string[];
-}
-
 /** Result of running a command inside a workspace. */
 export interface CommandResult {
   exitCode: number;

@@ -8,6 +8,7 @@ import {
   QUEUE_PROVIDER,
   VECTOR_PROVIDER,
   WORKSPACE_PROVIDER,
+  GIT_PROVIDER,
   AI_PROVIDERS,
   CONNECTOR_PROVIDERS,
   // Application services (pure core)
@@ -26,6 +27,7 @@ import {
   MemoryManager,
   ArtifactManager,
   WorkspaceManager,
+  GitManager,
   ConnectorManager,
   ResponseComposer,
   RiskPolicy,
@@ -33,6 +35,7 @@ import {
 import type {
   AiProvider,
   ConnectorProvider,
+  GitProvider,
   PlatformAdapter,
   StorageProvider,
   VectorProvider,
@@ -45,6 +48,7 @@ import { SqliteStorageProvider } from '@chunsik/storage-sqlite';
 import { LocalQueueProvider } from '@chunsik/queue-local';
 import { LocalVectorProvider } from '@chunsik/vector-local';
 import { LocalCloneWorkspaceProvider } from '@chunsik/workspace-local';
+import { LocalGitProvider } from '@chunsik/git-local';
 import { ClaudeCliProvider, CodexCliProvider, OllamaCliProvider } from '@chunsik/ai-cli';
 import { V1_CONNECTORS } from '@chunsik/connectors';
 
@@ -66,6 +70,8 @@ const infrastructure: Provider[] = [
     provide: WORKSPACE_PROVIDER,
     useFactory: () => new LocalCloneWorkspaceProvider({ workspaceRoot: config.workspace.workspaceRoot }),
   },
+  // CAP-002 Git (read-only). Separate port from Workspace — Workspace ≠ Git.
+  { provide: GIT_PROVIDER, useFactory: () => new LocalGitProvider() },
   {
     provide: PLATFORM_ADAPTER,
     useFactory: () => new DiscordPlatformAdapter(config.discord, new ConsoleLogger('discord')),
@@ -126,6 +132,11 @@ const application: Provider[] = [
     provide: WorkspaceManager,
     useFactory: (workspace: WorkspaceProvider) => new WorkspaceManager(workspace),
     inject: [WORKSPACE_PROVIDER],
+  },
+  {
+    provide: GitManager,
+    useFactory: (git: GitProvider) => new GitManager(git),
+    inject: [GIT_PROVIDER],
   },
   {
     provide: ConnectorManager,

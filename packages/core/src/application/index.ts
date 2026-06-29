@@ -14,6 +14,7 @@ export * from './task-manager';
 export * from './memory-manager';
 export * from './artifact-manager';
 export * from './workspace-manager';
+export * from './git-manager';
 export * from './connector-manager';
 export * from './response-composer';
 export * from './orchestrator';

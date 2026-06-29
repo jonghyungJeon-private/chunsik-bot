@@ -32,6 +32,9 @@ importers:
       '@chunsik/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@chunsik/git-local':
+        specifier: workspace:*
+        version: link:../../packages/git-local
       '@chunsik/queue-local':
         specifier: workspace:*
         version: link:../../packages/queue-local
@@ -79,6 +82,12 @@ importers:
         version: link:../core
 
   packages/core: {}
+
+  packages/git-local:
+    dependencies:
+      '@chunsik/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/queue-local:
     dependencies:

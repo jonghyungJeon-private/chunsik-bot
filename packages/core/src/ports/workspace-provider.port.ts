@@ -1,7 +1,6 @@
 import type {
   CommandResult,
   ContextFile,
-  GitStatus,
   ProposedChange,
   WorkspaceDiff,
   WorkspaceRef,
@@ -91,11 +90,9 @@ export interface WorkspaceProvider {
    */
   diff(ref: WorkspaceRef, changes: ProposedChange[]): Promise<WorkspaceDiff>;
 
-  // --- NOT part of the v2 Workspace capability. Workspace ≠ Git (ADR-0022),
-  //     and write/exec are gated behind future approval slices. Stubs for now. ---
-
-  /** Inspect git state. Future Git capability — unimplemented stub. */
-  gitStatus(ref: WorkspaceRef): Promise<GitStatus>;
+  // --- NOT part of the v2 Workspace capability. Workspace ≠ Git (ADR-0022/0023):
+  //     git lives in the GitProvider port (CAP-002), never here. Write/exec are
+  //     gated behind future approval slices. Stubs for now. ---
 
   writeFile(ref: WorkspaceRef, relPath: string, content: string): Promise<void>;
 

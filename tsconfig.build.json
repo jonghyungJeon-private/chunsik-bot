@@ -7,6 +7,7 @@
     { "path": "packages/queue-local" },
     { "path": "packages/vector-local" },
     { "path": "packages/workspace-local" },
+    { "path": "packages/git-local" },
     { "path": "packages/ai-cli" },
     { "path": "packages/connectors" },
     { "path": "apps/chunsik" }

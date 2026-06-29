@@ -14,5 +14,6 @@ export const STORAGE_PROVIDER = Symbol('StorageProvider');
 export const QUEUE_PROVIDER = Symbol('QueueProvider');
 export const VECTOR_PROVIDER = Symbol('VectorProvider');
 export const WORKSPACE_PROVIDER = Symbol('WorkspaceProvider');
+export const GIT_PROVIDER = Symbol('GitProvider');
 export const AI_PROVIDERS = Symbol('AiProviders');
 export const CONNECTOR_PROVIDERS = Symbol('ConnectorProviders');

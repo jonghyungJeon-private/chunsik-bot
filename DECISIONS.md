@@ -871,3 +871,77 @@ Applied the Chief Architect's minor improvements (no scope added):
 - **Capability independence** (must hold throughout V2): Workspace owns *filesystem*,
   Git owns *repository*, Approval owns *authorization*, Patch owns *code transformation*
   — kept independent. Capability doc: `docs/capabilities/workspace.md`.
+
+---
+
+## ADR-0023 — CAP-002 Git Capability (read-only repository inspection)
+
+- **Status:** ✅ Accepted (v2, Sprint 2b)
+- **Date:** 2026-06-29
+- **Capability:** CAP-002 — Git.
+
+### Context
+ADR-0022 deliberately left `gitStatus` a stub on `WorkspaceProvider` "until a future
+Git capability." Approval/Patch/Workspace-Write will need trustworthy repository state
+(branch, clean/dirty). Git must be a **separate** capability — `WorkspaceProvider` must
+not know git exists. (Chief Architect review: APPROVED WITH CHANGES.)
+
+### Decision
+- **Git Capability is separate from Workspace Capability.** New `GitProvider` port
+  (CAP-002) + `GIT_PROVIDER` token + `@chunsik/git-local` adapter (`LocalGitProvider`) +
+  `GitManager` core service. **Workspace ≠ Git.**
+- **Read-only in Sprint 2b.** Exactly three operations: `isRepository(rootPath)`,
+  `info(rootPath) → RepositoryInfo`, `status(rootPath) → GitStatus`. **No** commit,
+  checkout, branch, merge, reset, stash, push, pull, fetch, tag, add.
+- **Worktree is NOT part of Sprint 2b** — no WorktreeProvider, no worktree methods, no
+  reserved worktree operations. Mentioned only as a future relationship.
+- **Remote URLs are intentionally excluded.** `RepositoryInfo` carries no remote/url
+  field (HTTPS remotes can embed `user:token@host` credentials). Surfacing remotes needs
+  a future masking policy + its own ADR. Stderr is sanitized before it surfaces.
+- **Write operations require the future Approval capability** (CAP-003). Nothing in
+  CAP-002 mutates a repository.
+- **Git execution is adapter-only and argument-array based.** `LocalGitProvider` runs git
+  via `spawnSync` with an **argv array** (never a shell string, never `shell: true`), a
+  timeout, and the repository root as cwd. **Core stays `child_process`-free** and
+  provider-agnostic.
+- **Compose via `rootPath`.** `GitProvider` takes a plain path and imports **no** Workspace
+  type (`WorkspaceRef`/`WorkspaceProvider`). Composition happens above both capabilities.
+- **Relocation:** the `gitStatus` stub is **removed** from `WorkspaceProvider`; `GitStatus`
+  moves to `domain/git.ts`; `WorkspaceManager.ensureSafe/status` move to
+  `GitManager.requireClean/status`.
+
+### Consequences
+- + Clean Git/Workspace separation; a trustworthy repository-state source for future
+  gated writes; no secret/remote surface in v1.
+- + Core remains dependency-free and `child_process`-free; git isolated in one adapter.
+- − A port relocation (single implementer, **no live caller**) + a new package.
+- − `scanProject`'s git-branch probe (CAP-001/ADR-0018) still runs git inside
+  `workspace-local`; relocating it to `GitProvider` is flagged follow-up debt, not 2b scope.
+
+### Capability / Relations
+**CAP-002.** Relates: ADR-0022 (CAP-001 Workspace), ADR-0018 (`scanProject`),
+ARCHITECTURE.md §9. Capability doc: `docs/capabilities/git.md`.
+
+### V1 / V2
+**This slice (2b):** read-only `isRepository`/`info`/`status`.
+**Later (separate ADRs):** masked remotes / ahead-behind; worktree (read then,
+behind Approval, write); git writes (commit/checkout/branch) under Approval (CAP-003).
+
+### Layering (responsibility split — stable for all of V2)
+```
+GitRunner    → Infrastructure   (argv-array spawn; the only thing that touches git/child_process)
+GitProvider  → Port             (read-only contract: isRepository / info / status)
+GitManager   → Application Service (orchestration: isClean / requireClean; composes by rootPath)
+```
+This split is an architectural invariant: the Manager never spawns, the Port never knows
+the concrete runner, and only the adapter's Runner runs git.
+
+### Amendment (final review — APPROVED WITH MINOR CHANGES, 2026-06-29)
+- **GitStatus reserved fields** added as optional (`ahead`, `behind`, `isDetached`,
+  `hasUnmergedPaths`) — declared now, **not populated** in 2b, to avoid future domain
+  ripple for Approval/Patch/Workspace-Write.
+- **RepositoryRef (future, non-blocking):** 2b passes `rootPath: string` (accepted). A
+  dedicated `RepositoryRef { id, rootPath, provider, metadata }` may be introduced later
+  as the Git sibling of `WorkspaceRef`. **`RepositoryRef` and `WorkspaceRef` must never
+  reference each other** — sibling domain references; capabilities compose through them.
+  Considered for CAP-003+, not built here.

@@ -10,4 +10,5 @@ export * from './memory';
 export * from './artifact';
 export * from './project';
 export * from './workspace';
+export * from './git';
 export * from './approval';
