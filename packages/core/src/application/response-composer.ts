@@ -33,4 +33,9 @@ export class ResponseComposer {
       text: `This action needs your approval (${request.riskLevel}):\n${request.summary}`,
     };
   }
+
+  /** A user-facing failure reply (ADR-0015). Never includes technical detail. */
+  composeError(context: ConversationContext, userMessage: string): OutboundMessage {
+    return { context, text: userMessage };
+  }
 }

@@ -1,5 +1,5 @@
 import { tmpdir } from 'node:os';
-import { ArtifactKind, newId, now } from '@chunsik/core';
+import { AiFailureKind, AiProviderError, ArtifactKind, newId, now } from '@chunsik/core';
 import type {
   AiCapabilityDescriptor,
   AiExecutionRequest,
@@ -77,14 +77,29 @@ export class ClaudeCliProvider extends BaseCliAiProvider {
 
     const result = await this.runner(this.bin, this.buildArgs(), { cwd, input, timeoutMs });
 
+    // Classified failure taxonomy (ADR-0015). stderr is masked before it leaves.
     if (result.timedOut) {
-      throw new Error(`claude CLI timed out after ${timeoutMs}ms`);
+      throw new AiProviderError(AiFailureKind.TIMEOUT, `claude CLI timed out after ${timeoutMs}ms`);
+    }
+    if (result.code === null) {
+      throw new AiProviderError(
+        AiFailureKind.UNAVAILABLE,
+        `claude CLI could not run: ${maskSecrets(result.stderr).slice(0, 300)}`,
+      );
     }
     if (result.code !== 0) {
-      throw new Error(`claude CLI exited with code ${result.code}: ${maskSecrets(result.stderr).slice(0, 500)}`);
+      const kind = ClaudeCliProvider.classifyStderr(result.stderr);
+      throw new AiProviderError(
+        kind,
+        `claude CLI exited ${result.code}: ${maskSecrets(result.stderr).slice(0, 300)}`,
+      );
     }
 
     const text = result.stdout.trim();
+    if (!text) {
+      throw new AiProviderError(AiFailureKind.EMPTY_OUTPUT, 'claude CLI returned empty output');
+    }
+
     const artifact: Artifact = {
       id: newId(),
       kind: ArtifactKind.MARKDOWN_REPORT,
@@ -97,6 +112,19 @@ export class ClaudeCliProvider extends BaseCliAiProvider {
       artifacts: [artifact],
       raw: { exitCode: result.code, stderr: maskSecrets(result.stderr).slice(0, 1000) },
     };
+  }
+
+  /** Map CLI stderr to an auth vs. generic execution failure. */
+  private static classifyStderr(stderr: string): AiFailureKind {
+    const s = stderr.toLowerCase();
+    if (
+      /(not logged in|please run.*login|authenticat|unauthor|invalid api key|\bapi key\b|oauth|credential|forbidden|\b401\b|\b403\b)/.test(
+        s,
+      )
+    ) {
+      return AiFailureKind.AUTH_REQUIRED;
+    }
+    return AiFailureKind.EXECUTION_FAILED;
   }
 }
 

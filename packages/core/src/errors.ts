@@ -1,3 +1,5 @@
+import type { AiFailureKind } from './domain';
+
 /** Thrown by skeleton methods whose business logic is intentionally deferred. */
 export class NotImplementedError extends Error {
   constructor(what: string) {
@@ -11,6 +13,21 @@ export class NoProviderAvailableError extends Error {
   constructor(capability: string) {
     super(`No available AiProvider for capability: ${capability}`);
     this.name = 'NoProviderAvailableError';
+  }
+}
+
+/**
+ * A classified AI execution failure (ADR-0015). The provider sets `kind` and a
+ * technical `message` (already secret-masked); the core maps the kind to a
+ * user-facing message and stores a summary on the TaskRun.
+ */
+export class AiProviderError extends Error {
+  constructor(
+    readonly kind: AiFailureKind,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'AiProviderError';
   }
 }
 

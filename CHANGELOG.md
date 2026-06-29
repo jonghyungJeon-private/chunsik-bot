@@ -7,6 +7,20 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Sprint 1c (harden CLI provider failure handling)
+
+- Provider-agnostic failure taxonomy `AiFailureKind` (UNAVAILABLE, AUTH_REQUIRED,
+  TIMEOUT, EXECUTION_FAILED, EMPTY_OUTPUT) and `AiProviderError(kind, message)`.
+- `ClaudeCliProvider.execute` classifies failures (timeout / spawn-failure /
+  auth-stderr / non-zero / empty stdout); stderr is secret-masked.
+- Core maps the kind → a friendly Discord reply (`describeAiFailure` +
+  `ResponseComposer.composeError`); the user is always answered.
+- `TaskRun` records FAILED + `error` summary + `durationMs` (minimal usage tracking).
+- ADR-0015: accept global `~/.claude` context in v1 (neutral cwd retained, no
+  `--bare`); failure taxonomy, masking, and usage minimalism.
+- Tests: failure-kind classification, `maskSecrets`, `describeAiFailure`
+  (Vitest 6 files / 24 tests). Simulated failure smoke over all five kinds.
+
 ### Added — Sprint 1b-2 (Claude CLI execution)
 
 - Real `ClaudeCliProvider.execute` / `isAvailable`: runs `claude -p` with the prompt

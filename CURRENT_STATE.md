@@ -5,9 +5,10 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** Sprint 1b-2 complete — the pipeline executes the prompt through the
-  **real Claude CLI** (`claude -p`) and replies with the model's answer.
-- **Next:** TBD (e.g., Codex/Ollama providers, richer context, output-format/usage).
+- **Phase:** Sprint 1c complete — product-grade CLI failure handling. Provider
+  failures are classified, the user always gets a friendly reply, and the run is
+  recorded FAILED with an error summary + duration.
+- **Next:** TBD (e.g., Sprint 1d Codex/Ollama + fallback, retry policy, long replies).
 
 ## What exists
 
@@ -21,8 +22,11 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   `artifacts`, `memories` repositories implemented.
 - **AI:** `ClaudeCliProvider` executes via `claude -p` (stdin, neutral cwd, timeout;
   ADR-0014). Codex/Ollama remain stubbed. `PlaceholderAiProvider` retained but unused.
-- **Tests:** Vitest (5 files / 15 tests) over RiskPolicy, PromptComposer,
-  ContextBuilder, CapabilityRouter, ClaudeCliProvider.
+- **Failure handling (ADR-0015):** classified `AiFailureKind`; failures → friendly
+  Discord reply + `TaskRun` FAILED with error summary + `durationMs`; stderr masked.
+- **Tests:** Vitest (6 files / 24 tests) over RiskPolicy, PromptComposer,
+  ContextBuilder, CapabilityRouter, ClaudeCliProvider (incl. failure kinds),
+  describeAiFailure, maskSecrets.
 - **Observability:** `Logger` seam + `ConsoleLogger` (`[discord]`/`[chunsik]`).
 
 ## What is NOT implemented yet

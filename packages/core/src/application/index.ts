@@ -1,4 +1,5 @@
 export * from './risk-policy';
+export * from './ai-failure';
 export * from './actor-manager';
 export * from './session-manager';
 export * from './ai-provider-manager';

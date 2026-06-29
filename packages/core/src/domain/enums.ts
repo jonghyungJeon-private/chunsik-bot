@@ -82,6 +82,19 @@ export enum MemoryType {
   CONNECTOR = 'CONNECTOR',
 }
 
+/**
+ * Provider-agnostic failure taxonomy (ADR-0015). An AiProvider classifies its
+ * failure into one of these; the core maps the kind to a user-facing message
+ * and records it on the TaskRun. The core never branches on a provider id.
+ */
+export enum AiFailureKind {
+  UNAVAILABLE = 'UNAVAILABLE',
+  AUTH_REQUIRED = 'AUTH_REQUIRED',
+  TIMEOUT = 'TIMEOUT',
+  EXECUTION_FAILED = 'EXECUTION_FAILED',
+  EMPTY_OUTPUT = 'EMPTY_OUTPUT',
+}
+
 /** AI outputs are first-class artifacts, not plain text. */
 export enum ArtifactKind {
   MARKDOWN_REPORT = 'MARKDOWN_REPORT',

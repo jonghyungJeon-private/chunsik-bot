@@ -91,23 +91,36 @@ export class TaskManager {
     run: TaskRun,
     result: { artifactIds: Id[]; providerId?: string },
   ): Promise<TaskRun> {
+    const finishedAt = now();
     const updated: TaskRun = {
       ...run,
       status: TaskRunStatus.SUCCEEDED,
       artifactIds: result.artifactIds,
-      finishedAt: now(),
+      finishedAt,
+      durationMs: TaskManager.elapsed(run.startedAt, finishedAt),
       ...(result.providerId ? { providerId: result.providerId } : {}),
     };
     return this.storage.taskRuns.save(updated);
   }
 
-  async failRun(run: TaskRun, error: string): Promise<TaskRun> {
+  async failRun(
+    run: TaskRun,
+    error: string,
+    info: { providerId?: string } = {},
+  ): Promise<TaskRun> {
+    const finishedAt = now();
     const updated: TaskRun = {
       ...run,
       status: TaskRunStatus.FAILED,
       error,
-      finishedAt: now(),
+      finishedAt,
+      durationMs: TaskManager.elapsed(run.startedAt, finishedAt),
+      ...(info.providerId ? { providerId: info.providerId } : {}),
     };
     return this.storage.taskRuns.save(updated);
+  }
+
+  private static elapsed(startedAt: string, finishedAt: string): number {
+    return Math.max(0, Date.parse(finishedAt) - Date.parse(startedAt));
   }
 }

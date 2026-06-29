@@ -1,6 +1,7 @@
 import { NotImplementedError } from '../errors';
 import { newId } from '../util/id';
 import { now } from '../util/clock';
+import { describeAiFailure } from './ai-failure';
 import { TaskStatus } from '../domain';
 import type {
   ApprovalDecision,
@@ -144,6 +145,7 @@ export class ChunsikCore {
     const run = await this.deps.tasks.startRun(task, capability);
     this.deps.logger.info('run started', { taskId: task.id, runId: run.id, capability });
 
+    let providerId: string | undefined;
     try {
       const workspace = await this.deps.workspace.prepare(task);
 
@@ -153,6 +155,7 @@ export class ChunsikCore {
 
       // Provider chosen purely by capability — no concrete CLI named here.
       const provider = await this.deps.router.route(capability);
+      providerId = provider.id;
       const result = await provider.execute({
         capability,
         promptSpec,
@@ -177,14 +180,19 @@ export class ChunsikCore {
         this.deps.composer.compose(context, result, result.artifacts ?? []),
       );
     } catch (err) {
-      await this.deps.tasks.failRun(run, err instanceof Error ? err.message : String(err));
+      // Product-grade failure (ADR-0015): classify, record, and reply kindly.
+      const failure = describeAiFailure(err);
+      await this.deps.tasks.failRun(run, failure.errorSummary, providerId ? { providerId } : {});
       await this.deps.tasks.transition(task, TaskStatus.FAILED);
       this.deps.logger.error('task failed', {
         taskId: task.id,
         runId: run.id,
-        error: err instanceof Error ? err.message : String(err),
+        kind: failure.kind,
+        error: failure.errorSummary,
       });
-      throw err;
+      await this.deps.platform
+        .sendMessage(this.deps.composer.composeError(context, failure.userMessage))
+        .catch(() => undefined);
     }
   }
 }

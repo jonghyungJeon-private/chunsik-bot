@@ -52,5 +52,8 @@ export interface TaskRun {
   artifactIds: Id[];
   startedAt: IsoTimestamp;
   finishedAt?: IsoTimestamp;
+  /** Wall-clock duration of the run in ms (minimal usage tracking, ADR-0015). */
+  durationMs?: number;
+  /** Failure summary (classified kind + masked technical detail) when FAILED. */
   error?: string;
 }

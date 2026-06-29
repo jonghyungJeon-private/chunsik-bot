@@ -461,3 +461,47 @@ way for the CLI provider to run. ADR-0002 (ContextBuilder) and ADR-0003
 **V1:** the above; ClaudeCliProvider implements the invocation in Sprint 1b-2.
 **V2:** richer PromptSpec layers, ContextBuilder ranking/compression, per-provider
 rendering refinements.
+
+---
+
+## ADR-0015 — Claude global-context acceptance & CLI failure taxonomy
+
+- **Status:** ✅ Accepted (v1)
+- **Date:** 2026-06-29
+
+### Context
+`claude -p` with OAuth (no `--bare`) auto-loads the **global** `~/.claude/CLAUDE.md`
+and auto-memory; the neutral cwd only prevents the **repo** CLAUDE.md from being
+ingested. Separately, the product must fail gracefully when the CLI is missing,
+unauthenticated, slow, or errors — not crash or go silent.
+
+### Decision
+- **Global context (Chief-Architect decision 1):** v1 **accepts** that `claude -p`
+  loads global `~/.claude/CLAUDE.md` + auto-memory. We keep the **neutral cwd**
+  (blocks the repo CLAUDE.md) and do **not** use `--bare` (it requires
+  `ANTHROPIC_API_KEY` and breaks OAuth). A future **isolated mode** is left open
+  (dedicated HOME/settings or a discovery-skip flag) for team/SaaS editions.
+- **Failure taxonomy:** `AiFailureKind` = `UNAVAILABLE | AUTH_REQUIRED | TIMEOUT |
+  EXECUTION_FAILED | EMPTY_OUTPUT`. The provider throws `AiProviderError(kind,
+  masked technical message)`; the core maps the kind to a friendly Discord message
+  (the **core owns the UX text**, not the provider) and stores `kind: summary` on
+  the TaskRun.
+- **TaskRun on failure:** status `FAILED`, `error` summary stored, `durationMs`
+  recorded; no artifact. The user **always** gets a reply; the run is never lost.
+- **Secrets:** the prompt is passed via **stdin** (never argv); stderr is
+  **secret-masked** before being logged or stored; user messages never carry
+  technical detail.
+- **Output/usage:** text output retained; usage tracking is minimal (`providerId`
+  + `durationMs`). `--output-format json` and token/cost tracking are deferred.
+
+### Consequences
+- + Product-grade, classified failure UX; auditable FAILED runs with timing.
+- + No secret leakage into logs, storage, or user messages.
+- − Global `~/.claude` context may inject unintended instructions/memory into
+  user-facing answers in v1 (accepted risk; revisit for team/SaaS).
+- − No Codex/Ollama fallback yet: when Claude is unavailable the user gets the
+  UNAVAILABLE message rather than an alternate provider.
+
+### V1 / V2
+**V1:** the above. **V2/V3:** isolated Claude-context mode; multi-provider fallback;
+`--output-format json` + token/cost usage.
