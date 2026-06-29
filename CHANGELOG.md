@@ -7,6 +7,23 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Sprint 1f (local project registration)
+
+- Natural-language project registration: "이 프로젝트 등록해줘: /path" →
+  `REGISTER_PROJECT` intent → `ProjectManager` (deterministic command). Read-only
+  scan via `WorkspaceProvider.scanProject` (name, git branch / 'unknown', package
+  manager, top-level file tree excluding node_modules/dist/build/.git/coverage).
+- Persists a `Project` (SQLite `projects`) + a PROJECT memory summary scoped by
+  `projectId`; binds `session.activeProjectId`. Non-existent path → friendly failure.
+- `ContextBuilder` includes the active project's PROJECT memory; `PromptComposer`
+  renders it and instructs the model to answer from the provided context (no file/tool
+  access). Workspace prep gated to filesystem capabilities (chat doesn't resolve a workspace).
+- ADR-0017 addendum: SHORT_TERM memory capped at 30/session (oldest pruned); the
+  current inbound message is excluded from recent context. ADR-0018 (registration policy).
+- Tests: project registration, scanProject (invalid/non-git/exclusion), memory pruning,
+  context exclusion/project (Vitest 10 files / 51 tests). Live smoke: register + a
+  follow-up that explained the structure from the injected project memory.
+
 ### Added — Sprint 1e (short-term conversation memory)
 
 - Inbound user messages and assistant responses are stored as SHORT_TERM memory,

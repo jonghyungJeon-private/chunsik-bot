@@ -198,14 +198,16 @@ class SqliteMemoryRepository extends JsonRepository<MemoryRecord> implements Mem
   override async save(record: MemoryRecord): Promise<MemoryRecord> {
     this.db
       .prepare(
-        `INSERT INTO memories (id, session_id, channel_id, thread_id, type, data) VALUES (?, ?, ?, ?, ?, ?)
+        `INSERT INTO memories (id, session_id, project_id, channel_id, thread_id, type, data)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET session_id = excluded.session_id,
-           channel_id = excluded.channel_id, thread_id = excluded.thread_id,
-           type = excluded.type, data = excluded.data`,
+           project_id = excluded.project_id, channel_id = excluded.channel_id,
+           thread_id = excluded.thread_id, type = excluded.type, data = excluded.data`,
       )
       .run(
         record.id,
         record.scope.sessionId ?? null,
+        record.scope.projectId ?? null,
         record.scope.channelId ?? null,
         record.scope.threadId ?? null,
         record.type,
@@ -220,6 +222,10 @@ class SqliteMemoryRepository extends JsonRepository<MemoryRecord> implements Mem
     if (scope.sessionId !== undefined) {
       clauses.push('session_id = ?');
       params.push(scope.sessionId);
+    }
+    if (scope.projectId !== undefined) {
+      clauses.push('project_id = ?');
+      params.push(scope.projectId);
     }
     if (scope.channelId !== undefined) {
       clauses.push('channel_id = ?');
@@ -271,8 +277,8 @@ export class SqliteStorageProvider implements StorageProvider {
   taskRuns!: TaskRunRepository;
   artifacts!: ArtifactRepository;
   memories!: MemoryRepository;
+  projects!: Repository<Project>;
 
-  readonly projects: Repository<Project> = new StubRepository<Project>('projects');
   readonly approvals: Repository<ApprovalRequest> = new StubRepository<ApprovalRequest>('approvals');
 
   constructor(private readonly config: SqliteConfig) {}
@@ -304,16 +310,19 @@ export class SqliteStorageProvider implements StorageProvider {
       `CREATE TABLE IF NOT EXISTS artifacts (
          id TEXT PRIMARY KEY, task_id TEXT, data TEXT NOT NULL);`,
     );
+    db.exec(`CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, data TEXT NOT NULL);`);
     db.exec(
       `CREATE TABLE IF NOT EXISTS memories (
-         id TEXT PRIMARY KEY, session_id TEXT, channel_id TEXT, thread_id TEXT,
+         id TEXT PRIMARY KEY, session_id TEXT, project_id TEXT, channel_id TEXT, thread_id TEXT,
          type TEXT NOT NULL, data TEXT NOT NULL);`,
     );
-    // Defensive migration for DBs created before session_id existed (ADR-0017).
-    try {
-      db.exec(`ALTER TABLE memories ADD COLUMN session_id TEXT;`);
-    } catch {
-      /* column already exists */
+    // Defensive migrations for DBs created before these columns existed (ADR-0017/0018).
+    for (const col of ['session_id', 'project_id']) {
+      try {
+        db.exec(`ALTER TABLE memories ADD COLUMN ${col} TEXT;`);
+      } catch {
+        /* column already exists */
+      }
     }
 
     this.db = db;
@@ -323,6 +332,7 @@ export class SqliteStorageProvider implements StorageProvider {
     this.taskRuns = new SqliteTaskRunRepository(db, 'task_runs');
     this.artifacts = new SqliteArtifactRepository(db, 'artifacts');
     this.memories = new SqliteMemoryRepository(db, 'memories');
+    this.projects = new JsonRepository<Project>(db, 'projects');
   }
 
   async close(): Promise<void> {

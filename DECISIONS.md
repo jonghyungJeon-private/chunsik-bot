@@ -583,3 +583,50 @@ no summarization.
 ### V1 / V2
 **V1:** the above. **V2/V3:** vector recall, long-term + summarized memory, retention
 / pruning policy, cross-session/project memory.
+
+> Pruning addendum (Chief Architect): SHORT_TERM memory is capped at **30 per
+> session** (oldest pruned). No TTL or total-size cap yet. Also: the current inbound
+> user message is excluded from recent context (it already appears in the task layer).
+
+---
+
+## ADR-0018 — Local project registration policy
+
+- **Status:** ✅ Accepted (v1)
+- **Date:** 2026-06-29
+
+### Context
+Before any coding agent, a user must be able to register a local project and have
+its context flow into later answers — read-only, no deep indexing.
+
+### Decision
+- **Registration is a deterministic command, not an AI task.** A message like
+  "이 프로젝트 등록해줘: /path" classifies as `REGISTER_PROJECT` (path extracted) and
+  is handled by `ProjectManager` (risk ≤ MEDIUM, auto-run).
+- **Read-only scan** via `WorkspaceProvider.scanProject(path)`: `exists`, `name`
+  (basename), `gitBranch` ('unknown' when not a git repo), `packageManager` (lockfile
+  detection), `fileTreeSummary` (top-level only; **excludes** node_modules, dist,
+  build, .git, coverage). The scan never modifies anything.
+- **Persistence:** a `Project` entity (SQLite `projects`); a PROJECT-type memory
+  holding the rendered summary, scoped by `projectId` (+ sessionId); the session's
+  `activeProjectId` is set.
+- **Use in chat:** later tasks carry `projectId = session.activeProjectId`;
+  `ContextBuilder` includes the PROJECT memory summary; `PromptComposer` renders it and
+  instructs the model to answer from the provided context (not read files / use tools).
+- **Failure UX:** a non-existent path → friendly failure, nothing persisted. Path must
+  be a local directory.
+- **Workspace gating:** only filesystem-touching capabilities (CODE_IMPLEMENTATION /
+  TEST_EXECUTION) resolve a workspace; a chat about a project does NOT — its context
+  comes from PROJECT memory, not a resolved working directory.
+
+### Consequences
+- + Project context is available in conversation, read-only, with a bounded summary.
+- + Registration is auditable (project + PROJECT memory + session link) and safe.
+- − The summary is top-level only (shallow); deep structure isn't known without
+  reading files (deliberately out of scope — no deep indexing / coding agent yet).
+- − The model could still attempt file access despite the instruction; mitigated by a
+  neutral cwd + the system prompt. A hard tool-disable is a future option.
+
+### V1 / V2
+**V1:** the above. **V2:** deeper (gated) project indexing, multiple projects per
+session, git-worktree workspaces, and tool-restricted execution.

@@ -18,6 +18,7 @@ import {
   AiProviderManager,
   ActorManager,
   SessionManager,
+  ProjectManager,
   ContextBuilder,
   PromptComposer,
   TaskManager,
@@ -147,6 +148,16 @@ const application: Provider[] = [
   },
   { provide: PromptComposer, useFactory: () => new PromptComposer() },
   {
+    provide: ProjectManager,
+    useFactory: (
+      storage: StorageProvider,
+      workspace: WorkspaceManager,
+      memory: MemoryManager,
+      sessions: SessionManager,
+    ) => new ProjectManager(storage, workspace, memory, sessions),
+    inject: [STORAGE_PROVIDER, WorkspaceManager, MemoryManager, SessionManager],
+  },
+  {
     provide: ChunsikCore,
     useFactory: (
       classifier: IntentClassifier,
@@ -155,6 +166,7 @@ const application: Provider[] = [
       tasks: TaskManager,
       actors: ActorManager,
       sessions: SessionManager,
+      projects: ProjectManager,
       memory: MemoryManager,
       contextBuilder: ContextBuilder,
       promptComposer: PromptComposer,
@@ -172,6 +184,7 @@ const application: Provider[] = [
         tasks,
         actors,
         sessions,
+        projects,
         memory,
         contextBuilder,
         promptComposer,
@@ -190,6 +203,7 @@ const application: Provider[] = [
       TaskManager,
       ActorManager,
       SessionManager,
+      ProjectManager,
       MemoryManager,
       ContextBuilder,
       PromptComposer,

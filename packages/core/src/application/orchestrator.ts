@@ -2,12 +2,12 @@ import { NotImplementedError } from '../errors';
 import { newId } from '../util/id';
 import { now } from '../util/clock';
 import { describeAiFailure } from './ai-failure';
-import { TaskStatus } from '../domain';
+import { Capability, IntentType, TaskStatus } from '../domain';
 import type {
   ApprovalDecision,
   ApprovalRequest,
-  Capability,
   ConversationContext,
+  Id,
   InboundMessage,
   Plan,
   Task,
@@ -25,6 +25,7 @@ import type { ResponseComposer } from './response-composer';
 import type { RiskPolicy } from './risk-policy';
 import type { ActorManager } from './actor-manager';
 import type { SessionManager } from './session-manager';
+import type { ProjectManager } from './project-manager';
 import type { ContextBuilder } from './context-builder';
 import type { PromptComposer } from './prompt-composer';
 
@@ -36,6 +37,7 @@ export interface ChunsikCoreDeps {
   tasks: TaskManager;
   actors: ActorManager;
   sessions: SessionManager;
+  projects: ProjectManager;
   memory: MemoryManager;
   contextBuilder: ContextBuilder;
   promptComposer: PromptComposer;
@@ -59,6 +61,11 @@ export interface ChunsikCoreDeps {
 export class ChunsikCore {
   constructor(private readonly deps: ChunsikCoreDeps) {}
 
+  /** Capabilities that operate on files need a resolved workspace; chat does not. */
+  private static needsWorkspace(capability: Capability): boolean {
+    return capability === Capability.CODE_IMPLEMENTATION || capability === Capability.TEST_EXECUTION;
+  }
+
   /**
    * Flow (Sprint 1b-1):
    *   1. typing + resolve Actor + open/touch Session + record short-term memory
@@ -75,13 +82,26 @@ export class ChunsikCore {
     const actor = await this.deps.actors.resolveFromContext(message.context);
     const session = await this.deps.sessions.openForContext(message.context, actor.id);
     await this.deps.sessions.touch(session);
-    await this.deps.memory.recordShortTerm(message, session.id);
+    const userMemory = await this.deps.memory.recordShortTerm(message, session.id);
 
     const intent = await this.deps.classifier.classify(message);
     this.deps.logger.info('intent classified', {
       capability: intent.capability,
       requiresWork: intent.requiresWork,
     });
+
+    // Project registration is a deterministic command, not an AI task (ADR-0018).
+    if (intent.type === IntentType.REGISTER_PROJECT) {
+      const path = typeof intent.raw?.path === 'string' ? intent.raw.path : '';
+      const result = await this.deps.projects.register(path, session);
+      this.deps.logger.info('project registration', {
+        ok: result.ok,
+        projectId: result.project?.id,
+      });
+      await this.deps.platform.sendMessage({ context: message.context, text: result.message });
+      await this.deps.memory.recordAssistant(result.message, message.context, session.id);
+      return;
+    }
 
     // (3) Fast path — conversational, no Task needed.
     if (!intent.requiresWork) {
@@ -93,10 +113,11 @@ export class ChunsikCore {
       return;
     }
 
-    // (4) Work path — becomes a Task anchored to the actor + session.
+    // (4) Work path — becomes a Task anchored to the actor + session (+ active project).
     let task = await this.deps.tasks.createTask(intent, message.context, {
       actorId: actor.id,
       sessionId: session.id,
+      ...(session.activeProjectId ? { projectId: session.activeProjectId } : {}),
     });
     this.deps.logger.info('task created', {
       taskId: task.id,
@@ -121,8 +142,9 @@ export class ChunsikCore {
       return;
     }
 
-    // (6) Run now.
-    await this.executeTask(task, plan, message.context);
+    // (6) Run now. Exclude the just-recorded current message from recent context
+    // (it already appears in the task layer) — ADR-0017 decision.
+    await this.executeTask(task, plan, message.context, userMemory.id);
   }
 
   /**
@@ -139,6 +161,7 @@ export class ChunsikCore {
     inputTask: Task,
     plan: Plan,
     context: ConversationContext,
+    excludeMemoryId?: Id,
   ): Promise<void> {
     const task = await this.deps.tasks.transition(inputTask, TaskStatus.RUNNING);
     const capability: Capability = plan.steps[0]?.capability ?? task.intent.capability;
@@ -147,10 +170,18 @@ export class ChunsikCore {
 
     let providerId: string | undefined;
     try {
-      const workspace = await this.deps.workspace.prepare(task);
+      // Only filesystem-touching capabilities need a working directory. A chat
+      // about a project gets its context from PROJECT memory, not a resolved
+      // workspace — so we don't prepare one here (avoids resolving a stub).
+      const workspace = ChunsikCore.needsWorkspace(capability)
+        ? await this.deps.workspace.prepare(task)
+        : undefined;
 
       // Context + prompt are assembled in the core; the provider only renders.
-      const bundle = await this.deps.contextBuilder.build(task);
+      const bundle = await this.deps.contextBuilder.build(
+        task,
+        excludeMemoryId ? [excludeMemoryId] : [],
+      );
       const promptSpec = this.deps.promptComposer.compose(task, bundle);
 
       // Provider chosen purely by capability — no concrete CLI named here.

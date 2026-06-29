@@ -8,12 +8,22 @@ import type { ContextBundle, PromptSpec, Task } from '../domain';
  */
 export class PromptComposer {
   compose(task: Task, context: ContextBundle): PromptSpec {
+    const parts: string[] = [];
+    if (context.projectSummary) {
+      parts.push(`Active project:\n${context.projectSummary}`);
+    }
+    if (context.recentMessages.length) {
+      parts.push(`Recent conversation:\n${context.recentMessages.map((m) => `- ${m}`).join('\n')}`);
+    }
     return {
-      system: 'You are Chunsik, a concise and helpful local-first AI assistant.',
+      system:
+        'You are Chunsik, a concise, helpful local-first AI assistant. Use the ' +
+        'conversation and any provided context (such as an "Active project" summary) ' +
+        'together with your own knowledge to answer. Do NOT read files, run commands, ' +
+        'or use tools — rely only on the provided context; if key information is ' +
+        'missing from it, say so briefly.',
       developer: this.developerFor(task.intent.capability),
-      context: context.recentMessages.length
-        ? `Recent conversation:\n${context.recentMessages.map((m) => `- ${m}`).join('\n')}`
-        : '',
+      context: parts.join('\n\n'),
       task: context.summary,
     };
   }

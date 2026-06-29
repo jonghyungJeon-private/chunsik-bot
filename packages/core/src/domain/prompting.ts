@@ -11,6 +11,8 @@ export interface ContextBundle {
   summary: string;
   /** Recent short-term conversation lines (oldest → newest). */
   recentMessages: string[];
+  /** Active project memory summary, if a project is registered (ADR-0018). */
+  projectSummary?: string;
 }
 
 /**

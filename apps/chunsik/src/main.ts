@@ -72,7 +72,7 @@ async function bootstrap(): Promise<void> {
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
-  log.info('started (Sprint 1e — short-term conversation memory)');
+  log.info('started (Sprint 1f — local project registration)');
 }
 
 bootstrap().catch((err) => {

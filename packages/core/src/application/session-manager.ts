@@ -36,4 +36,13 @@ export class SessionManager {
   async touch(session: Session): Promise<Session> {
     return this.storage.sessions.save({ ...session, lastActivityAt: now() });
   }
+
+  /** Bind a registered project to the session as its active project (ADR-0018). */
+  async setActiveProject(session: Session, projectId: Id): Promise<Session> {
+    return this.storage.sessions.save({
+      ...session,
+      activeProjectId: projectId,
+      lastActivityAt: now(),
+    });
+  }
 }

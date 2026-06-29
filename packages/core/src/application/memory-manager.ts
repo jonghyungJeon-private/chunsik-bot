@@ -12,6 +12,9 @@ import type {
 } from '../domain';
 
 export type ConversationRole = 'user' | 'assistant';
+
+/** Max SHORT_TERM memories kept per session; older ones are pruned (ADR-0017). */
+export const MAX_SESSION_SHORT_TERM = 30;
 import type { StorageProvider, VectorProvider } from '../ports';
 
 /**
@@ -64,7 +67,45 @@ export class MemoryManager {
       createdAt: ts,
       updatedAt: ts,
     };
+    const saved = await this.storage.memories.save(record);
+    if (sessionId) await this.pruneSession(sessionId);
+    return saved;
+  }
+
+  /** Keep only the newest MAX_SESSION_SHORT_TERM SHORT_TERM memories per session. */
+  private async pruneSession(sessionId: Id): Promise<void> {
+    const all = await this.storage.memories.findByScope({ sessionId }, MemoryType.SHORT_TERM);
+    if (all.length <= MAX_SESSION_SHORT_TERM) return;
+    const sorted = all.slice().sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    const excess = sorted.slice(0, all.length - MAX_SESSION_SHORT_TERM);
+    for (const r of excess) await this.storage.memories.delete(r.id);
+  }
+
+  /** Persist a PROJECT-type memory summary (ADR-0018). */
+  async recordProjectMemory(
+    content: string,
+    scope: { projectId: Id; sessionId?: Id },
+  ): Promise<MemoryRecord> {
+    const ts = now();
+    const record: MemoryRecord = {
+      id: newId(),
+      type: MemoryType.PROJECT,
+      scope: {
+        projectId: scope.projectId,
+        ...(scope.sessionId ? { sessionId: scope.sessionId } : {}),
+      },
+      content,
+      metadata: { kind: 'project' },
+      createdAt: ts,
+      updatedAt: ts,
+    };
     return this.storage.memories.save(record);
+  }
+
+  /** The latest PROJECT memory summary for a project, if any. */
+  async projectMemory(projectId: Id): Promise<MemoryRecord | undefined> {
+    const records = await this.storage.memories.findByScope({ projectId }, MemoryType.PROJECT);
+    return records.slice().sort((a, b) => a.createdAt.localeCompare(b.createdAt)).at(-1);
   }
 
   /** Most recent short-term memories for a scope, oldest → newest. */

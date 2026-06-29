@@ -15,6 +15,8 @@ export interface Session {
   context: ConversationContext;
   status: SessionStatus;
   projectId?: Id;
+  /** The local project registered as active for this session (ADR-0018). */
+  activeProjectId?: Id;
   /** The task currently in focus, if any (referenced, not owned). */
   activeTaskId?: Id;
   createdAt: IsoTimestamp;

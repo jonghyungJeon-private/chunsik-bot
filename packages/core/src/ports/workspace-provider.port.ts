@@ -11,6 +11,19 @@ export interface RunCommandOptions {
   env?: Record<string, string>;
 }
 
+/** Read-only scan of a local project directory (ADR-0018). */
+export interface ProjectScan {
+  exists: boolean;
+  name: string;
+  rootPath: string;
+  /** Current git branch, or 'unknown' when not a git repo. */
+  gitBranch: string;
+  /** 'pnpm' | 'npm' | 'yarn' | 'unknown'. */
+  packageManager: string;
+  /** Basic top-level file/dir summary (excludes node_modules/dist/build/.git/coverage). */
+  fileTreeSummary: string;
+}
+
 /**
  * PORT: the filesystem/git surface a task operates on.
  * v1 implementation: LocalCloneWorkspaceProvider (operates on an existing
@@ -22,6 +35,9 @@ export interface RunCommandOptions {
  */
 export interface WorkspaceProvider {
   readonly kind: string;
+
+  /** Read-only scan of a local directory for project registration (ADR-0018). */
+  scanProject(path: string): Promise<ProjectScan>;
 
   /** Resolve (and prepare, if needed) a working directory for a project. */
   resolve(projectId: Id, options?: ResolveOptions): Promise<WorkspaceRef>;
