@@ -12,13 +12,15 @@
     "typecheck": "tsc -b tsconfig.build.json",
     "clean": "tsc -b tsconfig.build.json --clean",
     "start": "node apps/chunsik/dist/main.js",
-    "dev": "tsc -b tsconfig.build.json && node apps/chunsik/dist/main.js"
+    "dev": "tsc -b tsconfig.build.json && node apps/chunsik/dist/main.js",
+    "test": "vitest run"
   },
   "devDependencies": {
     "@types/node": "^20.12.7",
-    "typescript": "^5.4.5"
+    "typescript": "^5.4.5",
+    "vitest": "^2.1.9"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["better-sqlite3"]
+    "onlyBuiltDependencies": ["better-sqlite3", "esbuild"]
   }
 }

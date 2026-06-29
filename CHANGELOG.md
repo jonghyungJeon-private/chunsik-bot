@@ -7,6 +7,20 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Sprint 1b-2 (Claude CLI execution)
+
+- Real `ClaudeCliProvider.execute` / `isAvailable`: runs `claude -p` with the prompt
+  on **stdin**, in a **neutral cwd**, with a **timeout**, capturing stdout/stderr
+  (no `--bare`, OAuth CLI auth, no API path) — per ADR-0014.
+- `renderPromptSpec` (provider-side `PromptSpec` → CLI text) and an injectable
+  `CliRunner` (`defaultCliRunner`) + `maskSecrets` for redacting CLI output.
+- Claude's response is stored as a `MARKDOWN_REPORT` artifact and replied to Discord;
+  non-zero exit / timeout → `TaskRun` FAILED.
+- `AI_PROVIDERS` now `[ClaudeCliProvider]` (placeholder retained but unused).
+- Minimal Vitest suite (5 files / 15 tests): RiskPolicy, PromptComposer,
+  ContextBuilder, CapabilityRouter, ClaudeCliProvider command construction.
+  Test files excluded from the `tsc` build.
+
 ### Added — Sprint 1b-1 (core task pipeline)
 
 - Discord inbound is now handled by `ChunsikCore.handleInboundMessage` (replacing

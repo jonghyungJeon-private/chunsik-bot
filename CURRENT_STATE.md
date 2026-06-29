@@ -5,9 +5,9 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** Sprint 1b-1 complete — real `ChunsikCore` task pipeline wired with a
-  deterministic placeholder AI provider (no AI call yet).
-- **Next:** Sprint 1b-2 (Claude CLI execution) — awaiting go-ahead.
+- **Phase:** Sprint 1b-2 complete — the pipeline executes the prompt through the
+  **real Claude CLI** (`claude -p`) and replies with the model's answer.
+- **Next:** TBD (e.g., Codex/Ollama providers, richer context, output-format/usage).
 
 ## What exists
 
@@ -19,14 +19,16 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   `CapabilityRouter` → AiProvider → Artifact → reply.
 - **SQLite (better-sqlite3):** `actors`, `sessions`, `tasks`, `taskRuns`,
   `artifacts`, `memories` repositories implemented.
-- **AI:** `PlaceholderAiProvider` (deterministic, no AI call). Real CLI providers
-  remain stubbed until 1b-2.
+- **AI:** `ClaudeCliProvider` executes via `claude -p` (stdin, neutral cwd, timeout;
+  ADR-0014). Codex/Ollama remain stubbed. `PlaceholderAiProvider` retained but unused.
+- **Tests:** Vitest (5 files / 15 tests) over RiskPolicy, PromptComposer,
+  ContextBuilder, CapabilityRouter, ClaudeCliProvider.
 - **Observability:** `Logger` seam + `ConsoleLogger` (`[discord]`/`[chunsik]`).
 
 ## What is NOT implemented yet
 
-- **AI execution:** `ClaudeCliProvider`/`Codex`/`Ollama` `execute`/`isAvailable`
-  still stubbed (Sprint 1b-2 implements Claude per ADR-0014).
+- **AI execution:** `CodexCliProvider`/`OllamaCliProvider` `execute`/`isAvailable`
+  still stubbed (Claude is implemented). Streaming/long-reply chunking not done.
 - **Storage:** `projects`, `approvals` repositories remain stubbed.
 - **Platform:** `DiscordPlatformAdapter.requestApproval` (no approval UI yet).
 - **Deferred:** Workflow engine, agent runtime, plugins, connectors, AI HTTP API,

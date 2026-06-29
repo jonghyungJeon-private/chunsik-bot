@@ -1,16 +1,38 @@
-import type { AiCapabilityDescriptor } from '@chunsik/core';
+import { tmpdir } from 'node:os';
+import { ArtifactKind, newId, now } from '@chunsik/core';
+import type {
+  AiCapabilityDescriptor,
+  AiExecutionRequest,
+  AiExecutionResult,
+  Artifact,
+} from '@chunsik/core';
 import { BaseCliAiProvider, Capability } from './base-cli-provider';
+import { renderPromptSpec } from './prompt-render';
+import { defaultCliRunner, maskSecrets } from './cli-runner';
+import type { CliRunner } from './cli-runner';
 
 export { BaseCliAiProvider };
+export { renderPromptSpec } from './prompt-render';
+export { defaultCliRunner, maskSecrets } from './cli-runner';
+export type { CliRunner, CliRunOptions, CliRunResult } from './cli-runner';
+
+export interface CliProviderOptions {
+  runner?: CliRunner;
+  timeoutMs?: number;
+}
 
 /**
- * Claude CLI. Strongest for architecture/planning/review, and advertises EVERY
- * capability at a moderate priority so it is the universal fallback when Ollama
- * is down or Codex is absent.
+ * Claude CLI provider (Sprint 1b-2). Executes via `claude -p` with the prompt on
+ * **stdin**, in a **neutral cwd**, with a **timeout**, capturing stdout/stderr.
+ * Uses the CLI's existing OAuth auth — no `--bare`, no ANTHROPIC_API_KEY path,
+ * no HTTP API (ADR-0014).
  */
 export class ClaudeCliProvider extends BaseCliAiProvider {
   readonly id = 'claude-cli';
   protected readonly bin: string;
+  private readonly runner: CliRunner;
+  private readonly defaultTimeoutMs: number;
+
   readonly capabilities: readonly AiCapabilityDescriptor[] = [
     { capability: Capability.ARCHITECTURE_PLANNING, priority: 100 },
     { capability: Capability.CODE_REVIEW, priority: 90 },
@@ -22,13 +44,63 @@ export class ClaudeCliProvider extends BaseCliAiProvider {
     { capability: Capability.TEST_EXECUTION, priority: 50 },
   ];
 
-  constructor(bin = 'claude') {
+  constructor(bin = 'claude', options: CliProviderOptions = {}) {
     super();
     this.bin = bin;
+    this.runner = options.runner ?? defaultCliRunner;
+    this.defaultTimeoutMs = options.timeoutMs ?? 120_000;
+  }
+
+  /** Non-interactive print mode. Prompt is supplied via stdin, never as an argv. */
+  buildArgs(): string[] {
+    return ['-p'];
+  }
+
+  override async isAvailable(): Promise<boolean> {
+    try {
+      const r = await this.runner(this.bin, ['--version'], {
+        cwd: tmpdir(),
+        input: '',
+        timeoutMs: 10_000,
+      });
+      return r.code === 0;
+    } catch {
+      return false;
+    }
+  }
+
+  override async execute(request: AiExecutionRequest): Promise<AiExecutionResult> {
+    const input = request.promptSpec ? renderPromptSpec(request.promptSpec) : (request.prompt ?? '');
+    // Neutral cwd avoids ingesting the repo's CLAUDE.md; a workspace task may set its own.
+    const cwd = request.workspace?.rootPath ?? tmpdir();
+    const timeoutMs = request.timeoutMs ?? this.defaultTimeoutMs;
+
+    const result = await this.runner(this.bin, this.buildArgs(), { cwd, input, timeoutMs });
+
+    if (result.timedOut) {
+      throw new Error(`claude CLI timed out after ${timeoutMs}ms`);
+    }
+    if (result.code !== 0) {
+      throw new Error(`claude CLI exited with code ${result.code}: ${maskSecrets(result.stderr).slice(0, 500)}`);
+    }
+
+    const text = result.stdout.trim();
+    const artifact: Artifact = {
+      id: newId(),
+      kind: ArtifactKind.MARKDOWN_REPORT,
+      title: 'claude-response',
+      content: text,
+      createdAt: now(),
+    };
+    return {
+      text,
+      artifacts: [artifact],
+      raw: { exitCode: result.code, stderr: maskSecrets(result.stderr).slice(0, 1000) },
+    };
   }
 }
 
-/** Codex CLI. Strongest for code implementation and test execution. */
+/** Codex CLI. Strongest for code implementation and test execution. (execute() in a future sprint) */
 export class CodexCliProvider extends BaseCliAiProvider {
   readonly id = 'codex-cli';
   protected readonly bin: string;
@@ -46,8 +118,7 @@ export class CodexCliProvider extends BaseCliAiProvider {
 
 /**
  * Ollama CLI (OPTIONAL). Preferred for general chat / summarization / embedding
- * when available; if unavailable, the router naturally falls back to Claude
- * because Claude also advertises those capabilities (at lower priority).
+ * when available. (execute() in a future sprint.)
  */
 export class OllamaCliProvider extends BaseCliAiProvider {
   readonly id = 'ollama-cli';
@@ -67,7 +138,6 @@ export class OllamaCliProvider extends BaseCliAiProvider {
     this.model = options.model ?? 'llama3.1';
   }
 
-  /** Exposed for the eventual execute() impl; referenced to satisfy linting. */
   protected get modelName(): string {
     return this.model;
   }

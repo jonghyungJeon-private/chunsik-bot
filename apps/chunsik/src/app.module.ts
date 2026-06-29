@@ -48,7 +48,6 @@ import { V1_CONNECTORS } from '@chunsik/connectors';
 
 import { loadConfig } from './config';
 import { ConsoleLogger } from './console-logger';
-import { PlaceholderAiProvider } from './placeholder-ai-provider';
 
 const config = loadConfig();
 const coreLogger = new ConsoleLogger('chunsik');
@@ -71,10 +70,9 @@ const infrastructure: Provider[] = [
   },
   {
     provide: AI_PROVIDERS,
-    // Sprint 1b-1: a single deterministic placeholder so the pipeline runs
-    // without any AI call. Sprint 1b-2 swaps this back to the CLI providers
-    // (ClaudeCliProvider/CodexCliProvider/OllamaCliProvider — still imported).
-    useFactory: (): AiProvider[] => [new PlaceholderAiProvider()],
+    // Sprint 1b-2: real Claude CLI execution. Codex/Ollama remain stubbed and are
+    // wired in a future sprint. Selection is by capability via the router.
+    useFactory: (): AiProvider[] => [new ClaudeCliProvider(config.ai.claudeBin)],
   },
   { provide: CONNECTOR_PROVIDERS, useValue: V1_CONNECTORS },
 ];
