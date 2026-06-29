@@ -15,6 +15,8 @@ export * from './memory-manager';
 export * from './artifact-manager';
 export * from './workspace-manager';
 export * from './git-manager';
+export * from './deterministic-planner';
+export * from './planning-manager';
 export * from './connector-manager';
 export * from './response-composer';
 export * from './orchestrator';

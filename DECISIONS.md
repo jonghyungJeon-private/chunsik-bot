@@ -945,3 +945,73 @@ the concrete runner, and only the adapter's Runner runs git.
   as the Git sibling of `WorkspaceRef`. **`RepositoryRef` and `WorkspaceRef` must never
   reference each other** — sibling domain references; capabilities compose through them.
   Considered for CAP-003+, not built here.
+
+---
+
+## ADR-0024 — CAP-003 Planning Capability (deterministic ExecutionPlan)
+
+- **Status:** ✅ Accepted (v2, Sprint 2c)
+- **Date:** 2026-06-29
+- **Capability:** CAP-003 — Planning.
+- **Roadmap:** revised — Planning now precedes Approval. CAP-001 Workspace ✅ → CAP-002
+  Git ✅ → **CAP-003 Planning** → CAP-004 Approval → CAP-005 Patch → CAP-006 Workspace
+  Write → CAP-007 Command Execution → CAP-008 Codex → CAP-009 Ollama.
+
+### Context
+Every future execution flow (Approval → Patch → Write) needs a single, reviewable,
+deterministic blueprint produced *before* any approval or code change. (Chief Architect
+review: APPROVED WITH CHANGES, 98/100 — "treat Planning with the same importance as
+Workspace and Git.")
+
+### Decision
+- **`ExecutionPlan` is the cross-capability execution contract** — produced by Planning,
+  consumed by Approval (CAP-004) and Patch (CAP-005). Pure data; no behavior. Reserved
+  shape: `id, goal, summary, steps, requiredCapabilities, requiredResources,
+  estimatedChanges, approvalRequired, overallRisk, expectedArtifacts, status` (+ optional
+  `projectId`, `createdAt`). `ExecutionStep { id, title, description, capability, status }`
+  carries per-step `status` (future per-step approval/execution). `ExecutionStatus`
+  reserves the lifecycle (PENDING/APPROVED/REJECTED/EXECUTING/COMPLETED/FAILED).
+- **Strategy behind a port (no God Object):**
+  `PlanningManager → ExecutionPlanner (Port) → DeterministicPlanner`. The strategy is
+  replaceable; v2 ships **only `DeterministicPlanner`**. `AIPlanner`/`HybridPlanner` are
+  future implementations behind the same port.
+- **Deterministic only (Q1).** Planning is deterministic and **AI-free** in CAP-003. AI
+  may *assist* later but **must never be the source of truth** — Planning owns the plan.
+- **Composition by request (Q2).** `PlanningManager` receives all read-only context via
+  `PlanningRequest`; it **must not import** `WorkspaceManager`/`GitManager`/any capability
+  manager. Composition happens above Planning.
+- **Distinct from the v1 `Plan` (Q3).** The v1 `Plan`/`Planner` remain the intra-task
+  decomposition for the chat pipeline; `ExecutionPlan` is the V2 code-change contract.
+  Not merged.
+- **No persistence (Q4).** `ExecutionPlan` is in-memory only in CAP-003; persistence
+  begins with Approval (CAP-004).
+- **No orchestrator integration (Q5).** CAP-003 delivers only the domain model, the
+  planner strategy, and the contracts — no user-facing wiring.
+- **Ref model.** `ExecutionPlanRef { id, goal }` is how downstream capabilities reference
+  a plan (sibling of `WorkspaceRef`/`RepositoryRef`) — communicate via refs, not imports.
+- **Reuses `RiskPolicy`** for `overallRisk` (max over required capabilities) and
+  `approvalRequired` (`requiresApproval`). No new risk model.
+
+### Layering (responsibility split — stable for V2)
+```
+PlanningManager   → Application Service (thin: validate + delegate; no manager imports)
+ExecutionPlanner  → Port               (replaceable strategy)
+DeterministicPlanner → Strategy        (pure, deterministic, AI-free; reuses RiskPolicy)
+```
+
+### Consequences
+- + A single, deterministic, testable contract upstream of all execution; strategy is
+  swappable without touching the Manager; core stays pure and dependency-free.
+- + `ExecutionPlan` becomes a project-wide contract (see `docs/execution-plan.md`).
+- − A second plan concept beside the v1 `Plan` (bounded: distinct lifecycle/consumers).
+- − v1 deterministic plans are only as rich as their inputs; AI-assisted enrichment is a
+  future strategy (never the source of truth).
+
+### Capability / Relations
+**CAP-003.** Relates: ADR-0004 (Plan vs Workflow), ADR-0022 (Workspace), ADR-0023 (Git).
+Docs: `docs/capabilities/planning.md`, `docs/execution-plan.md`.
+
+### V1 / V2
+**This slice (2c):** `ExecutionPlan` contract + `DeterministicPlanner` + `PlanningManager`.
+**Later (separate ADRs/capabilities):** AIPlanner/HybridPlanner; persistence (CAP-004);
+per-step approval; orchestrator/Intent wiring.

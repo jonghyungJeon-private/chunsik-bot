@@ -5,13 +5,13 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** **Version 2, Sprint 2b — CAP-002 Git Capability (read-only)** (ADR-0023):
-  new `GitProvider` port + `@chunsik/git-local` adapter + `GitManager` —
-  `isRepository`/`info`/`status` via argument-array `spawn` (no shell, no writes, no
-  worktree, no remote-URL exposure). **Git ≠ Workspace.** `gitStatus` relocated off
-  `WorkspaceProvider`. Baseline tag: `v1.0.0-rc1`. CAP-001 Workspace merged.
-- **Next:** Chief Architect review of Sprint 2b; no merge until approved.
-- **Build/Test:** `pnpm typecheck` PASS (exit 0); `pnpm test` 16 files / 96 tests PASS.
+- **Phase:** **Version 2, Sprint 2c — CAP-003 Planning Capability** (ADR-0024):
+  deterministic `ExecutionPlan` contract + `ExecutionPlanner` port +
+  `DeterministicPlanner` + thin `PlanningManager`. AI-free; no execution/persistence/
+  orchestrator wiring; context arrives via `PlanningRequest`. **Planning precedes
+  Approval.** CAP-001 Workspace ✅ + CAP-002 Git ✅ merged. Baseline tag: `v1.0.0-rc1`.
+- **Next:** Chief Architect review of Sprint 2c; no merge until approved.
+- **Build/Test:** `pnpm typecheck` PASS (exit 0); `pnpm test` 19 files / 107 tests PASS.
 
 ## Implemented
 
@@ -32,6 +32,9 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 - **CAP-002 Git (read-only)** — `isRepository`/`info`/`status` on the new `git-local`
   adapter via argument-array `spawn` (timeout, cwd=repo root, sanitized stderr); no writes,
   no worktree, no remote-URL exposure. Composes with Workspace via `rootPath` (ADR-0023).
+- **CAP-003 Planning** — deterministic `ExecutionPlan` via `ExecutionPlanner` port +
+  `DeterministicPlanner` + thin `PlanningManager` (reuses `RiskPolicy`). AI-free, no I/O,
+  no persistence, not orchestrator-wired; the cross-capability execution contract (ADR-0024).
 
 ## Deferred
 
@@ -76,7 +79,7 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 
 ## Validation
 
-- `pnpm typecheck` — passes (exit 0). `pnpm test` — 16 files / 96 tests pass.
+- `pnpm typecheck` — passes (exit 0). `pnpm test` — 19 files / 107 tests pass.
 - Boundary enforced — Core cannot resolve adapter packages.
 - **Live (Sprint 1g):** real `node dist/main.js` Discord round-trip — register a
   project, then a structure question routed to PROJECT_ANALYSIS, read real files,

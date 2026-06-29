@@ -7,6 +7,22 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Sprint 2c · CAP-003 Planning Capability (deterministic ExecutionPlan)
+
+- New cross-capability execution contract **`ExecutionPlan`** (+ `ExecutionStep`,
+  `EstimatedChanges`, `ExecutionPlanRef`, `PlanningRequest`, `ExecutionStatus`) — the
+  blueprint consumed by Approval → Patch → Workspace Write. See `docs/execution-plan.md`.
+- **`ExecutionPlanner`** port (`EXECUTION_PLANNER`) with the v2 strategy
+  **`DeterministicPlanner`** (pure, deterministic, **AI-free**; reuses `RiskPolicy` for
+  `overallRisk`/`approvalRequired`). Thin **`PlanningManager`** delegates to the port and
+  imports no other capability manager (context arrives via `PlanningRequest`).
+- **Decisions (ADR-0024):** deterministic only (AI may assist later, never the source of
+  truth); distinct from the v1 `Plan`; **no persistence** (in-memory; begins at Approval);
+  **no orchestrator wiring**; Planning precedes Approval in the roadmap.
+- Tests (+11): DeterministicPlanner (determinism, risk/approval, steps, artifacts, scope,
+  empty request), PlanningManager (delegation, empty-goal guard, planRef), ExecutionPlan
+  domain — Vitest 19 files / 107 tests. Capability doc `docs/capabilities/planning.md`.
+
 ### Added — Sprint 2b · CAP-002 Git Capability (read-only)
 
 - New **`GitProvider`** port (+ `GIT_PROVIDER` token), **`@chunsik/git-local`** adapter

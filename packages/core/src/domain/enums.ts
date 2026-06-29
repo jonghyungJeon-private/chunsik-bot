@@ -109,3 +109,17 @@ export enum ArtifactKind {
   CONFLUENCE_DRAFT = 'CONFLUENCE_DRAFT',
   DOCUMENT_SUMMARY = 'DOCUMENT_SUMMARY',
 }
+
+/**
+ * Lifecycle of an ExecutionPlan and its steps (CAP-003, ADR-0024). Planning
+ * creates them as PENDING; later capabilities (Approval, Patch, Workspace Write)
+ * transition them. Reserved now to avoid future domain ripple.
+ */
+export enum ExecutionStatus {
+  PENDING = 'PENDING',
+  APPROVED = 'APPROVED',
+  REJECTED = 'REJECTED',
+  EXECUTING = 'EXECUTING',
+  COMPLETED = 'COMPLETED',
+  FAILED = 'FAILED',
+}

@@ -9,6 +9,7 @@ import {
   VECTOR_PROVIDER,
   WORKSPACE_PROVIDER,
   GIT_PROVIDER,
+  EXECUTION_PLANNER,
   AI_PROVIDERS,
   CONNECTOR_PROVIDERS,
   // Application services (pure core)
@@ -28,6 +29,8 @@ import {
   ArtifactManager,
   WorkspaceManager,
   GitManager,
+  DeterministicPlanner,
+  PlanningManager,
   ConnectorManager,
   ResponseComposer,
   RiskPolicy,
@@ -35,6 +38,7 @@ import {
 import type {
   AiProvider,
   ConnectorProvider,
+  ExecutionPlanner,
   GitProvider,
   PlatformAdapter,
   StorageProvider,
@@ -137,6 +141,18 @@ const application: Provider[] = [
     provide: GitManager,
     useFactory: (git: GitProvider) => new GitManager(git),
     inject: [GIT_PROVIDER],
+  },
+  // CAP-003 Planning. Strategy behind a port (deterministic only in v2);
+  // PlanningManager stays thin and imports no other capability manager.
+  {
+    provide: EXECUTION_PLANNER,
+    useFactory: (risk: RiskPolicy) => new DeterministicPlanner(risk),
+    inject: [RiskPolicy],
+  },
+  {
+    provide: PlanningManager,
+    useFactory: (planner: ExecutionPlanner) => new PlanningManager(planner),
+    inject: [EXECUTION_PLANNER],
   },
   {
     provide: ConnectorManager,
