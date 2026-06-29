@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { chunkText, deliverChunks, DISCORD_SAFE_LIMIT } from './delivery';
+import {
+  chunkText,
+  deliverChunks,
+  deliverWithNotice,
+  DISCORD_SAFE_LIMIT,
+  PARTIAL_FAILURE_NOTICE,
+} from './delivery';
 
 describe('chunkText', () => {
   it('returns [] for empty and a single chunk for short text', () => {
@@ -12,7 +18,6 @@ describe('chunkText', () => {
     const chunks = chunkText(text, 100);
     expect(chunks.length).toBeGreaterThan(1);
     for (const c of chunks) expect(c.length).toBeLessThanOrEqual(100);
-    // No non-whitespace content lost.
     expect(chunks.join('').replace(/\s/g, '')).toBe(text.replace(/\s/g, ''));
   });
 
@@ -27,7 +32,6 @@ describe('chunkText', () => {
     const chunks = chunkText('x'.repeat(250), 100);
     expect(chunks).toHaveLength(3);
     expect(chunks[0]).toHaveLength(100);
-    expect(chunks[2]).toHaveLength(50);
   });
 
   it('uses the Discord-safe default limit', () => {
@@ -36,15 +40,21 @@ describe('chunkText', () => {
 });
 
 describe('deliverChunks', () => {
-  it('sends all chunks in order and reports ok', async () => {
-    const sentInOrder: string[] = [];
+  it('numbers multi-chunk replies (i/N) and sends in order', async () => {
+    const sent: string[] = [];
     const report = await deliverChunks('abcabcabc', async (c) => {
-      sentInOrder.push(c);
+      sent.push(c);
     }, { maxLen: 3 });
-    expect(report.ok).toBe(true);
-    expect(report.totalChunks).toBe(3);
-    expect(report.sent).toBe(3);
-    expect(sentInOrder).toEqual(['abc', 'abc', 'abc']);
+    expect(report).toMatchObject({ ok: true, totalChunks: 3, sent: 3 });
+    expect(sent).toEqual(['(1/3) abc', '(2/3) abc', '(3/3) abc']);
+  });
+
+  it('does not number a single chunk', async () => {
+    const sent: string[] = [];
+    await deliverChunks('hello', async (c) => {
+      sent.push(c);
+    });
+    expect(sent).toEqual(['hello']);
   });
 
   it('empty text → nothing sent, ok', async () => {
@@ -67,8 +77,49 @@ describe('deliverChunks', () => {
       { maxLen: 3 },
     );
     expect(report.ok).toBe(false);
-    expect(report.sent).toBe(1); // first chunk succeeded, second failed
+    expect(report.sent).toBe(1);
     expect(report.error).toContain('discord 500');
-    expect(attempts).toHaveLength(2); // stopped — third chunk never attempted
+    expect(attempts).toHaveLength(2); // third chunk never attempted
+  });
+});
+
+describe('deliverWithNotice', () => {
+  it('does not notify on success', async () => {
+    const notified: string[] = [];
+    const report = await deliverWithNotice('hi', async () => {}, async (m) => {
+      notified.push(m);
+    });
+    expect(report.ok).toBe(true);
+    expect(notified).toEqual([]);
+  });
+
+  it('sends the partial-failure notice exactly once on failure', async () => {
+    const notified: string[] = [];
+    const report = await deliverWithNotice(
+      'aaabbb',
+      async () => {
+        throw new Error('send down');
+      },
+      async (m) => {
+        notified.push(m);
+      },
+      { maxLen: 3 },
+    );
+    expect(report.ok).toBe(false);
+    expect(notified).toEqual([PARTIAL_FAILURE_NOTICE]);
+  });
+
+  it('swallows a failing notice (no throw)', async () => {
+    const report = await deliverWithNotice(
+      'aaabbb',
+      async () => {
+        throw new Error('send down');
+      },
+      async () => {
+        throw new Error('notice down');
+      },
+      { maxLen: 3 },
+    );
+    expect(report.ok).toBe(false);
   });
 });

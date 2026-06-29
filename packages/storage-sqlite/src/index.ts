@@ -198,12 +198,14 @@ class SqliteMemoryRepository extends JsonRepository<MemoryRecord> implements Mem
   override async save(record: MemoryRecord): Promise<MemoryRecord> {
     this.db
       .prepare(
-        `INSERT INTO memories (id, channel_id, thread_id, type, data) VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET channel_id = excluded.channel_id,
-           thread_id = excluded.thread_id, type = excluded.type, data = excluded.data`,
+        `INSERT INTO memories (id, session_id, channel_id, thread_id, type, data) VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET session_id = excluded.session_id,
+           channel_id = excluded.channel_id, thread_id = excluded.thread_id,
+           type = excluded.type, data = excluded.data`,
       )
       .run(
         record.id,
+        record.scope.sessionId ?? null,
         record.scope.channelId ?? null,
         record.scope.threadId ?? null,
         record.type,
@@ -215,6 +217,10 @@ class SqliteMemoryRepository extends JsonRepository<MemoryRecord> implements Mem
   async findByScope(scope: MemoryScope, type?: MemoryType): Promise<MemoryRecord[]> {
     const clauses: string[] = [];
     const params: unknown[] = [];
+    if (scope.sessionId !== undefined) {
+      clauses.push('session_id = ?');
+      params.push(scope.sessionId);
+    }
     if (scope.channelId !== undefined) {
       clauses.push('channel_id = ?');
       params.push(scope.channelId);
@@ -300,8 +306,15 @@ export class SqliteStorageProvider implements StorageProvider {
     );
     db.exec(
       `CREATE TABLE IF NOT EXISTS memories (
-         id TEXT PRIMARY KEY, channel_id TEXT, thread_id TEXT, type TEXT NOT NULL, data TEXT NOT NULL);`,
+         id TEXT PRIMARY KEY, session_id TEXT, channel_id TEXT, thread_id TEXT,
+         type TEXT NOT NULL, data TEXT NOT NULL);`,
     );
+    // Defensive migration for DBs created before session_id existed (ADR-0017).
+    try {
+      db.exec(`ALTER TABLE memories ADD COLUMN session_id TEXT;`);
+    } catch {
+      /* column already exists */
+    }
 
     this.db = db;
     this.actors = new SqliteActorRepository(db, 'actors');

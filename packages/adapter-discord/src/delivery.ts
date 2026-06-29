@@ -61,19 +61,43 @@ export async function deliverChunks(
   opts: { maxLen?: number } = {},
 ): Promise<DeliveryReport> {
   const chunks = chunkText(text, opts.maxLen ?? DISCORD_SAFE_LIMIT);
+  const total = chunks.length;
+  // Number multi-message replies so they read in order (single chunk = no prefix).
+  const outgoing = total >= 2 ? chunks.map((c, i) => `(${i + 1}/${total}) ${c}`) : chunks;
+
   let sent = 0;
-  for (const chunk of chunks) {
+  for (const chunk of outgoing) {
     try {
       await send(chunk);
       sent += 1;
     } catch (err) {
       return {
-        totalChunks: chunks.length,
+        totalChunks: total,
         sent,
         ok: false,
         error: err instanceof Error ? err.message : String(err),
       };
     }
   }
-  return { totalChunks: chunks.length, sent, ok: true };
+  return { totalChunks: total, sent, ok: true };
+}
+
+/** Short notice shown once when delivery partially fails (ADR-0016 / decision 3). */
+export const PARTIAL_FAILURE_NOTICE = '답변 일부를 전송하지 못했어요.';
+
+/**
+ * Deliver chunks; if delivery partially fails, attempt the short notice ONCE
+ * (no resend, no retry). A failing notice is swallowed (caller logs).
+ */
+export async function deliverWithNotice(
+  text: string,
+  send: ChunkSender,
+  notify: (message: string) => Promise<void>,
+  opts: { maxLen?: number } = {},
+): Promise<DeliveryReport> {
+  const report = await deliverChunks(text, send, opts);
+  if (!report.ok) {
+    await notify(PARTIAL_FAILURE_NOTICE).catch(() => undefined);
+  }
+  return report;
 }

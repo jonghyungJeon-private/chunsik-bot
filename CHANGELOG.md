@@ -7,6 +7,20 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Sprint 1e (short-term conversation memory)
+
+- Inbound user messages and assistant responses are stored as SHORT_TERM memory,
+  scoped by `sessionId` (role in metadata; no provider id stored).
+- `ContextBuilder` includes the recent N=10 same-session turns (simply truncated at
+  400 chars); `PromptComposer` renders them into the conversation/context layer, so a
+  follow-up can reference the previous turn.
+- SQLite `memories.session_id` column (+ defensive migration); session-scoped retrieval.
+- Chunk numbering `(i/N)` for multi-message replies; partial-send-failure notice
+  ("답변 일부를 전송하지 못했어요.") via `deliverWithNotice` (one attempt, no resend).
+- ADR-0017 (conversation memory policy). Tests: memory persistence + session recall +
+  delivery numbering/notice (Vitest 8 files / 41 tests). Live smoke: a 2-turn chat where
+  the follow-up shortened the prior answer.
+
 ### Added — Sprint 1d (harden Discord response delivery)
 
 - Long responses are chunked under Discord's 2000-char limit (`DISCORD_SAFE_LIMIT`

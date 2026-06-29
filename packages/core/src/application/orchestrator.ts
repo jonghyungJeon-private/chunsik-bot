@@ -75,7 +75,7 @@ export class ChunsikCore {
     const actor = await this.deps.actors.resolveFromContext(message.context);
     const session = await this.deps.sessions.openForContext(message.context, actor.id);
     await this.deps.sessions.touch(session);
-    await this.deps.memory.recordShortTerm(message);
+    await this.deps.memory.recordShortTerm(message, session.id);
 
     const intent = await this.deps.classifier.classify(message);
     this.deps.logger.info('intent classified', {
@@ -168,6 +168,8 @@ export class ChunsikCore {
         result.artifacts ?? [],
       );
       await this.deps.tasks.completeRun(run, { artifactIds, providerId: provider.id });
+      // Persist the assistant turn so the next message in this session has context.
+      await this.deps.memory.recordAssistant(result.text, context, task.sessionId);
       await this.deps.tasks.transition(task, TaskStatus.COMPLETED);
       this.deps.logger.info('task completed', {
         taskId: task.id,

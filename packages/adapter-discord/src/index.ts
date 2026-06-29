@@ -1,9 +1,16 @@
 import { Client, Events, GatewayIntentBits } from 'discord.js';
 import type { Message } from 'discord.js';
 import { NotImplementedError, now } from '@chunsik/core';
-import { deliverChunks, FILE_ATTACHMENT_CHUNK_THRESHOLD } from './delivery';
+import { deliverWithNotice, FILE_ATTACHMENT_CHUNK_THRESHOLD } from './delivery';
 
-export { chunkText, deliverChunks, DISCORD_SAFE_LIMIT, FILE_ATTACHMENT_CHUNK_THRESHOLD } from './delivery';
+export {
+  chunkText,
+  deliverChunks,
+  deliverWithNotice,
+  DISCORD_SAFE_LIMIT,
+  FILE_ATTACHMENT_CHUNK_THRESHOLD,
+  PARTIAL_FAILURE_NOTICE,
+} from './delivery';
 export type { DeliveryReport, ChunkSender } from './delivery';
 import type {
   ApprovalDecisionHandler,
@@ -93,9 +100,23 @@ export class DiscordPlatformAdapter implements PlatformAdapter {
       return;
     }
 
-    const report = await deliverChunks(message.text, async (chunk) => {
-      await channel.send(chunk);
-    });
+    const report = await deliverWithNotice(
+      message.text,
+      async (chunk) => {
+        await channel.send(chunk);
+      },
+      async (notice) => {
+        // Single best-effort notice; if it also fails, log only (ADR-0016).
+        try {
+          await channel.send(notice);
+        } catch (err) {
+          this.logger.warn('partial-failure notice send failed', {
+            channelId: target,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      },
+    );
 
     if (!report.ok) {
       // Send failure (ADR-0016): record + log (masked). Partial delivery is reported,

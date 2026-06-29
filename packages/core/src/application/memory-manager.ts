@@ -3,11 +3,15 @@ import { now } from '../util/clock';
 import { MemoryType } from '../domain';
 import type {
   ContextFile,
+  ConversationContext,
+  Id,
   InboundMessage,
   MemoryRecord,
   MemoryScope,
   Task,
 } from '../domain';
+
+export type ConversationRole = 'user' | 'assistant';
 import type { StorageProvider, VectorProvider } from '../ports';
 
 /**
@@ -24,18 +28,39 @@ export class MemoryManager {
     private readonly vector: VectorProvider,
   ) {}
 
-  /** Persist the latest user message as short-term thread memory. */
-  async recordShortTerm(message: InboundMessage): Promise<MemoryRecord> {
+  /** Persist the latest USER message as short-term session memory (ADR-0017). */
+  async recordShortTerm(message: InboundMessage, sessionId?: Id): Promise<MemoryRecord> {
+    return this.saveShortTerm('user', message.text, message.context, sessionId);
+  }
+
+  /** Persist the assistant's response as short-term session memory (ADR-0017). */
+  async recordAssistant(
+    text: string,
+    context: ConversationContext,
+    sessionId?: Id,
+  ): Promise<MemoryRecord> {
+    return this.saveShortTerm('assistant', text, context, sessionId);
+  }
+
+  /** No provider id is ever stored in memory; role lives in metadata. */
+  private async saveShortTerm(
+    role: ConversationRole,
+    content: string,
+    context: ConversationContext,
+    sessionId?: Id,
+  ): Promise<MemoryRecord> {
     const ts = now();
     const record: MemoryRecord = {
       id: newId(),
       type: MemoryType.SHORT_TERM,
       scope: {
-        userId: message.context.userId,
-        channelId: message.context.channelId,
-        ...(message.context.threadId ? { threadId: message.context.threadId } : {}),
+        userId: context.userId,
+        channelId: context.channelId,
+        ...(context.threadId ? { threadId: context.threadId } : {}),
+        ...(sessionId ? { sessionId } : {}),
       },
-      content: message.text,
+      content,
+      metadata: { role },
       createdAt: ts,
       updatedAt: ts,
     };

@@ -5,11 +5,10 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** Sprint 1d complete — Discord response delivery hardened: long answers
-  are chunked under the 2000-char limit and sent sequentially, send failures are
-  handled gracefully (no duplicates), and the typing indicator stays alive during
-  long runs.
-- **Next:** TBD (e.g., file-attachment delivery, Codex/Ollama + fallback, RetryPolicy).
+- **Phase:** Sprint 1e complete — short-term conversation memory: user + assistant
+  turns are stored per session and the recent turns are fed into the next prompt, so
+  follow-ups ("방금 답변 줄여줘") work. Plus chunk numbering + partial-send notice.
+- **Next:** TBD (e.g., memory retention/pruning, project/long-term memory, Codex/Ollama).
 
 ## What exists
 
@@ -26,11 +25,15 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 - **Failure handling (ADR-0015):** classified `AiFailureKind`; failures → friendly
   Discord reply + `TaskRun` FAILED with error summary + `durationMs`; stderr masked.
 - **Discord delivery (ADR-0016):** long replies chunked under 2000 chars + sent
-  sequentially; send-failure stop (no duplicates); typing indicator refreshed during
-  long runs; file-attachment is a deferred seam.
-- **Tests:** Vitest (7 files / 32 tests) — RiskPolicy, PromptComposer, ContextBuilder,
-  CapabilityRouter, ClaudeCliProvider (incl. failure kinds), describeAiFailure,
-  maskSecrets, delivery chunking/send-failure.
+  sequentially with `(i/N)` numbering; send-failure stop (no duplicates) + one-shot
+  partial-failure notice; typing indicator refreshed during long runs; file-attachment
+  is a deferred seam.
+- **Conversation memory (ADR-0017):** user + assistant turns stored as SHORT_TERM,
+  session-scoped; `ContextBuilder` feeds recent N=10 (truncated) turns into the prompt.
+  No vector/long-term/summarization.
+- **Tests:** Vitest (8 files / 41 tests) — RiskPolicy, PromptComposer, ContextBuilder
+  (session recall), CapabilityRouter, ClaudeCliProvider (incl. failure kinds),
+  describeAiFailure, maskSecrets, delivery (chunking/numbering/notice), MemoryManager.
 - **Observability:** `Logger` seam + `ConsoleLogger` (`[discord]`/`[chunsik]`).
 
 ## What is NOT implemented yet

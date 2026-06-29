@@ -546,3 +546,40 @@ concern and must not leak into the core.
 ### V1 / V2
 **V1:** the above. **V2:** file-attachment delivery for long responses; optional
 chunk numbering; bounded delivery resend under a RetryPolicy ADR.
+
+---
+
+## ADR-0017 — Conversation memory policy (short-term)
+
+- **Status:** ✅ Accepted (v1)
+- **Date:** 2026-06-29
+
+### Context
+Within one session, a follow-up like "방금 답변 한 줄로 줄여줘" must see the previous
+turn. We need the **minimum** continuity — no vector search, no long-term auto-save,
+no summarization.
+
+### Decision
+- **Store both turns as SHORT_TERM memory:** the inbound USER message and the
+  assistant RESPONSE, each scoped by `sessionId` (plus userId/channelId/threadId),
+  with `role` (`user`/`assistant`) in `metadata`. **No provider id is stored in memory.**
+- **ContextBuilder** includes the most recent **N = 10** SHORT_TERM turns for the
+  **same session**, each **simply truncated** (`MAX_MEMORY_CHARS = 400`, no summarization).
+  `PromptComposer` renders them into the conversation/context layer (`role: text`).
+- **Retrieval is session-scoped** (falls back to channel/thread only if a task has
+  no session).
+- **Out of scope:** vector search, long-term memory auto-save, summarization memory.
+- **Masking:** reuse the existing policy (CLI stderr masking). Memory content is the
+  user's own local conversation, stored raw in local SQLite and never logged.
+
+### Consequences
+- + Natural multi-turn continuity within a session (verified live: a follow-up
+  shortened the prior answer).
+- + Bounded prompt growth via the N cap + per-memory truncation.
+- − Truncation can drop detail from very long prior turns (acceptable in v1).
+- − The `memories` table grows unbounded (no pruning yet) — a future retention/cleanup
+  concern; privacy is acceptable for a personal, local-first edition.
+
+### V1 / V2
+**V1:** the above. **V2/V3:** vector recall, long-term + summarized memory, retention
+/ pruning policy, cross-session/project memory.
