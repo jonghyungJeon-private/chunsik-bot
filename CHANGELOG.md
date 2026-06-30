@@ -22,9 +22,16 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
   adapter (`renderPromptSpec`, deleted) to the core `PromptRenderer`; `ClaudeCliProvider` + the
   chat path updated. **`ProviderSelector`** extracts selection from `CapabilityRouter` (now its impl;
   `route`→`select`).
-- **`CodexCliProvider.execute()` implemented — suggest-only** (`codex exec --sandbox read-only`,
-  prompt on stdin; never `--full-auto`/auto-apply): Codex only proposes; applying stays with
-  CAP-006, execution with CAP-007. Core stays HTTP/`child_process`-free.
+- **`CodexCliProvider.execute()` deferred — NotImplemented** (implementation-review MB-1): the
+  Codex CLI has no deterministic suggest-only / no-tool / no-exec mode (`codex exec --sandbox
+  read-only` is read-only *agent* execution, not proposal-only), so shipping it would cross the
+  CAP-008 boundary. It is treated as unavailable (never selected); real Codex execution awaits a
+  verified suggest-only contract (future PR). The capability runs on any suggest-only `AiProvider`.
+- **No Workspace bypass** (implementation-review MB-2): the AI Code Generation `AiRequest` carries
+  **no workspace cwd** — context flows only via `contextFiles`/`prompt`, so a provider cannot
+  read/traverse the repo itself and bypass CAP-001 Workspace Read. `workspaceRef` is recorded on
+  the aggregate (read-only reference) but never handed to the provider. Core stays
+  HTTP/`child_process`-free.
 - **Provider-agnostic proposal parsing** (`parseCodeProposal`): one fenced ```json envelope →
   `ProposedChange[]`; malformed → FAILED. Identical for Codex and Ollama (CAP-009 parity).
 - **Persistence:** `CodeGenerationRepository`/`CodeProposalRepository` + Sqlite + **migration v6**
@@ -33,9 +40,9 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
   Proposal Lifecycle, Prompt Version, Provider Cost, Token Usage, Provider Capability, Failure-
   Taxonomy extension; tool-calling, conversation state, generation retry, streaming.
 - Tests (+21): `parseCodeProposal`, `PromptRenderer`, `CodeGenerationManager` (success/parse-fail/
-  provider-error/identity-of-AiRequest/history), `CodexCliProvider` (suggest-only argv + failures),
-  Sqlite code-gen/proposal round-trip, migration v6 — Vitest 34 files / 200 tests. Capability doc
-  `docs/capabilities/code-generation.md`.
+  provider-error/identity-of-AiRequest/no-workspace-bypass/history), `CodexCliProvider`
+  (execute+isAvailable → NotImplemented / unavailable), Sqlite code-gen/proposal round-trip,
+  migration v6 — Vitest 34 files / 200 tests. Capability doc `docs/capabilities/code-generation.md`.
 
 ### Added — Sprint 2g · CAP-007 Command Execution Capability (run, gated)
 

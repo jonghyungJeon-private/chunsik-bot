@@ -51,10 +51,14 @@ export class CodeGenerationManager {
       ...(input.targetFiles ? { targetFiles: input.targetFiles } : {}),
       ...(input.contextFiles ? { contextFiles: input.contextFiles } : {}),
     });
+    // The AI Code Generation request carries NO workspace cwd (CAP-008 review, MB-2):
+    // handing the provider a workspace root would let it read/traverse the repo itself,
+    // bypassing the Workspace Read capability (CAP-001). Read-only context must arrive via
+    // `contextFiles`/`prompt`; direct workspace access is future Agent-Runtime scope. The
+    // `workspaceRef` is still recorded on the CodeGeneration aggregate (read-only reference).
     const aiRequest = this.promptRenderer.render(spec, {
       capability,
       ...(input.contextFiles ? { contextFiles: input.contextFiles } : {}),
-      ...(input.workspaceRef ? { workspace: input.workspaceRef } : {}),
       ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
     });
 

@@ -128,103 +128,29 @@ export class ClaudeCliProvider extends BaseCliAiProvider {
 }
 
 /**
- * Codex CLI provider (CAP-008, ADR-0029). Strongest for code implementation. Runs
- * **suggest-only**: `codex exec` in a **read-only sandbox** with the prompt on stdin —
- * NEVER `--full-auto`/auto-apply/auto-exec — so Codex only PROPOSES; applying stays with
- * Workspace Write (CAP-006) and execution with Command (CAP-007). The core parses the
- * captured output into a proposal. Consumes a rendered `AiRequest` (no `PromptSpec`).
+ * Codex CLI provider (CAP-008, ADR-0029). Advertised for code implementation, but
+ * `execute()` is intentionally **NOT implemented** in CAP-008 (inherits the base
+ * `NotImplementedError`). The Codex CLI has no deterministic suggest-only / no-tool /
+ * no-exec mode: `codex exec --sandbox read-only` is read-only **agent** execution (a
+ * tool/plan-act-observe loop), NOT proposal-only — which would cross the CAP-008
+ * boundary (no tool calling, no autonomous action; the AI only proposes). Real Codex
+ * execution is deferred to a future PR once a verified suggest-only contract exists
+ * (or to the Agent Runtime / Orchestrator). Because `isAvailable()` also throws,
+ * `AiProviderManager` treats it as unavailable and never selects it. The AI Code
+ * Generation capability is provider-agnostic and runs on any suggest-only AiProvider.
  */
 export class CodexCliProvider extends BaseCliAiProvider {
   readonly id = 'codex-cli';
   protected readonly bin: string;
-  private readonly runner: CliRunner;
-  private readonly defaultTimeoutMs: number;
   readonly capabilities: readonly AiCapabilityDescriptor[] = [
     { capability: Capability.CODE_IMPLEMENTATION, priority: 100 },
     { capability: Capability.TEST_EXECUTION, priority: 80 },
     { capability: Capability.CODE_REVIEW, priority: 60 },
   ];
 
-  constructor(bin = 'codex', options: CliProviderOptions = {}) {
+  constructor(bin = 'codex') {
     super();
     this.bin = bin;
-    this.runner = options.runner ?? defaultCliRunner;
-    this.defaultTimeoutMs = options.timeoutMs ?? 120_000;
-  }
-
-  /** Non-interactive, READ-ONLY sandbox (suggest-only). No auto-apply / auto-exec flag. */
-  buildArgs(): string[] {
-    return ['exec', '--sandbox', 'read-only'];
-  }
-
-  override async isAvailable(): Promise<boolean> {
-    try {
-      const r = await this.runner(this.bin, ['--version'], {
-        cwd: tmpdir(),
-        input: '',
-        timeoutMs: 10_000,
-      });
-      return r.code === 0;
-    } catch {
-      return false;
-    }
-  }
-
-  override async execute(request: AiRequest): Promise<AiExecutionResult> {
-    const input = request.prompt; // already rendered by the core PromptRenderer (ADR-0029)
-    const cwd = request.workspace?.rootPath ?? tmpdir();
-    const timeoutMs = request.timeoutMs ?? this.defaultTimeoutMs;
-
-    const result = await this.runner(this.bin, this.buildArgs(), { cwd, input, timeoutMs });
-
-    // Classified failure taxonomy (ADR-0015). stderr is masked before it leaves.
-    if (result.timedOut) {
-      throw new AiProviderError(AiFailureKind.TIMEOUT, `codex CLI timed out after ${timeoutMs}ms`);
-    }
-    if (result.code === null) {
-      throw new AiProviderError(
-        AiFailureKind.UNAVAILABLE,
-        `codex CLI could not run: ${maskSecrets(result.stderr).slice(0, 300)}`,
-      );
-    }
-    if (result.code !== 0) {
-      const kind = CodexCliProvider.classifyStderr(result.stderr);
-      throw new AiProviderError(
-        kind,
-        `codex CLI exited ${result.code}: ${maskSecrets(result.stderr).slice(0, 300)}`,
-      );
-    }
-
-    const text = result.stdout.trim();
-    if (!text) {
-      throw new AiProviderError(AiFailureKind.EMPTY_OUTPUT, 'codex CLI returned empty output');
-    }
-
-    const artifact: Artifact = {
-      id: newId(),
-      kind: ArtifactKind.CODE_DIFF,
-      title: 'codex-proposal',
-      content: text,
-      createdAt: now(),
-    };
-    return {
-      text,
-      artifacts: [artifact],
-      raw: { exitCode: result.code, stderr: maskSecrets(result.stderr).slice(0, 1000) },
-    };
-  }
-
-  /** Map CLI stderr to an auth vs. generic execution failure. */
-  private static classifyStderr(stderr: string): AiFailureKind {
-    const s = stderr.toLowerCase();
-    if (
-      /(not logged in|please run.*login|authenticat|unauthor|invalid api key|\bapi key\b|oauth|credential|forbidden|\b401\b|\b403\b)/.test(
-        s,
-      )
-    ) {
-      return AiFailureKind.AUTH_REQUIRED;
-    }
-    return AiFailureKind.EXECUTION_FAILED;
   }
 }
 

@@ -100,6 +100,15 @@ describe('CodeGenerationManager (CAP-008, ADR-0029)', () => {
     expect((req as unknown as { promptSpec?: unknown }).promptSpec).toBeUndefined();
   });
 
+  it('does NOT hand the provider a workspace cwd (no Workspace bypass), but records workspaceRef', async () => {
+    const { mgr, execute } = harness(async () => ({ text: OK }));
+    const workspaceRef = { id: 'w1', rootPath: '/repo', kind: 'local-clone' as const };
+    const gen = await mgr.generate(input({ workspaceRef }));
+    const req = execute.mock.calls[0]![0] as AiRequest;
+    expect(req.workspace).toBeUndefined(); // MB-2: provider gets no direct workspace access
+    expect(gen.workspaceRef?.id).toBe('w1'); // still recorded on the aggregate (read-only ref)
+  });
+
   it('FAILED + classified failureKind when the provider errors (no proposal persisted)', async () => {
     const { mgr } = harness(async () => {
       throw new AiProviderError(AiFailureKind.TIMEOUT, 'codex timed out');

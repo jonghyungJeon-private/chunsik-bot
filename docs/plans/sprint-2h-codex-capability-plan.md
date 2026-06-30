@@ -7,6 +7,11 @@
   Non-blocking list (`generationHash` — so the planned `promptHash` was dropped —
   `providerVersion`/`modelVersion`, Proposal Lifecycle, Prompt Version, Provider Cost, Token
   Usage, Provider Capability, Failure-Taxonomy extension) was NOT implemented.
+  **Implementation review (🔴 REQUEST CHANGES) — 2 Merge-Blocking applied:** (MB-1) the Codex
+  adapter has no deterministic suggest-only mode, so `CodexCliProvider.execute()` is kept
+  NotImplemented (Option B) and real Codex execution is deferred to a future PR; (MB-2) the AI
+  Code Generation `AiRequest` carries no workspace cwd (no Workspace-Read bypass; context via
+  `contextFiles`/`prompt`). The capability remains complete and provider-agnostic (fake-provider tests).
 - **Capability:** **CAP-008 — AI Code Generation** (the **first AI Layer** capability). Codex
   is its **first provider adapter**; CAP-009 Ollama is a second adapter behind the SAME contract.
 - **Date:** 2026-06-30 · **Base:** `main` @ `b190c9f` (CAP-001…007 merged).

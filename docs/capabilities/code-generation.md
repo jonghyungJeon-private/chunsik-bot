@@ -24,7 +24,9 @@ ExecutionPlan (Planning)
   it mutates). `CodeGeneration` holds a `CodeProposalRef`; the proposal data lives on `CodeProposal`.
 - `CodeGenerationManager.generate(input)` — orchestration only:
   - `PromptComposer.composeCodeGeneration` (authorship) → `PromptSpec` → `PromptRenderer.render`
-    → `AiRequest` (the provider never sees a `PromptSpec`).
+    → `AiRequest` (the provider never sees a `PromptSpec`, and the request carries **no workspace
+    cwd** — context flows only via `contextFiles`/`prompt`, so the provider cannot bypass CAP-001
+    Workspace Read; the `workspaceRef` is recorded on the aggregate only).
   - `ProviderSelector.select(capability)` → an `AiProvider` (no concrete CLI named).
   - `provider.execute(aiRequest)` → `parseCodeProposal(text)` → `ProposedChange[]`.
   - Persist `CodeGeneration` (`PENDING→GENERATING→SUCCEEDED`/`FAILED`) + a linked `CodeProposal`
@@ -47,8 +49,10 @@ ExecutionPlan (Planning)
 - `CodeGenerationManager` (`generate`/`get`/`getProposal`/`findByExecutionPlan`).
 - `ProviderSelector` (port; `select(capability) → AiProvider`; token `PROVIDER_SELECTOR`; impl
   `CapabilityRouter`). `PromptRenderer` (`render(PromptSpec, opts) → AiRequest`).
-- `AiProvider` (port, reused; `execute(AiRequest)`); `CodexCliProvider` (suggest-only:
-  `codex exec --sandbox read-only`, no auto-apply/-exec). `parseCodeProposal(text) → ProposedChange[]`.
+- `AiProvider` (port, reused; `execute(AiRequest)`). `CodexCliProvider.execute()` is **deferred /
+  NotImplemented** (the Codex CLI has no deterministic suggest-only mode — `codex exec --sandbox
+  read-only` is read-only *agent* execution, not proposal-only; treated as unavailable, never
+  selected). `parseCodeProposal(text) → ProposedChange[]`.
 - Domain: `CodeGeneration` (run; `PENDING|GENERATING|SUCCEEDED|FAILED`), `CodeProposal` (output;
   `ProposedChange[]` + providerId + usage? + artifacts?), `CodeGenerationRef`, `CodeProposalRef`,
   `GenerateCodeInput`, `AiRequest`. Reuses `ProposedChange` (CAP-001) — the contract handed to Patch.

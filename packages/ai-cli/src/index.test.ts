@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AiFailureKind, AiProviderError, ArtifactKind, Capability } from '@chunsik/core';
+import { AiFailureKind, AiProviderError, ArtifactKind, Capability, NotImplementedError } from '@chunsik/core';
 import { ClaudeCliProvider, CodexCliProvider, maskSecrets } from './index';
 import type { CliRunOptions, CliRunner, CliRunResult } from './cli-runner';
 
@@ -78,40 +78,22 @@ describe('ClaudeCliProvider', () => {
   });
 });
 
-describe('CodexCliProvider (CAP-008, ADR-0029) — suggest-only', () => {
-  it('runs `codex exec` in a READ-ONLY sandbox (no auto-apply/-exec) with the prompt on stdin', async () => {
-    const calls: Array<{ bin: string; args: string[]; opts: CliRunOptions }> = [];
-    const runner: CliRunner = async (bin, args, opts) => {
-      calls.push({ bin, args, opts });
-      return { code: 0, stdout: '```json\n{"changes":[]}\n```', stderr: '', timedOut: false };
-    };
-    const res = await new CodexCliProvider('codex', { runner }).execute({
-      capability: Capability.CODE_IMPLEMENTATION,
-      prompt: PROMPT,
-    });
-    expect(calls[0]?.bin).toBe('codex');
-    expect(calls[0]?.args).toEqual(['exec', '--sandbox', 'read-only']);
-    // suggest-only: never an auto-apply / full-auto flag
-    expect(calls[0]?.args.join(' ')).not.toMatch(/full-auto|auto-edit|--yes|dangerously/i);
-    expect(calls[0]?.opts.input).toContain('do the thing');
-    expect(res.text).toContain('"changes"');
-    expect(res.artifacts?.[0]?.kind).toBe(ArtifactKind.CODE_DIFF);
+describe('CodexCliProvider (CAP-008, ADR-0029) — suggest-only contract not yet satisfiable', () => {
+  // The Codex CLI has no deterministic suggest-only / no-tool / no-exec mode, so the
+  // adapter must NOT run an agentic `codex exec` (CAP-008 review, MB-1). execute() stays
+  // NotImplemented and the provider is treated as unavailable — never auto-applying,
+  // never bypassing Workspace via a workspace cwd.
+  it('advertises code capabilities but does NOT implement execute() (no agentic run)', async () => {
+    const codex = new CodexCliProvider('codex');
+    expect(codex.id).toBe('codex-cli');
+    expect(codex.capabilities.some((c) => c.capability === Capability.CODE_IMPLEMENTATION)).toBe(true);
+    await expect(
+      codex.execute({ capability: Capability.CODE_IMPLEMENTATION, prompt: PROMPT }),
+    ).rejects.toBeInstanceOf(NotImplementedError);
   });
 
-  it('classifies auth failure as AUTH_REQUIRED', async () => {
-    await expect(
-      new CodexCliProvider('codex', { runner: runnerOf({ code: 1, stdout: '', stderr: 'Not logged in', timedOut: false }) }).execute(
-        { capability: Capability.CODE_IMPLEMENTATION, prompt: PROMPT },
-      ),
-    ).rejects.toMatchObject({ kind: AiFailureKind.AUTH_REQUIRED });
-  });
-
-  it('empty stdout on success → EMPTY_OUTPUT', async () => {
-    await expect(
-      new CodexCliProvider('codex', { runner: runnerOf({ code: 0, stdout: '   ', stderr: '', timedOut: false }) }).execute(
-        { capability: Capability.CODE_IMPLEMENTATION, prompt: PROMPT },
-      ),
-    ).rejects.toMatchObject({ kind: AiFailureKind.EMPTY_OUTPUT });
+  it('is treated as unavailable (isAvailable is not implemented → never selected)', async () => {
+    await expect(new CodexCliProvider('codex').isAvailable()).rejects.toBeInstanceOf(NotImplementedError);
   });
 });
 

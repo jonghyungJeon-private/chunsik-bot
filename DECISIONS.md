@@ -1303,8 +1303,19 @@ ADR-0023(Git relocation precedent), ADR-0020(migrations). Docs:
   (+ `CodeProposal`). Exactly ONE generation per call (no retry — Orchestrator's concern).
 - **Reuses the `AiProvider` port, input narrowed to `AiRequest` (CA Round-1 MB-2):** the provider
   no longer renders prompts or sees a `PromptSpec`; rendering moved from the CLI adapter
-  (`renderPromptSpec`) to the core `PromptRenderer`. `CodexCliProvider.execute()` implemented
-  **suggest-only** (`codex exec --sandbox read-only`, prompt on stdin; never `--full-auto`).
+  (`renderPromptSpec`) to the core `PromptRenderer`.
+- **Codex adapter execution is DEFERRED (implementation-review MB-1).** `CodexCliProvider.execute()`
+  stays **NotImplemented**: the Codex CLI has no deterministic suggest-only / no-tool / no-exec mode
+  (`codex exec --sandbox read-only` is read-only AGENT execution — a tool loop — not proposal-only),
+  which would cross the CAP-008 boundary. Because `isAvailable()` also throws, the provider is
+  treated as unavailable and never selected. Real Codex execution awaits a verified suggest-only
+  contract (future PR / Agent Runtime). The capability is provider-agnostic and runs on any
+  suggest-only `AiProvider` (proven via a fake provider in tests).
+- **No workspace bypass (implementation-review MB-2).** The AI Code Generation `AiRequest` carries
+  **no workspace cwd** — handing a provider the workspace root would let it read/traverse the repo
+  itself, bypassing the Workspace Read capability (CAP-001). Read-only context flows only via
+  `contextFiles`/`prompt`; the `workspaceRef` is recorded on the aggregate but never given to the
+  provider. Direct workspace access is future Agent-Runtime scope.
 - **`ProviderSelector` (CA Round-1 MB-3):** provider selection extracted from `CapabilityRouter`
   (now its implementation, method `select`); the capability depends on the selection contract.
 - **Provider-agnostic proposal parsing** in core (`parseCodeProposal`): one fenced ```json
