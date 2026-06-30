@@ -5,17 +5,21 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** **Version 2, Sprint 2i — CAP-009 Ollama AI Code Generation Provider** (ADR-0030):
-  the **second `AiProvider` adapter** for CAP-008 (AI Code Generation) — *not a new capability*.
-  `OllamaCliProvider.execute`/`isAvailable` implemented **suggest-only** (`ollama run <model>`,
-  prompt on stdin, neutral cwd; single-shot text gen, no tools/exec), advertises
-  `CODE_IMPLEMENTATION` at priority 40 (below Claude 50), wired into `AI_PROVIDERS`
-  (`isAvailable()`-gated). **No Core change** — no new aggregate/manager/port/repository/migration;
-  `parseCodeProposal`/`PromptRenderer`/`ProviderSelector`/aggregates unchanged; Codex stays
-  NotImplemented. Proves CAP-008 provider-independence. Implemented on a branch — **awaiting CA
-  review, no merge.** CAP-001…008 ✅ merged.
-- **Next:** Chief Architect review of Sprint 2i; no merge until approved.
-- **Build/Test:** `pnpm typecheck` PASS (exit 0); `pnpm test` 34 files / 210 tests PASS.
+- **Phase:** **Version 2, Phase 2 (Application Layer), Sprint 2j — Execution Orchestrator** (ADR-0031):
+  the **first Application-layer composition**. **Phase 1 (Capability Layer, CAP-001…009) is closed.**
+  Not a new capability — `ExecutionOrchestrator` (`run`/`resume`) + `IntentResolver` compose the
+  completed capabilities (`Intent Resolver → Execution Orchestrator → Capability Managers`).
+  **Capability Selection** picks the ordered stage subset per intent (dynamic, not a fixed pipeline);
+  **stateless** (no `ExecutionFlow` aggregate; `executionPlanRef` is the correlation root; returns a
+  transient `ExecutionOutcome`); **Ref-threaded**; **Approval halt** (PENDING → `AWAITING_APPROVAL`,
+  never calls `decide`) + **resume contract**; **Cancellation** (`CANCELLED`, cooperative, no
+  rollback, Application-state only); **stop-on-failure, no retry**. Managers stay mutually unaware;
+  provider selection stays with `ProviderSelector`. **No Core-contract change, no new
+  aggregate/repository/migration.** Not wired into `ChunsikCore`/composition root (deferred to the
+  Conversation Runtime). Implemented on a branch — **awaiting CA implementation review, no merge.**
+- **Next:** Chief Architect implementation review of Sprint 2j; no merge until approved.
+- **Build/Test:** `pnpm typecheck` PASS (exit 0); `pnpm test` 36 files / 233 tests PASS (under the
+  project's better-sqlite3 ABI; the Node-pin↔native-binary mismatch is a Deferred (Environment) item).
 
 ## Implemented
 
@@ -74,7 +78,15 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   fallback for code), wired into `AI_PROVIDERS` (`isAvailable()`-gated). Failure taxonomy reused
   (ADR-0015; no AUTH path). **No Core change**: no new aggregate/manager/port/repository/migration;
   `parseCodeProposal`/aggregates/`PromptRenderer`/`ProviderSelector` unchanged; Codex still
-  NotImplemented. Demonstrates CAP-008 provider-independence (ADR-0030). *(awaiting CA review)*
+  NotImplemented. Demonstrates CAP-008 provider-independence (ADR-0030).
+- **Phase 2 · Execution Orchestrator (Application Layer)** — `ExecutionOrchestrator`
+  (`run`/`resume`) + `IntentResolver`: the first composition of CAP-001…009. **Capability
+  Selection** → ordered stage subset (Planning → AI Code Gen → Workspace diff → Approval → Patch →
+  Workspace Write → Command); **stateless** (no aggregate; `executionPlanRef` correlation root;
+  transient `ExecutionOutcome`); **Ref-threaded**; **Approval halt + resume** (never `decide`);
+  **Cancellation** (no rollback, Application-state only); **stop-on-failure, no retry**. Managers stay
+  mutually unaware; provider selection stays with `ProviderSelector`. No Core change. Not wired into
+  `ChunsikCore`/composition root (deferred). *(awaiting CA implementation review)* (ADR-0031).
 
 ## Deferred
 
@@ -118,7 +130,7 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 
 ## Validation
 
-- `pnpm typecheck` — passes (exit 0). `pnpm test` — 34 files / 210 tests pass.
+- `pnpm typecheck` — passes (exit 0). `pnpm test` — 36 files / 233 tests pass.
 - Boundary enforced — Core cannot resolve adapter packages.
 - **Live (Sprint 1g):** real `node dist/main.js` Discord round-trip — register a
   project, then a structure question routed to PROJECT_ANALYSIS, read real files,

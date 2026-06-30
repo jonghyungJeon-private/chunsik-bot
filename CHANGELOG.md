@@ -7,6 +7,46 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Sprint 2j · Execution Orchestrator (Application Layer — capability composition)
+
+- **Phase 2 begins: the first Application-layer composition** (ADR-0031). Phase 1 (Capability Layer,
+  CAP-001…009) is closed. **Not a new capability** — it composes the completed capabilities into one
+  safe execution flow: `Intent Resolver → Execution Orchestrator → Capability Managers`. No
+  Core-contract change, **no new aggregate/repository/migration**.
+- **`ExecutionOrchestrator`** (`run`/`resume`) — composes Planning → AI Code Generation → Workspace
+  diff → Approval → Patch → Workspace Write → Command Execution by **threading Refs**; calls each
+  manager's public method only. **Capability managers stay mutually unaware**; only the orchestrator
+  composes them. Provider selection stays with `ProviderSelector`.
+- **Capability Selection** (`selectStages`) — the orchestrator's first responsibility: maps a
+  request's `requiredCapabilities` to an **ordered subset** of stages (dynamic, not a fixed
+  pipeline). Analyze-only → `[PLANNING]`; run-tests → `[PLANNING, APPROVAL, COMMAND_EXECUTION]`;
+  code-change → the full chain.
+- **Stateless / owns no aggregate** — `ExecutionPlan` is the correlation root (every downstream
+  aggregate carries `executionPlanRef`); the orchestrator persists nothing and returns a transient
+  `ExecutionOutcome` read-model (`COMPLETED | AWAITING_APPROVAL | DENIED | STOPPED_ON_FAILURE |
+  CANCELLED`).
+- **`ExecutionContext`** — a transient, per-invocation Application-layer context (not an aggregate,
+  never persisted): `executionPlanRef`, `workspaceRef`, `projectId`, `requestedBy`, `selectedStages`,
+  `logger`, `cancelToken?`.
+- **Approval halt + resume** — halts at PENDING (`AWAITING_APPROVAL`); **never calls `decide`**.
+  `resume(request, prior, cancelToken?)` re-reads the approval and, if APPROVED, reconstructs the
+  proposal/diff from refs and continues; PENDING ⇒ re-halt; REJECTED ⇒ `DENIED`. Resume wiring is
+  deferred.
+- **Cancellation Contract** — cooperative `cancelToken` checked at each stage boundary (and during
+  the approval wait): on signal, stop without calling the next capability → `CANCELLED`. **No
+  compensation/rollback**; `CANCELLED` is Application-state only (no capability aggregate touched).
+- **Failure rule** — a failed/thrown stage ⇒ `STOPPED_ON_FAILURE`; the next capability is not
+  called. **No retry** (future Agent Runtime).
+- **`IntentResolver`** — maps an execution-capability `Intent` to an `ExecutionRequest`, else `null`
+  (chat/analysis stay on the existing fast path). Kept distinct from `IntentClassifier`.
+- **Not implemented (CA-confirmed):** Workflow Engine · Conversation Runtime · Agent Runtime · Retry
+  · Event Bus · Parallel Execution · Telemetry · Memory · Discord Integration. Not yet wired into
+  `ChunsikCore`/composition root (standalone services; wiring is the future Conversation Runtime).
+- Tests (+23): Capability Selection per intent; happy code-change/run-tests/analyze-only chains;
+  HIGH-risk halt (Patch not called); resume APPROVED/REJECTED/PENDING; failure + thrown-error stops;
+  cancellation between stages + during the approval wait; IntentResolver mapping — all with **fake
+  managers**. Vitest 36 files / **233 tests**. Plan: `docs/plans/sprint-2j-execution-orchestrator-plan.md`.
+
 ### Added — Sprint 2i · CAP-009 Ollama AI Code Generation Provider (second adapter; suggest-only)
 
 - **A second `AiProvider` for AI Code Generation (CAP-008) — not a new capability** (ADR-0030).

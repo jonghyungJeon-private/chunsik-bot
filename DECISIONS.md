@@ -1408,3 +1408,74 @@ pull UX, per-request model override, generation retry, orchestrator/Discord wiri
 **CAP-009** (provider adapter for CAP-008). Relates: **ADR-0029**(CAP-008 AI Code Generation —
 primary), ADR-0014(CLI providers), ADR-0015(AI failure taxonomy), ADR-0003(prompt layering).
 Supersedes nothing. Docs: `docs/capabilities/code-generation.md`.
+
+## ADR-0031 — Execution Orchestrator (Application-layer capability composition)
+
+- **Status:** ✅ Accepted (v2, Phase 2, Sprint 2j)
+- **Date:** 2026-07-01
+- **Scope:** The **first Application-layer composition** (Phase 2). Phase 1 (Capability Layer,
+  CAP-001…009) is closed. This is **not a new capability** — it composes the completed
+  capabilities into one safe execution flow: `Intent Resolver → Execution Orchestrator →
+  Capability Managers`. Planning review approved over two rounds (Round-1 Merge-Blocking:
+  Capability Selection, ExecutionContext, Cancellation Contract — all applied; Round-2 APPROVED).
+
+### Most important rule
+> **The Execution Orchestrator composes capabilities; it never does their work, and it owns no
+> aggregate.** Capability managers stay **mutually unaware** — only the orchestrator composes them.
+> Provider selection stays with `ProviderSelector` (orchestration-level **Capability Selection** is
+> a different concern: *which capability stages run*). It is intra-task composition — **not** the
+> `Workflow` engine and **not** the Agent Runtime.
+
+### Decision
+- **Capability Selection is the orchestrator's first responsibility** (Round-1 MB-1). `selectStages`
+  maps a request's `requiredCapabilities` to an **ordered subset** of the canonical stages
+  (`PLANNING → CODE_GENERATION → WORKSPACE_DIFF → APPROVAL → PATCH → WORKSPACE_WRITE →
+  COMMAND_EXECUTION`); a given execution runs **only** the selected stages. The pipeline is
+  **dynamic, not fixed** (analyze-only → `[PLANNING]`; run-tests → `[PLANNING, APPROVAL,
+  COMMAND_EXECUTION]`; code-change → the full chain).
+- **Stateless / aggregate-free** (CA-confirmed). No `ExecutionFlow` aggregate, no table, no
+  repository. The `ExecutionPlan` is the **correlation root** (every downstream aggregate carries
+  `executionPlanRef`); progress is derived from the capabilities' aggregates. The orchestrator
+  returns a **transient `ExecutionOutcome`** read-model and persists nothing.
+- **Ref-threading composition.** Each stage calls one existing manager and passes the Ref the next
+  consumer needs (`ExecutionPlanRef`, plan-scoped `ApprovalRef`, `ProposedChange[]` + `WorkspaceDiff`,
+  `PatchSet`, `WorkspaceChange`). The orchestrator depends on **narrow public method interfaces**, not
+  concrete managers; managers never import each other.
+- **ExecutionContext** (Round-1 MB-2): a transient, per-invocation Application-layer context
+  (`executionPlanRef`, `workspaceRef`, `projectId`, `requestedBy`, `selectedStages`, `logger`,
+  `cancelToken?`). **Not an aggregate, never persisted**, rebuilt on each `run`/`resume`.
+- **Approval halt + resume** (CA-confirmed). When `ApprovalManager.requestFor` returns PENDING
+  (HIGH/CRITICAL), the orchestrator returns `AWAITING_APPROVAL` and **halts** — it **never calls
+  `decide`**. `resume(request, priorOutcome, cancelToken?)` re-reads the approval aggregate and, only
+  if APPROVED, reconstructs the proposal/diff from refs and runs Patch→Write→Command; PENDING ⇒
+  re-halt, REJECTED ⇒ `DENIED`. Resume **wiring** (who triggers it) is deferred (Conversation Runtime).
+- **Cancellation Contract** (Round-1 MB-3). `RUNNING → CANCELLED → TERMINAL`: a cooperative
+  `cancelToken` is checked at each **stage boundary** (and during the approval wait); on signal the
+  orchestrator **stops without calling the next capability** and returns `CANCELLED`. **No
+  compensation/rollback** — already-applied changes remain. `CANCELLED` lives on `ExecutionOutcome`
+  only; **no capability aggregate** gains a cancelled status from the orchestrator.
+- **Failure rule.** A failed stage (a FAILED/!success aggregate status, or a thrown manager error) ⇒
+  `STOPPED_ON_FAILURE` naming the stage; the next capability is **not** called. **No retry** (the
+  future Agent Runtime's concern).
+- **Intent Resolver** (Application service): maps a classified `Intent` (execution capabilities only)
+  to an `ExecutionRequest`, else `null`. It does not classify (`IntentClassifier`) or plan (Planning).
+
+### Not implemented (CA-confirmed out of scope)
+Workflow Engine · Conversation Runtime · Agent Runtime · Retry · Event Bus · Parallel Execution ·
+Telemetry · Memory · Discord Integration. Also **not** wired into `ChunsikCore`/composition root yet
+(standalone Application services; wiring is the future Conversation Runtime slice). **Non-blocking
+(future):** Execution Hooks (`beforeCapability`/`afterCapability`); ExecutionOutcome-based pipeline
+visualization (a Presentation-layer concern).
+
+### Consequences
+- + The Execution Ledger capabilities (CAP-003…009), previously unwired, now have a safe
+  composition layer — the first step toward an end-to-end flow — with no Core-contract change and no
+  new aggregate.
+- − Resume/cancel are contracts without runtime wiring yet (no UI signals them); covered by
+  fake-manager tests, exercised end-to-end only once the Conversation Runtime lands.
+
+### Capability / Relations
+**Sprint 2j** (Application Layer; not a capability). Relates: ADR-0024(Planning), ADR-0025(Approval +
+Aggregate Ownership), ADR-0026(Patch), ADR-0027(Workspace Write), ADR-0028(Command Execution),
+ADR-0029(AI Code Generation), ADR-0013(YAGNI on `Workflow`/seams). Supersedes nothing.
+Plan: `docs/plans/sprint-2j-execution-orchestrator-plan.md`.
