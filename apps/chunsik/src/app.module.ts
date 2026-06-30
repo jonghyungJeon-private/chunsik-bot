@@ -100,9 +100,14 @@ const infrastructure: Provider[] = [
   },
   {
     provide: AI_PROVIDERS,
-    // Sprint 1b-2: real Claude CLI execution. Codex/Ollama remain stubbed and are
-    // wired in a future sprint. Selection is by capability via the router.
-    useFactory: (): AiProvider[] => [new ClaudeCliProvider(config.ai.claudeBin)],
+    // Real CLI execution: Claude (Sprint 1b-2) + Ollama (CAP-009, ADR-0030, suggest-only).
+    // Codex stays stubbed (no deterministic suggest-only mode → unavailable, never selected).
+    // Selection is by capability via the router; Ollama is isAvailable()-gated, so an
+    // environment without `ollama` has no runtime change.
+    useFactory: (): AiProvider[] => [
+      new ClaudeCliProvider(config.ai.claudeBin),
+      new OllamaCliProvider({ bin: config.ai.ollamaBin, model: config.ai.ollamaModel }),
+    ],
   },
   { provide: CONNECTOR_PROVIDERS, useValue: V1_CONNECTORS },
 ];

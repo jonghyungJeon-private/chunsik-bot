@@ -155,28 +155,106 @@ export class CodexCliProvider extends BaseCliAiProvider {
 }
 
 /**
- * Ollama CLI (OPTIONAL). Preferred for general chat / summarization / embedding
- * when available. (execute() in a future sprint.)
+ * Ollama CLI provider (CAP-009, ADR-0030). The **second** `AiProvider` adapter for the
+ * AI Code Generation capability (CAP-008, ADR-0029) — proof the contract is provider-
+ * agnostic: no Core change, no new aggregate/manager/port/migration. Unlike Codex (whose
+ * CLI has no deterministic suggest-only mode, so it stays NotImplemented), `ollama run
+ * <model>` is **single-shot text generation** — no tools, no exec, no file access, no
+ * plan-act loop — so it satisfies the suggest-only contract honestly: the model only
+ * proposes. Prompt is fed on **stdin** (never an argv); the CLI runs in a **neutral cwd**
+ * (it never needs the repo and must not ingest it). Failure classification per ADR-0015;
+ * output masked. Advertised for code at a LOW priority (below Claude) so a local model is
+ * a fallback, not the default, for code — plus its existing chat/summarization roles.
  */
 export class OllamaCliProvider extends BaseCliAiProvider {
   readonly id = 'ollama-cli';
   protected readonly bin: string;
   private readonly model: string;
+  private readonly runner: CliRunner;
+  private readonly defaultTimeoutMs: number;
+
   readonly capabilities: readonly AiCapabilityDescriptor[] = [
     { capability: Capability.GENERAL_CHAT, priority: 100 },
     { capability: Capability.SUMMARIZATION, priority: 100 },
     { capability: Capability.EMBEDDING, priority: 100 },
     { capability: Capability.DOCUMENT_ANALYSIS, priority: 80 },
     { capability: Capability.READONLY_LOOKUP, priority: 70 },
+    // CAP-009 (ADR-0030): code generation on a LOCAL model, suggest-only. Priority 40 is
+    // BELOW Claude's 50 so Claude is preferred for code when available; Ollama serves when
+    // it is the best available (e.g. offline / local-only). Codex advertises 100 but is
+    // unavailable, so it never competes.
+    { capability: Capability.CODE_IMPLEMENTATION, priority: 40 },
   ];
 
-  constructor(options: { bin?: string; model?: string } = {}) {
+  constructor(options: { bin?: string; model?: string; runner?: CliRunner; timeoutMs?: number } = {}) {
     super();
     this.bin = options.bin ?? 'ollama';
     this.model = options.model ?? 'llama3.1';
+    this.runner = options.runner ?? defaultCliRunner;
+    this.defaultTimeoutMs = options.timeoutMs ?? 120_000;
   }
 
-  protected get modelName(): string {
-    return this.model;
+  /** `ollama run <model>`. The prompt is supplied via stdin, never as an argv. */
+  buildArgs(): string[] {
+    return ['run', this.model];
+  }
+
+  override async isAvailable(): Promise<boolean> {
+    try {
+      const r = await this.runner(this.bin, ['--version'], {
+        cwd: tmpdir(),
+        input: '',
+        timeoutMs: 10_000,
+      });
+      return r.code === 0;
+    } catch {
+      return false;
+    }
+  }
+
+  override async execute(request: AiRequest): Promise<AiExecutionResult> {
+    const input = request.prompt; // already rendered by the core PromptRenderer (ADR-0029)
+    // Suggest-only: a local model never needs the repo. Always a neutral cwd so it cannot
+    // ingest workspace files (defense in depth on top of CAP-008's no-workspace AiRequest).
+    const cwd = tmpdir();
+    const timeoutMs = request.timeoutMs ?? this.defaultTimeoutMs;
+
+    const result = await this.runner(this.bin, this.buildArgs(), { cwd, input, timeoutMs });
+
+    // Classified failure taxonomy (ADR-0015). stderr is masked before it leaves. Ollama is
+    // local + auth-free, so there is no AUTH_REQUIRED path.
+    if (result.timedOut) {
+      throw new AiProviderError(AiFailureKind.TIMEOUT, `ollama CLI timed out after ${timeoutMs}ms`);
+    }
+    if (result.code === null) {
+      throw new AiProviderError(
+        AiFailureKind.UNAVAILABLE,
+        `ollama CLI could not run: ${maskSecrets(result.stderr).slice(0, 300)}`,
+      );
+    }
+    if (result.code !== 0) {
+      throw new AiProviderError(
+        AiFailureKind.EXECUTION_FAILED,
+        `ollama CLI exited ${result.code}: ${maskSecrets(result.stderr).slice(0, 300)}`,
+      );
+    }
+
+    const text = result.stdout.trim();
+    if (!text) {
+      throw new AiProviderError(AiFailureKind.EMPTY_OUTPUT, 'ollama CLI returned empty output');
+    }
+
+    const artifact: Artifact = {
+      id: newId(),
+      kind: ArtifactKind.MARKDOWN_REPORT,
+      title: 'ollama-response',
+      content: text,
+      createdAt: now(),
+    };
+    return {
+      text,
+      artifacts: [artifact],
+      raw: { exitCode: result.code, stderr: maskSecrets(result.stderr).slice(0, 1000) },
+    };
   }
 }

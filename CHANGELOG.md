@@ -7,6 +7,34 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Sprint 2i · CAP-009 Ollama AI Code Generation Provider (second adapter; suggest-only)
+
+- **A second `AiProvider` for AI Code Generation (CAP-008) — not a new capability** (ADR-0030).
+  Proof the AI Layer contract is provider-agnostic: Ollama authors a `CodeProposal` with **no Core
+  change** — no new aggregate, manager, port, repository, or migration. The AI still only *proposes*.
+- **`OllamaCliProvider.execute(AiRequest)` + `isAvailable()`** implemented behind the existing
+  `AiProvider` port. **Suggest-only is honest for Ollama:** `ollama run <model>` is single-shot text
+  generation (no tools/exec/file access/agent loop), so it satisfies the propose-only boundary by
+  construction — unlike Codex (no deterministic suggest-only mode → stays NotImplemented/unavailable).
+- **Invocation:** `ollama run <model>`, prompt on **stdin** (never argv), in a **neutral cwd**
+  (`tmpdir()` — a local model never needs the repo and must not ingest it). Output masked.
+- **Failure taxonomy (ADR-0015):** `TIMEOUT` / `UNAVAILABLE` (spawn failure) / `EXECUTION_FAILED`
+  (non-zero) / `EMPTY_OUTPUT`. No `AUTH_REQUIRED` (Ollama is local/auth-free).
+- **Selection:** advertises `CODE_IMPLEMENTATION` at **priority 40** (below Claude's 50) — Claude is
+  preferred for code when available; Ollama is the local/offline fallback. Data-driven via
+  `ProviderSelector`; Core never names `'ollama-cli'`.
+- **Wiring:** `OllamaCliProvider` added to `AI_PROVIDERS` from the existing `OLLAMA_CLI_BIN`/
+  `OLLAMA_MODEL` config. **`isAvailable()`-gated** — an environment without `ollama` is unaffected.
+- **Runtime note (intentional):** Ollama's pre-existing `GENERAL_CHAT`/`SUMMARIZATION` priority (100
+  > Claude 50) means that **where `ollama` is available, the live chat path now prefers Ollama**
+  (local-first; Claude fallback). Pre-existing priorities left unchanged.
+- **Unchanged:** `parseCodeProposal`, `CodeGenerationManager`, aggregates, `PromptRenderer`,
+  `ProviderSelector`, migrations, and Codex (still NotImplemented).
+- Tests (+10): `OllamaCliProvider` success → `MARKDOWN_REPORT`, `ollama run <model>` argv + stdin
+  prompt + neutral cwd (workspace ignored) + no agent/exec flag, full failure taxonomy,
+  `isAvailable` true/false, `CODE_IMPLEMENTATION` priority = 40 < Claude; Claude/chat regression
+  green — Vitest 34 files / **210 tests**. Doc: `docs/capabilities/code-generation.md` (ADR-0030).
+
 ### Added — Sprint 2h · CAP-008 AI Code Generation Capability (Codex; propose, never apply)
 
 - **First AI Layer capability.** Asks a code-capable `AiProvider` (Codex first) to author a code

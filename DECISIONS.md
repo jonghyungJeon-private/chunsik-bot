@@ -1347,3 +1347,64 @@ tool-calling/agentic loops, conversation state, generation-level retry, streamin
 **CAP-008.** Relates: ADR-0014(CLI providers), ADR-0015(AI failure taxonomy), ADR-0003(prompt
 layering), ADR-0024(Planning), ADR-0026(Patch), ADR-0025(Aggregate Ownership), ADR-0020(migrations).
 Docs: `docs/capabilities/code-generation.md`.
+
+## ADR-0030 — CAP-009 Ollama AI Code Generation Provider (second adapter; suggest-only)
+
+- **Status:** ✅ Accepted (v2, Sprint 2i)
+- **Date:** 2026-06-30
+- **Scope:** CAP-009 is **not a new capability.** It is the **second `AiProvider` adapter** for the
+  CAP-008 AI Code Generation capability (ADR-0029). It is the *proof* that the AI Layer contract is
+  provider-agnostic: a different backend authors a `CodeProposal` with **no Core-contract change**.
+
+### Most important rule
+> **CAP-009 stays a Provider Adapter — never expand it into a new capability.** Ollama serves the
+> existing AI Code Generation capability through the existing `AiProvider` port. No new aggregate,
+> manager, port, repository, or migration. The AI still only *proposes*.
+
+### Decision
+- **Implement `OllamaCliProvider.execute(AiRequest)` + `isAvailable()`** in `@chunsik/ai-cli`,
+  behind the **existing** `AiProvider` port (via `BaseCliAiProvider` + `CliRunner`). No Core change.
+- **Suggest-only is honest for Ollama (the key distinction from Codex, ADR-0029).** `ollama run
+  <model>` is **single-shot text generation** — no tools, no exec, no file access, no plan-act
+  loop — so it cannot autonomously act and satisfies the propose-only boundary by construction.
+  (Codex's CLI has no deterministic suggest-only mode → it stays NotImplemented/unavailable.)
+- **Invocation:** `ollama run <model>` with the prompt on **stdin** (never an argv), in a
+  **neutral cwd** (`tmpdir()`) — a local model never needs the repo and must not ingest it
+  (defense in depth atop CAP-008's no-workspace `AiRequest`). Output masked (`maskSecrets`).
+- **Failure taxonomy (ADR-0015):** `timedOut → TIMEOUT`; spawn failure (`code === null`) →
+  `UNAVAILABLE`; non-zero exit → `EXECUTION_FAILED`; empty stdout → `EMPTY_OUTPUT`. **No
+  `AUTH_REQUIRED`** — Ollama is local and auth-free.
+- **Selection data:** Ollama advertises `CODE_IMPLEMENTATION` at **priority 40** — *below* Claude's
+  50 — so Claude is preferred for code when available and Ollama is the local/offline fallback.
+  (Codex advertises 100 but is unavailable, so it never competes.) Selection stays data-driven via
+  `ProviderSelector`; Core never names `'ollama-cli'` or branches on `id`.
+- **Wiring:** `OllamaCliProvider` is added to `AI_PROVIDERS` (`app.module.ts`), constructed from the
+  existing `OLLAMA_CLI_BIN`/`OLLAMA_MODEL` config seam. **`isAvailable()`-gated:** an environment
+  without `ollama` sees no runtime change (provider treated as unavailable, never selected).
+- **`parseCodeProposal` is unchanged** — the provider-agnostic parser already handles Ollama output
+  identically (CAP-008 parity).
+
+### Runtime consequence (intentional, surfaced)
+- Ollama already advertises `GENERAL_CHAT`/`SUMMARIZATION`/`EMBEDDING` at priority **100** (> Claude
+  50, pre-existing data). Implementing `execute()` + wiring therefore means that **on a machine where
+  `ollama` is available, the live chat/summarization path prefers Ollama** (local-first; Claude
+  remains the fallback). These priorities are pre-existing and left unchanged (CA decision #5 keeps
+  the `EMBEDDING` descriptor; the embedding *execution* path is out of scope). No environment without
+  `ollama` is affected.
+
+### Not implemented (CA-confirmed out of scope)
+New capability/aggregate/manager/port/repository/migration; any Core-contract change; **any change to
+Codex** (stays NotImplemented); tool calling, Agent Runtime, embedding/vector path, streaming, model-
+pull UX, per-request model override, generation retry, orchestrator/Discord wiring of code generation.
+
+### Consequences
+- + A second, **local-first** code-generation provider behind the same contract — the
+  provider-independence of CAP-008 is now demonstrated, not just asserted. Smallest capability
+  increment in V2: one adapter method pair + one `capabilities[]` entry + one wiring line.
+- − Where `ollama` is present, chat/summarization now route to it by priority (see Runtime
+  consequence); guarded by the regression suite and `isAvailable()`.
+
+### Capability / Relations
+**CAP-009** (provider adapter for CAP-008). Relates: **ADR-0029**(CAP-008 AI Code Generation —
+primary), ADR-0014(CLI providers), ADR-0015(AI failure taxonomy), ADR-0003(prompt layering).
+Supersedes nothing. Docs: `docs/capabilities/code-generation.md`.

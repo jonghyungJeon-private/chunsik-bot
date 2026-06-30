@@ -5,16 +5,17 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** **Version 2, Sprint 2h — CAP-008 AI Code Generation Capability** (ADR-0029):
-  the first AI Layer capability. `CodeGeneration` (run) + `CodeProposal` (output) aggregates +
-  `CodeGenerationManager.generate` (compose → `PromptRenderer` → `AiRequest` → `ProviderSelector`
-  → `AiProvider.execute` → `parseCodeProposal`) + `CodexCliProvider` **suggest-only** + repos +
-  **migration v6**. **AI proposes only** (no decide/approve/apply/execute); reuses the `AiProvider`
-  port narrowed to `AiRequest`; core stays HTTP/child_process-free; owns `CodeGeneration` +
-  `CodeProposal`, never a downstream aggregate. Implemented on a branch — **awaiting CA review, no
-  merge.** CAP-001…007 ✅ merged.
-- **Next:** Chief Architect review of Sprint 2h; no merge until approved.
-- **Build/Test:** `pnpm typecheck` PASS (exit 0); `pnpm test` 34 files / 200 tests PASS.
+- **Phase:** **Version 2, Sprint 2i — CAP-009 Ollama AI Code Generation Provider** (ADR-0030):
+  the **second `AiProvider` adapter** for CAP-008 (AI Code Generation) — *not a new capability*.
+  `OllamaCliProvider.execute`/`isAvailable` implemented **suggest-only** (`ollama run <model>`,
+  prompt on stdin, neutral cwd; single-shot text gen, no tools/exec), advertises
+  `CODE_IMPLEMENTATION` at priority 40 (below Claude 50), wired into `AI_PROVIDERS`
+  (`isAvailable()`-gated). **No Core change** — no new aggregate/manager/port/repository/migration;
+  `parseCodeProposal`/`PromptRenderer`/`ProviderSelector`/aggregates unchanged; Codex stays
+  NotImplemented. Proves CAP-008 provider-independence. Implemented on a branch — **awaiting CA
+  review, no merge.** CAP-001…008 ✅ merged.
+- **Next:** Chief Architect review of Sprint 2i; no merge until approved.
+- **Build/Test:** `pnpm typecheck` PASS (exit 0); `pnpm test` 34 files / 210 tests PASS.
 
 ## Implemented
 
@@ -65,12 +66,19 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   → `AiProvider.execute` → `parseCodeProposal`) + `CodexCliProvider` **suggest-only** + repos +
   migration v6. First AI Layer capability: **AI proposes only** (no decide/approve/apply/execute);
   reuses `AiProvider` (narrowed to `AiRequest`); core HTTP/child_process-free; owns `CodeGeneration`
-  + `CodeProposal`, never downstream (ADR-0029). Not orchestrator-wired. *(awaiting CA review)*
+  + `CodeProposal`, never downstream (ADR-0029). Not orchestrator-wired.
+- **CAP-009 Ollama AI Code Generation Provider** — the **second `AiProvider` adapter** for CAP-008
+  (not a new capability). `OllamaCliProvider.execute`/`isAvailable` implemented **suggest-only**
+  (`ollama run <model>`, prompt on stdin, neutral cwd; single-shot text gen — no tools/exec/file
+  access), advertises `CODE_IMPLEMENTATION` at priority 40 (below Claude 50, a local/offline
+  fallback for code), wired into `AI_PROVIDERS` (`isAvailable()`-gated). Failure taxonomy reused
+  (ADR-0015; no AUTH path). **No Core change**: no new aggregate/manager/port/repository/migration;
+  `parseCodeProposal`/aggregates/`PromptRenderer`/`ProviderSelector` unchanged; Codex still
+  NotImplemented. Demonstrates CAP-008 provider-independence (ADR-0030). *(awaiting CA review)*
 
 ## Deferred
 
-- **Codex** — `CodexCliProvider` not implemented (stub).
-- **Ollama** — `OllamaCliProvider` not implemented (stub); no local-model fallback.
+- **Codex** — `CodexCliProvider` not implemented (stub; no deterministic suggest-only mode).
 - **Workflow** — multi-step planning/execution beyond a single Task is not built.
 - **Agent Runtime** — no autonomous tool-using / coding agent.
 - **Vector Search** — `VectorProvider` is a local stub; no embeddings/retrieval/semantic search.
@@ -99,8 +107,8 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 
 ## What is NOT implemented yet
 
-- **AI execution:** `CodexCliProvider`/`OllamaCliProvider` `execute`/`isAvailable`
-  still stubbed (Claude is implemented).
+- **AI execution:** only `CodexCliProvider` `execute`/`isAvailable` remain stubbed (no
+  deterministic suggest-only mode → treated as unavailable). Claude + Ollama are implemented.
 - **Storage:** all repositories implemented (`approvals` landed in CAP-004 / migration v2).
 - **Platform:** `DiscordPlatformAdapter.requestApproval` (no approval UI yet); resume
   after approval is deferred (no current capability reaches the HIGH/CRITICAL path).
@@ -110,7 +118,7 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 
 ## Validation
 
-- `pnpm typecheck` — passes (exit 0). `pnpm test` — 27 files / 146 tests pass.
+- `pnpm typecheck` — passes (exit 0). `pnpm test` — 34 files / 210 tests pass.
 - Boundary enforced — Core cannot resolve adapter packages.
 - **Live (Sprint 1g):** real `node dist/main.js` Discord round-trip — register a
   project, then a structure question routed to PROJECT_ANALYSIS, read real files,

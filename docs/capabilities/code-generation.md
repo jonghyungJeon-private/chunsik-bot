@@ -49,18 +49,22 @@ ExecutionPlan (Planning)
 - `CodeGenerationManager` (`generate`/`get`/`getProposal`/`findByExecutionPlan`).
 - `ProviderSelector` (port; `select(capability) → AiProvider`; token `PROVIDER_SELECTOR`; impl
   `CapabilityRouter`). `PromptRenderer` (`render(PromptSpec, opts) → AiRequest`).
-- `AiProvider` (port, reused; `execute(AiRequest)`). `CodexCliProvider.execute()` is **deferred /
-  NotImplemented** (the Codex CLI has no deterministic suggest-only mode — `codex exec --sandbox
-  read-only` is read-only *agent* execution, not proposal-only; treated as unavailable, never
-  selected). `parseCodeProposal(text) → ProposedChange[]`.
+- `AiProvider` (port, reused; `execute(AiRequest)`). **`OllamaCliProvider.execute()` is implemented
+  suggest-only (CAP-009, ADR-0030)** — `ollama run <model>`, prompt on stdin, neutral cwd; single-shot
+  text generation (no tools/exec), advertises `CODE_IMPLEMENTATION` at priority 40 (below Claude),
+  `isAvailable()`-gated. `CodexCliProvider.execute()` stays **deferred / NotImplemented** (the Codex
+  CLI has no deterministic suggest-only mode — `codex exec --sandbox read-only` is read-only *agent*
+  execution, not proposal-only; treated as unavailable, never selected).
+  `parseCodeProposal(text) → ProposedChange[]` (provider-agnostic; identical for both).
 - Domain: `CodeGeneration` (run; `PENDING|GENERATING|SUCCEEDED|FAILED`), `CodeProposal` (output;
   `ProposedChange[]` + providerId + usage? + artifacts?), `CodeGenerationRef`, `CodeProposalRef`,
   `GenerateCodeInput`, `AiRequest`. Reuses `ProposedChange` (CAP-001) — the contract handed to Patch.
 
 ## Future Expansion
 
-- **CAP-009 Ollama** — a second `AiProvider` adapter behind the same port + `ProviderSelector`;
-  the capability, manager, aggregates, renderer, and parser are unchanged.
+- **CAP-009 Ollama ✅ (ADR-0030)** — a second `AiProvider` adapter behind the same port +
+  `ProviderSelector`, suggest-only; the capability, manager, aggregates, renderer, and parser are
+  unchanged. Proves provider-independence (no Core change). Codex remains deferred.
 - Generation-level retry / self-repair = a future Execution Orchestrator (uses the run record).
 - Reserved: `CodeProposal.usage?` (token accounting), tool-calling (Agent Runtime), streaming.
 
@@ -74,5 +78,6 @@ ExecutionPlan (Planning)
 ## Related ADRs
 
 - **ADR-0029** — CAP-008 AI Code Generation (primary; "propose, never apply").
+- **ADR-0030** — CAP-009 Ollama provider (second adapter; suggest-only).
 - ADR-0014 (CLI providers) · ADR-0015 (AI failure taxonomy) · ADR-0003 (prompt layering) ·
   ADR-0024 (Planning) · ADR-0026 (Patch) · ADR-0025 (Aggregate Ownership) · ADR-0020 (migrations).
