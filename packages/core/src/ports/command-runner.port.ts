@@ -18,7 +18,11 @@ export interface CommandRunOptions {
   cwd: string;
   /** Required timeout in ms; on expiry the process is killed and `timedOut` is true. */
   timeoutMs: number;
-  /** Environment for the child; when omitted the adapter decides its default. */
+  /**
+   * Environment for the child. When omitted the adapter passes a MINIMAL env (PATH/HOME) —
+   * a child must NEVER inherit the full parent `process.env` by default (CAP-007 review,
+   * MB-1). Provide an explicit allow-listed env to override.
+   */
   env?: Record<string, string>;
 }
 

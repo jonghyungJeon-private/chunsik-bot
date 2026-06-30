@@ -7,13 +7,13 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 
 - **Phase:** **Version 2, Sprint 2g — CAP-007 Command Execution Capability** (ADR-0028):
   `CommandExecution` (Execution History) aggregate + `CommandExecutionManager.run` (allow-list
-  + risk + approval gates) + `CommandRunner` port/`LocalCommandRunner` (new `@chunsik/command-local`,
-  argv-array `spawnSync`, no shell, timeout, masked+capped output) + `CommandExecutionRepository`
-  + **migration v5**. **Runs commands, gated**; `runCommand` relocated off `WorkspaceProvider`;
-  **core stays child_process-free**; owns only `CommandExecution`. The last aggregate of the
-  Execution Ledger. CAP-001…006 ✅ merged.
-- **Next:** Chief Architect review of Sprint 2g; no merge until approved.
-- **Build/Test:** `pnpm typecheck` PASS (exit 0); `pnpm test` 30 files / 169 tests PASS.
+  + dangerous-arg + risk + approval gates) + `CommandRunner` port/`LocalCommandRunner` (new
+  `@chunsik/command-local`, argv-array `spawnSync`, no shell, timeout, minimal child env,
+  masked+capped output) + `CommandExecutionRepository` + **migration v5**. **Runs commands,
+  gated**; `runCommand` relocated off `WorkspaceProvider`; **core stays child_process-free**;
+  owns only `CommandExecution`. The last aggregate of the Execution Ledger. CAP-001…006 ✅ merged.
+- **Next:** Chief Architect re-review of Sprint 2g (Round 2 fixes pushed); no merge until approved.
+- **Build/Test:** `pnpm typecheck` PASS (exit 0); `pnpm test` 30 files / 179 tests PASS.
 
 ## Implemented
 
@@ -52,8 +52,9 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   `WorkspaceChange` (ADR-0027). First filesystem-mutating capability.
 - **CAP-007 Command Execution** — `CommandExecution` (Execution History) aggregate +
   `CommandExecutionManager.run` + `CommandRunner`/`LocalCommandRunner` (new `command-local`;
-  argv-array `spawnSync`, no shell, timeout, masked+capped output) + `SqliteCommandExecutionRepository`
-  (migration v5). **Runs** a command behind three gates — **allow-list** (`pnpm`/`npm`/`node`),
+  argv-array `spawnSync`, no shell, timeout, **minimal child env**, masked+capped output) +
+  `SqliteCommandExecutionRepository` (migration v5). **Runs** a command behind four gates —
+  **allow-list** (`pnpm`/`npm`/`node`), **dangerous-arg** (eval-style `node` flags refused),
   **risk** (CRITICAL/destructive refused), **approval** (HIGH → APPROVED + plan-scope; LOW/MEDIUM
   → none); persists `commandHash` identity. `runCommand` relocated off Workspace; core stays
   child_process-free; owns only `CommandExecution` (ADR-0028). Riskiest capability; the last

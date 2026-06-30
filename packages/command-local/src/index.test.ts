@@ -67,6 +67,47 @@ describe('LocalCommandRunner — argv-array execution (CAP-007, ADR-0028)', () =
     });
     expect(res.timedOut).toBe(true);
   });
+
+  // CAP-007 review MB-1: a child must NOT inherit the full parent process.env by default.
+  it('does NOT pass the full parent process.env to the child by default', () => {
+    process.env.CHUNSIK_SECRET_TEST = 'supersecret-value';
+    try {
+      const res = defaultRawRunner(
+        'node',
+        ['-e', "process.stdout.write(process.env.CHUNSIK_SECRET_TEST ?? 'UNSET')"],
+        { cwd: tmpdir(), timeoutMs: 10_000 },
+      );
+      expect(res.stdout).toBe('UNSET'); // parent secret-like var not inherited
+    } finally {
+      delete process.env.CHUNSIK_SECRET_TEST;
+    }
+  });
+
+  it('still provides PATH by default so allow-listed binaries resolve', () => {
+    const res = defaultRawRunner(
+      'node',
+      ['-e', "process.stdout.write(process.env.PATH ? 'HASPATH' : 'NOPATH')"],
+      { cwd: tmpdir(), timeoutMs: 10_000 },
+    );
+    expect(res.stdout).toBe('HASPATH');
+  });
+
+  it('passes ONLY the explicit env when one is supplied (parent vars excluded)', () => {
+    process.env.CHUNSIK_SECRET_TEST2 = 'leak-me';
+    try {
+      const res = defaultRawRunner(
+        'node',
+        [
+          '-e',
+          "process.stdout.write((process.env.FOO ?? 'NONE') + ':' + (process.env.CHUNSIK_SECRET_TEST2 ?? 'UNSET'))",
+        ],
+        { cwd: tmpdir(), timeoutMs: 10_000, env: { PATH: process.env.PATH ?? '', FOO: 'bar' } },
+      );
+      expect(res.stdout).toBe('bar:UNSET'); // explicit env honored; parent var not leaked
+    } finally {
+      delete process.env.CHUNSIK_SECRET_TEST2;
+    }
+  });
 });
 
 describe('maskCommandOutput', () => {

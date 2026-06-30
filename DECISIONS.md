@@ -1229,7 +1229,9 @@ ADR-0020(migrations). Docs: `docs/capabilities/workspace-write.md`.
   CommandExecution`. CommandExecution may reference the `WorkspaceChange` it follows.
 - **Adapter isolation:** all process execution in `@chunsik/command-local`
   (`node:child_process`, **argv array, `shell:false`, required timeout, cwd = workspace
-  root, masked + size-capped output**). **Core stays `child_process`-free.**
+  root, minimal env by default, masked + size-capped output**). **Core stays `child_process`-free.**
+- **Four-part execution-safety boundary** (CA Architecture Note): (1) command allow-list,
+  (2) dangerous-arg blocking, (3) minimal child env, (4) output masking + size cap.
 - **`runCommand` relocated off `WorkspaceProvider`** → the `CommandRunner` port (mirrors the
   CAP-002 `gitStatus` move). Workspace ≠ Command Execution.
 
@@ -1246,11 +1248,24 @@ ADR-0020(migrations). Docs: `docs/capabilities/workspace-write.md`.
 - **MB-3 Allow-list.** v2 permits only **`pnpm` / `npm` / `node`** (exact match, fails closed —
   e.g. `/usr/bin/node` and `git` are refused). Enforced in the manager BEFORE the runner runs.
 
+### CA Implementation-review — Merge-Blocking changes (Round 2)
+- **Minimal child env (not full `process.env`).** The runner must NOT pass the full parent
+  environment to a child by default (an allow-listed `node` could read local secrets, e.g.
+  `node -e "console.log(process.env)"`). `defaultRawRunner` passes a **minimal env (PATH/HOME)**
+  when none is supplied; callers may override with an explicit allow-listed env. Contract:
+  *Command Execution must not pass the full parent process environment to child processes by default.*
+- **Allow-list is command + dangerous-arg aware (not command-name only).** A command-name-only
+  allow-list is bypassable via eval-style flags (`node -e "…"` runs arbitrary JS). The manager
+  refuses eval-style `node` args (`-e` / `--eval` / `-p` / `--print`, incl. `=value` and short
+  clusters like `-pe`) BEFORE the runner. Contract: *Allow-list must be command + dangerous-arg
+  aware, not command-name only.*
+
 ### Non-blocking (CA-confirmed; NOT implemented now)
 ExitCode-as-Value-Object (kept a plain `number`, structure open); explicit Runner →
 CommandResult → CommandExecution responsibility split (already separated); streaming output
 (future ADR); **retry (Execution Orchestrator's responsibility, not CAP-007)**; background /
-long-lived processes (out of scope).
+long-lived processes (out of scope); a higher Execution-History aggregate; externalizing the
+command policy (allow-list / env) to config. (Round-2 review confirmed these stay deferred.)
 
 ### Consequences
 - + A complete, auditable, identity-stamped execution record; the project's primary

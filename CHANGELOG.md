@@ -24,7 +24,13 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
   Then runs and records (SUCCEEDED/FAILED/TIMED_OUT).
 - **`CommandRunner`** port + **`LocalCommandRunner`** adapter (new `@chunsik/command-local`;
   `node:child_process` argv-array `spawnSync`, **`shell:false`, required timeout, cwd =
-  workspace root, masked + size-capped output**). **Core stays `child_process`-free.**
+  workspace root, minimal env by default, masked + size-capped output**). **Core stays
+  `child_process`-free.**
+- **Execution-security (CAP-007 implementation review):** (a) **minimal child env** — the
+  runner never passes the full parent `process.env` to a child by default (only PATH/HOME;
+  explicit env overrides); (b) **dangerous-arg-aware allow-list** — eval-style `node` flags
+  (`-e`/`--eval`/`-p`/`--print`, incl. `=value`/short clusters) are refused so a command-name
+  allow-list cannot be bypassed into arbitrary code execution.
 - **`runCommand` relocated** off `WorkspaceProvider` → the `CommandRunner` port (mirrors the
   CAP-002 `gitStatus` move). Workspace ≠ Command Execution.
 - **Persistence:** `CommandExecutionRepository` (`findByExecutionPlan`/`findByWorkspaceChange`)
@@ -33,10 +39,11 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 - **Not in scope (CA-confirmed):** retry (Execution Orchestrator), streaming output,
   background/long-lived processes, ExitCode-as-VO, AI command generation, orchestrator/Discord
   wiring (ADR-0028).
-- Tests (+23): CommandExecutionManager (allow-list, CRITICAL refusal, HIGH-approval + plan-scope,
-  MEDIUM no-approval, status mapping, identity, no-mutation), LocalCommandRunner (argv-array,
-  masking/cap incl. ReDoS-safe, real node exec, timeout), SqliteCommandExecutionRepository,
-  migration v5 — Vitest 30 files / 169 tests. Capability doc `docs/capabilities/command-execution.md`.
+- Tests (+33): CommandExecutionManager (allow-list, dangerous-arg/eval-flag refusal, CRITICAL
+  refusal, HIGH-approval + plan-scope, MEDIUM no-approval, status mapping, identity, no-mutation),
+  LocalCommandRunner (argv-array, minimal-env/no-parent-env-leak, masking/cap incl. ReDoS-safe,
+  real node exec, timeout), SqliteCommandExecutionRepository, migration v5 — Vitest 30 files /
+  179 tests. Capability doc `docs/capabilities/command-execution.md`.
 
 ### Added — Sprint 2f · CAP-006 Workspace Write Capability (apply, never generate)
 

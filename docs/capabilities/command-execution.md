@@ -24,9 +24,12 @@ Planning → Approval → Patch → Workspace Write → [Command Execution: run 
   BEFORE the runner is ever invoked:
   1. **Allow-list** (MB-3): `command` must be one of `pnpm` / `npm` / `node` (exact match,
      fails closed). Anything else is refused.
-  2. **Risk** (MB-2): `RiskPolicy.assessCommand(command + args)`. **CRITICAL** (a destructive
+  2. **Dangerous-arg** (review): the allow-list is **command + arg aware** — an allow-listed
+     `node` may not use eval-style flags (`-e` / `--eval` / `-p` / `--print`, incl. `=value`
+     and short clusters like `-pe`), which would otherwise run arbitrary code.
+  3. **Risk** (MB-2): `RiskPolicy.assessCommand(command + args)`. **CRITICAL** (a destructive
      pattern matched) → **refused outright, regardless of approval**.
-  3. **Approval (Ref only)** (MB-2): **HIGH** → requires an APPROVED, **plan-scoped**
+  4. **Approval (Ref only)** (MB-2): **HIGH** → requires an APPROVED, **plan-scoped**
      `ApprovalRef` (`approvalRef.executionPlanRef.id === executionPlanRef.id`; no
      `ApprovalManager` query). **LOW/MEDIUM** → run without approval.
 - Stamp **command identity** (MB-1): `commandHash` = content hash of `command` + `args`.
@@ -51,7 +54,10 @@ Planning → Approval → Patch → Workspace Write → [Command Execution: run 
   `DEFAULT_COMMAND_TIMEOUT_MS`.
 - Port `CommandRunner` (`run(command, args, { cwd, timeoutMs, env? }) → CommandRunResult`;
   token `COMMAND_RUNNER`; adapter `LocalCommandRunner` in `@chunsik/command-local`,
-  `node:child_process` argv-array `spawnSync`, `shell:false`, masked + size-capped output).
+  `node:child_process` argv-array `spawnSync`, `shell:false`, **minimal env by default
+  (PATH/HOME — never the full parent `process.env`)**, masked + size-capped output).
+- **Execution-safety boundary (4 controls):** command allow-list · dangerous-arg blocking ·
+  minimal child env · output masking + size cap.
 - Domain: `CommandExecution` (aggregate, **Execution History**; carries `commandHash` — the
   command identity), `CommandExecutionRef`, `CommandExecutionStatus`
   (`PENDING|RUNNING|SUCCEEDED|FAILED|TIMED_OUT`), `RunCommandInput`. Reuses `CommandResult`.

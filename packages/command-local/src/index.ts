@@ -47,14 +47,24 @@ export type RawCommandRunner = (
   options: CommandRunOptions,
 ) => RawRunResult;
 
-/** Default runner: argument-array `spawnSync`, NEVER a shell, cwd + required timeout. */
+/**
+ * Minimal child environment when the caller supplies none (CAP-007 review, MB-1). A child
+ * MUST NOT inherit the full parent `process.env` by default — an allow-listed binary could
+ * otherwise read local secrets (e.g. `node -e "console.log(process.env)"`). Only PATH (so
+ * the binary resolves) and HOME are passed; callers may override with an explicit env.
+ */
+function minimalEnv(): Record<string, string> {
+  return { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '' };
+}
+
+/** Default runner: argument-array `spawnSync`, NEVER a shell, cwd + required timeout, minimal env. */
 export const defaultRawRunner: RawCommandRunner = (command, args, { cwd, timeoutMs, env }) => {
   const res = spawnSync(command, args, {
     cwd,
     timeout: timeoutMs,
     encoding: 'utf8',
     shell: false, // explicit: command + args are passed as an argv vector, never a shell string
-    ...(env ? { env } : {}), // omitted → inherits process.env (PATH); provided → exact env
+    env: env ?? minimalEnv(), // never inherit the full parent process.env by default (MB-1)
   });
   const timedOut = !!(res.error && (res.error as NodeJS.ErrnoException).code === 'ETIMEDOUT');
   // A spawn-level error (e.g. binary not found) is surfaced in stderr; not a timeout.
@@ -69,11 +79,12 @@ export const defaultRawRunner: RawCommandRunner = (command, args, { cwd, timeout
 
 /**
  * Runs ONE command with an ARGUMENT ARRAY (never a shell string, never `shell: true`),
- * a required timeout (a hung process is killed → `timedOut`), cwd = workspace root, and
+ * a required timeout (a hung process is killed → `timedOut`), cwd = workspace root,
+ * **minimal env by default** (PATH/HOME — never the full parent `process.env`), and
  * **masked + size-capped** output (CAP-007, ADR-0028). The core stays
- * `child_process`-free; ALL process execution lives here. Approval / risk / allow-list
- * gating happens in `CommandExecutionManager` BEFORE this runner is invoked — the runner
- * enforces no policy beyond "no shell".
+ * `child_process`-free; ALL process execution lives here. Approval / risk / allow-list /
+ * dangerous-arg gating happens in `CommandExecutionManager` BEFORE this runner is invoked —
+ * the runner enforces only "no shell" and "no full env inheritance".
  */
 export class LocalCommandRunner implements CommandRunner {
   readonly kind = 'local-command';

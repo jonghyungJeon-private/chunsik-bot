@@ -97,9 +97,29 @@ describe('CommandExecutionManager (CAP-007, ADR-0028)', () => {
     const h = harness();
     // allow-listed binary, but its args match a destructive pattern → CRITICAL.
     await expect(
-      mgr(h).run(input({ command: 'node', args: ['-e', 'DROP TABLE users'], approvalRef: approved })),
+      mgr(h).run(input({ command: 'npm', args: ['run', 'drop table users'], approvalRef: approved })),
     ).rejects.toThrow(/CRITICAL|destructive/);
     expect(h.run).not.toHaveBeenCalled();
+  });
+
+  // CAP-007 review MB-2: the allow-list is command + dangerous-arg aware — an allow-listed
+  // `node` must not bypass it via eval-style flags.
+  it.each([['-e'], ['--eval'], ['-p'], ['--print'], ['--eval=1+1'], ['-pe']])(
+    'refuses eval-style node arg %s (allow-list is dangerous-arg aware)',
+    async (flag) => {
+      const h = harness();
+      await expect(mgr(h).run(input({ command: 'node', args: [flag, '1+1'] }))).rejects.toThrow(
+        /eval-style/,
+      );
+      expect(h.run).not.toHaveBeenCalled();
+    },
+  );
+
+  it('allows a non-eval node invocation (e.g. running a script file) as before', async () => {
+    const h = harness();
+    const exec = await mgr(h).run(input({ command: 'node', args: ['dist/main.js'] }));
+    expect(exec.status).toBe(CommandExecutionStatus.SUCCEEDED);
+    expect(h.run).toHaveBeenCalledTimes(1);
   });
 
   it('requires an APPROVED approval for a HIGH command (MB-2)', async () => {
