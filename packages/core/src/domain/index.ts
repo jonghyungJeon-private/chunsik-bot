@@ -14,3 +14,4 @@ export * from './git';
 export * from './execution-plan';
 export * from './approval';
 export * from './patch';
+export * from './workspace-change';

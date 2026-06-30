@@ -11,6 +11,7 @@ import type {
   Session,
   Task,
   TaskRun,
+  WorkspaceChange,
 } from '../domain';
 
 /**
@@ -61,6 +62,11 @@ export interface PatchRepository extends Repository<PatchSet> {
   findByExecutionPlan(executionPlanId: Id): Promise<PatchSet[]>;
 }
 
+export interface WorkspaceChangeRepository extends Repository<WorkspaceChange> {
+  /** The workspace change(s) recorded for applying a given PatchSet (CAP-006). */
+  findByPatchSet(patchSetId: Id): Promise<WorkspaceChange[]>;
+}
+
 /**
  * PORT: persistence. v1 implementation: SQLiteStorageProvider.
  *
@@ -82,4 +88,5 @@ export interface StorageProvider {
   readonly projects: Repository<Project>;
   readonly approvals: ApprovalRepository;
   readonly patches: PatchRepository;
+  readonly workspaceChanges: WorkspaceChangeRepository;
 }

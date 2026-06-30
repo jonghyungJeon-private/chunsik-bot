@@ -18,6 +18,8 @@ import type {
   PatchSet,
   Project,
   Repository,
+  WorkspaceChange,
+  WorkspaceChangeRepository,
   Session,
   SessionRepository,
   StorageProvider,
@@ -240,6 +242,29 @@ class SqlitePatchRepository extends JsonRepository<PatchSet> implements PatchRep
   }
 }
 
+class SqliteWorkspaceChangeRepository
+  extends JsonRepository<WorkspaceChange>
+  implements WorkspaceChangeRepository
+{
+  override async save(change: WorkspaceChange): Promise<WorkspaceChange> {
+    this.db
+      .prepare(
+        `INSERT INTO workspace_changes (id, patch_id, status, data) VALUES (?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET patch_id = excluded.patch_id,
+           status = excluded.status, data = excluded.data`,
+      )
+      .run(change.id, change.patchRef.id, change.status, JSON.stringify(change));
+    return change;
+  }
+
+  async findByPatchSet(patchSetId: Id): Promise<WorkspaceChange[]> {
+    const rows = this.db
+      .prepare(`SELECT data FROM workspace_changes WHERE patch_id = ?`)
+      .all(patchSetId) as Row[];
+    return rows.map((r) => JSON.parse(r.data) as WorkspaceChange);
+  }
+}
+
 class SqliteMemoryRepository extends JsonRepository<MemoryRecord> implements MemoryRepository {
   override async save(record: MemoryRecord): Promise<MemoryRecord> {
     this.db
@@ -309,6 +334,7 @@ export class SqliteStorageProvider implements StorageProvider {
   projects!: Repository<Project>;
   approvals!: ApprovalRepository;
   patches!: PatchRepository;
+  workspaceChanges!: WorkspaceChangeRepository;
 
   constructor(private readonly config: SqliteConfig) {}
 
@@ -331,6 +357,7 @@ export class SqliteStorageProvider implements StorageProvider {
     this.projects = new JsonRepository<Project>(db, 'projects');
     this.approvals = new SqliteApprovalRepository(db, 'approvals');
     this.patches = new SqlitePatchRepository(db, 'patches');
+    this.workspaceChanges = new SqliteWorkspaceChangeRepository(db, 'workspace_changes');
   }
 
   async close(): Promise<void> {

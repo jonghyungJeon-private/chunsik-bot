@@ -92,6 +92,16 @@ export const MIGRATIONS: readonly Migration[] = [
       );
     },
   },
+  {
+    version: 4,
+    name: 'workspace_changes table (CAP-006)',
+    up(db) {
+      db.exec(
+        `CREATE TABLE IF NOT EXISTS workspace_changes (
+           id TEXT PRIMARY KEY, patch_id TEXT, status TEXT NOT NULL, data TEXT NOT NULL);`,
+      );
+    },
+  },
 ];
 
 /** The schema version this build targets (the highest migration version). */

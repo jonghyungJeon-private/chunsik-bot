@@ -7,6 +7,28 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Sprint 2f · CAP-006 Workspace Write Capability (apply, never generate)
+
+- **`WorkspaceChange`** aggregate (Workspace-Write-owned) — the **Execution History** of
+  applying a `PatchSet`: `{ patchRef, executionPlanRef, approvalRef, workspaceRef, status,
+  results: FileChangeResult[] }`. `WorkspaceChangeStatus = PENDING|APPLYING|APPLIED|
+  PARTIALLY_APPLIED|FAILED`; `FileChangeResult = { path, operation, status, message, durationMs }`.
+- **`WorkspaceWriteManager.apply`** — approval gate (Ref only: APPROVED + plan-scope match;
+  no `ApprovalManager` query), **status-based idempotency** (one change per PatchSet; APPLIED
+  → no-op), **best-effort** apply (every op attempted, all results recorded), final status derived.
+- **`WorkspaceWriter`** port + **`LocalWorkspaceWriter`** adapter (`node:fs` + jsdiff
+  `applyPatch`; **atomic unit = file** via temp-write+rename / unlink; sandboxed; binary →
+  skipped; conflict → failed). **No git, no child_process, no commit** (Repository-Independent).
+- **Persistence:** `WorkspaceChangeRepository` + `SqliteWorkspaceChangeRepository` + **SQLite
+  migration v4** (`workspace_changes`) via the ADR-0020 runner. References the immutable
+  `PatchSet`/`ExecutionPlan`/`ApprovalRequest` — mutates none of them (Aggregate Ownership).
+- **Not in scope (CA-confirmed):** Rollback (future capability), Resume (records only), git
+  recovery, command execution, AI integration, orchestrator/Discord wiring (ADR-0027).
+- Tests (+15): WorkspaceWriteManager (approval+plan-scope, idempotency, best-effort
+  partial/all-fail, no-PatchSet-mutation), LocalWorkspaceWriter (add/update/delete/conflict/
+  binary/sandbox over real fs+jsdiff), SqliteWorkspaceChangeRepository, migration v4 — Vitest
+  27 files / 144 tests. Capability doc `docs/capabilities/workspace-write.md`.
+
 ### Added — Sprint 2e · CAP-005 Patch Capability (generate, never apply)
 
 - **`PatchSet`** aggregate (Patch-owned, **immutable**) of `PatchOperation`s

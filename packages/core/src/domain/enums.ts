@@ -139,3 +139,16 @@ export enum ApprovalStatus {
 export enum PatchStatus {
   GENERATED = 'GENERATED',
 }
+
+/**
+ * Lifecycle of a WorkspaceChange — the Execution History aggregate for applying a
+ * PatchSet (CAP-006, ADR-0027). Owned/mutated only by Workspace Write. Set kept
+ * stable so a future Rollback capability needs no change.
+ */
+export enum WorkspaceChangeStatus {
+  PENDING = 'PENDING',
+  APPLYING = 'APPLYING',
+  APPLIED = 'APPLIED',
+  PARTIALLY_APPLIED = 'PARTIALLY_APPLIED',
+  FAILED = 'FAILED',
+}

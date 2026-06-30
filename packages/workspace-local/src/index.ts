@@ -1,13 +1,25 @@
-import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
-import { basename, isAbsolute, join, resolve, sep } from 'node:path';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { createTwoFilesPatch } from 'diff';
+import { applyPatch, createTwoFilesPatch } from 'diff';
 import { NotImplementedError } from '@chunsik/core';
 import type {
   CommandResult,
   ContextFile,
   DiffChangeKind,
+  FileChangeResult,
   FileDiff,
+  PatchOperation,
   ProjectFileEntry,
   ProjectReadout,
   ProjectScan,
@@ -16,6 +28,7 @@ import type {
   WorkspaceDiff,
   WorkspaceProvider,
   WorkspaceRef,
+  WorkspaceWriter,
 } from '@chunsik/core';
 
 /** Directories excluded from file-tree summaries / reads (ADR-0018/0019). */
@@ -395,5 +408,49 @@ export class LocalCloneWorkspaceProvider implements WorkspaceProvider {
     _options?: RunCommandOptions,
   ): Promise<CommandResult> {
     throw new NotImplementedError('LocalCloneWorkspaceProvider.runCommand');
+  }
+}
+
+/**
+ * Applies one patch operation to the local filesystem (CAP-006, ADR-0027).
+ * **Atomic unit = file** (temp-write + rename, or unlink); `node:fs` only — no git,
+ * no child_process. Apply failures are ENCODED in the FileChangeResult (never thrown)
+ * so the manager can record best-effort results for every file. Sandboxed to the
+ * workspace root via `resolveWithin`.
+ */
+export class LocalWorkspaceWriter implements WorkspaceWriter {
+  readonly kind = 'local';
+
+  async applyOperation(ref: WorkspaceRef, op: PatchOperation): Promise<FileChangeResult> {
+    const start = Date.now();
+    const done = (status: FileChangeResult['status'], message: string): FileChangeResult => ({
+      path: op.path,
+      operation: op.operation,
+      status,
+      message,
+      durationMs: Date.now() - start,
+    });
+    try {
+      if (op.metadata?.['binary'] === true) return done('skipped', 'binary file not applied');
+      const abs = resolveWithin(ref.rootPath, op.path);
+
+      if (op.operation === 'delete') {
+        if (existsSync(abs)) unlinkSync(abs);
+        return done('applied', 'deleted');
+      }
+
+      const current = existsSync(abs) && statSync(abs).isFile() ? readFileSync(abs, 'utf8') : '';
+      const next = applyPatch(current, op.diff);
+      if (next === false) return done('failed', 'unified diff did not apply cleanly');
+
+      // Atomic per-file write: temp + rename.
+      mkdirSync(dirname(abs), { recursive: true });
+      const tmp = `${abs}.chunsik-tmp`;
+      writeFileSync(tmp, next, 'utf8');
+      renameSync(tmp, abs);
+      return done('applied', op.operation === 'add' ? 'created' : 'updated');
+    } catch (err) {
+      return done('failed', err instanceof Error ? err.message : String(err));
+    }
   }
 }

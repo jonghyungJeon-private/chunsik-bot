@@ -9,6 +9,7 @@ import {
   VECTOR_PROVIDER,
   WORKSPACE_PROVIDER,
   GIT_PROVIDER,
+  WORKSPACE_WRITER,
   EXECUTION_PLANNER,
   AI_PROVIDERS,
   CONNECTOR_PROVIDERS,
@@ -34,6 +35,7 @@ import {
   ApprovalPolicy,
   ApprovalManager,
   PatchManager,
+  WorkspaceWriteManager,
   ConnectorManager,
   ResponseComposer,
   RiskPolicy,
@@ -47,6 +49,7 @@ import type {
   StorageProvider,
   VectorProvider,
   WorkspaceProvider,
+  WorkspaceWriter,
 } from '@chunsik/core';
 
 // Concrete providers — the ONLY file allowed to import them.
@@ -54,7 +57,7 @@ import { DiscordPlatformAdapter } from '@chunsik/adapter-discord';
 import { SqliteStorageProvider } from '@chunsik/storage-sqlite';
 import { LocalQueueProvider } from '@chunsik/queue-local';
 import { LocalVectorProvider } from '@chunsik/vector-local';
-import { LocalCloneWorkspaceProvider } from '@chunsik/workspace-local';
+import { LocalCloneWorkspaceProvider, LocalWorkspaceWriter } from '@chunsik/workspace-local';
 import { LocalGitProvider } from '@chunsik/git-local';
 import { ClaudeCliProvider, CodexCliProvider, OllamaCliProvider } from '@chunsik/ai-cli';
 import { V1_CONNECTORS } from '@chunsik/connectors';
@@ -79,6 +82,8 @@ const infrastructure: Provider[] = [
   },
   // CAP-002 Git (read-only). Separate port from Workspace — Workspace ≠ Git.
   { provide: GIT_PROVIDER, useFactory: () => new LocalGitProvider() },
+  // CAP-006 Workspace Write — applies PatchSet operations to the filesystem (node:fs only).
+  { provide: WORKSPACE_WRITER, useFactory: () => new LocalWorkspaceWriter() },
   {
     provide: PLATFORM_ADAPTER,
     useFactory: () => new DiscordPlatformAdapter(config.discord, new ConsoleLogger('discord')),
@@ -175,6 +180,13 @@ const application: Provider[] = [
     provide: PatchManager,
     useFactory: (storage: StorageProvider) => new PatchManager(storage),
     inject: [STORAGE_PROVIDER],
+  },
+  // CAP-006 Workspace Write (apply PatchSet). Not orchestrator/Discord wired.
+  {
+    provide: WorkspaceWriteManager,
+    useFactory: (storage: StorageProvider, writer: WorkspaceWriter) =>
+      new WorkspaceWriteManager(storage, writer),
+    inject: [STORAGE_PROVIDER, WORKSPACE_WRITER],
   },
   {
     provide: ConnectorManager,

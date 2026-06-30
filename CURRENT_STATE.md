@@ -5,14 +5,14 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** **Version 2, Sprint 2e — CAP-005 Patch Capability** (ADR-0026):
-  `PatchSet` aggregate + `PatchManager.generate` (deterministic; requires APPROVED approval)
-  + `PatchRepository`/`SqlitePatchRepository` + **migration v3**. **Patch generates, never
-  applies** (Workspace Write applies); `PatchStatus = GENERATED` only; references
-  `ExecutionPlanRef`/`ApprovalRef`, never mutates them. No UI/orchestrator wiring.
-  CAP-001/002/003/004 ✅ merged.
-- **Next:** Chief Architect review of Sprint 2e; no merge until approved.
-- **Build/Test:** `pnpm typecheck` PASS (exit 0); `pnpm test` 24 files / 127 tests PASS.
+- **Phase:** **Version 2, Sprint 2f — CAP-006 Workspace Write Capability** (ADR-0027):
+  `WorkspaceChange` (Execution History) aggregate + `WorkspaceWriteManager.apply` +
+  `WorkspaceWriter` port/`LocalWorkspaceWriter` (node:fs + jsdiff `applyPatch`) +
+  `WorkspaceChangeRepository` + **migration v4**. **Applies an approved PatchSet, never
+  generates**; best-effort per-file, atomic unit = file; **no git/child_process**; owns only
+  `WorkspaceChange`. The first filesystem-mutating capability. CAP-001…005 ✅ merged.
+- **Next:** Chief Architect review of Sprint 2f; no merge until approved.
+- **Build/Test:** `pnpm typecheck` PASS (exit 0); `pnpm test` 27 files / 144 tests PASS.
 
 ## Implemented
 
@@ -44,6 +44,11 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   APPROVED approval) + `SqlitePatchRepository` (migration v3). **Generates, never applies**;
   `PatchOperation` carries unified diffs; references `ExecutionPlanRef`/`ApprovalRef` only.
   Workspace Write (CAP-006) will apply (ADR-0026).
+- **CAP-006 Workspace Write** — `WorkspaceChange` (Execution History) aggregate +
+  `WorkspaceWriteManager.apply` + `WorkspaceWriter`/`LocalWorkspaceWriter` (node:fs + jsdiff)
+  + `SqliteWorkspaceChangeRepository` (migration v4). **Applies** an approved PatchSet
+  (best-effort, atomic-per-file); approval Ref + plan-scope checked; no git; owns only
+  `WorkspaceChange` (ADR-0027). First filesystem-mutating capability.
 
 ## Deferred
 
@@ -88,7 +93,7 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 
 ## Validation
 
-- `pnpm typecheck` — passes (exit 0). `pnpm test` — 24 files / 127 tests pass.
+- `pnpm typecheck` — passes (exit 0). `pnpm test` — 27 files / 144 tests pass.
 - Boundary enforced — Core cannot resolve adapter packages.
 - **Live (Sprint 1g):** real `node dist/main.js` Discord round-trip — register a
   project, then a structure question routed to PROJECT_ANALYSIS, read real files,

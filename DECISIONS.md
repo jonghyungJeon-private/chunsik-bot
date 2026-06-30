@@ -1137,3 +1137,58 @@ These capabilities must never be merged.
 ### Out of Scope (deferred)
 Patch application, file writing, git apply/commit, workspace mutation, execution, rollback,
 AI provider integration, command execution — all later capabilities.
+
+---
+
+## ADR-0027 — CAP-006 Workspace Write Capability (apply, not generate)
+
+- **Status:** ✅ Accepted (v2, Sprint 2f)
+- **Date:** 2026-06-30
+- **Capability:** CAP-006 — Workspace Write. **The first capability that mutates the
+  filesystem.** Owns the `WorkspaceChange` **Execution History** aggregate.
+
+### Most important rule
+> **Patch generates. Workspace Write applies.** Workspace Write consumes an immutable
+> `PatchSet` and applies its operations to the workspace; it never generates patches,
+> never calls git, never runs commands.
+
+### Decision
+- **Owns `WorkspaceChange`** (+ `WorkspaceChangeRef`, `WorkspaceChangeStatus`,
+  `FileChangeResult`). Mutates only this aggregate. **Never mutates** `PatchSet`/
+  `ExecutionPlan`/`ApprovalRequest` (Aggregate Ownership Rule, ADR-0025) — references via Refs.
+- **Apply flow:** `WorkspaceWriteManager.apply({ patchSet, approvalRef, workspaceRef })` →
+  `WorkspaceChange` → `WorkspaceWriter` (port/adapter). The writer never generates patches.
+- **Approval (Ref only):** requires `approvalRef.status === APPROVED` **and**
+  `approvalRef.executionPlanRef.id === patchSet.executionPlanRef.id` (plan-scoped referential
+  integrity, ADR-0025/0026). Does **not** query `ApprovalManager`.
+- **Repository independence:** **no git, no commit, no repo mutation, no `child_process`** in
+  Workspace Write. The `WorkspaceWriter` adapter uses `node:fs` only.
+- **PatchSet is immutable**, consumed exactly as produced (no regenerate/reinterpret).
+
+### CA Planning-review changes (Round 2)
+- **Best-effort, not stop-on-first-failure.** Every operation is attempted; each yields a
+  `FileChangeResult` (`applied`/`failed`/`skipped`). Final status is derived after all attempts.
+- **`WorkspaceChangeStatus` = `PENDING | APPLYING | APPLIED | PARTIALLY_APPLIED | FAILED`**
+  (Rollback-capability-stable).
+- **Idempotency is status-based.** One `WorkspaceChange` per `PatchSet`: `APPLIED` → no-op;
+  `FAILED`/`PARTIALLY_APPLIED`/`APPLYING` → re-attempt on the same aggregate.
+- **Atomic unit = file** (temp-write + rename, or unlink). A PatchSet is not a transaction.
+- **`FileChangeResult` = `{ path, operation, status, message, durationMs }`** — the
+  Execution-History record.
+
+### Consequences
+- + A complete, auditable execution record (best-effort, per-file); clean apply/generate
+  separation; reuses CAP-001 diff (jsdiff `applyPatch`) + the ADR-0020 migration runner (v4).
+- + Repository-independent — git recovery/rollback handled by future capabilities, not here.
+- − Multi-file apply is not atomic (file is the atomic unit); partial state is precisely
+  recorded for a future Rollback capability.
+
+### Out of Scope (deferred — Non-blocking, CA-confirmed)
+**Rollback** (future capability, may use Git capability), **Resume** (CAP-006 records only,
+no resume engine), git recovery, command execution, AI provider integration. Workspace Write
+stays Repository-Independent. `WorkspaceChange` is the **Execution History** starting point
+that CAP-007 Command Execution may later consume.
+
+### Capability / Relations
+**CAP-006.** Relates: ADR-0026(Patch), ADR-0025(Approval/Ownership), ADR-0022(Workspace diff),
+ADR-0020(migrations). Docs: `docs/capabilities/workspace-write.md`.
