@@ -13,9 +13,11 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
   (`{ path, operation: add/update/delete, diff, metadata? }`), with `PatchRef` and
   `PatchStatus` (**`GENERATED` only**). References `ExecutionPlanRef` + `ApprovalRef`; never
   mutates them (Aggregate Ownership Rule).
-- **`PatchManager.generate`** — deterministic; **requires an APPROVED `ApprovalRef`** (no
-  `ApprovalManager` query); merges `changes: ProposedChange[]` with their `diff:
-  WorkspaceDiff` (supplied independently) into operations; persists a `GENERATED` `PatchSet`.
+- **`PatchManager.generate`** — deterministic; **requires an APPROVED `ApprovalRef` scoped to
+  the same ExecutionPlan** (`ApprovalRef` is now plan-scoped: `{ id, status, executionPlanRef }`;
+  referential integrity — an approval from a different plan is rejected) — no `ApprovalManager`
+  query; merges `changes: ProposedChange[]` with their `diff: WorkspaceDiff` (supplied
+  independently) into operations; persists a `GENERATED` `PatchSet`.
 - **Patch generates, never applies** (Workspace Write, CAP-006, applies) — a permanent
   architectural separation (ADR-0026). No file/git writes; no I/O beyond persistence.
 - **Persistence:** `PatchRepository` port (`findByExecutionPlan`) + `SqlitePatchRepository`

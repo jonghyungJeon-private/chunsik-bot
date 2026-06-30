@@ -17,9 +17,11 @@ Planning → Approval → [Patch → PatchSet] → Workspace Write (applies) →
 ## Responsibilities
 
 - Own the **`PatchSet`** aggregate (`PatchOperation[]`, immutable after creation).
-- `PatchManager.generate(input)` — requires an **APPROVED** `ApprovalRef`; merges
-  `changes: ProposedChange[]` with their `diff: WorkspaceDiff` (received independently) into
-  `PatchOperation`s; persists a `GENERATED` `PatchSet`. Plus `get` / `findByExecutionPlan`.
+- `PatchManager.generate(input)` — requires an **APPROVED** `ApprovalRef` **scoped to the
+  same ExecutionPlan** (`approvalRef.executionPlanRef.id === input.executionPlanRef.id`;
+  referential integrity); merges `changes: ProposedChange[]` with their `diff: WorkspaceDiff`
+  (received independently) into `PatchOperation`s; persists a `GENERATED` `PatchSet`. Plus
+  `get` / `findByExecutionPlan`.
 - Persist via `PatchRepository` / `SqlitePatchRepository` (migration v3).
 
 ## Out of Scope

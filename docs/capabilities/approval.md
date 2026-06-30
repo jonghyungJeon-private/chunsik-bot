@@ -36,6 +36,9 @@ Planning → ExecutionPlan → [Approval] → Patch → Workspace Write → Comm
   (`evaluate`).
 - Domain: `ApprovalRequest` (aggregate), `ApprovalDecision` (input), `ApprovalRef`,
   `ApprovalStatus` (PENDING/APPROVED/REJECTED).
+- **`ApprovalRef` is plan-scoped:** `{ id, status, executionPlanRef }`. It carries the
+  `ExecutionPlanRef` so downstream capabilities (e.g. Patch) can verify an approval belongs
+  to the plan being acted on, without loading the aggregate. (Shared with CAP-005.)
 - Port: `ApprovalRepository` (`findByExecutionPlan`) → `SqliteApprovalRepository`.
 - **Persisted fields:** id, executionPlanRef, status, riskLevel, reason, requestedBy,
   decision?, decidedBy?, decidedAt?, comment?, createdAt, updatedAt (taskId? optional v1 compat).

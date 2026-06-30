@@ -21,7 +21,7 @@ function patchSet(id: string, planId: string): PatchSet {
   return {
     id,
     executionPlanRef: { id: planId, goal: 'g' },
-    approvalRef: { id: 'appr-1', status: ApprovalStatus.APPROVED },
+    approvalRef: { id: 'appr-1', status: ApprovalStatus.APPROVED, executionPlanRef: { id: planId, goal: 'g' } },
     operations: [{ path: 'a.ts', operation: 'update', diff: '@@\n-1\n+2' }],
     status: PatchStatus.GENERATED,
     createdAt: '2026-06-29T00:00:00.000Z',

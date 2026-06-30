@@ -35,7 +35,8 @@ function fakeStorage(): StorageProvider {
 }
 
 const planRef: ExecutionPlanRef = { id: 'plan-1', goal: 'do x' };
-const approved: ApprovalRef = { id: 'appr-1', status: ApprovalStatus.APPROVED };
+// ApprovalRef is plan-scoped: it carries the ExecutionPlanRef it approved.
+const approved: ApprovalRef = { id: 'appr-1', status: ApprovalStatus.APPROVED, executionPlanRef: planRef };
 
 function diffOf(...files: WorkspaceDiff['files']): WorkspaceDiff {
   return { refId: 'w1', files, estimatedChangedLines: 0, truncated: false };
@@ -70,9 +71,29 @@ describe('PatchManager (CAP-005, ADR-0026) — generation only', () => {
   it('requires an APPROVED ApprovalRef (rejects PENDING / REJECTED)', async () => {
     for (const status of [ApprovalStatus.PENDING, ApprovalStatus.REJECTED]) {
       await expect(
-        new PatchManager(fakeStorage()).generate(input({ approvalRef: { id: 'a', status } })),
+        new PatchManager(fakeStorage()).generate(
+          input({ approvalRef: { id: 'a', status, executionPlanRef: planRef } }),
+        ),
       ).rejects.toThrow(/APPROVED/);
     }
+  });
+
+  it('accepts an APPROVED approval scoped to the SAME ExecutionPlan', async () => {
+    const set = await new PatchManager(fakeStorage()).generate(
+      input({ approvalRef: { id: 'appr-1', status: ApprovalStatus.APPROVED, executionPlanRef: planRef } }),
+    );
+    expect(set.status).toBe(PatchStatus.GENERATED);
+  });
+
+  it('rejects an APPROVED approval scoped to a DIFFERENT ExecutionPlan (referential integrity)', async () => {
+    const otherPlanApproval: ApprovalRef = {
+      id: 'appr-2',
+      status: ApprovalStatus.APPROVED,
+      executionPlanRef: { id: 'plan-OTHER', goal: 'something else' },
+    };
+    await expect(
+      new PatchManager(fakeStorage()).generate(input({ approvalRef: otherPlanApproval })),
+    ).rejects.toThrow(/different ExecutionPlan/);
   });
 
   it('throws when a proposed change has no matching diff', async () => {

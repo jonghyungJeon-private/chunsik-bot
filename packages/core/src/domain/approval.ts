@@ -46,9 +46,20 @@ export interface ApprovalDecision {
 export interface ApprovalRef {
   id: Id;
   status: ApprovalStatus;
+  /**
+   * The plan this approval is scoped to. An `ApprovalRef` is **plan-scoped**: it
+   * carries the `ExecutionPlanRef` so downstream capabilities (e.g. Patch) can
+   * verify referential integrity — that an APPROVED approval belongs to the plan
+   * being acted on — without loading the `ApprovalRequest` aggregate (CAP-005 review).
+   */
+  executionPlanRef: ExecutionPlanRef;
 }
 
 /** Pure derivation of an ApprovalRef from the aggregate. */
 export function approvalRef(request: ApprovalRequest): ApprovalRef {
-  return { id: request.id, status: request.status };
+  return {
+    id: request.id,
+    status: request.status,
+    executionPlanRef: request.executionPlanRef,
+  };
 }

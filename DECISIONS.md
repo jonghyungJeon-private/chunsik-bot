@@ -1040,8 +1040,12 @@ sprint; the rule is binding from now.
 - **`ApprovalRequest` aggregate (Approval-owned), ExecutionPlan-based.** References the plan
   via `executionPlanRef`; persists `id, executionPlanRef, status, riskLevel, reason,
   requestedBy, decision?, decidedBy?, decidedAt?, comment?, createdAt, updatedAt` (+ optional
-  `taskId` for v1 compat — **not** task-first, Q2). `ApprovalRef { id, status }` is the Ref
-  handle; `ApprovalStatus = PENDING | APPROVED | REJECTED`.
+  `taskId` for v1 compat — **not** task-first, Q2). `ApprovalStatus = PENDING | APPROVED |
+  REJECTED`.
+- **`ApprovalRef` is plan-scoped** (`{ id, status, executionPlanRef }`) — amended per the
+  CAP-005 review. It carries the `ExecutionPlanRef` so a downstream capability can verify an
+  approval belongs to the plan it is acting on (referential integrity) without loading the
+  aggregate. CAP-004 and CAP-005 share this contract.
 - **Approval never mutates `ExecutionPlan` (Q1).** `ExecutionPlan` is an immutable planning
   output after creation; **approval state lives only on `ApprovalRequest`**. No
   `PLANNED → APPROVED` mutation of the plan. A global execution-state projection, if ever
@@ -1102,6 +1106,10 @@ These capabilities must never be merged.
 - **Approval enforced on the passed Ref (Q3).** `generate` requires
   `approvalRef.status === APPROVED` (deterministic check); `PatchManager` does **not** query
   `ApprovalManager`. Composition happens above Patch; capability managers stay independent.
+- **Referential integrity (CAP-005 review).** `ApprovalRef` is **plan-scoped**
+  (`{ id, status, executionPlanRef }`); `generate` additionally requires
+  `approvalRef.executionPlanRef.id === input.executionPlanRef.id` and rejects an approval
+  from a different plan. This guarantees the approval governs the plan being patched.
 - **Explicit inputs (Q4).** `changes: ProposedChange[]` and `diff: WorkspaceDiff` are received
   **independently** (not pre-merged) so future generators can use them differently. v1 maps
   each change to its `FileDiff` to build a `PatchOperation` (path, operation, diff, metadata?).

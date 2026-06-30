@@ -34,6 +34,15 @@ export class PatchManager {
         `patch generation requires an APPROVED approval (got ${input.approvalRef.status})`,
       );
     }
+    // Referential integrity (CAP-005 review): the approval must be scoped to the
+    // SAME ExecutionPlan we are patching — an APPROVED approval from a different
+    // plan must not authorize this patch.
+    if (input.approvalRef.executionPlanRef.id !== input.executionPlanRef.id) {
+      throw new Error(
+        `approval ${input.approvalRef.id} is scoped to a different ExecutionPlan ` +
+          `(${input.approvalRef.executionPlanRef.id}, expected ${input.executionPlanRef.id})`,
+      );
+    }
     const diffByPath = new Map(input.diff.files.map((f) => [f.path, f]));
     const operations: PatchOperation[] = input.changes.map((change) => {
       const fileDiff = diffByPath.get(change.path);
