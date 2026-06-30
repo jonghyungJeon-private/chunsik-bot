@@ -10,9 +10,12 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 ### Added — Sprint 2f · CAP-006 Workspace Write Capability (apply, never generate)
 
 - **`WorkspaceChange`** aggregate (Workspace-Write-owned) — the **Execution History** of
-  applying a `PatchSet`: `{ patchRef, executionPlanRef, approvalRef, workspaceRef, status,
-  results: FileChangeResult[] }`. `WorkspaceChangeStatus = PENDING|APPLYING|APPLIED|
+  applying a `PatchSet`: `{ patchRef, patchHash, executionPlanRef, approvalRef, workspaceRef,
+  status, results: FileChangeResult[] }`. `WorkspaceChangeStatus = PENDING|APPLYING|APPLIED|
   PARTIALLY_APPLIED|FAILED`; `FileChangeResult = { path, operation, status, message, durationMs }`.
+- **Patch revision contract (CAP-006 review):** `WorkspaceChange.patchHash` persists the
+  applied PatchSet's content revision; the same revision re-run is idempotent, a different
+  revision for the same PatchSet id is refused (no cross-revision reuse).
 - **`WorkspaceWriteManager.apply`** — approval gate (Ref only: APPROVED + plan-scope match;
   no `ApprovalManager` query), **status-based idempotency** (one change per PatchSet; APPLIED
   → no-op), **best-effort** apply (every op attempted, all results recorded), final status derived.

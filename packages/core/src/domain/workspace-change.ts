@@ -31,6 +31,14 @@ export interface FileChangeResult {
 export interface WorkspaceChange {
   id: Id;
   patchRef: PatchRef;
+  /**
+   * Content revision of the PatchSet that was applied (a deterministic hash of its
+   * operations). Persisted so the Execution History records EXACTLY which patch
+   * revision produced this change — the basis for conflict detection / resume /
+   * rollback / audit, and for refusing to reuse a change for a different revision
+   * (CAP-006 review, ADR-0027).
+   */
+  patchHash: string;
   executionPlanRef: ExecutionPlanRef;
   approvalRef: ApprovalRef;
   workspaceRef: WorkspaceRef;

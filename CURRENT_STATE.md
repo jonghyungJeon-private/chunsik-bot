@@ -12,7 +12,7 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   generates**; best-effort per-file, atomic unit = file; **no git/child_process**; owns only
   `WorkspaceChange`. The first filesystem-mutating capability. CAP-001…005 ✅ merged.
 - **Next:** Chief Architect review of Sprint 2f; no merge until approved.
-- **Build/Test:** `pnpm typecheck` PASS (exit 0); `pnpm test` 27 files / 144 tests PASS.
+- **Build/Test:** `pnpm typecheck` PASS (exit 0); `pnpm test` 27 files / 146 tests PASS.
 
 ## Implemented
 
@@ -93,7 +93,7 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 
 ## Validation
 
-- `pnpm typecheck` — passes (exit 0). `pnpm test` — 27 files / 144 tests pass.
+- `pnpm typecheck` — passes (exit 0). `pnpm test` — 27 files / 146 tests pass.
 - Boundary enforced — Core cannot resolve adapter packages.
 - **Live (Sprint 1g):** real `node dist/main.js` Discord round-trip — register a
   project, then a structure question routed to PROJECT_ANALYSIS, read real files,

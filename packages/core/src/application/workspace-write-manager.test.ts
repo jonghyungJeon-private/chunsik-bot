@@ -122,6 +122,28 @@ describe('WorkspaceWriteManager (CAP-006, ADR-0027)', () => {
     expect(applyOperation).not.toHaveBeenCalled();
   });
 
+  it('same patch revision re-run stays idempotent (no-op, same WorkspaceChange)', async () => {
+    const { storage, writer, applyOperation } = harness();
+    const mgr = new WorkspaceWriteManager(storage, writer);
+    const ps = patchSet({ path: 'a.ts', operation: 'update', diff: '@@\n-1\n+2' });
+    const first = await mgr.apply(input({ patchSet: ps }));
+    applyOperation.mockClear();
+    const second = await mgr.apply(input({ patchSet: ps })); // identical revision
+    expect(second.id).toBe(first.id);
+    expect(second.patchHash).toBe(first.patchHash);
+    expect(applyOperation).not.toHaveBeenCalled();
+  });
+
+  it('refuses to reuse a WorkspaceChange for a DIFFERENT patch revision (same PatchSet id)', async () => {
+    const { storage, writer } = harness();
+    const mgr = new WorkspaceWriteManager(storage, writer);
+    // Both PatchSets share id 'patch-1' (from the helper) but carry different operations.
+    await mgr.apply(input({ patchSet: patchSet({ path: 'one.ts', operation: 'add', diff: '@@\n+1' }) }));
+    await expect(
+      mgr.apply(input({ patchSet: patchSet({ path: 'two.ts', operation: 'add', diff: '@@\n+2' }) })),
+    ).rejects.toThrow(/different revision|refusing to reuse/);
+  });
+
   it('never mutates the PatchSet (aggregate ownership)', async () => {
     const { storage, writer } = harness();
     const ps = Object.freeze(patchSet());

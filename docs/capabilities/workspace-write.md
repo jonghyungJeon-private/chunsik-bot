@@ -40,16 +40,22 @@ Planning → Approval → Patch → [Workspace Write: apply PatchSet → Workspa
 - `WorkspaceWriteManager` (`apply`/`get`/`findByPatchSet`).
 - Port `WorkspaceWriter` (`applyOperation(ref, op) → FileChangeResult`; token `WORKSPACE_WRITER`;
   adapter `LocalWorkspaceWriter` in `workspace-local`, `node:fs` + jsdiff `applyPatch`).
-- Domain: `WorkspaceChange` (aggregate, **Execution History**), `WorkspaceChangeRef`,
-  `WorkspaceChangeStatus` (`PENDING|APPLYING|APPLIED|PARTIALLY_APPLIED|FAILED`),
-  `FileChangeResult` (`{ path, operation, status, message, durationMs }`), `ApplyInput`.
+- Domain: `WorkspaceChange` (aggregate, **Execution History**; carries `patchHash` — the
+  applied PatchSet's content revision), `WorkspaceChangeRef`, `WorkspaceChangeStatus`
+  (`PENDING|APPLYING|APPLIED|PARTIALLY_APPLIED|FAILED`), `FileChangeResult`
+  (`{ path, operation, status, message, durationMs }`), `ApplyInput`.
+- **Patch revision contract:** `WorkspaceChange.patchHash` records exactly which PatchSet
+  revision (content hash of its operations) was applied. Same revision re-run → idempotent;
+  a different revision for the same PatchSet id is refused (no cross-revision reuse).
 - **Atomic unit = file** (temp-write + rename / unlink); best-effort across files.
 
 ## Future Expansion
 
 - **Rollback capability** (separate; may compose the Git capability) — `WorkspaceChange`
-  records precise per-file state as its input.
-- **Resume** of an interrupted apply; richer conflict handling.
+  records precise per-file state + `patchHash` as its input. Reserved: a `ROLLBACK_REQUIRED`
+  status (added when Rollback lands — not now).
+- **Resume** of an interrupted apply; `FileChangeResult` kept open for future
+  `startedAt`/`finishedAt`.
 - CAP-007 Command Execution may consume `WorkspaceChange` as Execution History.
 
 ## Boundaries (Aggregate Ownership Rule — ADR-0025)

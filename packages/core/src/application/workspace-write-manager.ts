@@ -1,5 +1,6 @@
 import { newId } from '../util/id';
 import { now } from '../util/clock';
+import { contentHash } from '../util/hash';
 import { ApprovalStatus, WorkspaceChangeStatus, patchRef } from '../domain';
 import type {
   ApplyInput,
@@ -51,10 +52,19 @@ export class WorkspaceWriteManager {
       );
     }
 
-    // (2) Idempotency by status: one WorkspaceChange per PatchSet.
+    // (2) Revision contract + status-based idempotency. The applied patch revision is a
+    // content hash of the PatchSet's operations, persisted on the WorkspaceChange.
+    const patchHash = contentHash(JSON.stringify(patchSet.operations));
     const existing = (await this.storage.workspaceChanges.findByPatchSet(patchSet.id))[0];
-    if (existing && existing.status === WorkspaceChangeStatus.APPLIED) {
-      return existing; // already applied — no-op
+    if (existing) {
+      if (existing.patchHash !== patchHash) {
+        // Same PatchSet id, different revision/content — refuse to reuse the change.
+        throw new Error(
+          `workspace change ${existing.id} already applied patch revision ${existing.patchHash}; ` +
+            `refusing to reuse it for a different revision (${patchHash})`,
+        );
+      }
+      if (existing.status === WorkspaceChangeStatus.APPLIED) return existing; // idempotent no-op
     }
 
     // (3) Create or reuse the aggregate, mark APPLYING.
@@ -62,6 +72,7 @@ export class WorkspaceWriteManager {
     const base: WorkspaceChange = existing ?? {
       id: newId(),
       patchRef: patchRef(patchSet),
+      patchHash,
       executionPlanRef: patchSet.executionPlanRef,
       approvalRef,
       workspaceRef,

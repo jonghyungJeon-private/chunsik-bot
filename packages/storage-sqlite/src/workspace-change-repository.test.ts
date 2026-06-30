@@ -22,6 +22,7 @@ function change(id: string, patchId: string, status: WorkspaceChangeStatus): Wor
   return {
     id,
     patchRef: { id: patchId, status: PatchStatus.GENERATED },
+    patchHash: 'abc123def456',
     executionPlanRef: planRef,
     approvalRef: { id: 'appr-1', status: ApprovalStatus.APPROVED, executionPlanRef: planRef },
     workspaceRef: { id: 'w1', rootPath: '/tmp/ws', kind: 'local-clone' },

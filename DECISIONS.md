@@ -1164,6 +1164,12 @@ AI provider integration, command execution — all later capabilities.
 - **Repository independence:** **no git, no commit, no repo mutation, no `child_process`** in
   Workspace Write. The `WorkspaceWriter` adapter uses `node:fs` only.
 - **PatchSet is immutable**, consumed exactly as produced (no regenerate/reinterpret).
+- **Patch revision contract (CAP-006 review).** `WorkspaceChange` persists `patchHash` — a
+  deterministic content hash of the applied PatchSet's operations (pure `contentHash`, no
+  `node:crypto`). The Execution History records EXACTLY which patch revision it applied
+  (basis for conflict detection / resume / rollback / audit). Re-applying the **same**
+  revision keeps status-based idempotency; a **different** revision for the same PatchSet id
+  is **refused** (`WorkspaceChange` is not reused across revisions).
 
 ### CA Planning-review changes (Round 2)
 - **Best-effort, not stop-on-first-failure.** Every operation is attempted; each yields a
@@ -1188,6 +1194,11 @@ AI provider integration, command execution — all later capabilities.
 no resume engine), git recovery, command execution, AI provider integration. Workspace Write
 stays Repository-Independent. `WorkspaceChange` is the **Execution History** starting point
 that CAP-007 Command Execution may later consume.
+
+**Reserved (NOT implemented now — future candidates):** a `ROLLBACK_REQUIRED`
+`WorkspaceChangeStatus` (added when the Rollback capability lands); `startedAt`/`finishedAt`
+on `FileChangeResult` (the VO is kept open for this). Recorded here per the CAP-006 review;
+no code added.
 
 ### Capability / Relations
 **CAP-006.** Relates: ADR-0026(Patch), ADR-0025(Approval/Ownership), ADR-0022(Workspace diff),

@@ -12,6 +12,18 @@ Apply an **approved**, immutable `PatchSet` to the workspace filesystem and reco
 outcome as a `WorkspaceChange` (Execution History). **Workspace Write applies; it never
 generates** (Patch generates). First filesystem-mutating capability.
 
+## Round-1 PR review fix (CA: APPROVED WITH CHANGES — 1 Merge-Blocking item)
+
+**Blocking:** `WorkspaceChange` must record which PatchSet **revision** it applied
+(Referential Contract → conflict detection / resume / rollback / audit).
+- Added **`WorkspaceChange.patchHash`** — a deterministic content hash of the PatchSet's
+  operations (pure `core/util/hash.contentHash`; no `node:crypto` → core stays pure).
+- `WorkspaceWriteManager.apply` now: same revision re-run → idempotent (existing rule);
+  **different revision for the same PatchSet id → refused** (no cross-revision reuse).
+- Tests +2: same-revision idempotency; different-revision reuse rejected. (146 tests total.)
+- Docs: ADR-0027 + `workspace-write.md` (+ reserved `ROLLBACK_REQUIRED` / `startedAt`-
+  `finishedAt` as ADR notes only). **Non-blocking items not implemented.**
+
 ## CA Planning-review changes — all applied
 
 | CA change | Applied |
@@ -62,7 +74,7 @@ generates** (Patch generates). First filesystem-mutating capability.
 ## Validation
 
 - `pnpm typecheck` → **PASS (exit 0)**.
-- `pnpm test` → **27 files / 144 tests PASS** (+15):
+- `pnpm test` → **27 files / 146 tests PASS** (+15):
   - **Manager:** APPLIED on full success; approval + plan-scope rejection; **best-effort**
     (all ops attempted) → PARTIALLY_APPLIED; all-fail → FAILED; **status-idempotency** (no-op,
     writer not called); **no PatchSet mutation** (frozen).
