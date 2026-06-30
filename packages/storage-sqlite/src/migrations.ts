@@ -113,6 +113,20 @@ export const MIGRATIONS: readonly Migration[] = [
       );
     },
   },
+  {
+    version: 6,
+    name: 'code_generations + code_proposals tables (CAP-008)',
+    up(db) {
+      db.exec(
+        `CREATE TABLE IF NOT EXISTS code_generations (
+           id TEXT PRIMARY KEY, execution_plan_id TEXT, status TEXT NOT NULL, data TEXT NOT NULL);`,
+      );
+      db.exec(
+        `CREATE TABLE IF NOT EXISTS code_proposals (
+           id TEXT PRIMARY KEY, code_generation_id TEXT, data TEXT NOT NULL);`,
+      );
+    },
+  },
 ];
 
 /** The schema version this build targets (the highest migration version). */

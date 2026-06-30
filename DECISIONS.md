@@ -1279,3 +1279,60 @@ command policy (allow-list / env) to config. (Round-2 review confirmed these sta
 **CAP-007.** Relates: ADR-0027(Workspace Write), ADR-0026(Patch), ADR-0025(Approval/Ownership),
 ADR-0023(Git relocation precedent), ADR-0020(migrations). Docs:
 `docs/capabilities/command-execution.md`.
+
+## ADR-0029 — CAP-008 AI Code Generation Capability (Codex; propose, never apply)
+
+- **Status:** ✅ Accepted (v2, Sprint 2h)
+- **Date:** 2026-06-30
+- **Capability:** CAP-008 — AI Code Generation. **The first AI Layer capability.** "Codex" is
+  the first *provider*; the capability is provider-agnostic. Owns the `CodeGeneration` (run) and
+  `CodeProposal` (output) aggregates.
+
+### Most important rule
+> **The AI proposes; it does not decide, approve, apply, or execute.** AI Code Generation asks a
+> code-capable provider to author a **proposal** (`ProposedChange[]`); Decision/Approval/Apply/
+> Execution stay with the existing capabilities (Planning/Approval/Patch/Workspace Write/Command).
+> The AI is never a source of truth.
+
+### Decision
+- **Owns `CodeGeneration` (run) + `CodeProposal` (output)** — the AI Layer owns BOTH (CA Round-1).
+  `CodeGeneration` holds only a `CodeProposalRef`; the heavy data (`ProposedChange[]`, providerId,
+  usage?, artifacts?) lives on `CodeProposal`. Mutates only these; references plan/workspace via Refs.
+- **Generate flow:** `PromptComposer` (authorship) → `PromptSpec` → **`PromptRenderer`** (rendering)
+  → **`AiRequest`** → (`ProviderSelector`) → `AiProvider.execute` → parse → `CodeGeneration`
+  (+ `CodeProposal`). Exactly ONE generation per call (no retry — Orchestrator's concern).
+- **Reuses the `AiProvider` port, input narrowed to `AiRequest` (CA Round-1 MB-2):** the provider
+  no longer renders prompts or sees a `PromptSpec`; rendering moved from the CLI adapter
+  (`renderPromptSpec`) to the core `PromptRenderer`. `CodexCliProvider.execute()` implemented
+  **suggest-only** (`codex exec --sandbox read-only`, prompt on stdin; never `--full-auto`).
+- **`ProviderSelector` (CA Round-1 MB-3):** provider selection extracted from `CapabilityRouter`
+  (now its implementation, method `select`); the capability depends on the selection contract.
+- **Provider-agnostic proposal parsing** in core (`parseCodeProposal`): one fenced ```json
+  envelope → `ProposedChange[]`; malformed output → FAILED. Identical for Codex and Ollama.
+- **Adapter isolation:** the provider owns all external AI interaction (process/auth/timeout/
+  transport-retry/masking/failure classification, ADR-0015). **Core stays HTTP/`child_process`-free.**
+- **Persistence:** `CodeGenerationRepository` + `CodeProposalRepository` + Sqlite + **migration v6**
+  (`code_generations`, `code_proposals`).
+
+### AI-Layer Aggregate Ownership Rule (CA Round-1 MB-4)
+> Planning owns ExecutionPlan · Approval owns ApprovalRequest · Patch owns PatchSet ·
+> Workspace owns WorkspaceChange · Command owns CommandExecution ·
+> **AI owns CodeGeneration (and CodeProposal)** · **AI never owns any downstream aggregate.**
+
+### Non-blocking (CA-confirmed; NOT implemented now)
+`generationHash` (the planned `promptHash` was dropped), `providerVersion`/`modelVersion`,
+Proposal Lifecycle, Prompt Version; Provider Cost, Token Usage accounting (`CodeProposal.usage?`
+is a reserved passthrough only), Provider Capability modelling, Failure-Taxonomy extension;
+tool-calling/agentic loops, conversation state, generation-level retry, streaming.
+
+### Consequences
+- + A clean, provider-agnostic AI Code Generation seam (Codex now; Ollama adds only an adapter,
+  CAP-009) with a strict propose-only boundary; reuses `AiProvider`/`ProviderSelector`/`PromptRenderer`,
+  the ADR-0015 failure taxonomy, and the ADR-0020 migration runner (v6).
+- − Narrowing `AiProvider` to `AiRequest` touched the existing Claude/chat path (rendering moved to
+  `PromptRenderer`; orchestrator renders before `execute`); guarded by the regression suite.
+
+### Capability / Relations
+**CAP-008.** Relates: ADR-0014(CLI providers), ADR-0015(AI failure taxonomy), ADR-0003(prompt
+layering), ADR-0024(Planning), ADR-0026(Patch), ADR-0025(Aggregate Ownership), ADR-0020(migrations).
+Docs: `docs/capabilities/code-generation.md`.

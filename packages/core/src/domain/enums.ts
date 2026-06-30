@@ -165,3 +165,15 @@ export enum CommandExecutionStatus {
   FAILED = 'FAILED',
   TIMED_OUT = 'TIMED_OUT',
 }
+
+/**
+ * Lifecycle of a CodeGeneration — the AI Layer's run record for one code-generation
+ * request (CAP-008, ADR-0029). Owned/mutated only by AI Code Generation. The AI
+ * authors a proposal; it never decides, approves, applies, or executes.
+ */
+export enum CodeGenerationStatus {
+  PENDING = 'PENDING',
+  GENERATING = 'GENERATING',
+  SUCCEEDED = 'SUCCEEDED',
+  FAILED = 'FAILED',
+}

@@ -7,6 +7,36 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Sprint 2h · CAP-008 AI Code Generation Capability (Codex; propose, never apply)
+
+- **First AI Layer capability.** Asks a code-capable `AiProvider` (Codex first) to author a code
+  **proposal** for an `ExecutionPlan`. **The AI proposes; it does not decide, approve, apply, or
+  execute** — never a source of truth.
+- **Two owned aggregates (AI owns both):** `CodeGeneration` (run; `PENDING|GENERATING|SUCCEEDED|
+  FAILED`, holds a `CodeProposalRef`) and `CodeProposal` (output; `ProposedChange[]` + providerId
+  + usage? + artifacts?). AI never owns any downstream aggregate (AI-Layer Ownership Rule, ADR-0029).
+- **`CodeGenerationManager.generate`** — `PromptComposer` → `PromptSpec` → **`PromptRenderer`** →
+  **`AiRequest`** → (**`ProviderSelector`**) → `AiProvider.execute` → `parseCodeProposal` → persist.
+  Exactly ONE generation per call (no retry). Failures classified (ADR-0015) and recorded as FAILED.
+- **`AiProvider` port narrowed to `AiRequest`** (no `PromptSpec`): rendering moved from the CLI
+  adapter (`renderPromptSpec`, deleted) to the core `PromptRenderer`; `ClaudeCliProvider` + the
+  chat path updated. **`ProviderSelector`** extracts selection from `CapabilityRouter` (now its impl;
+  `route`→`select`).
+- **`CodexCliProvider.execute()` implemented — suggest-only** (`codex exec --sandbox read-only`,
+  prompt on stdin; never `--full-auto`/auto-apply): Codex only proposes; applying stays with
+  CAP-006, execution with CAP-007. Core stays HTTP/`child_process`-free.
+- **Provider-agnostic proposal parsing** (`parseCodeProposal`): one fenced ```json envelope →
+  `ProposedChange[]`; malformed → FAILED. Identical for Codex and Ollama (CAP-009 parity).
+- **Persistence:** `CodeGenerationRepository`/`CodeProposalRepository` + Sqlite + **migration v6**
+  (`code_generations`, `code_proposals`).
+- **Not implemented (CA Non-blocking):** `generationHash`, `providerVersion`/`modelVersion`,
+  Proposal Lifecycle, Prompt Version, Provider Cost, Token Usage, Provider Capability, Failure-
+  Taxonomy extension; tool-calling, conversation state, generation retry, streaming.
+- Tests (+21): `parseCodeProposal`, `PromptRenderer`, `CodeGenerationManager` (success/parse-fail/
+  provider-error/identity-of-AiRequest/history), `CodexCliProvider` (suggest-only argv + failures),
+  Sqlite code-gen/proposal round-trip, migration v6 — Vitest 34 files / 200 tests. Capability doc
+  `docs/capabilities/code-generation.md`.
+
 ### Added — Sprint 2g · CAP-007 Command Execution Capability (run, gated)
 
 - **`CommandExecution`** aggregate (Command-Execution-owned) — the **Execution History** of

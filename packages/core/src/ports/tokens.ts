@@ -18,5 +18,6 @@ export const GIT_PROVIDER = Symbol('GitProvider');
 export const WORKSPACE_WRITER = Symbol('WorkspaceWriter');
 export const COMMAND_RUNNER = Symbol('CommandRunner');
 export const EXECUTION_PLANNER = Symbol('ExecutionPlanner');
+export const PROVIDER_SELECTOR = Symbol('ProviderSelector');
 export const AI_PROVIDERS = Symbol('AiProviders');
 export const CONNECTOR_PROVIDERS = Symbol('ConnectorProviders');

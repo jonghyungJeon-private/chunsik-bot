@@ -1,6 +1,13 @@
 import { Capability } from '../domain';
-import type { ContextBundle, PromptSpec, Task } from '../domain';
+import type { ContextBundle, ContextFile, PromptSpec, Task } from '../domain';
 import type { ProjectReadout } from '../ports';
+
+/** Read-only inputs for authoring a code-generation prompt (CAP-008). */
+export interface CodeGenerationPromptInput {
+  instruction: string;
+  targetFiles?: string[];
+  contextFiles?: ContextFile[];
+}
 
 /**
  * Owns prompt assembly (ADR-0003). Produces a provider-agnostic, layered
@@ -29,6 +36,38 @@ export class PromptComposer {
       developer: this.developerFor(task.intent.capability),
       context: parts.join('\n\n'),
       task: context.summary,
+    };
+  }
+
+  /**
+   * Author a code-generation prompt (CAP-008, ADR-0029). The AI must PROPOSE only —
+   * it never applies, runs, or commits — and must emit the structured proposal envelope
+   * the `CodeProposalParser` reads (one fenced ```json block). Prompt authorship lives
+   * here (prompting layer); `PromptRenderer` renders this to an `AiRequest`.
+   */
+  composeCodeGeneration(input: CodeGenerationPromptInput): PromptSpec {
+    const parts: string[] = [];
+    if (input.targetFiles?.length) {
+      parts.push(`Target files:\n${input.targetFiles.map((f) => `- ${f}`).join('\n')}`);
+    }
+    if (input.contextFiles?.length) {
+      parts.push(
+        `Context files (read-only):\n${input.contextFiles
+          .map((f) => `### ${f.path}\n\`\`\`\n${f.content}\n\`\`\``)
+          .join('\n\n')}`,
+      );
+    }
+    return {
+      system:
+        'You are a code generation assistant. PROPOSE code changes only — do NOT apply ' +
+        'files, run commands, or commit; another system applies your proposal after human ' +
+        'approval. Respond with EXACTLY ONE fenced ```json block and no prose outside it. ' +
+        'The JSON must be {"changes":[{"path":"<relative path>","newContent":"<full file ' +
+        'content>","delete":false}]}. Use "delete":true (and omit newContent) to remove a ' +
+        'file. Provide the COMPLETE new content for each changed file.',
+      developer: 'Generate the minimal, correct change set that satisfies the instruction.',
+      context: parts.join('\n\n'),
+      task: input.instruction,
     };
   }
 

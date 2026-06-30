@@ -1,16 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { AiFailureKind, AiProviderError, ArtifactKind, Capability } from '@chunsik/core';
-import type { PromptSpec } from '@chunsik/core';
-import { ClaudeCliProvider, maskSecrets } from './index';
+import { ClaudeCliProvider, CodexCliProvider, maskSecrets } from './index';
 import type { CliRunOptions, CliRunner, CliRunResult } from './cli-runner';
 
-const spec: PromptSpec = { system: 'SYS', developer: 'DEV', context: '', task: 'do the thing' };
+const PROMPT = 'do the thing';
 
 const runnerOf = (r: CliRunResult): CliRunner => async () => r;
 const exec = (r: CliRunResult) =>
   new ClaudeCliProvider('claude', { runner: runnerOf(r) }).execute({
     capability: Capability.GENERAL_CHAT,
-    promptSpec: spec,
+    prompt: PROMPT,
   });
 
 describe('ClaudeCliProvider', () => {
@@ -22,7 +21,7 @@ describe('ClaudeCliProvider', () => {
     };
     const res = await new ClaudeCliProvider('claude', { runner }).execute({
       capability: Capability.GENERAL_CHAT,
-      promptSpec: spec,
+      prompt: PROMPT,
     });
     expect(calls[0]?.bin).toBe('claude');
     expect(calls[0]?.args).toEqual(['-p']);
@@ -76,6 +75,43 @@ describe('ClaudeCliProvider', () => {
       timedOut: false,
     });
     expect(await new ClaudeCliProvider('claude', { runner }).isAvailable()).toBe(true);
+  });
+});
+
+describe('CodexCliProvider (CAP-008, ADR-0029) — suggest-only', () => {
+  it('runs `codex exec` in a READ-ONLY sandbox (no auto-apply/-exec) with the prompt on stdin', async () => {
+    const calls: Array<{ bin: string; args: string[]; opts: CliRunOptions }> = [];
+    const runner: CliRunner = async (bin, args, opts) => {
+      calls.push({ bin, args, opts });
+      return { code: 0, stdout: '```json\n{"changes":[]}\n```', stderr: '', timedOut: false };
+    };
+    const res = await new CodexCliProvider('codex', { runner }).execute({
+      capability: Capability.CODE_IMPLEMENTATION,
+      prompt: PROMPT,
+    });
+    expect(calls[0]?.bin).toBe('codex');
+    expect(calls[0]?.args).toEqual(['exec', '--sandbox', 'read-only']);
+    // suggest-only: never an auto-apply / full-auto flag
+    expect(calls[0]?.args.join(' ')).not.toMatch(/full-auto|auto-edit|--yes|dangerously/i);
+    expect(calls[0]?.opts.input).toContain('do the thing');
+    expect(res.text).toContain('"changes"');
+    expect(res.artifacts?.[0]?.kind).toBe(ArtifactKind.CODE_DIFF);
+  });
+
+  it('classifies auth failure as AUTH_REQUIRED', async () => {
+    await expect(
+      new CodexCliProvider('codex', { runner: runnerOf({ code: 1, stdout: '', stderr: 'Not logged in', timedOut: false }) }).execute(
+        { capability: Capability.CODE_IMPLEMENTATION, prompt: PROMPT },
+      ),
+    ).rejects.toMatchObject({ kind: AiFailureKind.AUTH_REQUIRED });
+  });
+
+  it('empty stdout on success → EMPTY_OUTPUT', async () => {
+    await expect(
+      new CodexCliProvider('codex', { runner: runnerOf({ code: 0, stdout: '   ', stderr: '', timedOut: false }) }).execute(
+        { capability: Capability.CODE_IMPLEMENTATION, prompt: PROMPT },
+      ),
+    ).rejects.toMatchObject({ kind: AiFailureKind.EMPTY_OUTPUT });
   });
 });
 

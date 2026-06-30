@@ -10,4 +10,5 @@ export * from './workspace-writer.port';
 export * from './command-runner.port';
 export * from './execution-planner.port';
 export * from './ai-provider.port';
+export * from './provider-selector.port';
 export * from './connector-provider.port';

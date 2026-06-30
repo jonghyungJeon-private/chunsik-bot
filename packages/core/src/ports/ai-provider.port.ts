@@ -3,7 +3,6 @@ import type {
   Capability,
   ContextFile,
   Metadata,
-  PromptSpec,
   WorkspaceRef,
 } from '../domain';
 
@@ -25,15 +24,16 @@ export interface AiCapabilityDescriptor {
   priority: number;
 }
 
-export interface AiExecutionRequest {
+/**
+ * A FULLY-RENDERED, provider-agnostic AI request (CAP-008, ADR-0029). The provider
+ * receives only this — it never sees a `PromptSpec`. Prompt authorship is the
+ * `PromptComposer`'s job and rendering (`PromptSpec` → `prompt` text) is the
+ * `PromptRenderer`'s job (ADR-0003 / ADR-0014); the provider just executes.
+ */
+export interface AiRequest {
   capability: Capability;
-  /**
-   * Layered, provider-agnostic prompt built by the PromptComposer. Preferred
-   * input; the provider RENDERS it to a CLI-ready form. (ADR-0003 / ADR-0014)
-   */
-  promptSpec?: PromptSpec;
-  /** Pre-rendered instruction string. Fallback when no promptSpec is supplied. */
-  prompt?: string;
+  /** The rendered instruction text (produced by the PromptRenderer). */
+  prompt: string;
   /**
    * Memory injected as files. The core generates these from Chunsik Memory;
    * the provider's only job is to ensure the CLI can see them (typically by
@@ -71,8 +71,8 @@ export interface AiProvider {
   /** Health/auth probe. Ollama may be down; Claude/Codex may be unauthed. */
   isAvailable(): Promise<boolean>;
 
-  execute(request: AiExecutionRequest): Promise<AiExecutionResult>;
+  execute(request: AiRequest): Promise<AiExecutionResult>;
 
   /** Optional streaming for long runs; core falls back to execute() if absent. */
-  stream?(request: AiExecutionRequest): AsyncIterable<string>;
+  stream?(request: AiRequest): AsyncIterable<string>;
 }

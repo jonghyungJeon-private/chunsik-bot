@@ -2,6 +2,8 @@ import type {
   Actor,
   Artifact,
   ApprovalRequest,
+  CodeGeneration,
+  CodeProposal,
   CommandExecution,
   Id,
   MemoryRecord,
@@ -75,6 +77,16 @@ export interface CommandExecutionRepository extends Repository<CommandExecution>
   findByWorkspaceChange(workspaceChangeId: Id): Promise<CommandExecution[]>;
 }
 
+export interface CodeGenerationRepository extends Repository<CodeGeneration> {
+  /** All code-generation runs recorded for a given ExecutionPlan (CAP-008). */
+  findByExecutionPlan(executionPlanId: Id): Promise<CodeGeneration[]>;
+}
+
+export interface CodeProposalRepository extends Repository<CodeProposal> {
+  /** The proposal(s) produced by a given code-generation run (CAP-008). */
+  findByCodeGeneration(codeGenerationId: Id): Promise<CodeProposal[]>;
+}
+
 /**
  * PORT: persistence. v1 implementation: SQLiteStorageProvider.
  *
@@ -98,4 +110,6 @@ export interface StorageProvider {
   readonly patches: PatchRepository;
   readonly workspaceChanges: WorkspaceChangeRepository;
   readonly commandExecutions: CommandExecutionRepository;
+  readonly codeGenerations: CodeGenerationRepository;
+  readonly codeProposals: CodeProposalRepository;
 }

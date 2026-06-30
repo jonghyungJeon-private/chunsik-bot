@@ -27,6 +27,7 @@ import type { ProjectManager } from './project-manager';
 import type { ProjectAnalyzer } from './project-analyzer';
 import type { ContextBuilder } from './context-builder';
 import type { PromptComposer } from './prompt-composer';
+import type { PromptRenderer } from './prompt-renderer';
 
 /** Everything the orchestrator needs, injected by the composition root. */
 export interface ChunsikCoreDeps {
@@ -41,6 +42,7 @@ export interface ChunsikCoreDeps {
   memory: MemoryManager;
   contextBuilder: ContextBuilder;
   promptComposer: PromptComposer;
+  promptRenderer: PromptRenderer;
   artifacts: ArtifactManager;
   workspace: WorkspaceManager;
   connectors: ConnectorManager;
@@ -119,7 +121,7 @@ export class ChunsikCore {
 
     // (3) Fast path — conversational, no Task needed.
     if (!intent.requiresWork) {
-      const provider = await this.deps.router.route(intent.capability);
+      const provider = await this.deps.router.select(intent.capability);
       const result = await provider.execute({ capability: intent.capability, prompt: message.text });
       await this.deps.platform.sendMessage(
         this.deps.composer.compose(message.context, result, result.artifacts ?? []),
@@ -191,15 +193,18 @@ export class ChunsikCore {
         excludeMemoryId ? [excludeMemoryId] : [],
       );
       const promptSpec = this.deps.promptComposer.compose(task, bundle, readout);
-
-      // Provider chosen purely by capability — no concrete CLI named here.
-      const provider = await this.deps.router.route(capability);
-      providerId = provider.id;
-      const result = await provider.execute({
+      // Render the PromptSpec to a provider-agnostic AiRequest BEFORE the provider sees
+      // it — the provider never knows PromptSpec (ADR-0029):
+      //   PromptComposer → PromptSpec → PromptRenderer → AiRequest → AiProvider.
+      const aiRequest = this.deps.promptRenderer.render(promptSpec, {
         capability,
-        promptSpec,
         ...(workspace ? { workspace } : {}),
       });
+
+      // Provider chosen purely by capability — no concrete CLI named here.
+      const provider = await this.deps.router.select(capability);
+      providerId = provider.id;
+      const result = await provider.execute(aiRequest);
 
       const artifactIds = await this.deps.artifacts.persistAll(
         task.id,

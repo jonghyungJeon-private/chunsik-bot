@@ -5,15 +5,16 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** **Version 2, Sprint 2g — CAP-007 Command Execution Capability** (ADR-0028):
-  `CommandExecution` (Execution History) aggregate + `CommandExecutionManager.run` (allow-list
-  + dangerous-arg + risk + approval gates) + `CommandRunner` port/`LocalCommandRunner` (new
-  `@chunsik/command-local`, argv-array `spawnSync`, no shell, timeout, minimal child env,
-  masked+capped output) + `CommandExecutionRepository` + **migration v5**. **Runs commands,
-  gated**; `runCommand` relocated off `WorkspaceProvider`; **core stays child_process-free**;
-  owns only `CommandExecution`. The last aggregate of the Execution Ledger. CAP-001…006 ✅ merged.
-- **Next:** Chief Architect re-review of Sprint 2g (Round 2 fixes pushed); no merge until approved.
-- **Build/Test:** `pnpm typecheck` PASS (exit 0); `pnpm test` 30 files / 179 tests PASS.
+- **Phase:** **Version 2, Sprint 2h — CAP-008 AI Code Generation Capability** (ADR-0029):
+  the first AI Layer capability. `CodeGeneration` (run) + `CodeProposal` (output) aggregates +
+  `CodeGenerationManager.generate` (compose → `PromptRenderer` → `AiRequest` → `ProviderSelector`
+  → `AiProvider.execute` → `parseCodeProposal`) + `CodexCliProvider` **suggest-only** + repos +
+  **migration v6**. **AI proposes only** (no decide/approve/apply/execute); reuses the `AiProvider`
+  port narrowed to `AiRequest`; core stays HTTP/child_process-free; owns `CodeGeneration` +
+  `CodeProposal`, never a downstream aggregate. Implemented on a branch — **awaiting CA review, no
+  merge.** CAP-001…007 ✅ merged.
+- **Next:** Chief Architect review of Sprint 2h; no merge until approved.
+- **Build/Test:** `pnpm typecheck` PASS (exit 0); `pnpm test` 34 files / 200 tests PASS.
 
 ## Implemented
 
@@ -59,6 +60,12 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   → none); persists `commandHash` identity. `runCommand` relocated off Workspace; core stays
   child_process-free; owns only `CommandExecution` (ADR-0028). Riskiest capability; the last
   Execution-Ledger aggregate.
+- **CAP-008 AI Code Generation** — `CodeGeneration` (run) + `CodeProposal` (output) aggregates +
+  `CodeGenerationManager.generate` (compose → `PromptRenderer` → `AiRequest` → `ProviderSelector`
+  → `AiProvider.execute` → `parseCodeProposal`) + `CodexCliProvider` **suggest-only** + repos +
+  migration v6. First AI Layer capability: **AI proposes only** (no decide/approve/apply/execute);
+  reuses `AiProvider` (narrowed to `AiRequest`); core HTTP/child_process-free; owns `CodeGeneration`
+  + `CodeProposal`, never downstream (ADR-0029). Not orchestrator-wired. *(awaiting CA review)*
 
 ## Deferred
 

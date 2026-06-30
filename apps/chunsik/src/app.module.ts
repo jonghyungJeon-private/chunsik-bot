@@ -12,6 +12,7 @@ import {
   WORKSPACE_WRITER,
   COMMAND_RUNNER,
   EXECUTION_PLANNER,
+  PROVIDER_SELECTOR,
   AI_PROVIDERS,
   CONNECTOR_PROVIDERS,
   // Application services (pure core)
@@ -26,6 +27,7 @@ import {
   ProjectAnalyzer,
   ContextBuilder,
   PromptComposer,
+  PromptRenderer,
   TaskManager,
   MemoryManager,
   ArtifactManager,
@@ -38,6 +40,7 @@ import {
   PatchManager,
   WorkspaceWriteManager,
   CommandExecutionManager,
+  CodeGenerationManager,
   ConnectorManager,
   ResponseComposer,
   RiskPolicy,
@@ -49,6 +52,7 @@ import type {
   ExecutionPlanner,
   GitProvider,
   PlatformAdapter,
+  ProviderSelector,
   StorageProvider,
   VectorProvider,
   WorkspaceProvider,
@@ -120,6 +124,14 @@ const application: Provider[] = [
     provide: CapabilityRouter,
     useFactory: (manager: AiProviderManager) => new CapabilityRouter(manager),
     inject: [AiProviderManager],
+  },
+  // CAP-008: provider selection is consumed via the ProviderSelector port
+  // (CapabilityRouter is its implementation), so the AI capability depends on the
+  // selection contract, not the concrete router.
+  {
+    provide: PROVIDER_SELECTOR,
+    useFactory: (router: CapabilityRouter): ProviderSelector => router,
+    inject: [CapabilityRouter],
   },
   {
     provide: ActorManager,
@@ -201,6 +213,22 @@ const application: Provider[] = [
       new CommandExecutionManager(storage, runner, risk),
     inject: [STORAGE_PROVIDER, COMMAND_RUNNER, RiskPolicy],
   },
+  // CAP-008 AI Code Generation (compose → render → select → execute → parse → record).
+  // Reuses the AiProvider port via ProviderSelector; not orchestrator/Discord wired.
+  {
+    provide: PromptRenderer,
+    useFactory: () => new PromptRenderer(),
+  },
+  {
+    provide: CodeGenerationManager,
+    useFactory: (
+      storage: StorageProvider,
+      selector: ProviderSelector,
+      promptComposer: PromptComposer,
+      promptRenderer: PromptRenderer,
+    ) => new CodeGenerationManager(storage, selector, promptComposer, promptRenderer),
+    inject: [STORAGE_PROVIDER, PROVIDER_SELECTOR, PromptComposer, PromptRenderer],
+  },
   {
     provide: ConnectorManager,
     useFactory: (connectors: readonly ConnectorProvider[]) => new ConnectorManager(connectors),
@@ -252,6 +280,7 @@ const application: Provider[] = [
       memory: MemoryManager,
       contextBuilder: ContextBuilder,
       promptComposer: PromptComposer,
+      promptRenderer: PromptRenderer,
       artifacts: ArtifactManager,
       workspace: WorkspaceManager,
       connectors: ConnectorManager,
@@ -271,6 +300,7 @@ const application: Provider[] = [
         memory,
         contextBuilder,
         promptComposer,
+        promptRenderer,
         artifacts,
         workspace,
         connectors,
@@ -291,6 +321,7 @@ const application: Provider[] = [
       MemoryManager,
       ContextBuilder,
       PromptComposer,
+      PromptRenderer,
       ArtifactManager,
       WorkspaceManager,
       ConnectorManager,

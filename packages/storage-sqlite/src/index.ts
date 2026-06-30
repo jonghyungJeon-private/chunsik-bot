@@ -9,6 +9,10 @@ import type {
   ApprovalRequest,
   Artifact,
   ArtifactRepository,
+  CodeGeneration,
+  CodeGenerationRepository,
+  CodeProposal,
+  CodeProposalRepository,
   CommandExecution,
   CommandExecutionRepository,
   Id,
@@ -305,6 +309,52 @@ class SqliteCommandExecutionRepository
   }
 }
 
+class SqliteCodeGenerationRepository
+  extends JsonRepository<CodeGeneration>
+  implements CodeGenerationRepository
+{
+  override async save(generation: CodeGeneration): Promise<CodeGeneration> {
+    this.db
+      .prepare(
+        `INSERT INTO code_generations (id, execution_plan_id, status, data) VALUES (?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET execution_plan_id = excluded.execution_plan_id,
+           status = excluded.status, data = excluded.data`,
+      )
+      .run(generation.id, generation.executionPlanRef.id, generation.status, JSON.stringify(generation));
+    return generation;
+  }
+
+  async findByExecutionPlan(executionPlanId: Id): Promise<CodeGeneration[]> {
+    const rows = this.db
+      .prepare(`SELECT data FROM code_generations WHERE execution_plan_id = ?`)
+      .all(executionPlanId) as Row[];
+    return rows.map((r) => JSON.parse(r.data) as CodeGeneration);
+  }
+}
+
+class SqliteCodeProposalRepository
+  extends JsonRepository<CodeProposal>
+  implements CodeProposalRepository
+{
+  override async save(proposal: CodeProposal): Promise<CodeProposal> {
+    this.db
+      .prepare(
+        `INSERT INTO code_proposals (id, code_generation_id, data) VALUES (?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET code_generation_id = excluded.code_generation_id,
+           data = excluded.data`,
+      )
+      .run(proposal.id, proposal.codeGenerationRef.id, JSON.stringify(proposal));
+    return proposal;
+  }
+
+  async findByCodeGeneration(codeGenerationId: Id): Promise<CodeProposal[]> {
+    const rows = this.db
+      .prepare(`SELECT data FROM code_proposals WHERE code_generation_id = ?`)
+      .all(codeGenerationId) as Row[];
+    return rows.map((r) => JSON.parse(r.data) as CodeProposal);
+  }
+}
+
 class SqliteMemoryRepository extends JsonRepository<MemoryRecord> implements MemoryRepository {
   override async save(record: MemoryRecord): Promise<MemoryRecord> {
     this.db
@@ -360,7 +410,8 @@ class SqliteMemoryRepository extends JsonRepository<MemoryRecord> implements Mem
  * StorageProvider over SQLite (better-sqlite3). All SQL stays in this package;
  * callers see only domain entities. Implemented: actors, sessions, tasks,
  * taskRuns, artifacts, memories, projects, approvals (CAP-004), patches (CAP-005),
- * workspaceChanges (CAP-006), commandExecutions (CAP-007).
+ * workspaceChanges (CAP-006), commandExecutions (CAP-007), codeGenerations +
+ * codeProposals (CAP-008).
  */
 export class SqliteStorageProvider implements StorageProvider {
   private db?: Db;
@@ -377,6 +428,8 @@ export class SqliteStorageProvider implements StorageProvider {
   patches!: PatchRepository;
   workspaceChanges!: WorkspaceChangeRepository;
   commandExecutions!: CommandExecutionRepository;
+  codeGenerations!: CodeGenerationRepository;
+  codeProposals!: CodeProposalRepository;
 
   constructor(private readonly config: SqliteConfig) {}
 
@@ -401,6 +454,8 @@ export class SqliteStorageProvider implements StorageProvider {
     this.patches = new SqlitePatchRepository(db, 'patches');
     this.workspaceChanges = new SqliteWorkspaceChangeRepository(db, 'workspace_changes');
     this.commandExecutions = new SqliteCommandExecutionRepository(db, 'command_executions');
+    this.codeGenerations = new SqliteCodeGenerationRepository(db, 'code_generations');
+    this.codeProposals = new SqliteCodeProposalRepository(db, 'code_proposals');
   }
 
   async close(): Promise<void> {
