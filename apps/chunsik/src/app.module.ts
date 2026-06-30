@@ -41,18 +41,25 @@ import {
   WorkspaceWriteManager,
   CommandExecutionManager,
   CodeGenerationManager,
+  ExecutionOrchestrator,
+  IntentResolver,
+  ConversationRuntime,
   ConnectorManager,
   ResponseComposer,
   RiskPolicy,
+  ApprovalStatus,
 } from '@chunsik/core';
 import type {
   AiProvider,
+  ApprovalFlow,
+  ApprovalRequest,
   CommandRunner,
   ConnectorProvider,
   ExecutionPlanner,
   GitProvider,
   PlatformAdapter,
   ProviderSelector,
+  Session,
   StorageProvider,
   VectorProvider,
   WorkspaceProvider,
@@ -271,69 +278,135 @@ const application: Provider[] = [
       new ProjectAnalyzer(storage, workspace),
     inject: [STORAGE_PROVIDER, WorkspaceManager],
   },
+  // Sprint 2j — Intent Resolver + Execution Orchestrator (Application-Layer composition).
+  { provide: IntentResolver, useFactory: () => new IntentResolver() },
   {
-    provide: ChunsikCore,
+    provide: ExecutionOrchestrator,
     useFactory: (
-      classifier: IntentClassifier,
-      planner: Planner,
-      router: CapabilityRouter,
-      tasks: TaskManager,
-      actors: ActorManager,
-      sessions: SessionManager,
-      projects: ProjectManager,
-      analyzer: ProjectAnalyzer,
-      memory: MemoryManager,
-      contextBuilder: ContextBuilder,
-      promptComposer: PromptComposer,
-      promptRenderer: PromptRenderer,
-      artifacts: ArtifactManager,
+      planning: PlanningManager,
+      codeGeneration: CodeGenerationManager,
       workspace: WorkspaceManager,
-      connectors: ConnectorManager,
-      composer: ResponseComposer,
-      platform: PlatformAdapter,
-      risk: RiskPolicy,
+      approval: ApprovalManager,
+      patch: PatchManager,
+      workspaceWrite: WorkspaceWriteManager,
+      command: CommandExecutionManager,
     ) =>
-      new ChunsikCore({
-        classifier,
-        planner,
-        router,
-        tasks,
-        actors,
-        sessions,
-        projects,
-        analyzer,
-        memory,
-        contextBuilder,
-        promptComposer,
-        promptRenderer,
-        artifacts,
+      new ExecutionOrchestrator({
+        planning,
+        codeGeneration,
         workspace,
-        connectors,
-        composer,
-        platform,
-        risk,
+        approval,
+        patch,
+        workspaceWrite,
+        command,
         logger: coreLogger,
       }),
     inject: [
-      IntentClassifier,
-      Planner,
-      CapabilityRouter,
-      TaskManager,
+      PlanningManager,
+      CodeGenerationManager,
+      WorkspaceManager,
+      ApprovalManager,
+      PatchManager,
+      WorkspaceWriteManager,
+      CommandExecutionManager,
+    ],
+  },
+  // Sprint 2k — Conversation Runtime (the single conversation entry; ADR-0032). ChunsikCore
+  // (below) is a thin facade that delegates to it. Approval-awaiting state is DERIVED from existing
+  // aggregates (Session.activeTaskId → Task.planId → approvals.findByExecutionPlan → PENDING); the
+  // runtime persists no state and writes no snapshot to Session.
+  {
+    provide: ConversationRuntime,
+    useFactory: (
+      storage: StorageProvider,
+      actors: ActorManager,
+      sessions: SessionManager,
+      memory: MemoryManager,
+      classifier: IntentClassifier,
+      projects: ProjectManager,
+      analyzer: ProjectAnalyzer,
+      tasks: TaskManager,
+      workspace: WorkspaceManager,
+      contextBuilder: ContextBuilder,
+      promptComposer: PromptComposer,
+      promptRenderer: PromptRenderer,
+      router: CapabilityRouter,
+      artifacts: ArtifactManager,
+      composer: ResponseComposer,
+      risk: RiskPolicy,
+      intentResolver: IntentResolver,
+      orchestrator: ExecutionOrchestrator,
+      approvals: ApprovalManager,
+    ) => {
+      const approvalFlow: ApprovalFlow = {
+        async findPending(session: Session) {
+          if (!session.activeTaskId) return null;
+          const task = await storage.tasks.get(session.activeTaskId);
+          if (!task?.planId) return null;
+          const requests = await storage.approvals.findByExecutionPlan(task.planId);
+          return requests.find((r: ApprovalRequest) => r.status === ApprovalStatus.PENDING) ?? null;
+        },
+        // ADR-0032: full anchoring + resume reconstruction mature with the live execution path
+        // (AI-driven execution-intent classification). Until then these are inert; no live path
+        // reaches them because the deterministic classifier emits no execution intent.
+        async anchor() {
+          /* no-op (ADR-0032) */
+        },
+        async reconstructResume() {
+          return null;
+        },
+      };
+      return new ConversationRuntime({
+        actors,
+        sessions,
+        memory,
+        classifier,
+        projects,
+        analyzer,
+        tasks,
+        workspace,
+        contextBuilder,
+        promptComposer,
+        promptRenderer,
+        router,
+        artifacts,
+        composer,
+        risk,
+        intentResolver,
+        orchestrator,
+        approvals,
+        approvalFlow,
+        logger: coreLogger,
+      });
+    },
+    inject: [
+      STORAGE_PROVIDER,
       ActorManager,
       SessionManager,
+      MemoryManager,
+      IntentClassifier,
       ProjectManager,
       ProjectAnalyzer,
-      MemoryManager,
+      TaskManager,
+      WorkspaceManager,
       ContextBuilder,
       PromptComposer,
       PromptRenderer,
+      CapabilityRouter,
       ArtifactManager,
-      WorkspaceManager,
-      ConnectorManager,
       ResponseComposer,
-      PLATFORM_ADAPTER,
       RiskPolicy,
+      IntentResolver,
+      ExecutionOrchestrator,
+      ApprovalManager,
     ],
+  },
+  // Thin platform-entry facade (ADR-0032): delegates to ConversationRuntime, then delivers.
+  {
+    provide: ChunsikCore,
+    useFactory: (runtime: ConversationRuntime, platform: PlatformAdapter) =>
+      new ChunsikCore({ runtime, platform, logger: coreLogger }),
+    inject: [ConversationRuntime, PLATFORM_ADAPTER],
   },
 ];
 

@@ -7,6 +7,40 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Sprint 2k · Conversation Runtime (Application Layer — the conversation entry; first Product Construction)
+
+- **춘식봇's conversation entry point** (ADR-0032). Turns one user message into one natural assistant
+  response by **composing** existing Application/Capability services. **Not** a new execution engine,
+  capability, or aggregate. No Core-contract change, **no new aggregate/repository/migration**.
+- **`ConversationRuntime.handle(message): Promise<TurnResult>`** owns the **full** flow (chat ·
+  project-analysis · register · execution · approval-resume · failure/cancel), branching internally.
+  `ChunsikCore` is now a **thin facade** that delegates to it and performs platform delivery
+  (`Platform Adapter → ChunsikCore → ConversationRuntime → OutboundMessage → deliver`) — one entry,
+  no parallel paths.
+- **Transient runtime model (no new aggregate):** `RuntimeTurnStatus = RESPONDED | AWAITING_APPROVAL
+  | DENIED | FAILED | CANCELLED`; `TurnResult` carries the status + `OutboundMessage` + `sessionId`
+  (+ optional `ExecutionOutcome`). No `Turn`/`Conversation`/`Message` aggregate, no table, no repo.
+- **Stateless approval halt → resume routing.** Approval-awaiting state is **derived** from existing
+  aggregates — fixed correlation source `Session.activeTaskId → Task.planId →
+  approvals.findByExecutionPlan → PENDING` (ADR-0032). The runtime persists nothing and writes **no
+  snapshot to `Session`**. Decision interpretation runs **only** when a pending approval exists:
+  approve {승인/진행/좋아/yes/y/ok} → `ApprovalManager.decide` + `ExecutionOrchestrator.resume`; deny
+  {거절/아니/no/n} → DENIED (no resume); cancel {취소/중단/그만} → CANCELLED (no resume); ambiguous →
+  re-send the approval notice (no resume). The orchestrator contract is unchanged.
+- **`ResponseComposer.composeExecutionResult(...)`** added; the runtime never builds reply text
+  itself (uses `compose`/`composeApprovalNotice`/`composeError`/`composeExecutionResult`).
+- **Short-term memory only** (record user/assistant turns; read history; `ContextBuilder` context).
+  No long-term/vector/working memory, no memory repo/schema change.
+- `ExecutionOrchestrator` + `IntentResolver` (Sprint 2j) are now wired into the composition root via
+  the runtime (previously standalone).
+- **Out of scope (CA-confirmed):** Agent Runtime · Tool Calling · Retry/loop/reflection · Workflow
+  Engine · Background Task · Discord UI (buttons) · Telemetry · any new memory subsystem.
+- Tests (+9, fake managers): chat→RESPONDED; execution low-risk→COMPLETED; high-risk→AWAITING_APPROVAL
+  (anchored); next-turn approve→decide+resume; deny→DENIED (no resume); cancel→CANCELLED (no resume);
+  ambiguous→clarify (no resume); runtime persists no state; no Session snapshot. **Validation runtime:
+  Node 22** — `pnpm typecheck` PASS; `pnpm test` 37 files / **242 tests** PASS. Plan:
+  `docs/plans/sprint-2k-conversation-runtime-plan.md`.
+
 ### Added — Sprint 2j · Execution Orchestrator (Application Layer — capability composition)
 
 - **Phase 2 begins: the first Application-layer composition** (ADR-0031). Phase 1 (Capability Layer,

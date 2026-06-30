@@ -5,21 +5,24 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** **Version 2, Phase 2 (Application Layer), Sprint 2j — Execution Orchestrator** (ADR-0031):
-  the **first Application-layer composition**. **Phase 1 (Capability Layer, CAP-001…009) is closed.**
-  Not a new capability — `ExecutionOrchestrator` (`run`/`resume`) + `IntentResolver` compose the
-  completed capabilities (`Intent Resolver → Execution Orchestrator → Capability Managers`).
-  **Capability Selection** picks the ordered stage subset per intent (dynamic, not a fixed pipeline);
-  **stateless** (no `ExecutionFlow` aggregate; `executionPlanRef` is the correlation root; returns a
-  transient `ExecutionOutcome`); **Ref-threaded**; **Approval halt** (PENDING → `AWAITING_APPROVAL`,
-  never calls `decide`) + **resume contract**; **Cancellation** (`CANCELLED`, cooperative, no
-  rollback, Application-state only); **stop-on-failure, no retry**. Managers stay mutually unaware;
-  provider selection stays with `ProviderSelector`. **No Core-contract change, no new
-  aggregate/repository/migration.** Not wired into `ChunsikCore`/composition root (deferred to the
-  Conversation Runtime). Implemented on a branch — **awaiting CA implementation review, no merge.**
-- **Next:** Chief Architect implementation review of Sprint 2j; no merge until approved.
-- **Build/Test:** `pnpm typecheck` PASS (exit 0); `pnpm test` 36 files / 233 tests PASS (under the
-  project's better-sqlite3 ABI; the Node-pin↔native-binary mismatch is a Deferred (Environment) item).
+- **Phase:** **Version 2, Phase 2 (Application Layer), Sprint 2k — Conversation Runtime** (ADR-0032):
+  the **first Product Construction** sprint — 춘식봇's conversation entry point. **Phase 1 (Capability
+  Layer, CAP-001…009) closed; Sprint 2j Execution Orchestrator merged.** Not a new capability/aggregate —
+  `ConversationRuntime.handle(message) → TurnResult` **composes** existing services into the full flow
+  (`User → ChunsikCore facade → ConversationRuntime → Intent Resolver → Execution Orchestrator →
+  Capability Managers → OutboundMessage`). `ChunsikCore` is now a **thin facade** delegating to it
+  (one entry, no parallel paths). **Transient** `TurnResult`/`RuntimeTurnStatus` (no aggregate/table);
+  **stateless approval halt→resume routing** — awaiting state **derived** from existing aggregates
+  (`Session.activeTaskId → Task.planId → approvals.findByExecutionPlan → PENDING`); the runtime
+  persists nothing and writes **no `Session` snapshot**. Decision interpretation only when pending
+  (approve→decide+resume · deny→DENIED · cancel→CANCELLED · ambiguous→re-ask). Short-term memory only;
+  `ResponseComposer.composeExecutionResult` added; orchestrator/intent-resolver now wired. **No
+  Core-contract change, no new aggregate/repository/migration.** Implemented on a branch — **awaiting
+  CA implementation review, no merge.**
+- **Next:** Chief Architect implementation review of Sprint 2k; no merge until approved.
+- **Build/Test (validation runtime: Node 22):** `pnpm typecheck` PASS (exit 0); `pnpm test` 37 files /
+  242 tests PASS. (Under the `.nvmrc`-pinned Node 18, SQLite repo tests fail on a better-sqlite3 ABI
+  mismatch — a Deferred (Environment) item; the suite is green on Node 22.)
 
 ## Implemented
 
@@ -85,8 +88,17 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   Workspace Write → Command); **stateless** (no aggregate; `executionPlanRef` correlation root;
   transient `ExecutionOutcome`); **Ref-threaded**; **Approval halt + resume** (never `decide`);
   **Cancellation** (no rollback, Application-state only); **stop-on-failure, no retry**. Managers stay
-  mutually unaware; provider selection stays with `ProviderSelector`. No Core change. Not wired into
-  `ChunsikCore`/composition root (deferred). *(awaiting CA implementation review)* (ADR-0031).
+  mutually unaware; provider selection stays with `ProviderSelector`. No Core change (ADR-0031).
+- **Phase 2 · Conversation Runtime (Application Layer)** — `ConversationRuntime.handle(message) →
+  TurnResult`: 춘식봇's conversation entry; **composes** the existing services into the full flow
+  (chat · project-analysis · register · execution · approval-resume · failure/cancel). `ChunsikCore`
+  is a **thin facade** delegating to it (one entry, no parallel paths). **Transient** `TurnResult`/
+  `RuntimeTurnStatus` (no aggregate/table); **stateless approval halt→resume** with awaiting state
+  derived from existing aggregates (`Session.activeTaskId → Task.planId → approvals.findByExecutionPlan
+  → PENDING`); persists nothing; **no `Session` snapshot**. Decision interpreted only when pending
+  (approve→decide+resume · deny→DENIED · cancel→CANCELLED · ambiguous→re-ask). Short-term memory only;
+  `ResponseComposer.composeExecutionResult` added; orchestrator/intent-resolver now wired into the
+  composition root. No Core change (ADR-0032). *(awaiting CA implementation review)*
 
 ## Deferred
 
@@ -130,7 +142,7 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 
 ## Validation
 
-- `pnpm typecheck` — passes (exit 0). `pnpm test` — 36 files / 233 tests pass.
+- `pnpm typecheck` — passes (exit 0). `pnpm test` — 37 files / 242 tests pass (validation runtime: Node 22).
 - Boundary enforced — Core cannot resolve adapter packages.
 - **Live (Sprint 1g):** real `node dist/main.js` Discord round-trip — register a
   project, then a structure question routed to PROJECT_ANALYSIS, read real files,

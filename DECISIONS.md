@@ -1479,3 +1479,79 @@ visualization (a Presentation-layer concern).
 Aggregate Ownership), ADR-0026(Patch), ADR-0027(Workspace Write), ADR-0028(Command Execution),
 ADR-0029(AI Code Generation), ADR-0013(YAGNI on `Workflow`/seams). Supersedes nothing.
 Plan: `docs/plans/sprint-2j-execution-orchestrator-plan.md`.
+
+## ADR-0032 — Conversation Runtime (Application-Layer runtime entry; stateless composition)
+
+- **Status:** ✅ Accepted (v2, Phase 2, Sprint 2k — first **Product Construction** sprint)
+- **Date:** 2026-07-01
+- **Scope:** The **conversation entry point** of 춘식봇 — an Application-Layer Runtime that turns one
+  user message into one natural assistant response by **composing** existing Application/Capability
+  services. It is **not** a new execution engine, **not** a Capability, and **not** a new Aggregate.
+
+### Invariants (must always hold)
+> - **Conversation Runtime must not persist runtime state.**
+> - **Approval-awaiting state is derived from existing Session / Task / ExecutionPlan / ApprovalRequest state.**
+> - **Session must not store runtime snapshots.**
+
+### Decision
+- **Runtime entry / `ChunsikCore` relationship.** `ConversationRuntime` owns the full per-message
+  flow; **`ChunsikCore` is a thin facade** that delegates to it and performs platform delivery:
+  `Platform Adapter → ChunsikCore (facade) → ConversationRuntime.handle() → OutboundMessage → ChunsikCore delivers`.
+  There is exactly ONE entry — no parallel `ChunsikCore`/`ConversationRuntime` paths.
+- **Owns (flow + transient state only):** per-message flow; Session open/touch ordering; short-term
+  memory record order; intent branching; **approval halt/resume routing**; outcome→response mapping;
+  a **transient** `TurnResult`. **Does NOT own:** capability execution, approval policy, planning,
+  patch, workspace mutation, command execution, provider selection, retry, autonomous loops, or any
+  **persistent** runtime state. It is a **composer**, never a decider/executor.
+- **Full conversational flow ownership.** One runtime branches internally across: chat ·
+  project-analysis · register · execution · approval-resume · failure/cancel response. The user
+  experiences a conversational assistant, not an "execution runtime".
+- **Transient runtime model (NO new aggregate).** `RuntimeTurnStatus =
+  RESPONDED | AWAITING_APPROVAL | DENIED | FAILED | CANCELLED`; `ConversationRuntime.handle(message:
+  InboundMessage): Promise<TurnResult>`; `TurnResult` carries the status + the `OutboundMessage` +
+  `sessionId` (+ optional `ExecutionOutcome`). **No `Turn`/`Conversation`/`Message` aggregate, no
+  `RuntimeState` table, no `TurnRepository`, no migration.**
+- **Stateless approval resume — fixed correlation source (the ONE source):**
+  `Session.activeTaskId → Task.planId → approvals.findByExecutionPlan(planId) → PENDING ApprovalRequest`.
+  An execution turn that halts anchors itself to the in-focus `Task` (existing `Task.planId` =
+  the produced `ExecutionPlan` id; existing `Session.activeTaskId` = that task). The runtime
+  **persists nothing itself** and stores **no snapshot on `Session`**; it re-derives the pending
+  approval from these existing aggregates each turn (via the injected `findPendingApproval`
+  collaborator). Forbidden: `Session.runtimeState`, approval snapshot on `Session`, a
+  `ConversationRuntimeState` repository, or recovering pending approval by parsing memory text.
+- **Approval-decision interpretation (only when pending).** The runtime interprets a user message as
+  an approval decision **only** when a PENDING approval is derived for the session. Minimal,
+  platform-agnostic contract: approve = {승인, 진행, 좋아, yes, y, ok}; deny = {거절, 아니, no, n};
+  cancel = {취소, 중단, 그만}; otherwise **ambiguous** → re-send the approval notice, **no `resume`**.
+  When pending, the decision interpretation takes priority over normal intent; with no pending
+  approval, those same words are ordinary intent. The decision itself is owned by
+  `ApprovalManager.decide`; resume goes through `ExecutionOrchestrator.resume` (its contract is
+  **unchanged** — the runtime supplies `{request, prior}` via the injected `reconstructResume`
+  collaborator). The runtime never judges approval policy; the orchestrator never parses the message.
+- **Short-term memory only.** Reuse existing short-term conversation memory: record the user turn,
+  record the assistant turn, read history, request context via `ContextBuilder`. **No** long-term /
+  vector / working memory, no memory repository/schema/format change.
+- **Platform delivery boundary.** The runtime's essential output is an **`OutboundMessage`**;
+  platform-specific delivery stays **outside** the runtime (the `ChunsikCore` facade calls
+  `PlatformAdapter.sendMessage`).
+- **ResponseComposer boundary.** The runtime never builds natural-language text; it maps outcomes via
+  `ResponseComposer` (`composeExecutionResult` added this sprint, alongside `composeApprovalNotice` /
+  `composeError` / `compose`).
+
+### Not implemented (CA-confirmed out of scope)
+Agent Runtime; Tool Calling; Retry / loop / reflection; Workflow Engine; Background Task; Discord UI
+(buttons/interaction-ids); Telemetry/Metrics; any new memory subsystem; **new aggregate / repository
+/ migration / capability**; any Core-contract change; any change to a capability manager or to the
+`ExecutionOrchestrator` contract.
+
+### Consequences
+- + 춘식봇 has a single coherent conversation entry that composes the whole stack (chat → execution →
+  approval → resume → response) with **no new structure** — the first Product-Construction step.
+- − Cross-turn resume reconstruction (`reconstructResume`) is an injected app-layer collaborator;
+  its concrete derivation from `Task`/aggregate state is wired in the composition root, and the
+  end-to-end live binding (and platform UI) matures with later Product sprints.
+
+### Relations
+ADR-0001 (Session, thin), ADR-0017 (short-term memory), ADR-0031 (Execution Orchestrator),
+ADR-0025 (Approval), ADR-0015 (failure taxonomy / kind replies), ADR-0003 (prompt/context layering).
+Supersedes nothing. Plan: `docs/plans/sprint-2k-conversation-runtime-plan.md`.
