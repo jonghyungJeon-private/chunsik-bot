@@ -5,14 +5,15 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** **Version 2, Sprint 2f — CAP-006 Workspace Write Capability** (ADR-0027):
-  `WorkspaceChange` (Execution History) aggregate + `WorkspaceWriteManager.apply` +
-  `WorkspaceWriter` port/`LocalWorkspaceWriter` (node:fs + jsdiff `applyPatch`) +
-  `WorkspaceChangeRepository` + **migration v4**. **Applies an approved PatchSet, never
-  generates**; best-effort per-file, atomic unit = file; **no git/child_process**; owns only
-  `WorkspaceChange`. The first filesystem-mutating capability. CAP-001…005 ✅ merged.
-- **Next:** Chief Architect review of Sprint 2f; no merge until approved.
-- **Build/Test:** `pnpm typecheck` PASS (exit 0); `pnpm test` 27 files / 146 tests PASS.
+- **Phase:** **Version 2, Sprint 2g — CAP-007 Command Execution Capability** (ADR-0028):
+  `CommandExecution` (Execution History) aggregate + `CommandExecutionManager.run` (allow-list
+  + risk + approval gates) + `CommandRunner` port/`LocalCommandRunner` (new `@chunsik/command-local`,
+  argv-array `spawnSync`, no shell, timeout, masked+capped output) + `CommandExecutionRepository`
+  + **migration v5**. **Runs commands, gated**; `runCommand` relocated off `WorkspaceProvider`;
+  **core stays child_process-free**; owns only `CommandExecution`. The last aggregate of the
+  Execution Ledger. CAP-001…006 ✅ merged.
+- **Next:** Chief Architect review of Sprint 2g; no merge until approved.
+- **Build/Test:** `pnpm typecheck` PASS (exit 0); `pnpm test` 30 files / 169 tests PASS.
 
 ## Implemented
 
@@ -49,6 +50,14 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   + `SqliteWorkspaceChangeRepository` (migration v4). **Applies** an approved PatchSet
   (best-effort, atomic-per-file); approval Ref + plan-scope checked; no git; owns only
   `WorkspaceChange` (ADR-0027). First filesystem-mutating capability.
+- **CAP-007 Command Execution** — `CommandExecution` (Execution History) aggregate +
+  `CommandExecutionManager.run` + `CommandRunner`/`LocalCommandRunner` (new `command-local`;
+  argv-array `spawnSync`, no shell, timeout, masked+capped output) + `SqliteCommandExecutionRepository`
+  (migration v5). **Runs** a command behind three gates — **allow-list** (`pnpm`/`npm`/`node`),
+  **risk** (CRITICAL/destructive refused), **approval** (HIGH → APPROVED + plan-scope; LOW/MEDIUM
+  → none); persists `commandHash` identity. `runCommand` relocated off Workspace; core stays
+  child_process-free; owns only `CommandExecution` (ADR-0028). Riskiest capability; the last
+  Execution-Ledger aggregate.
 
 ## Deferred
 

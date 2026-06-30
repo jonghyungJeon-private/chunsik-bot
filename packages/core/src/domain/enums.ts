@@ -152,3 +152,16 @@ export enum WorkspaceChangeStatus {
   PARTIALLY_APPLIED = 'PARTIALLY_APPLIED',
   FAILED = 'FAILED',
 }
+
+/**
+ * Lifecycle of a CommandExecution — the Execution History aggregate for running a
+ * command (CAP-007, ADR-0028). Owned/mutated only by Command Execution. The last
+ * aggregate of the Execution Ledger (after WorkspaceChange).
+ */
+export enum CommandExecutionStatus {
+  PENDING = 'PENDING',
+  RUNNING = 'RUNNING',
+  SUCCEEDED = 'SUCCEEDED',
+  FAILED = 'FAILED',
+  TIMED_OUT = 'TIMED_OUT',
+}

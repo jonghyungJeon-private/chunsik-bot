@@ -18,14 +18,14 @@ describe('runMigrations (ADR-0020 — versioned schema)', () => {
     expect(res.from).toBe(0);
     expect(res.to).toBe(LATEST_SCHEMA_VERSION);
     expect(userVersion(db)).toBe(LATEST_SCHEMA_VERSION);
-    for (const t of ['actors', 'actor_identities', 'sessions', 'tasks', 'task_runs', 'artifacts', 'projects', 'memories', 'approvals', 'patches', 'workspace_changes']) {
+    for (const t of ['actors', 'actor_identities', 'sessions', 'tasks', 'task_runs', 'artifacts', 'projects', 'memories', 'approvals', 'patches', 'workspace_changes', 'command_executions']) {
       expect(tableNames(db)).toContain(t);
     }
     db.close();
   });
 
-  it('migrations v2/v3/v4 add the approvals, patches, and workspace_changes tables (CAP-004/005/006)', () => {
-    expect(LATEST_SCHEMA_VERSION).toBe(4);
+  it('migrations v2-v5 add approvals, patches, workspace_changes, command_executions (CAP-004/005/006/007)', () => {
+    expect(LATEST_SCHEMA_VERSION).toBe(5);
     const db = new Database(':memory:');
     runMigrations(db);
     for (const t of ['approvals', 'patches']) {
@@ -36,6 +36,12 @@ describe('runMigrations (ADR-0020 — versioned schema)', () => {
     expect(tableNames(db)).toContain('workspace_changes');
     const wcCols = (db.pragma('table_info(workspace_changes)') as Array<{ name: string }>).map((c) => c.name);
     expect(wcCols).toEqual(expect.arrayContaining(['id', 'patch_id', 'status', 'data']));
+
+    expect(tableNames(db)).toContain('command_executions');
+    const ceCols = (db.pragma('table_info(command_executions)') as Array<{ name: string }>).map((c) => c.name);
+    expect(ceCols).toEqual(
+      expect.arrayContaining(['id', 'execution_plan_id', 'workspace_change_id', 'status', 'data']),
+    );
     db.close();
   });
 

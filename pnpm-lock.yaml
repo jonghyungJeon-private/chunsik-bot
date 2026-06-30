@@ -26,6 +26,9 @@ importers:
       '@chunsik/ai-cli':
         specifier: workspace:*
         version: link:../../packages/ai-cli
+      '@chunsik/command-local':
+        specifier: workspace:*
+        version: link:../../packages/command-local
       '@chunsik/connectors':
         specifier: workspace:*
         version: link:../../packages/connectors
@@ -70,6 +73,12 @@ importers:
         version: 14.16.3
 
   packages/ai-cli:
+    dependencies:
+      '@chunsik/core':
+        specifier: workspace:*
+        version: link:../core
+
+  packages/command-local:
     dependencies:
       '@chunsik/core':
         specifier: workspace:*

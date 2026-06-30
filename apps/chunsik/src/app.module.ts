@@ -10,6 +10,7 @@ import {
   WORKSPACE_PROVIDER,
   GIT_PROVIDER,
   WORKSPACE_WRITER,
+  COMMAND_RUNNER,
   EXECUTION_PLANNER,
   AI_PROVIDERS,
   CONNECTOR_PROVIDERS,
@@ -36,12 +37,14 @@ import {
   ApprovalManager,
   PatchManager,
   WorkspaceWriteManager,
+  CommandExecutionManager,
   ConnectorManager,
   ResponseComposer,
   RiskPolicy,
 } from '@chunsik/core';
 import type {
   AiProvider,
+  CommandRunner,
   ConnectorProvider,
   ExecutionPlanner,
   GitProvider,
@@ -59,6 +62,7 @@ import { LocalQueueProvider } from '@chunsik/queue-local';
 import { LocalVectorProvider } from '@chunsik/vector-local';
 import { LocalCloneWorkspaceProvider, LocalWorkspaceWriter } from '@chunsik/workspace-local';
 import { LocalGitProvider } from '@chunsik/git-local';
+import { LocalCommandRunner } from '@chunsik/command-local';
 import { ClaudeCliProvider, CodexCliProvider, OllamaCliProvider } from '@chunsik/ai-cli';
 import { V1_CONNECTORS } from '@chunsik/connectors';
 
@@ -84,6 +88,8 @@ const infrastructure: Provider[] = [
   { provide: GIT_PROVIDER, useFactory: () => new LocalGitProvider() },
   // CAP-006 Workspace Write — applies PatchSet operations to the filesystem (node:fs only).
   { provide: WORKSPACE_WRITER, useFactory: () => new LocalWorkspaceWriter() },
+  // CAP-007 Command Execution — runs commands via argv-array spawn, no shell (child_process).
+  { provide: COMMAND_RUNNER, useFactory: () => new LocalCommandRunner() },
   {
     provide: PLATFORM_ADAPTER,
     useFactory: () => new DiscordPlatformAdapter(config.discord, new ConsoleLogger('discord')),
@@ -187,6 +193,13 @@ const application: Provider[] = [
     useFactory: (storage: StorageProvider, writer: WorkspaceWriter) =>
       new WorkspaceWriteManager(storage, writer),
     inject: [STORAGE_PROVIDER, WORKSPACE_WRITER],
+  },
+  // CAP-007 Command Execution (gate + run + record). Not orchestrator/Discord wired.
+  {
+    provide: CommandExecutionManager,
+    useFactory: (storage: StorageProvider, runner: CommandRunner, risk: RiskPolicy) =>
+      new CommandExecutionManager(storage, runner, risk),
+    inject: [STORAGE_PROVIDER, COMMAND_RUNNER, RiskPolicy],
   },
   {
     provide: ConnectorManager,

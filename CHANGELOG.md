@@ -7,6 +7,37 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Sprint 2g · CAP-007 Command Execution Capability (run, gated)
+
+- **`CommandExecution`** aggregate (Command-Execution-owned) — the **Execution History** of
+  running one command: `{ executionPlanRef, approvalRef?, workspaceRef, workspaceChangeRef?,
+  command, args, commandHash, status, exitCode?, stdout, stderr, durationMs, riskLevel }`.
+  `CommandExecutionStatus = PENDING|RUNNING|SUCCEEDED|FAILED|TIMED_OUT`. The last aggregate of
+  the Execution Ledger (`… → WorkspaceChange → CommandExecution`).
+- **Command identity (CAP-007 review, MB-1):** `commandHash` = deterministic content hash of
+  `command` + `args` (pure `contentHash`, no `node:crypto`) — basis for audit / duplicate
+  detection / resume / a future retry.
+- **`CommandExecutionManager.run`** — three deterministic gates BEFORE the runner: **(1)
+  allow-list** (`pnpm`/`npm`/`node` only, exact match, fails closed — MB-3); **(2) risk**
+  (`RiskPolicy.assessCommand`; CRITICAL/destructive → refused regardless of approval — MB-2);
+  **(3) approval (Ref only)** (HIGH → APPROVED + plan-scope match; LOW/MEDIUM → none — MB-2).
+  Then runs and records (SUCCEEDED/FAILED/TIMED_OUT).
+- **`CommandRunner`** port + **`LocalCommandRunner`** adapter (new `@chunsik/command-local`;
+  `node:child_process` argv-array `spawnSync`, **`shell:false`, required timeout, cwd =
+  workspace root, masked + size-capped output**). **Core stays `child_process`-free.**
+- **`runCommand` relocated** off `WorkspaceProvider` → the `CommandRunner` port (mirrors the
+  CAP-002 `gitStatus` move). Workspace ≠ Command Execution.
+- **Persistence:** `CommandExecutionRepository` (`findByExecutionPlan`/`findByWorkspaceChange`)
+  + `SqliteCommandExecutionRepository` + **SQLite migration v5** (`command_executions`) via the
+  ADR-0020 runner. References plan/approval/workspace/change — mutates none (Aggregate Ownership).
+- **Not in scope (CA-confirmed):** retry (Execution Orchestrator), streaming output,
+  background/long-lived processes, ExitCode-as-VO, AI command generation, orchestrator/Discord
+  wiring (ADR-0028).
+- Tests (+23): CommandExecutionManager (allow-list, CRITICAL refusal, HIGH-approval + plan-scope,
+  MEDIUM no-approval, status mapping, identity, no-mutation), LocalCommandRunner (argv-array,
+  masking/cap incl. ReDoS-safe, real node exec, timeout), SqliteCommandExecutionRepository,
+  migration v5 — Vitest 30 files / 169 tests. Capability doc `docs/capabilities/command-execution.md`.
+
 ### Added — Sprint 2f · CAP-006 Workspace Write Capability (apply, never generate)
 
 - **`WorkspaceChange`** aggregate (Workspace-Write-owned) — the **Execution History** of

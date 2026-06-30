@@ -2,6 +2,7 @@ import type {
   Actor,
   Artifact,
   ApprovalRequest,
+  CommandExecution,
   Id,
   MemoryRecord,
   MemoryScope,
@@ -67,6 +68,13 @@ export interface WorkspaceChangeRepository extends Repository<WorkspaceChange> {
   findByPatchSet(patchSetId: Id): Promise<WorkspaceChange[]>;
 }
 
+export interface CommandExecutionRepository extends Repository<CommandExecution> {
+  /** All command executions recorded for a given ExecutionPlan (CAP-007). */
+  findByExecutionPlan(executionPlanId: Id): Promise<CommandExecution[]>;
+  /** All command executions recorded for a given WorkspaceChange (CAP-007). */
+  findByWorkspaceChange(workspaceChangeId: Id): Promise<CommandExecution[]>;
+}
+
 /**
  * PORT: persistence. v1 implementation: SQLiteStorageProvider.
  *
@@ -89,4 +97,5 @@ export interface StorageProvider {
   readonly approvals: ApprovalRepository;
   readonly patches: PatchRepository;
   readonly workspaceChanges: WorkspaceChangeRepository;
+  readonly commandExecutions: CommandExecutionRepository;
 }

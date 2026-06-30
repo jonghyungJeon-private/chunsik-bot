@@ -14,7 +14,6 @@ import { spawnSync } from 'node:child_process';
 import { applyPatch, createTwoFilesPatch } from 'diff';
 import { NotImplementedError } from '@chunsik/core';
 import type {
-  CommandResult,
   ContextFile,
   DiffChangeKind,
   FileChangeResult,
@@ -24,7 +23,6 @@ import type {
   ProjectReadout,
   ProjectScan,
   ProposedChange,
-  RunCommandOptions,
   WorkspaceDiff,
   WorkspaceProvider,
   WorkspaceRef,
@@ -159,8 +157,9 @@ export interface LocalCloneConfig {
  * `@chunsik/git-local` (CAP-002), never here.
  *
  * Read-only methods are implemented (`resolve`/`readFile`/`listFiles`/`diff`).
- * `writeFile`/`writeContextFiles`/`runCommand` remain stubs until their
- * approval-gated capabilities land.
+ * `writeFile`/`writeContextFiles` remain stubs until their approval-gated
+ * capabilities land. Command execution is NOT here — it lives in the
+ * `CommandRunner` port / `@chunsik/command-local` adapter (CAP-007).
  *
  * Safety: NEVER auto-commit, auto-push, or auto-delete. Those are HIGH/CRITICAL
  * and only run via approval-gated capabilities later.
@@ -391,8 +390,9 @@ export class LocalCloneWorkspaceProvider implements WorkspaceProvider {
   }
 
   // --- NOT part of the v2 Workspace capability. Workspace ≠ Git (ADR-0022/0023):
-  //     git lives in @chunsik/git-local (CAP-002), never here. Write/exec are
-  //     gated behind future approval slices. Stubs for now. ---
+  //     git lives in @chunsik/git-local (CAP-002); command execution lives in
+  //     @chunsik/command-local (CAP-007), never here. Writes are gated behind
+  //     future approval slices. Stubs for now. ---
 
   async writeFile(_ref: WorkspaceRef, _relPath: string, _content: string): Promise<void> {
     throw new NotImplementedError('LocalCloneWorkspaceProvider.writeFile');
@@ -400,14 +400,6 @@ export class LocalCloneWorkspaceProvider implements WorkspaceProvider {
 
   async writeContextFiles(_ref: WorkspaceRef, _files: ContextFile[]): Promise<void> {
     throw new NotImplementedError('LocalCloneWorkspaceProvider.writeContextFiles');
-  }
-
-  async runCommand(
-    _ref: WorkspaceRef,
-    _command: string,
-    _options?: RunCommandOptions,
-  ): Promise<CommandResult> {
-    throw new NotImplementedError('LocalCloneWorkspaceProvider.runCommand');
   }
 }
 

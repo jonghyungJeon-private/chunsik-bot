@@ -21,6 +21,7 @@ export * from './approval-policy';
 export * from './approval-manager';
 export * from './patch-manager';
 export * from './workspace-write-manager';
+export * from './command-execution-manager';
 export * from './connector-manager';
 export * from './response-composer';
 export * from './orchestrator';

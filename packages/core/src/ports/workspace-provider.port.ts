@@ -1,17 +1,9 @@
 import type {
-  CommandResult,
   ContextFile,
   ProposedChange,
   WorkspaceDiff,
   WorkspaceRef,
 } from '../domain';
-
-export interface RunCommandOptions {
-  /** Subdirectory relative to the workspace root. */
-  cwd?: string;
-  timeoutMs?: number;
-  env?: Record<string, string>;
-}
 
 /** One allow-listed file read during analysis (ADR-0019). */
 export interface ProjectFileEntry {
@@ -49,9 +41,10 @@ export interface ProjectScan {
  * v1 implementation: LocalCloneWorkspaceProvider (operates on an existing
  * local clone). v2 adds GitWorktreeWorkspaceProvider with the SAME contract.
  *
- * Safety rule: this port exposes NO auto-commit / auto-push / auto-delete.
- * Such mutations are HIGH/CRITICAL and run only through the approval gate via
- * `runCommand` after a decision — never implicitly.
+ * Safety rule: this port exposes NO auto-commit / auto-push / auto-delete and NO
+ * command execution. Running commands is a separate, riskier capability — the
+ * `CommandRunner` port (CAP-007, ADR-0028), behind its own approval/risk/allow-list
+ * gate — never the Workspace surface (Workspace ≠ Command Execution).
  */
 export interface WorkspaceProvider {
   readonly kind: string;
@@ -91,14 +84,12 @@ export interface WorkspaceProvider {
   diff(ref: WorkspaceRef, changes: ProposedChange[]): Promise<WorkspaceDiff>;
 
   // --- NOT part of the v2 Workspace capability. Workspace ≠ Git (ADR-0022/0023):
-  //     git lives in the GitProvider port (CAP-002), never here. Write/exec are
-  //     gated behind future approval slices. Stubs for now. ---
+  //     git lives in the GitProvider port (CAP-002), never here; command execution
+  //     lives in the CommandRunner port (CAP-007). Writes are gated behind future
+  //     approval slices. Stubs for now. ---
 
   writeFile(ref: WorkspaceRef, relPath: string, content: string): Promise<void>;
 
   /** Materialize memory context files (CLAUDE.md, .chunsik/context.md, ...). */
   writeContextFiles(ref: WorkspaceRef, files: ContextFile[]): Promise<void>;
-
-  /** Run an arbitrary command. Risk is assessed by the core, not here. */
-  runCommand(ref: WorkspaceRef, command: string, options?: RunCommandOptions): Promise<CommandResult>;
 }

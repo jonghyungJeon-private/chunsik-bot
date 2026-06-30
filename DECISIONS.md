@@ -1203,3 +1203,64 @@ no code added.
 ### Capability / Relations
 **CAP-006.** Relates: ADR-0026(Patch), ADR-0025(Approval/Ownership), ADR-0022(Workspace diff),
 ADR-0020(migrations). Docs: `docs/capabilities/workspace-write.md`.
+
+## ADR-0028 — CAP-007 Command Execution Capability (run, gated)
+
+- **Status:** ✅ Accepted (v2, Sprint 2g)
+- **Date:** 2026-06-30
+- **Capability:** CAP-007 — Command Execution. **The riskiest capability** (arbitrary
+  process execution) and the **last aggregate of the Execution Ledger**. Owns the
+  `CommandExecution` Execution-History aggregate.
+
+### Most important rule
+> **Workspace Write applies files. Command Execution runs commands.** Command Execution
+> runs ONE command inside a workspace via an argv array (never a shell); it never edits
+> files, generates patches, calls git, or calls AI. Every run passes three deterministic
+> gates BEFORE the runner is invoked.
+
+### Decision
+- **Owns `CommandExecution`** (+ `CommandExecutionRef`, `CommandExecutionStatus`). Mutates
+  only this aggregate. **Never mutates** `ExecutionPlan`/`ApprovalRequest`/`PatchSet`/
+  `WorkspaceChange` (Aggregate Ownership Rule, ADR-0025) — references via Refs.
+- **Run flow:** `CommandExecutionManager.run({ executionPlanRef, approvalRef?, workspaceRef,
+  workspaceChangeRef?, command, args, timeoutMs? })` → three gates → `CommandRunner`
+  (port/adapter) → record a `CommandExecution`.
+- **Execution Ledger:** `ExecutionPlan → ApprovalRequest → PatchSet → WorkspaceChange →
+  CommandExecution`. CommandExecution may reference the `WorkspaceChange` it follows.
+- **Adapter isolation:** all process execution in `@chunsik/command-local`
+  (`node:child_process`, **argv array, `shell:false`, required timeout, cwd = workspace
+  root, masked + size-capped output**). **Core stays `child_process`-free.**
+- **`runCommand` relocated off `WorkspaceProvider`** → the `CommandRunner` port (mirrors the
+  CAP-002 `gitStatus` move). Workspace ≠ Command Execution.
+
+### CA Planning-review — Merge-Blocking changes (Round 1)
+- **MB-1 Command Identity.** `CommandExecution.commandHash` = a deterministic content hash
+  of `command` + `args` (pure `contentHash`, no `node:crypto`). The Execution History
+  identifies EXACTLY what ran — the basis for audit / duplicate detection / resume, and for
+  a future Execution Orchestrator's retry. (Reuses the CAP-006 revision-contract pattern.)
+- **MB-2 Approval policy (deterministic, Ref-only).** `RiskPolicy.assessCommand` classifies
+  the command: **LOW/MEDIUM → no approval**; **HIGH → an APPROVED, plan-scoped `ApprovalRef`
+  is required** (referential integrity: `approvalRef.executionPlanRef.id === executionPlanRef.id`,
+  no `ApprovalManager` query); **CRITICAL (destructive pattern) → refused outright, regardless
+  of approval.**
+- **MB-3 Allow-list.** v2 permits only **`pnpm` / `npm` / `node`** (exact match, fails closed —
+  e.g. `/usr/bin/node` and `git` are refused). Enforced in the manager BEFORE the runner runs.
+
+### Non-blocking (CA-confirmed; NOT implemented now)
+ExitCode-as-Value-Object (kept a plain `number`, structure open); explicit Runner →
+CommandResult → CommandExecution responsibility split (already separated); streaming output
+(future ADR); **retry (Execution Orchestrator's responsibility, not CAP-007)**; background /
+long-lived processes (out of scope).
+
+### Consequences
+- + A complete, auditable, identity-stamped execution record; the project's primary
+  execution-safety boundary (no shell, allow-list, risk + approval gating, masked output).
+- + Reuses `CommandResult` (CAP-001), `RiskPolicy.assessCommand`/`requiresApproval`, the
+  ADR-0020 migration runner (v5 `command_executions`), and the secret-masking approach.
+- − Allow-list + CRITICAL refusal are conservative by design; widening them is a future
+  policy decision (config/per-project), not a code change to the gate.
+
+### Capability / Relations
+**CAP-007.** Relates: ADR-0027(Workspace Write), ADR-0026(Patch), ADR-0025(Approval/Ownership),
+ADR-0023(Git relocation precedent), ADR-0020(migrations). Docs:
+`docs/capabilities/command-execution.md`.

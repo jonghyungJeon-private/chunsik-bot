@@ -9,6 +9,8 @@ import type {
   ApprovalRequest,
   Artifact,
   ArtifactRepository,
+  CommandExecution,
+  CommandExecutionRepository,
   Id,
   MemoryRecord,
   MemoryRepository,
@@ -265,6 +267,44 @@ class SqliteWorkspaceChangeRepository
   }
 }
 
+class SqliteCommandExecutionRepository
+  extends JsonRepository<CommandExecution>
+  implements CommandExecutionRepository
+{
+  override async save(execution: CommandExecution): Promise<CommandExecution> {
+    this.db
+      .prepare(
+        `INSERT INTO command_executions (id, execution_plan_id, workspace_change_id, status, data)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET execution_plan_id = excluded.execution_plan_id,
+           workspace_change_id = excluded.workspace_change_id,
+           status = excluded.status, data = excluded.data`,
+      )
+      .run(
+        execution.id,
+        execution.executionPlanRef.id,
+        execution.workspaceChangeRef?.id ?? null,
+        execution.status,
+        JSON.stringify(execution),
+      );
+    return execution;
+  }
+
+  async findByExecutionPlan(executionPlanId: Id): Promise<CommandExecution[]> {
+    const rows = this.db
+      .prepare(`SELECT data FROM command_executions WHERE execution_plan_id = ?`)
+      .all(executionPlanId) as Row[];
+    return rows.map((r) => JSON.parse(r.data) as CommandExecution);
+  }
+
+  async findByWorkspaceChange(workspaceChangeId: Id): Promise<CommandExecution[]> {
+    const rows = this.db
+      .prepare(`SELECT data FROM command_executions WHERE workspace_change_id = ?`)
+      .all(workspaceChangeId) as Row[];
+    return rows.map((r) => JSON.parse(r.data) as CommandExecution);
+  }
+}
+
 class SqliteMemoryRepository extends JsonRepository<MemoryRecord> implements MemoryRepository {
   override async save(record: MemoryRecord): Promise<MemoryRecord> {
     this.db
@@ -319,7 +359,8 @@ class SqliteMemoryRepository extends JsonRepository<MemoryRecord> implements Mem
 /**
  * StorageProvider over SQLite (better-sqlite3). All SQL stays in this package;
  * callers see only domain entities. Implemented: actors, sessions, tasks,
- * taskRuns, artifacts, memories, projects, approvals (CAP-004).
+ * taskRuns, artifacts, memories, projects, approvals (CAP-004), patches (CAP-005),
+ * workspaceChanges (CAP-006), commandExecutions (CAP-007).
  */
 export class SqliteStorageProvider implements StorageProvider {
   private db?: Db;
@@ -335,6 +376,7 @@ export class SqliteStorageProvider implements StorageProvider {
   approvals!: ApprovalRepository;
   patches!: PatchRepository;
   workspaceChanges!: WorkspaceChangeRepository;
+  commandExecutions!: CommandExecutionRepository;
 
   constructor(private readonly config: SqliteConfig) {}
 
@@ -358,6 +400,7 @@ export class SqliteStorageProvider implements StorageProvider {
     this.approvals = new SqliteApprovalRepository(db, 'approvals');
     this.patches = new SqlitePatchRepository(db, 'patches');
     this.workspaceChanges = new SqliteWorkspaceChangeRepository(db, 'workspace_changes');
+    this.commandExecutions = new SqliteCommandExecutionRepository(db, 'command_executions');
   }
 
   async close(): Promise<void> {

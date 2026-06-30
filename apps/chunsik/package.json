@@ -17,6 +17,7 @@
     "@chunsik/vector-local": "workspace:*",
     "@chunsik/workspace-local": "workspace:*",
     "@chunsik/git-local": "workspace:*",
+    "@chunsik/command-local": "workspace:*",
     "@chunsik/ai-cli": "workspace:*",
     "@chunsik/connectors": "workspace:*",
     "@nestjs/common": "^10.4.4",

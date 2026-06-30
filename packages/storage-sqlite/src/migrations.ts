@@ -102,6 +102,17 @@ export const MIGRATIONS: readonly Migration[] = [
       );
     },
   },
+  {
+    version: 5,
+    name: 'command_executions table (CAP-007)',
+    up(db) {
+      db.exec(
+        `CREATE TABLE IF NOT EXISTS command_executions (
+           id TEXT PRIMARY KEY, execution_plan_id TEXT, workspace_change_id TEXT,
+           status TEXT NOT NULL, data TEXT NOT NULL);`,
+      );
+    },
+  },
 ];
 
 /** The schema version this build targets (the highest migration version). */
