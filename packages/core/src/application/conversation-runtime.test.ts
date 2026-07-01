@@ -101,6 +101,12 @@ const commandExecOf = (
 const codeIntent = intentOf(Capability.CODE_IMPLEMENTATION, IntentType.IMPLEMENT_CODE, true);
 const testIntent = intentOf(Capability.TEST_EXECUTION, IntentType.RUN_TESTS, true, { kind: 'test' });
 
+/** A validated target file used across Live Code Change Planning tests (Sprint 2o, ADR-0036). */
+const TARGET_FILE = 'packages/core/src/application/foo.ts';
+
+/** Fake `workspace.list` that reports an exact hit only for `path`, nothing for anything else. */
+const hitsFor = (path: string) => (glob?: string): string[] => (glob === path ? [path] : []);
+
 interface Calls {
   run: number;
   resume: number;
@@ -109,6 +115,7 @@ interface Calls {
   sessionTouch: number;
   sessionWrites: Session[];
   lastRunRequest?: ExecutionRequest;
+  workspaceList: number;
 }
 
 interface Opts {
@@ -121,10 +128,12 @@ interface Opts {
   resumeOutcome?: ExecutionOutcome;
   pending?: ApprovalRequest | null;
   reconstruct?: { request: ExecutionRequest; prior: ExecutionOutcome } | null;
+  /** Fake `workspace.list` result per glob — defaults to reporting no hits at all (Sprint 2o). */
+  workspaceList?: (glob?: string) => string[];
 }
 
 function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Calls } {
-  const calls: Calls = { run: 0, resume: 0, decide: 0, anchor: 0, sessionTouch: 0, sessionWrites: [] };
+  const calls: Calls = { run: 0, resume: 0, decide: 0, anchor: 0, sessionTouch: 0, sessionWrites: [], workspaceList: 0 };
   const composer = new ResponseComposer();
   const intentResolver = new IntentResolver();
 
@@ -174,6 +183,10 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
         if (opts.workspaceOpenThrows) throw new Error('open failed');
         return WORKSPACE;
       },
+      async list(_ref, glob) {
+        calls.workspaceList++;
+        return opts.workspaceList ? opts.workspaceList(glob) : [];
+      },
     },
     commandExecutions: {
       async get() { return opts.commandExec === undefined ? commandExecOf(CommandExecutionStatus.SUCCEEDED) : opts.commandExec; },
@@ -219,17 +232,25 @@ describe('ConversationRuntime', () => {
     expect(calls.run).toBe(0);
   });
 
-  it('execution intent (code, active project) → COMPLETED execution, RESPONDED turn', async () => {
-    const { deps, calls } = makeDeps({ intent: codeIntent, runOutcome: outcomeOf(ExecutionOutcomeStatus.COMPLETED) });
-    const result = await new ConversationRuntime(deps).handle(messageOf('이 버그 고쳐줘'));
+  it('execution intent (code, active project, validated target) → COMPLETED execution, RESPONDED turn', async () => {
+    const { deps, calls } = makeDeps({
+      intent: codeIntent,
+      runOutcome: outcomeOf(ExecutionOutcomeStatus.COMPLETED),
+      workspaceList: hitsFor(TARGET_FILE),
+    });
+    const result = await new ConversationRuntime(deps).handle(messageOf(`${TARGET_FILE}에서 이 버그 고쳐줘`));
     expect(calls.run).toBe(1);
     expect(result.executionOutcome?.status).toBe(ExecutionOutcomeStatus.COMPLETED);
     expect(result.status).toBe('RESPONDED');
   });
 
-  it('high-risk execution → AWAITING_APPROVAL + anchored', async () => {
-    const { deps, calls } = makeDeps({ intent: codeIntent, runOutcome: outcomeOf(ExecutionOutcomeStatus.AWAITING_APPROVAL) });
-    const result = await new ConversationRuntime(deps).handle(messageOf('배포해줘'));
+  it('high-risk execution (validated target) → AWAITING_APPROVAL + anchored', async () => {
+    const { deps, calls } = makeDeps({
+      intent: codeIntent,
+      runOutcome: outcomeOf(ExecutionOutcomeStatus.AWAITING_APPROVAL),
+      workspaceList: hitsFor(TARGET_FILE),
+    });
+    const result = await new ConversationRuntime(deps).handle(messageOf(`${TARGET_FILE}에서 배포해줘`));
     expect(result.status).toBe('AWAITING_APPROVAL');
     expect(calls.anchor).toBe(1);
   });
@@ -411,14 +432,22 @@ describe('Live Code Change Planning — runtime', () => {
   });
 
   it('the resolved ExecutionRequest is marked planningOnly (real IntentResolver, ADR-0035)', async () => {
-    const { deps, calls } = makeDeps({ intent: codeIntent, runOutcome: outcomeOf(ExecutionOutcomeStatus.AWAITING_APPROVAL) });
-    await new ConversationRuntime(deps).handle(messageOf('이 버그 고쳐줘'));
+    const { deps, calls } = makeDeps({
+      intent: codeIntent,
+      runOutcome: outcomeOf(ExecutionOutcomeStatus.AWAITING_APPROVAL),
+      workspaceList: hitsFor(TARGET_FILE),
+    });
+    await new ConversationRuntime(deps).handle(messageOf(`${TARGET_FILE}에서 이 버그 고쳐줘`));
     expect(calls.lastRunRequest?.planningOnly).toBe(true);
   });
 
-  it('active project → AWAITING_APPROVAL uses the code-change-specific prompt, not the generic one', async () => {
-    const { deps, calls } = makeDeps({ intent: codeIntent, runOutcome: outcomeOf(ExecutionOutcomeStatus.AWAITING_APPROVAL) });
-    const result = await new ConversationRuntime(deps).handle(messageOf('이 버그 고쳐줘'));
+  it('active project + validated target → AWAITING_APPROVAL uses the code-change-specific prompt, not the generic one', async () => {
+    const { deps, calls } = makeDeps({
+      intent: codeIntent,
+      runOutcome: outcomeOf(ExecutionOutcomeStatus.AWAITING_APPROVAL),
+      workspaceList: hitsFor(TARGET_FILE),
+    });
+    const result = await new ConversationRuntime(deps).handle(messageOf(`${TARGET_FILE}에서 이 버그 고쳐줘`));
     expect(result.status).toBe('AWAITING_APPROVAL');
     expect(calls.anchor).toBe(1);
     expect(result.reply.text).toBe(new ResponseComposer().composeCodeChangeApprovalRequired(CTX).text);
@@ -468,6 +497,120 @@ describe('Live Code Change Planning — runtime', () => {
   });
 });
 
+// ── Sprint 2o — Code Change Scope Collection (ADR-0036) ─────────────────────────────────────────
+
+describe('Code Change Scope Collection — runtime', () => {
+  it('no path candidate ("이 버그 고쳐줘") → composeTargetScopeClarification, orchestrator.run never called', async () => {
+    const { deps, calls } = makeDeps({ intent: codeIntent });
+    const result = await new ConversationRuntime(deps).handle(messageOf('이 버그 고쳐줘'));
+    expect(calls.run).toBe(0);
+    expect(calls.workspaceList).toBe(0); // no candidates to try
+    expect(result.status).toBe('RESPONDED');
+    expect(result.reply.text).toBe(new ResponseComposer().composeTargetScopeClarification(CTX).text);
+  });
+
+  it('module/area text only ("로그인 처리 부분 수정해줘") → clarification, no run (CA Case 3)', async () => {
+    const { deps, calls } = makeDeps({ intent: codeIntent });
+    const result = await new ConversationRuntime(deps).handle(messageOf('로그인 처리 부분 수정해줘'));
+    expect(calls.run).toBe(0);
+    expect(result.reply.text).toBe(new ResponseComposer().composeTargetScopeClarification(CTX).text);
+  });
+
+  it('a path candidate that does not validate (fake workspace.list returns []) → clarification, no run', async () => {
+    const { deps, calls } = makeDeps({ intent: codeIntent, workspaceList: () => [] });
+    const result = await new ConversationRuntime(deps).handle(messageOf(`${TARGET_FILE}에서 이 버그 고쳐줘`));
+    expect(calls.run).toBe(0);
+    expect(result.reply.text).toBe(new ResponseComposer().composeTargetScopeClarification(CTX).text);
+  });
+
+  it('a workspace.list hit that does not normalize-equal the candidate is not trusted (glob false-positive guard)', async () => {
+    const { deps, calls } = makeDeps({
+      intent: codeIntent,
+      // A hit is returned, but for a DIFFERENT path than the candidate — must not be accepted.
+      workspaceList: () => ['packages/core/src/application/other.ts'],
+    });
+    const result = await new ConversationRuntime(deps).handle(messageOf(`${TARGET_FILE}에서 이 버그 고쳐줘`));
+    expect(calls.run).toBe(0);
+    expect(result.reply.text).toBe(new ResponseComposer().composeTargetScopeClarification(CTX).text);
+  });
+
+  it('a validated candidate threads the Workspace-returned hit into targetFiles, not the raw candidate', async () => {
+    const { deps, calls } = makeDeps({
+      intent: codeIntent,
+      runOutcome: outcomeOf(ExecutionOutcomeStatus.AWAITING_APPROVAL),
+      // Workspace returns a differently-formatted-but-equal path; targetFiles must carry THIS value.
+      workspaceList: (glob) => (glob === TARGET_FILE ? [`./${TARGET_FILE}`] : []),
+    });
+    await new ConversationRuntime(deps).handle(messageOf(`${TARGET_FILE}에서 이 버그 고쳐줘`));
+    expect(calls.lastRunRequest?.targetFiles).toEqual([`./${TARGET_FILE}`]);
+  });
+
+  it('secret/ignored/outside-workspace mentions all fail validation (mirrors the real provider, workspace-local/src/index.test.ts:147)', async () => {
+    for (const text of [
+      '.env에서 이 버그 고쳐줘',
+      'node_modules/foo.ts에서 이 버그 고쳐줘',
+      '/etc/passwd에서 이 버그 고쳐줘',
+    ]) {
+      const { deps, calls } = makeDeps({ intent: codeIntent, workspaceList: () => [] });
+      const result = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.run).toBe(0);
+      expect(result.reply.text).toBe(new ResponseComposer().composeTargetScopeClarification(CTX).text);
+    }
+  });
+
+  it('a traversal mention ("../escape.ts") never reaches workspace.list at all (rejected at extraction)', async () => {
+    const { deps, calls } = makeDeps({ intent: codeIntent });
+    const result = await new ConversationRuntime(deps).handle(messageOf('../escape.ts에서 이 버그 고쳐줘'));
+    expect(calls.workspaceList).toBe(0);
+    expect(calls.run).toBe(0);
+    expect(result.reply.text).toBe(new ResponseComposer().composeTargetScopeClarification(CTX).text);
+  });
+
+  it('bounds validation attempts at MAX_TARGET_CANDIDATES (5) even with more candidates in one message', async () => {
+    const manyPaths = Array.from({ length: 8 }, (_, i) => `packages/core/src/f${i}.ts`);
+    const { deps, calls } = makeDeps({ intent: codeIntent, workspaceList: () => [] });
+    await new ConversationRuntime(deps).handle(messageOf(`${manyPaths.join(' ')} 고쳐줘`));
+    expect(calls.workspaceList).toBe(5);
+  });
+
+  it('TEST_EXECUTION never calls workspace.list (gate is CODE_IMPLEMENTATION-only)', async () => {
+    const { deps, calls } = makeDeps({ intent: testIntent, runOutcome: outcomeOf(ExecutionOutcomeStatus.COMPLETED, 'cmd-1') });
+    await new ConversationRuntime(deps).handle(messageOf('테스트 돌려줘'));
+    expect(calls.workspaceList).toBe(0);
+  });
+
+  it('PROJECT_ANALYSIS never calls workspace.list', async () => {
+    // PROJECT_ANALYSIS isn't an execution capability — it never reaches handleExecutionIntent at
+    // all, so it can't hit this sprint's new gate; gate the analyzer itself to keep the fake
+    // harness from exercising the unrelated work-turn/task machinery.
+    const { deps, calls } = makeDeps({ intent: intentOf(Capability.PROJECT_ANALYSIS, IntentType.PROJECT_ANALYSIS, true) });
+    const notReady = { ...deps, analyzer: { async prepare() { return { ready: false, message: '아직 준비되지 않았어요.' }; } } };
+    await new ConversationRuntime(notReady).handle(messageOf('이 프로젝트 구조 설명해줘'));
+    expect(calls.workspaceList).toBe(0);
+  });
+
+  it('CHAT never calls workspace.list', async () => {
+    const { deps, calls } = makeDeps();
+    await new ConversationRuntime(deps).handle(messageOf('안녕'));
+    expect(calls.workspaceList).toBe(0);
+  });
+
+  it('no active project + a path in the message → still composeNeedsProject, no run, no workspace.list', async () => {
+    const { deps, calls } = makeDeps({ intent: codeIntent, session: sessionOf({ activeProjectId: undefined }) });
+    const result = await new ConversationRuntime(deps).handle(messageOf(`${TARGET_FILE}에서 이 버그 고쳐줘`));
+    expect(calls.run).toBe(0);
+    expect(calls.workspaceList).toBe(0);
+    expect(result.reply.text).toBe(new ResponseComposer().composeNeedsProject(CTX).text);
+  });
+
+  it('workspace-open failure + a path in the message → still composeWorkspaceUnavailable, no run', async () => {
+    const { deps, calls } = makeDeps({ intent: codeIntent, workspaceOpenThrows: true });
+    const result = await new ConversationRuntime(deps).handle(messageOf(`${TARGET_FILE}에서 이 버그 고쳐줘`));
+    expect(calls.run).toBe(0);
+    expect(result.reply.text).toBe(new ResponseComposer().composeWorkspaceUnavailable(CTX).text);
+  });
+});
+
 // ── Production-like resume (Sprint 2k, retained) ─────────────────────────────────────────────────
 
 describe('ConversationRuntime + StatelessApprovalFlow (production-like)', () => {
@@ -488,7 +631,11 @@ describe('ConversationRuntime + StatelessApprovalFlow (production-like)', () => 
     };
     const approvalFlow = new StatelessApprovalFlow(store);
 
-    const base = makeDeps({ intent: codeIntent, runOutcome: outcomeOf(ExecutionOutcomeStatus.AWAITING_APPROVAL) }).deps;
+    const base = makeDeps({
+      intent: codeIntent,
+      runOutcome: outcomeOf(ExecutionOutcomeStatus.AWAITING_APPROVAL),
+      workspaceList: hitsFor(TARGET_FILE),
+    }).deps;
     const deps: ConversationRuntimeDeps = {
       ...base,
       approvalFlow,
@@ -510,7 +657,7 @@ describe('ConversationRuntime + StatelessApprovalFlow (production-like)', () => 
     };
     const runtime = new ConversationRuntime(deps);
 
-    const t1 = await runtime.handle(messageOf('이 버그 고쳐줘'));
+    const t1 = await runtime.handle(messageOf(`${TARGET_FILE}에서 이 버그 고쳐줘`));
     expect(t1.status).toBe('AWAITING_APPROVAL');
     expect(sessions.get('sess-1')?.activeTaskId).toBeTruthy();
 

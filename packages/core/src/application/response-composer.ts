@@ -279,4 +279,23 @@ export class ResponseComposer {
   composeCommandUnavailable(context: ConversationContext): OutboundMessage {
     return { context, text: '명령을 실행할 수 없었어요. 잠시 후 다시 시도해 주세요.' };
   }
+
+  /**
+   * Clarification prompt when a code-change request names no validated target file (Code Change
+   * Scope Collection, ADR-0036). No ExecutionPlan/ApprovalRequest exists at this point — this is a
+   * plain conversational reply, not an approval/waiting state. Wording is CA-specified (Round 1):
+   * asks for a file path as the sufficient ask, frames natural-language scope as optional context
+   * only, and tells the user to re-send the full request together with the path (no multi-turn
+   * memory this sprint).
+   */
+  composeTargetScopeClarification(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text:
+        '수정할 파일 경로와 함께 다시 요청해 주세요.\n' +
+        '예: packages/core/src/application/foo.ts 파일에서 이 버그 고쳐줘\n\n' +
+        '"로그인 처리 부분"처럼 설명만으로는 아직 부족해요. 어떤 부분을 고치려는지는 파일 경로와 함께 ' +
+        '추가로 적어주면 더 좋아요.',
+    };
+  }
 }

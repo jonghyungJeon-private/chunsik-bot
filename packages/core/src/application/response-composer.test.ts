@@ -167,3 +167,25 @@ describe('ResponseComposer.composePlanningOnlyApproved', () => {
     expect(planningOnly.text).not.toBe(completed.text);
   });
 });
+
+// ── Sprint 2o — Code Change Scope Collection (ADR-0036) ─────────────────────────────────────────
+
+describe('ResponseComposer.composeTargetScopeClarification', () => {
+  it('asks for a file path with a concrete example', () => {
+    const reply = composer.composeTargetScopeClarification(CTX);
+    expect(reply.text).toContain('파일 경로');
+    expect(reply.text).toContain('packages/core/src/application/foo.ts');
+  });
+
+  it('instructs the user to re-send the full request together with the path', () => {
+    const reply = composer.composeTargetScopeClarification(CTX);
+    expect(reply.text).toContain('다시 요청');
+    expect(reply.text).toContain('파일에서');
+  });
+
+  it('does not present module/area text alone as a sufficient example', () => {
+    const reply = composer.composeTargetScopeClarification(CTX);
+    expect(reply.text).toContain('아직 부족해요');
+    expect(reply.text).not.toMatch(/또는\s*"로그인 처리 부분"/);
+  });
+});
