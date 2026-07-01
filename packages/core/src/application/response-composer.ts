@@ -49,6 +49,18 @@ export interface CodeChangePreview {
   outOfScopeWarnings: string[];
 }
 
+/**
+ * Display-relevant shape of a unified-diff-style code-change preview (Unified Diff Preview, ADR-0039).
+ * Application-layer, not domain, not persisted. `unified`/`binary` come straight from a
+ * `WorkspaceManager.diff()` `FileDiff` — current-content-vs-proposed, never AI-authored diff text.
+ * Every entry's `kind` is `'update' | 'delete'` — `'add'` is rejected as a failure before this DTO is
+ * built (`ConversationRuntime.runCodeGenerationPreview`).
+ */
+export interface CodeDiffPreview {
+  changes: Array<{ path: string; kind: 'update' | 'delete'; unified: string; binary: boolean }>;
+  outOfScopeWarnings: string[];
+}
+
 /** Per-stream tail kept in a reply excerpt (lines), before the char cap applies. */
 const MAX_SUMMARY_LINES = 20;
 /** Char cap on the rendered excerpt, leaving headroom under Discord's 2000-char message limit. */
@@ -61,6 +73,22 @@ const ADAPTER_TRUNCATION_MARKER = '…[truncated]';
 const MAX_PREVIEW_EXCERPT_CHARS = 800;
 /** Bound on how many out-of-scope paths are listed before truncating (ADR-0038). */
 const MAX_OUT_OF_SCOPE_WARNING_PATHS = 5;
+/** Per-file diff line/char caps before the reserved-budget assembly applies (Unified Diff Preview,
+ *  ADR-0039) — independent of MAX_PREVIEW_EXCERPT_CHARS (different content shape). Lowered to 1000
+ *  chars (from an initial 2000) so a single file's diff leaves headroom for the header, footer, and
+ *  other files' blocks within MAX_MESSAGE_CHARS (CA Round 1 Required Change #2). */
+const MAX_DIFF_LINES_PER_FILE = 40;
+const MAX_DIFF_CHARS_PER_FILE = 1000;
+/** Fixed upper bound on the "N개 파일... 생략했어요" notice's length (N is bounded by
+ *  MAX_TARGET_CANDIDATES = 5 upstream, so always short) — reserved up front so the notice never has to
+ *  compete for budget after the fact (ADR-0039). */
+const MAX_OMITTED_NOTICE_CHARS = 40;
+/** Slack for line-join overhead across header/blocks/footer (ADR-0039, CA Round 1 Required Change #2). */
+const DIFF_BUDGET_MARGIN_CHARS = 20;
+
+const DIFF_PREVIEW_HEADER =
+  '코드 변경 제안을 diff로 보여드려요. 아직 실제로 적용되지 않았어요. 파일은 수정되지 않았어요.';
+const DIFF_PREVIEW_FOOTER = '이 제안을 실제로 적용하는 기능은 아직 지원하지 않아요.';
 
 /** Which stream a rendered excerpt came from, and which non-empty stream was left out. */
 interface OutputSummary {
@@ -156,6 +184,34 @@ function renderOutOfScopeWarning(paths: string[]): string | undefined {
   const shown = paths.slice(0, MAX_OUT_OF_SCOPE_WARNING_PATHS);
   const suffix = paths.length > shown.length ? ` 외 ${paths.length - shown.length}개` : '';
   return `참고: ${shown.join(', ')}${suffix}에도 변경을 제안했지만, 확인된 대상 파일이 아니라서 보여드리지 않았어요.`;
+}
+
+/** Clamp one file's unified diff to a bounded number of lines, then chars (Unified Diff Preview,
+ *  ADR-0039); reports whether either cap fired so the caller can add a truncation notice. */
+function clampDiffText(unified: string): { text: string; truncated: boolean } {
+  const lines = unified.split('\n');
+  const lineTruncated = lines.length > MAX_DIFF_LINES_PER_FILE;
+  let text = (lineTruncated ? lines.slice(0, MAX_DIFF_LINES_PER_FILE) : lines).join('\n');
+  const charTruncated = text.length > MAX_DIFF_CHARS_PER_FILE;
+  if (charTruncated) text = text.slice(0, MAX_DIFF_CHARS_PER_FILE);
+  return { text, truncated: lineTruncated || charTruncated };
+}
+
+/**
+ * Render one changed file's block (Unified Diff Preview, ADR-0039). Binary and size-skipped files must
+ * say plainly that a diff could not be displayed — never phrased as if one was shown — and repeat that
+ * the file was not modified (CA Round 1 Required Change #4).
+ */
+function renderDiffChange(c: CodeDiffPreview['changes'][number]): string {
+  if (c.binary) return `- ${c.path}: 바이너리 파일이라 diff를 표시할 수 없어요. (파일은 수정되지 않았어요)`;
+  if (!c.unified.trim()) {
+    return `- ${c.path}: 내용이 너무 커서 diff를 표시할 수 없어요. (파일은 수정되지 않았어요)`;
+  }
+  const { text, truncated } = clampDiffText(c.unified);
+  const fence = fenceFor(text);
+  const label = c.kind === 'delete' ? `${c.path} (삭제 제안)` : c.path;
+  const note = truncated ? '\n(diff가 길어서 일부만 보여드렸어요.)' : '';
+  return `- ${label}\n${fence}diff\n${text}\n${fence}${note}`;
 }
 
 /**
@@ -384,6 +440,47 @@ export class ResponseComposer {
     const lines = ['AI가 제안한 변경이 확인된 대상 파일과 일치하지 않아 보여드릴 수 없어요.', '파일은 수정되지 않았어요.'];
     const warning = renderOutOfScopeWarning(outOfScopeWarnings);
     if (warning) lines.push(warning);
+    return { context, text: clampToMessageBudget(lines.join('\n')) };
+  }
+
+  /**
+   * A successful unified-diff-style code-change preview (Unified Diff Preview, ADR-0039). Supersedes
+   * {@link composeCodeGenerationPreview} as the primary success rendering for a post-approval
+   * CodeGeneration preview — that method is retained, unreached from this call site, the same accepted
+   * status ADR-0038 gave `composePlanningOnlyApproved`. Must repeat, not merely mention once, that
+   * nothing was applied.
+   *
+   * CA Round 1 Required Change #2: the header and footer (incl. the out-of-scope warning, if any, and
+   * a bound on the "files omitted" notice) are reserved budget FIRST; only the remaining budget is
+   * spent on file blocks, which are dropped (not truncated mid-block) once that budget is used up. This
+   * guarantees the safety wording survives even when the diff content alone would have exceeded
+   * MAX_MESSAGE_CHARS — the trailing clampToMessageBudget call below is now a defensive backstop, not
+   * the primary guarantee.
+   */
+  composeCodeDiffPreview(context: ConversationContext, preview: CodeDiffPreview): OutboundMessage {
+    const warning = renderOutOfScopeWarning(preview.outOfScopeWarnings);
+    const footerLines = [...(warning ? [warning] : []), DIFF_PREVIEW_FOOTER];
+    const footer = footerLines.join('\n');
+    const reserved =
+      DIFF_PREVIEW_HEADER.length + footer.length + MAX_OMITTED_NOTICE_CHARS + DIFF_BUDGET_MARGIN_CHARS;
+    const bodyBudget = Math.max(0, MAX_MESSAGE_CHARS - reserved);
+
+    const blocks: string[] = [];
+    let used = 0;
+    let omitted = 0;
+    for (const c of preview.changes) {
+      const block = renderDiffChange(c);
+      if (used + block.length > bodyBudget) {
+        omitted++;
+        continue;
+      }
+      used += block.length;
+      blocks.push(block);
+    }
+
+    const lines = [DIFF_PREVIEW_HEADER, ...blocks];
+    if (omitted > 0) lines.push(`(길이 제한으로 파일 ${omitted}개의 diff는 생략했어요.)`);
+    lines.push(...footerLines);
     return { context, text: clampToMessageBudget(lines.join('\n')) };
   }
 }

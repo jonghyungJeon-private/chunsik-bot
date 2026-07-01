@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ConversationContext } from '../domain';
 import { ResponseComposer } from './response-composer';
-import type { CodeChangePreview, TestResultDetail } from './response-composer';
+import type { CodeChangePreview, CodeDiffPreview, TestResultDetail } from './response-composer';
 
 const CTX: ConversationContext = { platform: 'test', channelId: 'c1', userId: 'u1' };
 const composer = new ResponseComposer();
@@ -316,5 +316,130 @@ describe('ResponseComposer.composeCodeGenerationPreviewNoValidChange', () => {
     const noValidChange = composer.composeCodeGenerationPreviewNoValidChange(CTX, ['other.ts']);
     const failed = composer.composeCodeGenerationPreviewFailed(CTX);
     expect(noValidChange.text).not.toBe(failed.text);
+  });
+});
+
+// ── Sprint 2r — Unified Diff Preview (ADR-0039) ─────────────────────────────────────────────────
+
+describe('ResponseComposer.composeCodeDiffPreview', () => {
+  const diffPreviewOf = (o: Partial<CodeDiffPreview> = {}): CodeDiffPreview => ({
+    changes: [
+      {
+        path: 'packages/core/src/application/foo.ts',
+        kind: 'update',
+        unified: '--- a/foo.ts\n+++ b/foo.ts\n@@ -1 +1 @@\n-old\n+new\n',
+        binary: false,
+      },
+    ],
+    outOfScopeWarnings: [],
+    ...o,
+  });
+
+  it('states, at least twice, that nothing was applied yet', () => {
+    const reply = composer.composeCodeDiffPreview(CTX, diffPreviewOf());
+    const notAppliedMentions = (reply.text.match(/적용되지 않|지원하지 않/g) ?? []).length;
+    expect(notAppliedMentions).toBeGreaterThanOrEqual(2);
+  });
+
+  it('never uses wording that implies a completed mutation', () => {
+    const reply = composer.composeCodeDiffPreview(CTX, diffPreviewOf());
+    for (const word of FORBIDDEN_MUTATION_WORDS) {
+      expect(reply.text).not.toContain(word);
+    }
+  });
+
+  it('lists the changed file path and the unified diff text', () => {
+    const reply = composer.composeCodeDiffPreview(CTX, diffPreviewOf());
+    expect(reply.text).toContain('packages/core/src/application/foo.ts');
+    expect(reply.text).toContain('-old');
+    expect(reply.text).toContain('+new');
+  });
+
+  it('a delete change is labeled "(삭제 제안)"', () => {
+    const reply = composer.composeCodeDiffPreview(
+      CTX,
+      diffPreviewOf({
+        changes: [{ path: 'packages/core/old.ts', kind: 'delete', unified: '--- a/old.ts\n+++ /dev/null\n@@ -1 +0,0 @@\n-old\n', binary: false }],
+      }),
+    );
+    expect(reply.text).toContain('packages/core/old.ts');
+    expect(reply.text).toContain('삭제 제안');
+  });
+
+  it('a binary change renders a "diff를 표시할 수 없어요" notice, no code fence, and reaffirms not-modified (CA Round 1 Required Change #4)', () => {
+    const reply = composer.composeCodeDiffPreview(
+      CTX,
+      diffPreviewOf({ changes: [{ path: 'image.png', kind: 'update', unified: '', binary: true }] }),
+    );
+    expect(reply.text).toContain('diff를 표시할 수 없어요');
+    expect(reply.text).toContain('image.png');
+    expect(reply.text).not.toContain('```');
+    expect(reply.text).toContain('수정되지 않았어요');
+  });
+
+  it('an empty unified diff (size-skipped) renders a "diff를 표시할 수 없어요" notice — never a fabricated diff (CA Round 1 Required Change #4)', () => {
+    const reply = composer.composeCodeDiffPreview(
+      CTX,
+      diffPreviewOf({ changes: [{ path: 'huge.ts', kind: 'update', unified: '', binary: false }] }),
+    );
+    expect(reply.text).toContain('diff를 표시할 수 없어요');
+    expect(reply.text).toContain('huge.ts');
+    expect(reply.text).not.toContain('```');
+  });
+
+  it('includes the out-of-scope warning line when present, omits it when absent', () => {
+    const withWarning = composer.composeCodeDiffPreview(CTX, diffPreviewOf({ outOfScopeWarnings: ['other.ts'] }));
+    expect(withWarning.text).toContain('other.ts');
+    const withoutWarning = composer.composeCodeDiffPreview(CTX, diffPreviewOf({ outOfScopeWarnings: [] }));
+    expect(withoutWarning.text).not.toContain('참고:');
+  });
+
+  it('a diff text containing a run of triple backticks does not break the rendered fence', () => {
+    const reply = composer.composeCodeDiffPreview(
+      CTX,
+      diffPreviewOf({
+        changes: [{ path: 'foo.ts', kind: 'update', unified: 'before\n```\nnested\n```\nafter', binary: false }],
+      }),
+    );
+    expect(reply.text).toContain('````');
+    expect(reply.text).toContain('nested');
+  });
+
+  it('a diff exceeding the per-file line/char cap is clamped with a truncation notice (CA Round 1 Required Change #2)', () => {
+    const hugeUnified = Array.from({ length: 200 }, (_, i) => `-line ${i}`).join('\n');
+    const reply = composer.composeCodeDiffPreview(
+      CTX,
+      diffPreviewOf({ changes: [{ path: 'foo.ts', kind: 'update', unified: hugeUnified, binary: false }] }),
+    );
+    expect(reply.text).toContain('일부만 보여드렸어요');
+    expect(reply.text).not.toContain('line 199'); // well past the 40-line cap
+  });
+
+  it('many large diffs together still preserve the not-applied/not-modified wording and stay within the message budget (CA Round 1 Required Change #2)', () => {
+    const bigUnified = Array.from({ length: 60 }, (_, i) => `-line ${i}`).join('\n');
+    const reply = composer.composeCodeDiffPreview(
+      CTX,
+      diffPreviewOf({
+        changes: Array.from({ length: 5 }, (_, i) => ({
+          path: `packages/core/file-${i}.ts`,
+          kind: 'update' as const,
+          unified: bigUnified,
+          binary: false,
+        })),
+      }),
+    );
+    expect(reply.text.length).toBeLessThanOrEqual(1900);
+    expect(reply.text).toContain('파일은 수정되지 않았어요');
+    expect(reply.text).toContain('아직 실제로 적용되지 않았어요');
+    expect(reply.text).toContain('이 제안을 실제로 적용하는 기능은 아직 지원하지 않아요');
+    expect(reply.text).toContain('생략했어요'); // not every file's diff fit — the omission is noted, not silent
+  });
+
+  it('stays within the existing message-length bound even with a near-limit single diff', () => {
+    const reply = composer.composeCodeDiffPreview(
+      CTX,
+      diffPreviewOf({ changes: [{ path: 'foo.ts', kind: 'update', unified: 'x'.repeat(5000), binary: false }] }),
+    );
+    expect(reply.text.length).toBeLessThanOrEqual(1900);
   });
 });

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   ApprovalStatus,
   Capability,
@@ -18,9 +18,11 @@ import type {
   GenerateCodeInput,
   InboundMessage,
   Intent,
+  ProposedChange,
   Project,
   Session,
   Task,
+  WorkspaceDiff,
   WorkspaceRef,
 } from '../domain';
 import type { Logger } from '../ports';
@@ -30,7 +32,7 @@ import type { CapabilityRouter } from './capability-router';
 import { IntentResolver } from './intent-resolver';
 import { ExecutionOutcomeStatus, ExecutionStage } from './execution-orchestrator';
 import type { ExecutionOutcome, ExecutionRequest } from './execution-orchestrator';
-import { ConversationRuntime, toCodeChangePreview } from './conversation-runtime';
+import { ConversationRuntime, filterInScopeChanges, toCodeChangePreview, toCodeDiffPreview } from './conversation-runtime';
 import type { ApprovalFlow, ConversationRuntimeDeps, PendingScopeClarification, ScopeClarificationFlow } from './conversation-runtime';
 import { StatelessApprovalFlow } from './stateless-approval-flow';
 
@@ -132,6 +134,22 @@ const codeProposalOf = (o: Partial<CodeProposal> = {}): CodeProposal => ({
   ...o,
 });
 
+/** Deterministic default `workspace.diff` fake output — mirrors what a real provider would derive
+ *  from current content vs a `ProposedChange`, without needing real files (Sprint 2r, ADR-0039). */
+const workspaceDiffOf = (changes: ProposedChange[]): WorkspaceDiff => ({
+  refId: WORKSPACE.id,
+  files: changes.map((c) => ({
+    path: c.path,
+    changeKind: c.delete ? 'delete' : 'modify',
+    unified: c.delete
+      ? `--- a/${c.path}\n+++ /dev/null\n@@ -1 +0,0 @@\n-old content\n`
+      : `--- a/${c.path}\n+++ b/${c.path}\n@@ -1 +1 @@\n-old content\n+${c.newContent ?? ''}\n`,
+    binary: false,
+  })),
+  estimatedChangedLines: changes.length,
+  truncated: false,
+});
+
 interface Calls {
   run: number;
   resume: number;
@@ -150,6 +168,8 @@ interface Calls {
   codeGenerationGenerate: number;
   codeGenerationGetProposal: number;
   lastCodeGenerationInput?: GenerateCodeInput;
+  workspaceDiff: number;
+  lastWorkspaceDiffInput?: ProposedChange[];
 }
 
 interface Opts {
@@ -173,6 +193,11 @@ interface Opts {
   /** `codeGeneration.getProposal` result (Sprint 2q) — defaults to an in-scope proposal for
    *  TARGET_FILE; pass null to simulate a missing proposal. */
   codeProposal?: CodeProposal | null;
+  /** `workspace.diff` result (Sprint 2r) — defaults to a clean per-change diff derived from whatever
+   *  in-scope changes were actually passed in (`workspaceDiffOf`); pass 'throw' to simulate a read
+   *  failure, or a literal `WorkspaceDiff` to force a specific (e.g. empty, or `changeKind: 'add'`)
+   *  result. */
+  workspaceDiff?: WorkspaceDiff | 'throw';
 }
 
 function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Calls } {
@@ -191,6 +216,7 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
     recordAssistant: 0,
     codeGenerationGenerate: 0,
     codeGenerationGetProposal: 0,
+    workspaceDiff: 0,
   };
   const composer = new ResponseComposer();
   const intentResolver = new IntentResolver();
@@ -266,6 +292,12 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
       async list(_ref, glob) {
         calls.workspaceList++;
         return opts.workspaceList ? opts.workspaceList(glob) : [];
+      },
+      async diff(_ref, changes) {
+        calls.workspaceDiff++;
+        calls.lastWorkspaceDiffInput = changes;
+        if (opts.workspaceDiff === 'throw') throw new Error('diff failed');
+        return opts.workspaceDiff ?? workspaceDiffOf(changes);
       },
     },
     commandExecutions: {
@@ -829,17 +861,29 @@ async function approveWith(
 }
 
 describe('AI Code Generation Preview — runtime', () => {
-  it('successful in-scope proposal → composeCodeGenerationPreview, RESPONDED, generate called exactly once', async () => {
+  it('successful in-scope proposal → composeCodeDiffPreview, RESPONDED, generate/diff called exactly once', async () => {
     const { result, calls } = await approveWith({}, planningOnlyRequestOf());
     expect(calls.codeGenerationGenerate).toBe(1);
     expect(calls.codeGenerationGetProposal).toBe(1);
+    expect(calls.workspaceDiff).toBe(1);
     expect(result.status).toBe('RESPONDED');
+    const expectedDiff = workspaceDiffOf([{ path: TARGET_FILE, newContent: 'fixed content' }]);
     expect(result.reply.text).toBe(
-      new ResponseComposer().composeCodeGenerationPreview(CTX, {
-        changes: [{ path: TARGET_FILE, kind: 'update', excerpt: 'fixed content' }],
-        outOfScopeWarnings: [],
-      }).text,
+      new ResponseComposer().composeCodeDiffPreview(CTX, toCodeDiffPreview(expectedDiff, [])).text,
     );
+  });
+
+  it('successful diff preview calls composeCodeDiffPreview and never composeCodeGenerationPreview', async () => {
+    const { deps } = makeDeps({
+      pending: pendingApprovalOf(),
+      reconstruct: { request: planningOnlyRequestOf(), prior: outcomeOf(ExecutionOutcomeStatus.AWAITING_APPROVAL) },
+    });
+    const spyDiff = vi.spyOn(deps.composer, 'composeCodeDiffPreview');
+    const spyText = vi.spyOn(deps.composer, 'composeCodeGenerationPreview');
+    const result = await new ConversationRuntime(deps).handle(messageOf('승인'));
+    expect(result.status).toBe('RESPONDED');
+    expect(spyDiff).toHaveBeenCalledTimes(1);
+    expect(spyText).not.toHaveBeenCalled();
   });
 
   it('generate() input uses the original summary, the resumed plan ref, and the validated workspaceRef/targetFiles', async () => {
@@ -907,11 +951,54 @@ describe('AI Code Generation Preview — runtime', () => {
     expect(result.reply.text).toBe(new ResponseComposer().composeCodeGenerationPreviewFailed(CTX).text);
   });
 
-  it('a proposal path outside targetFiles is never rendered as content, only as a warning', async () => {
+  it('workspace.diff() throws → failed preview, FAILED, no mutation attempted (ADR-0039)', async () => {
+    const { result } = await approveWith({ workspaceDiff: 'throw' }, planningOnlyRequestOf());
+    expect(result.status).toBe('FAILED');
+    expect(result.reply.text).toBe(new ResponseComposer().composeCodeGenerationPreviewFailed(CTX).text);
+  });
+
+  it('workspace.diff() returning zero files → failed preview, FAILED (CA Round 1 Required Change #3)', async () => {
     const { result } = await approveWith(
+      { workspaceDiff: { refId: WORKSPACE.id, files: [], estimatedChangedLines: 0, truncated: false } },
+      planningOnlyRequestOf(),
+    );
+    expect(result.status).toBe('FAILED');
+    expect(result.reply.text).toBe(new ResponseComposer().composeCodeGenerationPreviewFailed(CTX).text);
+  });
+
+  it("workspace.diff() reporting changeKind 'add' → failed preview, never a successful diff (CA Round 1 Required Change #1)", async () => {
+    const { result } = await approveWith(
+      {
+        workspaceDiff: {
+          refId: WORKSPACE.id,
+          files: [{ path: TARGET_FILE, changeKind: 'add', unified: 'irrelevant', binary: false }],
+          estimatedChangedLines: 1,
+          truncated: false,
+        },
+      },
+      planningOnlyRequestOf(),
+    );
+    expect(result.status).toBe('FAILED');
+    expect(result.reply.text).toBe(new ResponseComposer().composeCodeGenerationPreviewFailed(CTX).text);
+  });
+
+  it('a delete proposal produces a delete-style diff preview (ADR-0039)', async () => {
+    const { result, calls } = await approveWith(
+      { codeProposal: codeProposalOf({ proposal: [{ path: TARGET_FILE, delete: true }] }) },
+      planningOnlyRequestOf(),
+    );
+    expect(calls.lastWorkspaceDiffInput).toEqual([{ path: TARGET_FILE, delete: true }]);
+    expect(result.status).toBe('RESPONDED');
+    expect(result.reply.text).toContain(TARGET_FILE);
+    expect(result.reply.text).toContain('삭제 제안');
+  });
+
+  it('a proposal path outside targetFiles is never rendered as content, only as a warning', async () => {
+    const { result, calls } = await approveWith(
       { codeProposal: codeProposalOf({ proposal: [{ path: 'packages/core/other.ts', newContent: 'x' }] }) },
       planningOnlyRequestOf(),
     );
+    expect(calls.workspaceDiff).toBe(0); // all-out-of-scope never reaches workspace.diff
     expect(result.status).toBe('FAILED'); // the only proposed path was out of scope — no valid change
     expect(result.reply.text).toBe(
       new ResponseComposer().composeCodeGenerationPreviewNoValidChange(CTX, ['packages/core/other.ts']).text,
@@ -948,25 +1035,28 @@ describe('AI Code Generation Preview — runtime', () => {
     expect(result.reply.text).not.toContain(`./${TARGET_FILE}`);
   });
 
-  it('deny ("거절") never calls codeGeneration.generate', async () => {
+  it('deny ("거절") never calls codeGeneration.generate or workspace.diff', async () => {
     const { deps, calls } = makeDeps({ pending: pendingApprovalOf() });
     await new ConversationRuntime(deps).handle(messageOf('거절'));
     expect(calls.codeGenerationGenerate).toBe(0);
+    expect(calls.workspaceDiff).toBe(0);
   });
 
-  it('cancel ("취소") never calls codeGeneration.generate', async () => {
+  it('cancel ("취소") never calls codeGeneration.generate or workspace.diff', async () => {
     const { deps, calls } = makeDeps({ pending: pendingApprovalOf() });
     await new ConversationRuntime(deps).handle(messageOf('취소'));
     expect(calls.codeGenerationGenerate).toBe(0);
+    expect(calls.workspaceDiff).toBe(0);
   });
 
-  it('reconstructResume failure (re-ask) never calls codeGeneration.generate', async () => {
+  it('reconstructResume failure (re-ask) never calls codeGeneration.generate or workspace.diff', async () => {
     const { deps, calls } = makeDeps({ pending: pendingApprovalOf(), reconstruct: null });
     await new ConversationRuntime(deps).handle(messageOf('승인'));
     expect(calls.codeGenerationGenerate).toBe(0);
+    expect(calls.workspaceDiff).toBe(0);
   });
 
-  it('a non-planningOnly approval resume never calls codeGeneration.generate', async () => {
+  it('a non-planningOnly approval resume never calls codeGeneration.generate or workspace.diff', async () => {
     const { result, calls } = await approveWith({}, {
       goal: 'g',
       instruction: 'g',
@@ -975,6 +1065,7 @@ describe('AI Code Generation Preview — runtime', () => {
       // planningOnly deliberately absent
     });
     expect(calls.codeGenerationGenerate).toBe(0);
+    expect(calls.workspaceDiff).toBe(0);
     expect(result.status).toBe('RESPONDED'); // falls through to the existing generic replyForOutcome path
   });
 
@@ -1019,6 +1110,60 @@ describe('toCodeChangePreview (Sprint 2q, ADR-0038)', () => {
     const preview = toCodeChangePreview([{ path: TARGET_FILE, newContent: 'x' }], []);
     expect(preview.changes).toEqual([]);
     expect(preview.outOfScopeWarnings).toEqual([TARGET_FILE]);
+  });
+});
+
+describe('filterInScopeChanges (Sprint 2r, ADR-0039)', () => {
+  it('an in-scope delete change preserves delete: true exactly — no defaulted newContent field', () => {
+    const { inScope, outOfScopeWarnings } = filterInScopeChanges([{ path: TARGET_FILE, delete: true }], [TARGET_FILE]);
+    expect(inScope).toEqual([{ path: TARGET_FILE, delete: true }]);
+    expect(inScope[0]).not.toHaveProperty('newContent');
+    expect(outOfScopeWarnings).toEqual([]);
+  });
+
+  it('an in-scope update change preserves newContent exactly', () => {
+    const { inScope } = filterInScopeChanges([{ path: TARGET_FILE, newContent: 'x' }], [TARGET_FILE]);
+    expect(inScope).toEqual([{ path: TARGET_FILE, newContent: 'x' }]);
+  });
+
+  it('the rendered path is the validated targetFiles value, never the AI raw path', () => {
+    const { inScope } = filterInScopeChanges([{ path: `./${TARGET_FILE}`, newContent: 'x' }], [TARGET_FILE]);
+    expect(inScope).toEqual([{ path: TARGET_FILE, newContent: 'x' }]);
+  });
+
+  it('an out-of-scope path is excluded from inScope and reported using the AI raw string', () => {
+    const { inScope, outOfScopeWarnings } = filterInScopeChanges([{ path: 'other.ts', newContent: 'x' }], [TARGET_FILE]);
+    expect(inScope).toEqual([]);
+    expect(outOfScopeWarnings).toEqual(['other.ts']);
+  });
+});
+
+describe('toCodeDiffPreview (Sprint 2r, ADR-0039)', () => {
+  const diffOf = (changeKind: 'add' | 'modify' | 'delete', unified = 'diff text', binary = false): WorkspaceDiff => ({
+    refId: 'ws-1',
+    files: [{ path: TARGET_FILE, changeKind, unified, binary }],
+    estimatedChangedLines: 1,
+    truncated: false,
+  });
+
+  it("maps a 'modify' FileDiff to kind: 'update'", () => {
+    const preview = toCodeDiffPreview(diffOf('modify'), []);
+    expect(preview.changes).toEqual([{ path: TARGET_FILE, kind: 'update', unified: 'diff text', binary: false }]);
+  });
+
+  it("maps a 'delete' FileDiff to kind: 'delete'", () => {
+    const preview = toCodeDiffPreview(diffOf('delete'), []);
+    expect(preview.changes[0]?.kind).toBe('delete');
+  });
+
+  it('passes unified/binary through unchanged', () => {
+    const preview = toCodeDiffPreview(diffOf('modify', '', true), []);
+    expect(preview.changes[0]).toEqual({ path: TARGET_FILE, kind: 'update', unified: '', binary: true });
+  });
+
+  it('passes outOfScopeWarnings through unchanged', () => {
+    const preview = toCodeDiffPreview(diffOf('modify'), ['other.ts']);
+    expect(preview.outOfScopeWarnings).toEqual(['other.ts']);
   });
 });
 
