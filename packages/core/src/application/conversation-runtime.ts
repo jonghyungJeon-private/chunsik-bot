@@ -23,11 +23,18 @@ import type {
   Session,
   Task,
   TaskRun,
+  WorkspaceDiff,
   WorkspaceRef,
 } from '../domain';
 import type { AiProvider, AiRequest, Logger, ProjectReadout } from '../ports';
 import { now } from '../util/clock';
-import type { ResponseComposer, CodeChangePreview, ExecutionReplyStatus, TestResultDetail } from './response-composer';
+import type {
+  ResponseComposer,
+  CodeChangePreview,
+  CodeDiffPreview,
+  ExecutionReplyStatus,
+  TestResultDetail,
+} from './response-composer';
 import type { IntentResolutionContext } from './intent-resolver';
 import { extractTargetPathCandidates, normalizeRelativePath } from './target-scope';
 import type {
@@ -159,6 +166,9 @@ export interface ConversationRuntimeDeps {
     open(project: { id: Id; rootPath: string }): Promise<WorkspaceRef>;
     /** Reused for target-scope validation (Sprint 2o, ADR-0036) — not a new port/capability. */
     list(ref: WorkspaceRef, glob?: string): Promise<string[]>;
+    /** Reused for post-approval diff preview (Sprint 2r, ADR-0039) — not a new port/capability; the
+     *  same read-only WorkspaceManager.diff() ExecutionOrchestrator's WORKSPACE_DIFF stage uses. */
+    diff(ref: WorkspaceRef, changes: ProposedChange[]): Promise<WorkspaceDiff>;
   };
   readonly commandExecutions: { get(id: Id): Promise<CommandExecution | null> };
   readonly contextBuilder: { build(task: Task, excludeMemoryIds: Id[]): Promise<ContextBundle> };
@@ -204,13 +214,21 @@ function toReplyStatus(status: ExecutionOutcomeStatus): ExecutionReplyStatus {
 
 /**
  * Split a proposal into in-scope changes (path normalizes to a validated targetFiles entry) and
- * everything else, reported as a warning and never rendered as content (AI Code Generation Preview,
- * ADR-0038). AI-proposed paths are untrusted; targetFiles is the authoritative scope. Exported (not a
- * private class method) so it is directly unit-testable, matching `target-scope.ts`'s pattern.
+ * everything else, reported as a warning and never read/rendered as content (AI Code Generation
+ * Preview, ADR-0038; Unified Diff Preview, ADR-0039). AI-proposed paths are untrusted; targetFiles is
+ * the authoritative scope. Exported (not a private class method) so it is directly unit-testable,
+ * matching `target-scope.ts`'s pattern.
+ *
+ * Preserves each in-scope `ProposedChange`'s `delete`/`newContent` shape exactly as given — spreads
+ * `change` and overrides only `path`, never reconstructing a new object that could default a field the
+ * AI's proposal didn't carry (Sprint 2r, ADR-0039, CA Round 1 Required Change #6).
  */
-export function toCodeChangePreview(proposal: ProposedChange[], targetFiles: string[]): CodeChangePreview {
+export function filterInScopeChanges(
+  proposal: ProposedChange[],
+  targetFiles: string[],
+): { inScope: ProposedChange[]; outOfScopeWarnings: string[] } {
   const normalizedTargets = new Map(targetFiles.map((p) => [normalizeRelativePath(p), p]));
-  const changes: CodeChangePreview['changes'] = [];
+  const inScope: ProposedChange[] = [];
   const outOfScopeWarnings: string[] = [];
   for (const change of proposal) {
     const validatedPath = normalizedTargets.get(normalizeRelativePath(change.path));
@@ -218,12 +236,36 @@ export function toCodeChangePreview(proposal: ProposedChange[], targetFiles: str
       outOfScopeWarnings.push(change.path);
       continue;
     }
-    changes.push({
-      path: validatedPath, // the validated targetFiles value — never the AI's raw path
-      kind: change.delete ? 'delete' : 'update',
-      ...(change.delete ? {} : { excerpt: change.newContent }),
-    });
+    inScope.push({ ...change, path: validatedPath }); // validated value, never the AI's raw path
   }
+  return { inScope, outOfScopeWarnings };
+}
+
+/** Sprint 2q's original filtering + text-excerpt shaping (ADR-0038) — now a thin wrapper over
+ *  {@link filterInScopeChanges}. Signature/behavior unchanged; retained for compatibility (ADR-0039). */
+export function toCodeChangePreview(proposal: ProposedChange[], targetFiles: string[]): CodeChangePreview {
+  const { inScope, outOfScopeWarnings } = filterInScopeChanges(proposal, targetFiles);
+  const changes: CodeChangePreview['changes'] = inScope.map((c) => ({
+    path: c.path,
+    kind: c.delete ? 'delete' : 'update',
+    ...(c.delete ? {} : { excerpt: c.newContent }),
+  }));
+  return { changes, outOfScopeWarnings };
+}
+
+/**
+ * Shape an already-guarded `WorkspaceManager.diff()` result into the composer-facing DTO (Sprint 2r,
+ * ADR-0039). Pure data reshaping — no bounding/truncation-notice text here; `ResponseComposer` owns
+ * that (ADR-0032). Callers must have already rejected an empty `diff.files` and any `changeKind: 'add'`
+ * entry before calling this (see `runCodeGenerationPreview`).
+ */
+export function toCodeDiffPreview(diff: WorkspaceDiff, outOfScopeWarnings: string[]): CodeDiffPreview {
+  const changes: CodeDiffPreview['changes'] = diff.files.map((f) => ({
+    path: f.path, // already the validated targetFiles value passed into workspace.diff
+    kind: f.changeKind === 'delete' ? 'delete' : 'update', // 'modify' -> 'update' ('add' rejected earlier)
+    unified: f.unified, // '' when binary or size-skipped by the provider
+    binary: f.binary,
+  }));
   return { changes, outOfScopeWarnings };
 }
 
@@ -366,13 +408,17 @@ export class ConversationRuntime {
 
   /**
    * After a planningOnly CODE_IMPLEMENTATION approval resumes cleanly, run AI Code Generation once,
-   * in preview mode, and render the result (ADR-0038). Never calls ExecutionOrchestrator, Patch,
-   * WorkspaceWrite, or CommandExecution — this method's only side effect is at most one
-   * CodeGenerationManager.generate() call (which itself never touches the filesystem, CAP-008).
+   * in preview mode, and render the result as a unified diff against the current workspace content
+   * (ADR-0038, ADR-0039). Never calls ExecutionOrchestrator, Patch, WorkspaceWrite, or
+   * CommandExecution — this method's only side effects are at most one CodeGenerationManager.generate()
+   * call (CAP-008) and at most one WorkspaceManager.diff() call (CAP-001) — both read-only, neither
+   * ever touches the filesystem.
    *
    * executionPlanRef, workspaceRef, and a non-empty targetFiles must ALL be present before
    * generate() is ever called — targetFiles is the only allowed scope source; there is no AI
-   * target-file guessing in this sprint.
+   * target-file guessing. An empty diff result or a changeKind of 'add' for a validated target (its
+   * current content could not be found/read at diff time) is a failed preview, never a partial or
+   * degraded success (ADR-0039, CA Round 1).
    */
   private async runCodeGenerationPreview(
     message: InboundMessage,
@@ -415,19 +461,47 @@ export class ConversationRuntime {
       );
     }
 
-    const preview = toCodeChangePreview(proposal.proposal, targetFiles);
-    if (preview.changes.length === 0) {
+    const { inScope, outOfScopeWarnings } = filterInScopeChanges(proposal.proposal, targetFiles);
+    if (inScope.length === 0) {
       // Every proposed path was outside the validated targetFiles — never present this as a
       // successful code-change proposal.
       return this.failComposed(
         message,
         session,
-        this.deps.composer.composeCodeGenerationPreviewNoValidChange(message.context, preview.outOfScopeWarnings),
+        this.deps.composer.composeCodeGenerationPreviewNoValidChange(message.context, outOfScopeWarnings),
         outcome,
       );
     }
 
-    const reply = this.deps.composer.composeCodeGenerationPreview(message.context, preview);
+    let diff: WorkspaceDiff;
+    try {
+      diff = await this.deps.workspace.diff(request.workspaceRef, inScope);
+    } catch {
+      // Read-only failure (e.g. current file unreadable) — same guaranteed non-mutation as every
+      // other preview failure (ADR-0039, CA Round 1 Required Change #8).
+      return this.failComposed(
+        message, session, this.deps.composer.composeCodeGenerationPreviewFailed(message.context), outcome,
+      );
+    }
+
+    // An empty diff result cannot be a successful preview (ADR-0039, CA Round 1 Required Change #3).
+    if (diff.files.length === 0) {
+      return this.failComposed(
+        message, session, this.deps.composer.composeCodeGenerationPreviewFailed(message.context), outcome,
+      );
+    }
+
+    // targetFiles are Workspace-validated existing files (ADR-0036) — changeKind 'add' means the
+    // current content could not be found/read at diff time. Failed preview, not a "new file" success
+    // (ADR-0039, CA Round 1 Required Change #1).
+    if (diff.files.some((f) => f.changeKind === 'add')) {
+      return this.failComposed(
+        message, session, this.deps.composer.composeCodeGenerationPreviewFailed(message.context), outcome,
+      );
+    }
+
+    const diffPreview = toCodeDiffPreview(diff, outOfScopeWarnings);
+    const reply = this.deps.composer.composeCodeDiffPreview(message.context, diffPreview);
     return this.respondComposed(message, session, reply, outcome);
   }
 

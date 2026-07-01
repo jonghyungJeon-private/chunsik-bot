@@ -2051,3 +2051,101 @@ preservation through approval resume, reused), ADR-0031 (Execution Orchestrator 
 model this sprint deliberately does not extend), ADR-0034 (Test Result Detail UX —
 `MAX_MESSAGE_CHARS`/`clampToMessageBudget`, reused). Supersedes nothing.
 Plan: `docs/plans/sprint-2q-ai-code-generation-preview-plan.md`.
+
+## ADR-0039 — Unified Diff Preview (current content vs. proposed content, still no Patch/Write)
+
+- **Status:** ✅ Accepted (v2, Phase 2, Sprint 2r — Product Construction), Chief Architect Review:
+  APPROVED WITH CHANGES (Round 1).
+- **Date:** 2026-07-01
+- **Scope:** Sprint 2r replaces Sprint 2q's plain-excerpt code-change preview with a **unified-diff-style**
+  preview — current workspace file content vs. the AI's proposed content — for a successful in-scope
+  proposal. Still preview only: no `Patch`, no `WorkspaceWrite`, no `CommandExecution`, no file mutation,
+  no git mutation, no `ExecutionOrchestrator` change.
+
+### Most important rule
+> **The diff is computed deterministically from current workspace content and the AI's proposed
+> content — never from AI- or provider-authored diff text — and only for paths already validated
+> against `targetFiles`.** `ConversationRuntime` calls the existing `WorkspaceManager.diff()` (CAP-001,
+> ADR-0022) directly with `filterInScopeChanges`'s in-scope subset only. Anything less than a clean,
+> complete diff of every in-scope file — a missing current file (`changeKind: 'add'`), an empty result,
+> or a read failure — is reported as a failed preview, never as a partial or degraded success.
+
+### Decision
+- **Reuses `WorkspaceManager.diff()`/`WorkspaceProvider.diff()` unchanged — no new capability, port, or
+  provider.** This read already existed for `ExecutionOrchestrator`'s `WORKSPACE_DIFF` stage
+  (pre-Approval, mutating flow); Sprint 2r is the first caller to reuse it for a post-approval,
+  non-mutating preview. `ConversationRuntime` calls `workspace.diff()` directly, for the identical
+  reason ADR-0038 gave for calling `CodeGenerationManager` directly: `planningOnly`'s `selectStages()`
+  is `[PLANNING, APPROVAL]` only (ADR-0035) and never includes `WORKSPACE_DIFF`, so routing this through
+  `ExecutionOrchestrator` would require a resume-only stage override — the same shape of problem
+  ADR-0038 already rejected. No new `ExecutionStage`; `ExecutionOrchestrator` is not touched;
+  `planningOnly` remains Orchestrator-scoped.
+- **No `app.module.ts` change.** The `WorkspaceManager` instance already injected into
+  `ConversationRuntimeDeps.workspace` already implements `.diff()` — widening the dependency's
+  *declared* structural type in `conversation-runtime.ts` is the only code change at that seam.
+- **`filterInScopeChanges` (extracted from Sprint 2q's `toCodeChangePreview`) is the single shared
+  normalized-path filter** both the retained text-excerpt path and the new diff path use — comparison
+  is `normalizeRelativePath` exact-match, never a raw string compare, and only the validated
+  `targetFiles` value is ever passed to `workspace.diff()`. AI-proposed paths outside `targetFiles` are
+  never read, never diffed, never rendered — surfaced only as a bounded warning, unchanged from
+  ADR-0038. The extraction preserves each `ProposedChange`'s `delete`/`newContent` shape via object
+  spread + a single overridden field, never a reconstruction that could default one differently from
+  what the AI returned.
+- **`changeKind: 'add'` is treated as a failure this sprint, not a successful "new file" diff (CA Round
+  1).** `targetFiles` are Workspace-validated existing files (ADR-0036); a `WorkspaceDiff` entry
+  reporting `'add'` for one of them means its current content could not be found/read at diff time —
+  reported as `composeCodeGenerationPreviewFailed`, `RuntimeTurnStatus.FAILED`.
+- **An empty `WorkspaceDiff.files` result is also a failure, never a vacuous success (CA Round 1).**
+  Guarded explicitly before the success DTO is built.
+- **Binary and size-skipped files render an explicit "diff를 표시할 수 없어요" notice (CA Round 1) —**
+  never phrased as if a diff had been shown, and each such line reaffirms the file was not modified.
+- **Diff rendering is budget-aware, not merely length-capped (CA Round 1).** The header, the
+  out-of-scope warning (if any), and the closing "not applied" line are reserved budget computed
+  *before* any file block is rendered; file blocks are dropped (with a bounded "N개 생략" notice) once
+  that budget is exhausted, so the mandatory safety wording always survives — the pre-existing
+  `clampToMessageBudget` call is now a defensive backstop, not the primary guarantee. The per-file cap
+  is lowered (`MAX_DIFF_CHARS_PER_FILE` = 1000) to leave headroom for this reservation.
+- **`composeCodeDiffPreview` supersedes `composeCodeGenerationPreview` for a successful in-scope
+  proposal.** `composeCodeGenerationPreview`/`CodeChangePreview`/`toCodeChangePreview` (ADR-0038) are
+  **retained, not deleted** — their own tests keep passing; they are simply no longer reached from
+  `runCodeGenerationPreview`'s success branch. The same accepted "unreached in production, not deleted"
+  status ADR-0038 already gave `composePlanningOnlyApproved`, applied a second time.
+- **Failure — including `changeKind: 'add'`, an empty diff, and a `workspace.diff()` read error — reports
+  `RuntimeTurnStatus.FAILED` via the existing `composeCodeGenerationPreviewFailed` reply.** No new
+  failure-wording composer method; the required behavior is identical in shape to Sprint 2q's existing
+  generation-failure handling.
+- **No Core/Orchestrator contract change; no new aggregate/repository/migration/capability/port.**
+
+### Not implemented (out of scope)
+Preview → Apply · `Patch` generation · `Patch` application · `WorkspaceWrite` · file mutation · git
+mutation · command execution · test execution after generation · retry loop · autonomous agent loop ·
+multi-file selection · directory scope · module scope as sufficient target · semantic repository search
+· repository indexing · AI target-file guessing · provider-specific diff generation · a successful diff
+preview for `changeKind: 'add'` · a new `PatchSet` type · `ExecutionOrchestrator` contract change ·
+`Core` contract change.
+
+### Consequences
+- + The code-change preview now shows what actually changes in the real file, not just the proposed
+  content in isolation — a materially more useful pre-Apply review, using a read the codebase already
+  had (`WorkspaceManager.diff()`) for a purpose it was never wired into.
+- + The untrusted-output-vs-validated-scope pattern (ADR-0036/0037/0038) generalizes a third time:
+  `filterInScopeChanges` is the one shared gate both the retained text preview and the new diff preview
+  pass through before touching the workspace or rendering anything.
+- + Treating `changeKind: 'add'`/an empty diff/a read failure as failures (rather than degraded
+  successes) keeps the "never look like an ordinary successful reply when something's actually wrong"
+  discipline ADR-0038 established, extended to a new failure surface this sprint introduces.
+- − `composeCodeGenerationPreview` becomes dead code in production a second way (already unreached via
+  `composePlanningOnlyApproved`'s precedent) — still tested, not deleted, an accepted trade-off.
+- − A validated target file that is genuinely a new addition (not yet created) cannot get a successful
+  preview this sprint — deferred; Sprint 2o/2p's scope-collection flow currently assumes an existing
+  file, so this is expected to be rare in practice, not a common-case regression.
+
+### Relations
+ADR-0038 (AI Code Generation Preview — the text-excerpt preview this sprint supersedes for the success
+case, but does not delete), ADR-0022 (Workspace read-only diff — `WorkspaceManager.diff()`, reused
+unchanged), ADR-0036 (Code Change Scope Collection — `normalizeRelativePath`, `targetFiles` validation,
+reused), ADR-0037 (Multi-turn Code Scope Clarification — `targetFiles` preservation through approval
+resume, reused), ADR-0035 (Live Code Change Planning — `planningOnly`, unchanged), ADR-0031 (Execution
+Orchestrator — the stage-selection model this sprint deliberately does not extend), ADR-0034 (Test
+Result Detail UX — `MAX_MESSAGE_CHARS`/`clampToMessageBudget`, reused). Supersedes nothing.
+Plan: `docs/plans/sprint-2r-unified-diff-preview-plan.md`.
