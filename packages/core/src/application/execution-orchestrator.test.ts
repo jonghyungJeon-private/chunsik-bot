@@ -267,6 +267,24 @@ describe('selectStages (Capability Selection, MB-1)', () => {
       ExecutionStage.PLANNING,
     ]);
   });
+
+  it('code-change intent with planningOnly → Planning → Approval only (ADR-0035)', () => {
+    expect(selectStages({ ...codeChange(), planningOnly: true })).toEqual([
+      ExecutionStage.PLANNING,
+      ExecutionStage.APPROVAL,
+    ]);
+  });
+
+  it('code-change intent without planningOnly → existing full pipeline unchanged (regression, ADR-0035)', () => {
+    expect(selectStages(codeChange())).toEqual([
+      ExecutionStage.PLANNING,
+      ExecutionStage.CODE_GENERATION,
+      ExecutionStage.WORKSPACE_DIFF,
+      ExecutionStage.APPROVAL,
+      ExecutionStage.PATCH,
+      ExecutionStage.WORKSPACE_WRITE,
+    ]);
+  });
 });
 
 describe('ExecutionOrchestrator.run', () => {
@@ -305,6 +323,34 @@ describe('ExecutionOrchestrator.run', () => {
     expect(out.status).toBe(ExecutionOutcomeStatus.COMPLETED);
     expect(out.lastStage).toBe(ExecutionStage.COMMAND_EXECUTION);
     expect(calls).toMatchObject({ planning: 1, approvalRequest: 1, command: 1, codeGen: 0, patch: 0, write: 0 });
+  });
+
+  it('planningOnly code-change (HIGH risk → PENDING approval) → AWAITING_APPROVAL, no mutation (ADR-0035, Q9)', async () => {
+    const { deps, calls } = makeDeps({ approval: approvalOf(ApprovalStatus.PENDING) });
+    const out = await new ExecutionOrchestrator(deps).run({ ...codeChange(), planningOnly: true });
+
+    expect(out.status).toBe(ExecutionOutcomeStatus.AWAITING_APPROVAL);
+    expect(out.lastStage).toBe(ExecutionStage.APPROVAL);
+
+    // Only executionPlanRef + approvalRef are ever produced — no other ref exists.
+    expect(out.refs.executionPlanRef?.id).toBe('plan-1');
+    expect(out.refs.approvalRef?.id).toBe('appr-1');
+    expect(out.refs.codeGenerationId).toBeUndefined();
+    expect(out.refs.codeProposalRef).toBeUndefined();
+    expect(out.refs.patchSetId).toBeUndefined();
+    expect(out.refs.workspaceChangeId).toBeUndefined();
+    expect(out.refs.commandExecutionId).toBeUndefined();
+
+    // No mutating/generating capability is ever called — proven by call count, not just outcome.
+    expect(calls).toMatchObject({
+      planning: 1,
+      approvalRequest: 1,
+      codeGen: 0,
+      diff: 0,
+      patch: 0,
+      write: 0,
+      command: 0,
+    });
   });
 
   it('HIGH-risk plan → halts AWAITING_APPROVAL and does NOT call Patch/Write', async () => {

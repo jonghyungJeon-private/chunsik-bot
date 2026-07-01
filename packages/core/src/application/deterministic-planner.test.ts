@@ -42,8 +42,9 @@ describe('DeterministicPlanner (CAP-003, ADR-0024)', () => {
       goal: 'edit code',
       requiredCapabilities: [Capability.GENERAL_CHAT, Capability.CODE_IMPLEMENTATION],
     });
-    expect(plan.overallRisk).toBe(RiskLevel.MEDIUM); // max(LOW, MEDIUM)
-    expect(plan.approvalRequired).toBe(false); // MEDIUM is auto (not HIGH/CRITICAL)
+    // ADR-0035: CODE_IMPLEMENTATION is HIGH — a precursor to mutation — so this now requires approval.
+    expect(plan.overallRisk).toBe(RiskLevel.HIGH); // max(LOW, HIGH)
+    expect(plan.approvalRequired).toBe(true); // HIGH requires human approval
   });
 
   it('creates one PENDING step per required capability', async () => {

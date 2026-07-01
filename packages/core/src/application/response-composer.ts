@@ -166,6 +166,36 @@ export class ResponseComposer {
   }
 
   /**
+   * Code-change-specific "approval required" prompt (Live Code Change Planning, ADR-0035). More
+   * specific than {@link composeApprovalRequired}: names this as a code-change request and states
+   * explicitly that no file is modified yet — a `planningOnly` halt never mutates.
+   */
+  composeCodeChangeApprovalRequired(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text:
+        '이 작업은 코드 변경으로 이어질 수 있어 승인이 필요해요.\n' +
+        '이번 단계에서는 실제 파일을 수정하지 않고 계획/승인까지만 진행해요.\n' +
+        '진행하려면 "승인", 그만두려면 "취소"라고 답해 주세요.',
+    };
+  }
+
+  /**
+   * Reply for "승인" on a `planningOnly` CODE_IMPLEMENTATION request (Live Code Change Planning,
+   * ADR-0035). Must NEVER read as "the code was fixed" — nothing was generated, patched, or written
+   * this sprint. Distinct from {@link composeExecutionResult}('COMPLETED'), which would falsely
+   * imply the work happened.
+   */
+  composePlanningOnlyApproved(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text:
+        '승인은 확인했어요. 이번 단계에서는 코드 수정 전 계획까지만 진행했어요. ' +
+        '실제 코드 제안/수정은 다음 단계에서 진행할 수 있어요.',
+    };
+  }
+
+  /**
    * Map a finished/halted execution turn to a natural reply (Conversation Runtime, ADR-0032). The
    * runtime never builds reply text itself — it hands the outcome status (and any produced
    * artifacts) here. AWAITING_APPROVAL is handled by {@link composeApprovalNotice}, not here.

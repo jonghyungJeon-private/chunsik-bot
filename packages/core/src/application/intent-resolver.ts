@@ -53,6 +53,9 @@ export class IntentResolver {
       ...(context.workspaceRef ? { workspaceRef: context.workspaceRef } : {}),
       ...(context.targetFiles ? { targetFiles: context.targetFiles } : {}),
       ...(command ? { command } : {}),
+      // ADR-0035: planningOnly is set ONLY here, ONLY for CODE_IMPLEMENTATION — the first live
+      // code-change product slice stops at Planning + Approval; no AI generation/patch/write yet.
+      ...(intent.capability === Capability.CODE_IMPLEMENTATION ? { planningOnly: true } : {}),
     };
   }
 }

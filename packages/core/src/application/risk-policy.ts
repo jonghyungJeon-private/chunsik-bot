@@ -7,8 +7,9 @@ import type { Intent } from '../domain';
  * whether the approval gate applies.
  *
  *   LOW      chat, summary, explanation, document analysis, read-only lookup
- *   MEDIUM   local code modification, local test execution, local file gen
- *   HIGH     git commit/push/PR, Jira/Slack/Confluence write (not in v1)
+ *   MEDIUM   local test execution, local file gen
+ *   HIGH     code implementation (ADR-0035 — precursor to mutation), git commit/push/PR,
+ *            Jira/Slack/Confluence write (not in v1)
  *   CRITICAL deploy, DB migration, destructive shell, force push, secret access
  */
 export class RiskPolicy {
@@ -22,7 +23,9 @@ export class RiskPolicy {
     [Capability.EMBEDDING]: RiskLevel.LOW,
     [Capability.ARCHITECTURE_PLANNING]: RiskLevel.LOW,
     [Capability.CODE_REVIEW]: RiskLevel.LOW,
-    [Capability.CODE_IMPLEMENTATION]: RiskLevel.MEDIUM,
+    // HIGH by default (ADR-0035): even a suggest-only or planning-stage code-change request is a
+    // precursor to mutation — this is the policy lever that forces the Approval gate to halt.
+    [Capability.CODE_IMPLEMENTATION]: RiskLevel.HIGH,
     [Capability.TEST_EXECUTION]: RiskLevel.MEDIUM,
   };
 

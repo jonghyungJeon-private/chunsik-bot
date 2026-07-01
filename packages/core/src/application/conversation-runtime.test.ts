@@ -400,6 +400,74 @@ describe('Live Test Execution — runtime', () => {
   });
 });
 
+// ── Sprint 2n — Live Code Change Planning (ADR-0035) ────────────────────────────────────────────
+
+describe('Live Code Change Planning — runtime', () => {
+  it('no active project → no orchestrator.run + composeNeedsProject reply', async () => {
+    const { deps, calls } = makeDeps({ intent: codeIntent, session: sessionOf({ activeProjectId: undefined }) });
+    const result = await new ConversationRuntime(deps).handle(messageOf('이 버그 고쳐줘'));
+    expect(calls.run).toBe(0);
+    expect(result.reply.text).toBe(new ResponseComposer().composeNeedsProject(CTX).text);
+  });
+
+  it('the resolved ExecutionRequest is marked planningOnly (real IntentResolver, ADR-0035)', async () => {
+    const { deps, calls } = makeDeps({ intent: codeIntent, runOutcome: outcomeOf(ExecutionOutcomeStatus.AWAITING_APPROVAL) });
+    await new ConversationRuntime(deps).handle(messageOf('이 버그 고쳐줘'));
+    expect(calls.lastRunRequest?.planningOnly).toBe(true);
+  });
+
+  it('active project → AWAITING_APPROVAL uses the code-change-specific prompt, not the generic one', async () => {
+    const { deps, calls } = makeDeps({ intent: codeIntent, runOutcome: outcomeOf(ExecutionOutcomeStatus.AWAITING_APPROVAL) });
+    const result = await new ConversationRuntime(deps).handle(messageOf('이 버그 고쳐줘'));
+    expect(result.status).toBe('AWAITING_APPROVAL');
+    expect(calls.anchor).toBe(1);
+    expect(result.reply.text).toBe(new ResponseComposer().composeCodeChangeApprovalRequired(CTX).text);
+    expect(result.reply.text).not.toBe(new ResponseComposer().composeApprovalRequired(CTX).text);
+  });
+
+  it('next turn "승인" on a planningOnly pending approval → composePlanningOnlyApproved, never a fake "완료"', async () => {
+    const { deps, calls } = makeDeps({
+      pending: pendingApprovalOf(),
+      reconstruct: {
+        request: {
+          goal: 'g',
+          instruction: 'g',
+          requiredCapabilities: [Capability.CODE_IMPLEMENTATION],
+          requestedBy: 'actor-1',
+          planningOnly: true,
+        },
+        prior: outcomeOf(ExecutionOutcomeStatus.AWAITING_APPROVAL),
+      },
+    });
+    const result = await new ConversationRuntime(deps).handle(messageOf('승인'));
+    expect(calls.decide).toBe(1);
+    expect(calls.resume).toBe(1);
+    expect(result.status).toBe('RESPONDED');
+    expect(result.reply.text).toBe(new ResponseComposer().composePlanningOnlyApproved(CTX).text);
+    expect(result.reply.text).not.toBe(new ResponseComposer().composeExecutionResult(CTX, 'COMPLETED').text);
+    expect(result.reply.text).not.toContain('완료');
+  });
+
+  it('next turn "취소" on the same planningOnly pending approval still cancels normally (no resume)', async () => {
+    const { deps, calls } = makeDeps({
+      pending: pendingApprovalOf(),
+      reconstruct: {
+        request: {
+          goal: 'g',
+          instruction: 'g',
+          requiredCapabilities: [Capability.CODE_IMPLEMENTATION],
+          requestedBy: 'actor-1',
+          planningOnly: true,
+        },
+        prior: outcomeOf(ExecutionOutcomeStatus.AWAITING_APPROVAL),
+      },
+    });
+    const result = await new ConversationRuntime(deps).handle(messageOf('취소'));
+    expect(result.status).toBe('CANCELLED');
+    expect(calls.resume).toBe(0);
+  });
+});
+
 // ── Production-like resume (Sprint 2k, retained) ─────────────────────────────────────────────────
 
 describe('ConversationRuntime + StatelessApprovalFlow (production-like)', () => {

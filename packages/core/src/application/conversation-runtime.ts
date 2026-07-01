@@ -250,6 +250,13 @@ export class ConversationRuntime {
       }
       await this.deps.approvals.decide(pending.id, this.decisionOf(pending.id, actor.id, true));
       const outcome = await this.deps.orchestrator.resume(ctx.request, ctx.prior);
+      // ADR-0035: a planningOnly request never mutates, so "완료했어요" would be misleading —
+      // nothing was generated/patched/written. Say so explicitly instead of the generic COMPLETED text.
+      if (ctx.request.planningOnly) {
+        const reply = this.deps.composer.composePlanningOnlyApproved(message.context);
+        await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+        return { status: 'RESPONDED', reply, sessionId: session.id, executionOutcome: outcome };
+      }
       return this.replyForOutcome(message.context, session, outcome);
     }
 
@@ -299,6 +306,13 @@ export class ConversationRuntime {
     const outcome = await this.deps.orchestrator.run(request);
     if (outcome.status === ('AWAITING_APPROVAL' as ExecutionOutcomeStatus)) {
       await this.deps.approvalFlow.anchor(session, request, outcome); // enable next-turn resume
+      // ADR-0035: a code-change halt gets a more specific prompt than the generic approval text —
+      // it names this as a code-change request and states that no file is modified yet.
+      if (intent.capability === Capability.CODE_IMPLEMENTATION) {
+        const reply = this.deps.composer.composeCodeChangeApprovalRequired(message.context);
+        await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+        return { status: 'AWAITING_APPROVAL', reply, sessionId: session.id, executionOutcome: outcome };
+      }
       return this.replyForOutcome(message.context, session, outcome);
     }
     if (intent.capability === Capability.TEST_EXECUTION) {

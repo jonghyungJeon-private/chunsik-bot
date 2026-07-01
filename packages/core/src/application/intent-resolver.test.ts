@@ -27,6 +27,15 @@ describe('IntentResolver', () => {
     expect(req?.projectId).toBe('proj-1');
   });
 
+  // Live Code Change Planning (ADR-0035): planningOnly is set ONLY for CODE_IMPLEMENTATION, and
+  // ONLY by IntentResolver — never a general-purpose stage-override signal.
+  it('marks a code-implementation ExecutionRequest as planningOnly (ADR-0035)', () => {
+    const req = resolver.resolve(intentOf(Capability.CODE_IMPLEMENTATION, IntentType.IMPLEMENT_CODE, '이 버그 고쳐줘'), {
+      requestedBy: 'user',
+    });
+    expect(req?.planningOnly).toBe(true);
+  });
+
   it('maps a test-execution intent to an ExecutionRequest (carrying the command)', () => {
     const req = resolver.resolve(intentOf(Capability.TEST_EXECUTION, IntentType.RUN_TESTS), {
       requestedBy: 'user',
@@ -34,6 +43,14 @@ describe('IntentResolver', () => {
     });
     expect(req?.requiredCapabilities).toEqual([Capability.TEST_EXECUTION]);
     expect(req?.command).toEqual({ command: 'pnpm', args: ['test'] });
+  });
+
+  it('does not set planningOnly for a test-execution intent (scoped to CODE_IMPLEMENTATION only, ADR-0035)', () => {
+    const req = resolver.resolve(intentOf(Capability.TEST_EXECUTION, IntentType.RUN_TESTS), {
+      requestedBy: 'user',
+      command: { command: 'pnpm', args: ['test'] },
+    });
+    expect(req?.planningOnly).toBeUndefined();
   });
 
   it('returns null for a conversational intent (stays on the chat fast path)', () => {

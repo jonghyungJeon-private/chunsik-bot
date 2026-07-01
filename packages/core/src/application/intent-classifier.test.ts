@@ -36,4 +36,43 @@ describe('IntentClassifier.classify (v1 deterministic)', () => {
     expect(intent.type).toBe(IntentType.CHAT);
     expect(intent.capability).toBe(Capability.GENERAL_CHAT);
   });
+
+  // Live Code Change Planning (ADR-0035) — deterministic code-change intent recognition.
+  it('routes a bug-fix request to IMPLEMENT_CODE with raw.kind "fix"', async () => {
+    const intent = await classifier.classify(msg('이 버그 고쳐줘'));
+    expect(intent.type).toBe(IntentType.IMPLEMENT_CODE);
+    expect(intent.capability).toBe(Capability.CODE_IMPLEMENTATION);
+    expect(intent.requiresWork).toBe(true);
+    expect(intent.raw).toEqual({ kind: 'fix' });
+  });
+
+  it('routes a "이 부분 수정해줘" request to IMPLEMENT_CODE with raw.kind "change"', async () => {
+    const intent = await classifier.classify(msg('이 부분 수정해줘'));
+    expect(intent.type).toBe(IntentType.IMPLEMENT_CODE);
+    expect(intent.raw).toEqual({ kind: 'change' });
+  });
+
+  it('routes "코드 바꿔줘" to IMPLEMENT_CODE with raw.kind "change"', async () => {
+    const intent = await classifier.classify(msg('코드 바꿔줘'));
+    expect(intent.type).toBe(IntentType.IMPLEMENT_CODE);
+    expect(intent.raw).toEqual({ kind: 'change' });
+  });
+
+  it('routes a refactor request to IMPLEMENT_CODE with raw.kind "refactor"', async () => {
+    const intent = await classifier.classify(msg('이 함수 리팩터링 해줘'));
+    expect(intent.type).toBe(IntentType.IMPLEMENT_CODE);
+    expect(intent.raw).toEqual({ kind: 'refactor' });
+  });
+
+  it('does not shadow RUN_TESTS ("테스트 돌려줘" still classifies as a test run)', async () => {
+    const intent = await classifier.classify(msg('테스트 돌려줘'));
+    expect(intent.type).toBe(IntentType.RUN_TESTS);
+    expect(intent.capability).toBe(Capability.TEST_EXECUTION);
+  });
+
+  it('does not shadow PROJECT_ANALYSIS ("이 프로젝트 구조 설명해줘" still classifies as analysis)', async () => {
+    const intent = await classifier.classify(msg('이 프로젝트 구조 설명해줘'));
+    expect(intent.type).toBe(IntentType.PROJECT_ANALYSIS);
+    expect(intent.capability).toBe(Capability.PROJECT_ANALYSIS);
+  });
 });
