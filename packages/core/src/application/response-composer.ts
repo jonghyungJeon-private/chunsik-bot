@@ -48,6 +48,18 @@ export class ResponseComposer {
   }
 
   /**
+   * Generic "this needs approval" prompt for when only a reference (not the full `ApprovalRequest`)
+   * is at hand — e.g. a fresh execution that halted at `AWAITING_APPROVAL` (Conversation Runtime,
+   * ADR-0032). Keeps all user-facing text inside ResponseComposer.
+   */
+  composeApprovalRequired(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '이 작업은 승인이 필요해요. 진행하려면 "승인", 그만두려면 "취소"라고 답해 주세요.',
+    };
+  }
+
+  /**
    * Map a finished/halted execution turn to a natural reply (Conversation Runtime, ADR-0032). The
    * runtime never builds reply text itself — it hands the outcome status (and any produced
    * artifacts) here. AWAITING_APPROVAL is handled by {@link composeApprovalNotice}, not here.

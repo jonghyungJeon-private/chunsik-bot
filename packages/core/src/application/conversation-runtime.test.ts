@@ -13,6 +13,7 @@ import type {
   InboundMessage,
   Intent,
   Session,
+  Task,
 } from '../domain';
 import type { Logger } from '../ports';
 import { ResponseComposer } from './response-composer';
@@ -21,6 +22,7 @@ import { ExecutionOutcomeStatus, ExecutionStage } from './execution-orchestrator
 import type { ExecutionOutcome, ExecutionRequest } from './execution-orchestrator';
 import { ConversationRuntime } from './conversation-runtime';
 import type { ApprovalFlow, ConversationRuntimeDeps } from './conversation-runtime';
+import { StatelessApprovalFlow } from './stateless-approval-flow';
 
 const TS = '2026-07-01T00:00:00.000Z';
 const CTX: ConversationContext = { platform: 'test', channelId: 'c1', userId: 'u1' };
@@ -235,5 +237,83 @@ describe('ConversationRuntime', () => {
       expect(s).not.toHaveProperty('pendingApprovalId');
       expect(s).not.toHaveProperty('approvalSnapshot');
     }
+  });
+
+  it('approve but reconstructResume() null → does NOT call ApprovalManager.decide, and re-asks', async () => {
+    const { deps, calls } = makeDeps({ pending: pendingApprovalOf(), reconstruct: null });
+    const result = await new ConversationRuntime(deps).handle(messageOf('승인'));
+    expect(calls.decide).toBe(0); // never decide what we cannot resume (CA review §1)
+    expect(calls.resume).toBe(0);
+    expect(result.status).toBe('AWAITING_APPROVAL');
+  });
+
+  it('fresh AWAITING_APPROVAL reply comes from ResponseComposer (no hardcoded runtime text)', async () => {
+    const { deps } = makeDeps({ intent: execIntent, runOutcome: outcomeOf(ExecutionOutcomeStatus.AWAITING_APPROVAL) });
+    const result = await new ConversationRuntime(deps).handle(messageOf('배포해줘'));
+    expect(result.reply.text).toBe(new ResponseComposer().composeApprovalRequired(CTX).text);
+  });
+});
+
+/**
+ * Production-like flow: the REAL StatelessApprovalFlow over an in-memory store proves the full
+ * halt→approve→resume loop reaches ExecutionOrchestrator.resume() (CA review §2/§4).
+ */
+describe('ConversationRuntime + StatelessApprovalFlow (production-like)', () => {
+  it('execution halts, then next-turn "승인" reconstructs and reaches orchestrator.resume()', async () => {
+    const sessions = new Map<string, Session>();
+    const tasks = new Map<string, Task>();
+    const approvals: ApprovalRequest[] = [];
+    sessions.set('sess-1', sessionOf());
+    let resumeCalls = 0;
+
+    const store = {
+      sessions: { async save(s: Session) { sessions.set(s.id, s); return s; } },
+      tasks: {
+        async get(id: string) { return tasks.get(id) ?? null; },
+        async save(t: Task) { tasks.set(t.id, t); return t; },
+      },
+      approvals: { async findByExecutionPlan(planId: string) { return approvals.filter((a) => a.executionPlanRef.id === planId); } },
+    };
+    const approvalFlow = new StatelessApprovalFlow(store);
+    const composer = new ResponseComposer();
+
+    const base = makeDeps({ intent: execIntent, runOutcome: outcomeOf(ExecutionOutcomeStatus.AWAITING_APPROVAL) }).deps;
+    const deps: ConversationRuntimeDeps = {
+      ...base,
+      composer,
+      approvalFlow,
+      sessions: {
+        async openForContext() { return sessions.get('sess-1')!; },
+        async touch(s) { sessions.set(s.id, s); return s; },
+      },
+      orchestrator: {
+        async run() {
+          // Simulate the real run: a HIGH-risk plan creates a PENDING approval for plan-1.
+          approvals.push(pendingApprovalOf());
+          return outcomeOf(ExecutionOutcomeStatus.AWAITING_APPROVAL);
+        },
+        async resume() { resumeCalls++; return outcomeOf(ExecutionOutcomeStatus.COMPLETED); },
+      },
+      approvals: {
+        async decide(id) {
+          const idx = approvals.findIndex((a) => a.id === id);
+          if (idx >= 0) approvals[idx] = { ...approvals[idx]!, status: ApprovalStatus.APPROVED };
+          return approvals[idx]!;
+        },
+      },
+    };
+
+    const runtime = new ConversationRuntime(deps);
+
+    // Turn 1: execution intent → halt at approval; anchor persists task + session.activeTaskId.
+    const t1 = await runtime.handle(messageOf('배포해줘'));
+    expect(t1.status).toBe('AWAITING_APPROVAL');
+    expect(sessions.get('sess-1')?.activeTaskId).toBeTruthy();
+    expect(approvals.some((a) => a.status === ApprovalStatus.PENDING)).toBe(true);
+
+    // Turn 2: "승인" → findPending derives it, reconstructResume reads the anchor, resume runs.
+    const t2 = await runtime.handle(messageOf('승인'));
+    expect(resumeCalls).toBe(1);
+    expect(t2.status).toBe('RESPONDED');
   });
 });

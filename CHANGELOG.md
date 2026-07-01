@@ -27,19 +27,25 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
   approve {승인/진행/좋아/yes/y/ok} → `ApprovalManager.decide` + `ExecutionOrchestrator.resume`; deny
   {거절/아니/no/n} → DENIED (no resume); cancel {취소/중단/그만} → CANCELLED (no resume); ambiguous →
   re-send the approval notice (no resume). The orchestrator contract is unchanged.
-- **`ResponseComposer.composeExecutionResult(...)`** added; the runtime never builds reply text
-  itself (uses `compose`/`composeApprovalNotice`/`composeError`/`composeExecutionResult`).
+- **`StatelessApprovalFlow`** (production `ApprovalFlow`) anchors the in-flight `{request, prior}` on
+  the in-focus `Task.metadata` (+ `Session.activeTaskId`, `Task.planId`) and reconstructs it on the
+  next turn, so resume is genuinely functional (no orchestrator-contract change). The approve path
+  **reconstructs before `decide`** — a decision is never recorded unless the execution can be resumed.
+- **`ResponseComposer.composeExecutionResult(...)` + `composeApprovalRequired(...)`** added; the
+  runtime never builds reply text itself (all user-facing text goes through `ResponseComposer`).
 - **Short-term memory only** (record user/assistant turns; read history; `ContextBuilder` context).
   No long-term/vector/working memory, no memory repo/schema change.
 - `ExecutionOrchestrator` + `IntentResolver` (Sprint 2j) are now wired into the composition root via
   the runtime (previously standalone).
 - **Out of scope (CA-confirmed):** Agent Runtime · Tool Calling · Retry/loop/reflection · Workflow
   Engine · Background Task · Discord UI (buttons) · Telemetry · any new memory subsystem.
-- Tests (+9, fake managers): chat→RESPONDED; execution low-risk→COMPLETED; high-risk→AWAITING_APPROVAL
+- Tests (+12, fake managers): chat→RESPONDED; execution low-risk→COMPLETED; high-risk→AWAITING_APPROVAL
   (anchored); next-turn approve→decide+resume; deny→DENIED (no resume); cancel→CANCELLED (no resume);
-  ambiguous→clarify (no resume); runtime persists no state; no Session snapshot. **Validation runtime:
-  Node 22** — `pnpm typecheck` PASS; `pnpm test` 37 files / **242 tests** PASS. Plan:
-  `docs/plans/sprint-2k-conversation-runtime-plan.md`.
+  ambiguous→clarify (no resume); approve with unreconstructable state→no decide, re-ask; fresh
+  AWAITING_APPROVAL text via ResponseComposer; runtime persists no state; no Session snapshot; and a
+  **production-like `StatelessApprovalFlow`** proving halt→approve→`orchestrator.resume()` end-to-end.
+  **Validation runtime: Node 22** — `pnpm typecheck` PASS; `pnpm test` 37 files / **245 tests** PASS.
+  Plan: `docs/plans/sprint-2k-conversation-runtime-plan.md`.
 
 ### Added — Sprint 2j · Execution Orchestrator (Application Layer — capability composition)
 

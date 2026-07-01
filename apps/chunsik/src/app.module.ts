@@ -44,22 +44,19 @@ import {
   ExecutionOrchestrator,
   IntentResolver,
   ConversationRuntime,
+  StatelessApprovalFlow,
   ConnectorManager,
   ResponseComposer,
   RiskPolicy,
-  ApprovalStatus,
 } from '@chunsik/core';
 import type {
   AiProvider,
-  ApprovalFlow,
-  ApprovalRequest,
   CommandRunner,
   ConnectorProvider,
   ExecutionPlanner,
   GitProvider,
   PlatformAdapter,
   ProviderSelector,
-  Session,
   StorageProvider,
   VectorProvider,
   WorkspaceProvider,
@@ -338,24 +335,14 @@ const application: Provider[] = [
       orchestrator: ExecutionOrchestrator,
       approvals: ApprovalManager,
     ) => {
-      const approvalFlow: ApprovalFlow = {
-        async findPending(session: Session) {
-          if (!session.activeTaskId) return null;
-          const task = await storage.tasks.get(session.activeTaskId);
-          if (!task?.planId) return null;
-          const requests = await storage.approvals.findByExecutionPlan(task.planId);
-          return requests.find((r: ApprovalRequest) => r.status === ApprovalStatus.PENDING) ?? null;
-        },
-        // ADR-0032: full anchoring + resume reconstruction mature with the live execution path
-        // (AI-driven execution-intent classification). Until then these are inert; no live path
-        // reaches them because the deterministic classifier emits no execution intent.
-        async anchor() {
-          /* no-op (ADR-0032) */
-        },
-        async reconstructResume() {
-          return null;
-        },
-      };
+      // ADR-0032: production ApprovalFlow — stateless, derived from existing aggregates
+      // (Session.activeTaskId → Task.planId → approvals.findByExecutionPlan → PENDING); anchors the
+      // in-flight {request, prior} on the in-focus Task so a later turn can resume. No new store.
+      const approvalFlow = new StatelessApprovalFlow({
+        sessions: storage.sessions,
+        tasks: storage.tasks,
+        approvals: storage.approvals,
+      });
       return new ConversationRuntime({
         actors,
         sessions,

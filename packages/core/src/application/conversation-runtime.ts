@@ -63,8 +63,11 @@ export type ApprovalDecisionKind = 'approve' | 'deny' | 'cancel' | 'ambiguous';
 export interface ApprovalFlow {
   /** Derive the session's PENDING approval, if any, from existing aggregates. */
   findPending(session: Session): Promise<ApprovalRequest | null>;
-  /** Anchor an awaiting-approval execution to the session's in-focus Task (existing fields only). */
-  anchor(session: Session, outcome: ExecutionOutcome): Promise<void>;
+  /**
+   * Anchor an awaiting-approval execution to the session's in-focus Task (existing fields only), so
+   * a later turn can find + resume it. Persists what {@link reconstructResume} needs.
+   */
+  anchor(session: Session, request: ExecutionRequest, outcome: ExecutionOutcome): Promise<void>;
   /** Reconstruct the `{request, prior}` needed to resume, from anchored/derived state (null if unavailable). */
   reconstructResume(
     session: Session,
@@ -230,14 +233,16 @@ export class ConversationRuntime {
     }
 
     if (decision === 'approve') {
-      await this.deps.approvals.decide(pending.id, this.decisionOf(pending.id, actor.id, true));
+      // Reconstruct FIRST — never record a decision we cannot act on (CA review). Only once the
+      // halted execution is recoverable do we decide + resume.
       const ctx = await this.deps.approvalFlow.reconstructResume(session, pending);
       if (!ctx) {
-        // Can't reconstruct the halted execution — fail safe: re-ask rather than half-run.
+        // Can't reconstruct — fail safe: re-ask, and do NOT call ApprovalManager.decide.
         const reply = this.deps.composer.composeApprovalNotice(message.context, pending);
         await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
         return { status: 'AWAITING_APPROVAL', reply, sessionId: session.id };
       }
+      await this.deps.approvals.decide(pending.id, this.decisionOf(pending.id, actor.id, true));
       const outcome = await this.deps.orchestrator.resume(ctx.request, ctx.prior);
       return this.replyForOutcome(message.context, session, outcome);
     }
@@ -259,7 +264,7 @@ export class ConversationRuntime {
   ): Promise<TurnResult> {
     const outcome = await this.deps.orchestrator.run(request);
     if (outcome.status === ('AWAITING_APPROVAL' as ExecutionOutcomeStatus)) {
-      await this.deps.approvalFlow.anchor(session, outcome); // enable next-turn resume (existing fields only)
+      await this.deps.approvalFlow.anchor(session, request, outcome); // enable next-turn resume
     }
     return this.replyForOutcome(message.context, session, outcome);
   }
@@ -271,9 +276,9 @@ export class ConversationRuntime {
     outcome: ExecutionOutcome,
   ): Promise<TurnResult> {
     if (outcome.status === ('AWAITING_APPROVAL' as ExecutionOutcomeStatus)) {
-      // The pending ApprovalRequest carries the human-facing reason; surface it.
-      const text = '이 작업은 승인이 필요해요. 진행하려면 "승인", 그만두려면 "취소"라고 답해 주세요.';
-      const reply: OutboundMessage = { context, text };
+      // Only a plan-scoped ref is available here (not the full ApprovalRequest) — use the generic
+      // ResponseComposer prompt. The runtime never builds reply text itself (ADR-0032 §10).
+      const reply = this.deps.composer.composeApprovalRequired(context);
       await this.deps.memory.recordAssistant(reply.text, context, session.id);
       return { status: 'AWAITING_APPROVAL', reply, sessionId: session.id, executionOutcome: outcome };
     }

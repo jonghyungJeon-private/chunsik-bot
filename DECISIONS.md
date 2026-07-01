@@ -1516,9 +1516,17 @@ Plan: `docs/plans/sprint-2j-execution-orchestrator-plan.md`.
   An execution turn that halts anchors itself to the in-focus `Task` (existing `Task.planId` =
   the produced `ExecutionPlan` id; existing `Session.activeTaskId` = that task). The runtime
   **persists nothing itself** and stores **no snapshot on `Session`**; it re-derives the pending
-  approval from these existing aggregates each turn (via the injected `findPendingApproval`
-  collaborator). Forbidden: `Session.runtimeState`, approval snapshot on `Session`, a
-  `ConversationRuntimeState` repository, or recovering pending approval by parsing memory text.
+  approval from these existing aggregates each turn (via the injected `ApprovalFlow` collaborator).
+  Forbidden: `Session.runtimeState`, approval snapshot on `Session`, a `ConversationRuntimeState`
+  repository, or recovering pending approval by parsing memory text.
+- **`StatelessApprovalFlow` (production `ApprovalFlow`).** On a halt it **anchors** the in-flight
+  `{request, prior}` on the in-focus **`Task.metadata`** (the Task capability's own field — not a
+  Session snapshot, no new store) with `Task.planId` = the plan id, and points `Session.activeTaskId`
+  at it. `reconstructResume` reads that back (validating `Task.planId === approval.executionPlanRef.id`)
+  to supply the `{request, prior}` that `ExecutionOrchestrator.resume` requires — so resume is
+  genuinely functional (no orchestrator-contract change). The approve path **reconstructs FIRST and
+  only calls `ApprovalManager.decide` once reconstruction succeeds** — never record a decision that
+  cannot be acted on; if reconstruction fails the runtime re-asks.
 - **Approval-decision interpretation (only when pending).** The runtime interprets a user message as
   an approval decision **only** when a PENDING approval is derived for the session. Minimal,
   platform-agnostic contract: approve = {승인, 진행, 좋아, yes, y, ok}; deny = {거절, 아니, no, n};
@@ -1535,8 +1543,9 @@ Plan: `docs/plans/sprint-2j-execution-orchestrator-plan.md`.
   platform-specific delivery stays **outside** the runtime (the `ChunsikCore` facade calls
   `PlatformAdapter.sendMessage`).
 - **ResponseComposer boundary.** The runtime never builds natural-language text; it maps outcomes via
-  `ResponseComposer` (`composeExecutionResult` added this sprint, alongside `composeApprovalNotice` /
-  `composeError` / `compose`).
+  `ResponseComposer` (`composeExecutionResult` + `composeApprovalRequired` added this sprint, alongside
+  `composeApprovalNotice` / `composeError` / `compose`). A fresh execution that halts at
+  `AWAITING_APPROVAL` (only a plan-scoped ref in hand) replies via `composeApprovalRequired`.
 
 ### Not implemented (CA-confirmed out of scope)
 Agent Runtime; Tool Calling; Retry / loop / reflection; Workflow Engine; Background Task; Discord UI
@@ -1547,9 +1556,9 @@ Agent Runtime; Tool Calling; Retry / loop / reflection; Workflow Engine; Backgro
 ### Consequences
 - + 춘식봇 has a single coherent conversation entry that composes the whole stack (chat → execution →
   approval → resume → response) with **no new structure** — the first Product-Construction step.
-- − Cross-turn resume reconstruction (`reconstructResume`) is an injected app-layer collaborator;
-  its concrete derivation from `Task`/aggregate state is wired in the composition root, and the
-  end-to-end live binding (and platform UI) matures with later Product sprints.
+- − Cross-turn resume reconstruction (`StatelessApprovalFlow`) anchors `{request, prior}` on
+  `Task.metadata`; the platform UI (approval buttons) and richer failure recovery mature with later
+  Product sprints.
 
 ### Relations
 ADR-0001 (Session, thin), ADR-0017 (short-term memory), ADR-0031 (Execution Orchestrator),
