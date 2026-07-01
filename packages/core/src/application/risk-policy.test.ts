@@ -5,9 +5,17 @@ import { Capability, IntentType, RiskLevel } from '../domain';
 describe('RiskPolicy', () => {
   const rp = new RiskPolicy();
 
-  it('rates conversational capabilities LOW and local code MEDIUM', () => {
+  it('rates conversational capabilities LOW and local test execution MEDIUM', () => {
     expect(rp.assessCapability(Capability.GENERAL_CHAT)).toBe(RiskLevel.LOW);
-    expect(rp.assessCapability(Capability.CODE_IMPLEMENTATION)).toBe(RiskLevel.MEDIUM);
+    expect(rp.assessCapability(Capability.TEST_EXECUTION)).toBe(RiskLevel.MEDIUM);
+  });
+
+  it('rates code implementation HIGH — approval-gated by design (ADR-0035)', () => {
+    // Even a suggest-only or planning-stage code-change request is a precursor to mutation.
+    expect(rp.assessCapability(Capability.CODE_IMPLEMENTATION)).toBe(RiskLevel.HIGH);
+    // TEST_EXECUTION and other low-risk capabilities are unaffected by this change.
+    expect(rp.assessCapability(Capability.TEST_EXECUTION)).toBe(RiskLevel.MEDIUM);
+    expect(rp.assessCapability(Capability.GENERAL_CHAT)).toBe(RiskLevel.LOW);
   });
 
   it('escalates external/destructive commands', () => {

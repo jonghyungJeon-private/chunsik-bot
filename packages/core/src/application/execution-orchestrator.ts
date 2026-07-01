@@ -90,6 +90,16 @@ export interface ExecutionRequest {
   targetFiles?: string[];
   /** Optional command to run (e.g. tests) when COMMAND_EXECUTION is selected. */
   command?: { command: string; args: string[] };
+  /**
+   * Request PLANNING + APPROVAL only — skip CODE_GENERATION/WORKSPACE_DIFF/PATCH/WORKSPACE_WRITE/
+   * COMMAND_EXECUTION this turn (Sprint 2n, ADR-0035). Absent/false preserves the full pipeline.
+   *
+   * SCOPE CONSTRAINT (ADR-0035): a narrow Application-layer execution mode for the first live
+   * CODE_IMPLEMENTATION product slice — NOT a general stage-override system. Set only by
+   * `IntentResolver`, only when `intent.capability === Capability.CODE_IMPLEMENTATION`. Never set
+   * from user input, never by `IntentClassifier`, never generalized to another capability.
+   */
+  planningOnly?: boolean;
 }
 
 /**
@@ -158,14 +168,17 @@ export interface ExecutionOrchestratorDeps {
 export function selectStages(request: ExecutionRequest): ExecutionStage[] {
   const caps = new Set(request.requiredCapabilities);
   const needsCode = caps.has(Capability.CODE_IMPLEMENTATION);
+  // planningOnly (ADR-0035) requests PLANNING + APPROVAL only — no codegen/diff/patch/write this
+  // turn. Absent/false for every pre-Sprint-2n caller, so needsCodeGeneration === needsCode exactly.
+  const needsCodeGeneration = needsCode && !request.planningOnly;
   const needsCommand = caps.has(Capability.TEST_EXECUTION) && request.command !== undefined;
 
   const stages: ExecutionStage[] = [ExecutionStage.PLANNING]; // always the entry stage
-  if (needsCode) stages.push(ExecutionStage.CODE_GENERATION, ExecutionStage.WORKSPACE_DIFF);
+  if (needsCodeGeneration) stages.push(ExecutionStage.CODE_GENERATION, ExecutionStage.WORKSPACE_DIFF);
   // Approval gates every mutating/executing stage; auto-APPROVED for LOW/MEDIUM by the
   // ApprovalManager, PENDING (→ halt) only for HIGH/CRITICAL.
   if (needsCode || needsCommand) stages.push(ExecutionStage.APPROVAL);
-  if (needsCode) stages.push(ExecutionStage.PATCH, ExecutionStage.WORKSPACE_WRITE);
+  if (needsCodeGeneration) stages.push(ExecutionStage.PATCH, ExecutionStage.WORKSPACE_WRITE);
   if (needsCommand) stages.push(ExecutionStage.COMMAND_EXECUTION);
   return stages;
 }

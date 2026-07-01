@@ -1685,4 +1685,99 @@ contract change.
 ### Relations
 ADR-0033 (Live Test Execution), ADR-0032 (Conversation Runtime), ADR-0028 (Command Execution /
 masking-and-capping). Supersedes nothing (extends ADR-0033's `composeTestResult`/`frameTestResult`).
+
+## ADR-0035 — Live Code Change Planning (code-change intent → Planning/Approval halt, no mutation)
+
+- **Status:** ✅ Accepted (v2, Phase 2, Sprint 2n — Product Construction), Chief Architect Review:
+  APPROVED WITH CHANGES (Round 1).
+- **Date:** 2026-07-01
+- **Scope:** Sprint 2n is **live code-change planning, not live code-change execution.** It opens the
+  (already-built but unreachable) `CODE_IMPLEMENTATION` pipeline to a real user intent for the first
+  time, and stops it at `Planning → Approval → AWAITING_APPROVAL` — no AI Code Generation, no
+  `WorkspaceDiff`, no `Patch`, no `WorkspaceWrite`, no `CommandExecution`.
+
+### Most important rule
+> **A code-change request never mutates anything this sprint.** Not because it is denied at the last
+> moment, but because `CODE_GENERATION`/`WORKSPACE_DIFF`/`PATCH`/`WORKSPACE_WRITE`/`COMMAND_EXECUTION`
+> are never selected into the pipeline for this request in the first place — the no-mutation guarantee
+> rests on **stage selection**, not on the risk/approval gate alone (which is a second, reinforcing
+> layer, not the only one).
+
+### Decision
+- **Reused, no new enum.** `IntentType.IMPLEMENT_CODE` + `Capability.CODE_IMPLEMENTATION` — both
+  pre-existing (Sprint 2j) and already load-bearing in `IntentResolver.EXECUTION_CAPABILITIES`,
+  `ConversationRuntime.needsWorkspace`, and `ExecutionOrchestrator.selectStages`, but never reachable
+  because `IntentClassifier` never emitted `IMPLEMENT_CODE`.
+- **Classifier stays command/codegen-free.** `IntentClassifier` gains deterministic code-change
+  detection (same style as `RUN_TESTS`/`REGISTER_PROJECT`) → `IntentType.IMPLEMENT_CODE` +
+  `Capability.CODE_IMPLEMENTATION` + `raw.kind: 'fix' | 'change' | 'refactor'`. The classifier never
+  produces an implementation instruction, a target-file guess, a patch hint, or a command — only a
+  classification tag, same shape/spirit as ADR-0033's `raw.kind`.
+- **`planningOnly` — a narrow, single-purpose execution mode, not a general stage-override system.**
+  `ExecutionRequest` gains one optional field, `planningOnly?: boolean`. When set, `selectStages`
+  selects `[PLANNING, APPROVAL]` only for a `CODE_IMPLEMENTATION` request — `CODE_GENERATION`,
+  `WORKSPACE_DIFF`, `PATCH`, `WORKSPACE_WRITE`, `COMMAND_EXECUTION` are never included. When unset
+  (every existing caller/test), behavior is byte-for-byte identical to the pre-Sprint-2n pipeline.
+  **Constraint (binding on all future changes):** `planningOnly` may be set **only** by
+  `IntentResolver`, and **only** when `intent.capability === Capability.CODE_IMPLEMENTATION` on this
+  live code-change-planning path. It must never be set from user input, never by `IntentClassifier`,
+  and must never be generalized into an arbitrary-capability or externally-controlled stage override.
+  Any future change that widens its scope must revisit this ADR.
+- **`RiskPolicy.CAPABILITY_RISK[CODE_IMPLEMENTATION]`: `MEDIUM → HIGH`.** This is a **global policy
+  change** (`RiskPolicy` is shared/capability-agnostic, ADR-0024/0025), not a capability-ownership
+  change. Rationale: `CODE_IMPLEMENTATION` is `HIGH` by default because even suggest-only or
+  planning-stage code-change requests are precursors to mutation. `TEST_EXECUTION` remains `MEDIUM`
+  (Sprint 2l, unaffected). This makes `ApprovalPolicy.evaluate` return `requiresApproval: true` for
+  any `CODE_IMPLEMENTATION` plan, so `ApprovalManager.requestFor` creates a `PENDING` (not
+  auto-`APPROVED`) request, and `ExecutionOrchestrator.run` halts and returns `AWAITING_APPROVAL`.
+- **Three-layer no-mutation guarantee — Layer 1 is the proof, Layers 2-3 are reinforcement:**
+  1. **Stage selection (primary).** `PATCH`/`WORKSPACE_WRITE`/`COMMAND_EXECUTION` are absent from
+     `selectedStages` for a `planningOnly` request — `runMutatingStages`'s `if
+     (selectedStages.includes(STAGE))` guards make those calls unreachable code, independent of
+     approval status.
+  2. **Risk/Approval gate.** `CODE_IMPLEMENTATION` → `HIGH` → `PENDING` approval → `AWAITING_APPROVAL`
+     halt before any mutating stage would have run, had one been selected.
+  3. **Aggregate-level guard.** `PatchManager.generate`/`WorkspaceWriteManager.apply` both throw
+     synchronously without an `APPROVED` `ApprovalRef`, regardless of stage selection.
+- **Workspace resolution reused unchanged (ADR-0033 pattern).** `ConversationRuntime` reads
+  `session.activeProjectId`, loads the `Project`, resolves the `WorkspaceRef` via the existing
+  `WorkspaceManager.open` (read-only). No new mechanism.
+- **Approval prompt is code-change-specific.** New `ResponseComposer.composeCodeChangeApprovalRequired`
+  states that approval is required, that this is a code-change request, and that this stage does not
+  modify any file yet — selected by `ConversationRuntime` (facts only: `intent.capability`) instead of
+  the generic `composeApprovalRequired` used by other capabilities.
+- **Approval resume never claims completion.** New `ResponseComposer.composePlanningOnlyApproved`
+  replies to "승인" on a `planningOnly` request without implying code was fixed/generated/written —
+  selected by `ConversationRuntime` when the resumed request's `planningOnly` flag is set, instead of
+  the generic `composeExecutionResult('COMPLETED')`, which would otherwise be misleading (nothing
+  mutates on this path). "거절"/"취소" are unaffected — they never claimed completion.
+- **`ConversationRuntime` frames facts only; `ResponseComposer` owns all text (ADR-0032 §10,
+  unchanged invariant).** Both new Runtime branches only select which composer method applies, based
+  on facts already on hand (`intent.capability`, `request.planningOnly`) — no inline text, no new
+  persisted state, no new aggregate.
+- **No Core/Orchestrator contract change beyond the one additive, non-breaking `planningOnly` field.
+  No new aggregate/repository/migration/capability/port.**
+
+### Not implemented (out of scope)
+AI Code Generation call · `ProviderSelector`/Claude/Ollama/Codex invocation · `WorkspaceDiff` ·
+`Patch` generation · `WorkspaceWrite` · `CommandExecution` · file mutation · command execution ·
+retry · agent loop · autonomous coding · Discord button UI · new aggregate/repository/migration/
+capability/port · Core-contract change · a general-purpose execution-stage override system.
+
+### Consequences
+- + A user's code-change request ("이 버그 고쳐줘") now flows through `Runtime → Orchestrator →
+  Planning → Approval` for the first time and halts safely — no code is ever touched, but the product
+  surface for code-change requests now exists, ready for a future sprint to turn `planningOnly` off.
+- + The no-mutation guarantee is structural (stage selection), not merely policy-based — a future
+  regression in `RiskPolicy` alone cannot, by itself, cause a mutation on this path.
+- − "승인" on a `planningOnly` request does nothing observable yet (by design) — `composePlanningOnlyApproved`
+  makes this explicit to the user rather than implying completion.
+- − `CODE_IMPLEMENTATION`'s risk escalation to `HIGH` is global; any future non-`planningOnly` caller of
+  `CODE_IMPLEMENTATION` will also require human approval (intentional — see rationale above).
+
+### Relations
+ADR-0033 (Live Test Execution — `raw.kind` classifier pattern, workspace resolution), ADR-0032
+(Conversation Runtime — text-ownership invariant), ADR-0031 (Execution Orchestrator — stage
+selection), ADR-0025 (Approval Capability), ADR-0024 (Planning Capability). Supersedes nothing.
+Plan: `docs/plans/sprint-2n-live-code-change-planning-plan.md`.
 Plan: `docs/plans/sprint-2m-test-result-detail-ux-plan.md`.

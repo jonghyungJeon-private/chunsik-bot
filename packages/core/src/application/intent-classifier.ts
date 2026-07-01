@@ -43,6 +43,20 @@ export class IntentClassifier {
       };
     }
 
+    // Code-change request (live planning, ADR-0035). The classifier judges intent + a normalized
+    // `raw.kind` ONLY — no implementation instruction, target-file guess, patch hint, or command.
+    const codeChangeKind = IntentClassifier.detectCodeChange(text);
+    if (codeChangeKind) {
+      return {
+        type: IntentType.IMPLEMENT_CODE,
+        capability: Capability.CODE_IMPLEMENTATION,
+        confidence: 1,
+        requiresWork: true,
+        summary: text.slice(0, 200) || 'Change code',
+        raw: { kind: codeChangeKind },
+      };
+    }
+
     if (IntentClassifier.isProjectAnalysis(text)) {
       return {
         type: IntentType.PROJECT_ANALYSIS,
@@ -71,6 +85,21 @@ export class IntentClassifier {
     const mentionsTest = /(테스트|\btest\b)/i.test(text);
     const actionVerb = /(돌려|실행|run|해줘|해 줘)/i.test(text);
     if ((mentionsTest && actionVerb) || /\bpnpm\s+test\b/i.test(text)) return 'test';
+    return undefined;
+  }
+
+  /**
+   * Detect a code-change request → its kind, or undefined. Deterministic, conservative (KO + EN).
+   * Kind is a classification tag only — never an implementation instruction (ADR-0035).
+   */
+  private static detectCodeChange(text: string): 'fix' | 'change' | 'refactor' | undefined {
+    if (/(리팩터|리팩토링|refactor)/i.test(text)) return 'refactor';
+    const bugish = /(버그|bug|에러|오류|error)/i;
+    const fixVerb = /(고쳐|고치|수정|fix)/i;
+    if (bugish.test(text) && fixVerb.test(text)) return 'fix';
+    const changeVerb = /(고쳐|고치|수정해|수정\s*해|바꿔|바꾸어|변경해|구현해|fix|change|modify|implement)/i;
+    const codeish = /(코드|code|파일|file|부분|함수|function|버그|bug)/i;
+    if (changeVerb.test(text) && codeish.test(text)) return 'change';
     return undefined;
   }
 

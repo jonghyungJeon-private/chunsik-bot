@@ -133,3 +133,37 @@ describe('ResponseComposer.composeTestTimedOut', () => {
     expect(timedOut.text).not.toBe(result.text);
   });
 });
+
+// ── Sprint 2n — Live Code Change Planning (ADR-0035) ────────────────────────────────────────────
+
+describe('ResponseComposer.composeCodeChangeApprovalRequired', () => {
+  it('names this as a code-change request, states no file is modified yet, and how to reply', () => {
+    const reply = composer.composeCodeChangeApprovalRequired(CTX);
+    expect(reply.text).toContain('승인');
+    expect(reply.text).toContain('코드 변경');
+    expect(reply.text).toContain('수정하지 않');
+    expect(reply.text).toContain('"승인"');
+    expect(reply.text).toContain('"취소"');
+  });
+
+  it('is distinct from the generic composeApprovalRequired wording', () => {
+    const generic = composer.composeApprovalRequired(CTX);
+    const codeChange = composer.composeCodeChangeApprovalRequired(CTX);
+    expect(codeChange.text).not.toBe(generic.text);
+  });
+});
+
+describe('ResponseComposer.composePlanningOnlyApproved', () => {
+  it('never claims completion — no "완료", states planning-only progress', () => {
+    const reply = composer.composePlanningOnlyApproved(CTX);
+    expect(reply.text).not.toContain('완료');
+    expect(reply.text).toContain('승인은 확인했어요');
+    expect(reply.text).toContain('계획까지만');
+  });
+
+  it('is distinct from composeExecutionResult("COMPLETED")', () => {
+    const planningOnly = composer.composePlanningOnlyApproved(CTX);
+    const completed = composer.composeExecutionResult(CTX, 'COMPLETED');
+    expect(planningOnly.text).not.toBe(completed.text);
+  });
+});
