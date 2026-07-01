@@ -7,6 +7,39 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Sprint 2m · Test Result Detail UX (CommandExecution facts → useful reply)
+
+- **Test/typecheck replies now carry detail, not just pass/fail** (ADR-0034). `CommandExecution`
+  already held `command`, `args`, `exitCode`, `stdout`, `stderr`, `durationMs`; this sprint reuses
+  those facts — no new read path, no command-surface change.
+- **`TestResultDetail`** (new Application-layer DTO in `response-composer.ts`, not domain, not
+  persisted) carries the display-relevant facts; `ConversationRuntime.frameTestResult` assembles it
+  from the `CommandExecution` it already reads, with a three-way branch: `SUCCEEDED`/`FAILED` (ran)
+  → detail result; `TIMED_OUT` (killed) → distinct timeout reply; no `CommandExecution` (never ran)
+  → unchanged `composeCommandUnavailable`.
+- **`ResponseComposer.composeTestResult`** signature changed to take a `TestResultDetail` (command,
+  exit code, duration, and a safe output excerpt) instead of bare `passed`/`kind`. New
+  **`composeTestTimedOut`**: never phrases a timeout as a test failure, never shows an exit code
+  (none exists), never claims a "configured timeout" value — only the actual elapsed duration.
+- **Deterministic output summarization** (no AI call): prefers `stdout`, falls back to `stderr` only
+  if `stdout` is empty (single stream, never merged); keeps the **tail** — last 20 lines, then capped
+  at 1200 chars; a truncation notice is shown when either bound cut it or the command-runner
+  adapter's own `…[truncated]` marker is present. When `stdout` is shown but `stderr` was also
+  non-empty, the reply says so — stdout-preference never hides that stderr output existed.
+- **No second masking pass.** `maskCommandOutput` (ADR-0028) already redacts + caps at the adapter
+  boundary; summarization is a length transform only over already-safe text. Wording never claims a
+  completeness/security guarantee about the log.
+- **Message-length defended:** excerpt capped at 1200 chars, full rendered reply capped at 1900
+  chars (headroom under Discord's 2000-char limit).
+- **Out of scope (CA-confirmed):** command-surface expansion · AI-generated summary · retry ·
+  patch/write · new aggregate/repository/migration/capability/port · Core/Orchestrator contract change.
+- Tests (+16, `response-composer.test.ts` new + `conversation-runtime.test.ts` updated): success/
+  failure detail content; short/long/huge-line/adapter-marker truncation cases; stdout-preferred +
+  omitted-stream notice; stderr fallback; no-output case; message-length bound; timeout wording
+  constraints; runtime three-way branch (ran/timed-out/never-ran). **Validation runtime: Node 22** —
+  `pnpm typecheck` PASS; `pnpm test` 38 files / **270 tests** PASS. Plan:
+  `docs/plans/sprint-2m-test-result-detail-ux-plan.md`.
+
 ### Added — Sprint 2l · Live Test Execution (first reachable execution Product slice)
 
 - **The execution pipeline is now reachable from a real user message** (ADR-0033). "테스트 돌려줘" /
