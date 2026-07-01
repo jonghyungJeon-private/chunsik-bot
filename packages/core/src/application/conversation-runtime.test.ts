@@ -121,6 +121,7 @@ interface Calls {
   scopeClear: number;
   scopeFindPending: number;
   lastScopeAnchor?: PendingScopeClarification;
+  recordAssistant: number;
 }
 
 interface Opts {
@@ -153,6 +154,7 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
     scopeAnchor: 0,
     scopeClear: 0,
     scopeFindPending: 0,
+    recordAssistant: 0,
   };
   const composer = new ResponseComposer();
   const intentResolver = new IntentResolver();
@@ -198,7 +200,7 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
     },
     memory: {
       async recordShortTerm() { return { id: 'mem-1' }; },
-      async recordAssistant() { return undefined; },
+      async recordAssistant() { calls.recordAssistant++; return undefined; },
       async recordToolMemory() { return undefined; },
     },
     classifier: {
@@ -692,12 +694,16 @@ describe('Multi-turn Code Scope Clarification — runtime', () => {
     await new ConversationRuntime(deps).handle(messageOf('이 버그 고쳐줘')); // turn 1: anchors
     expect(calls.scopeAnchor).toBe(1);
 
+    const recordAssistantBeforeTurn2 = calls.recordAssistant;
     const result = await new ConversationRuntime(deps).handle(messageOf('node_modules/foo.ts')); // turn 2: invalid
 
     expect(calls.run).toBe(0);
     expect(calls.scopeClear).toBe(1);
     expect(calls.scopeAnchor).toBe(1); // still just the original anchor — no re-anchor on failure
     expect(result.reply.text).toBe(new ResponseComposer().composeTargetScopeClarification(CTX).text);
+    // CA Implementation Review (Round 1): the clarification reply must be recorded to memory exactly
+    // once per turn, not twice (respondComposed already records it — no separate manual call).
+    expect(calls.recordAssistant - recordAssistantBeforeTurn2).toBe(1);
   });
 
   it('Case 4: "취소" while pending clears the anchor and never claims a plan/patch/execution existed', async () => {

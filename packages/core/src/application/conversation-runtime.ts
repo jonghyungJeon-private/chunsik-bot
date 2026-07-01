@@ -477,7 +477,6 @@ export class ConversationRuntime {
     }
 
     const reply = this.deps.composer.composeTargetScopeClarification(message.context);
-    await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
     return this.respondComposed(message, session, reply); // no re-anchor (next-turn-only)
   }
 
