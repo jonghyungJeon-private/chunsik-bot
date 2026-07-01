@@ -443,3 +443,70 @@ describe('ResponseComposer.composeCodeDiffPreview', () => {
     expect(reply.text.length).toBeLessThanOrEqual(1900);
   });
 });
+
+// ── Sprint 2s — Explicit Preview Apply Approval (ADR-0040) ─────────────────────────────────────────
+
+describe('ResponseComposer.composeApplyApprovalRequested', () => {
+  it('states this is for file modification, not preview generation', () => {
+    const reply = composer.composeApplyApprovalRequested(CTX, ['packages/core/src/application/foo.ts']);
+    expect(reply.text).toContain('실제 파일');
+    expect(reply.text).toContain('미리보기 생성이 아니라');
+    expect(reply.text).toContain('packages/core/src/application/foo.ts');
+  });
+
+  it('states nothing was modified yet', () => {
+    const reply = composer.composeApplyApprovalRequested(CTX, ['foo.ts']);
+    expect(reply.text).toContain('아직 파일은 수정되지 않았어요');
+  });
+
+  it('mentions revalidation against the latest file content before actual apply', () => {
+    const reply = composer.composeApplyApprovalRequested(CTX, ['foo.ts']);
+    expect(reply.text).toContain('최신 파일 내용으로 다시 확인');
+  });
+
+  it('names all three decision words — 승인/거절/취소', () => {
+    const reply = composer.composeApplyApprovalRequested(CTX, ['foo.ts']);
+    expect(reply.text).toContain('"승인"');
+    expect(reply.text).toContain('"거절"');
+    expect(reply.text).toContain('"취소"');
+  });
+
+  it('never uses wording that implies a completed mutation', () => {
+    const reply = composer.composeApplyApprovalRequested(CTX, ['foo.ts']);
+    for (const word of FORBIDDEN_MUTATION_WORDS) {
+      expect(reply.text).not.toContain(word);
+    }
+  });
+});
+
+describe('ResponseComposer.composeApplyPreviewUnavailable', () => {
+  it('states there is nothing to apply and never creates an approval-sounding reply', () => {
+    const reply = composer.composeApplyPreviewUnavailable(CTX);
+    expect(reply.text).toContain('적용할 수 있는 코드 변경 미리보기가 없어요');
+  });
+
+  it('never uses wording that implies a completed mutation', () => {
+    const reply = composer.composeApplyPreviewUnavailable(CTX);
+    for (const word of FORBIDDEN_MUTATION_WORDS) {
+      expect(reply.text).not.toContain(word);
+    }
+  });
+});
+
+describe('ResponseComposer.composeApplyApprovalRecorded', () => {
+  it('states the approval was recorded but not applied — never implies completion', () => {
+    const reply = composer.composeApplyApprovalRecorded(CTX);
+    expect(reply.text).toContain('적용 승인만 기록했어요');
+    expect(reply.text).toContain('아직 실제 파일 적용은 수행하지 않았어요');
+    expect(reply.text).toContain('파일은 수정되지 않았어요');
+  });
+
+  it('never uses wording that implies a completed mutation', () => {
+    const reply = composer.composeApplyApprovalRecorded(CTX);
+    for (const word of FORBIDDEN_MUTATION_WORDS) {
+      expect(reply.text).not.toContain(word);
+    }
+    expect(reply.text).not.toContain('적용 완료');
+    expect(reply.text).not.toContain('반영 완료');
+  });
+});

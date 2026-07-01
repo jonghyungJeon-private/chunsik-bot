@@ -46,6 +46,7 @@ import {
   ConversationRuntime,
   StatelessApprovalFlow,
   StatelessScopeClarificationFlow,
+  StatelessApplyPreviewFlow,
   ConnectorManager,
   ResponseComposer,
   RiskPolicy,
@@ -353,6 +354,14 @@ const application: Provider[] = [
         sessions: storage.sessions,
         tasks: storage.tasks,
       });
+      // ADR-0040: production ApplyPreviewFlow — same shape as StatelessScopeClarificationFlow. The
+      // anchored Task is a plan-less inert conversation anchor, so it is never discoverable by
+      // StatelessApprovalFlow's plan-scoped lookup, even though the second (apply) ApprovalRequest it
+      // eventually creates references the same executionPlanRef as the first.
+      const applyPreviewFlow = new StatelessApplyPreviewFlow({
+        sessions: storage.sessions,
+        tasks: storage.tasks,
+      });
       return new ConversationRuntime({
         actors,
         sessions,
@@ -379,6 +388,7 @@ const application: Provider[] = [
         approvals,
         approvalFlow,
         scopeClarificationFlow,
+        applyPreviewFlow,
         // ADR-0038: reuses the same, already-registered CodeGenerationManager provider
         // ExecutionOrchestrator already depends on — no new provider.
         codeGeneration,

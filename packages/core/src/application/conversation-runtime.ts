@@ -1,15 +1,27 @@
 import { describeAiFailure } from './ai-failure';
-import { Capability, CodeGenerationStatus, CommandExecutionStatus, IntentType, TaskStatus } from '../domain';
+import {
+  Capability,
+  CodeGenerationStatus,
+  CommandExecutionStatus,
+  IntentType,
+  RiskLevel,
+  TaskStatus,
+  codeGenerationRef,
+  codeProposalRef,
+} from '../domain';
 import type {
   Actor,
   ApprovalDecision,
   ApprovalRequest,
   Artifact,
   CodeGeneration,
+  CodeGenerationRef,
   CodeProposal,
+  CodeProposalRef,
   CommandExecution,
   ContextBundle,
   ConversationContext,
+  ExecutionPlanRef,
   GenerateCodeInput,
   Id,
   InboundMessage,
@@ -19,7 +31,6 @@ import type {
   Project,
   PromptSpec,
   ProposedChange,
-  RiskLevel,
   Session,
   Task,
   TaskRun,
@@ -131,6 +142,54 @@ export interface ScopeClarificationFlow {
   clear(session: Session): Promise<void>;
 }
 
+/** The three states one apply-preview anchor moves through (Sprint 2s, ADR-0040). Never regresses;
+ *  deny/cancel clears the anchor entirely instead of introducing a fourth "rejected" state. */
+export type ApplyPreviewAnchorStatus = 'ELIGIBLE' | 'AWAITING_APPROVAL' | 'APPROVED';
+
+/**
+ * Anchored fact set for "a diff preview was shown; the user may explicitly ask to apply it" (Sprint 2s,
+ * ADR-0040). `kind` proves this Task's metadata is an apply-preview anchor, never an approval anchor
+ * (`planId` present) or a scope-clarification anchor (different discriminator) — mirrors
+ * PendingScopeClarification's pattern exactly.
+ */
+export interface ApplyPreviewAnchor {
+  kind: 'code-preview-apply';
+  status: ApplyPreviewAnchorStatus;
+  executionPlanRef: ExecutionPlanRef;
+  workspaceRef: WorkspaceRef;
+  targetFiles: string[];
+  codeGenerationRef: CodeGenerationRef;
+  codeProposalRef: CodeProposalRef;
+  /** The original request's instruction — restated in the apply-approval's `reason`, never re-derived
+   *  from chat history. */
+  instruction: string;
+  /** The active project at anchor time — re-checked at recovery time (mirrors Sprint 2p's Q5 pattern). */
+  projectId?: Id;
+  createdAt: IsoTimestamp;
+  /** Set once `status` moves to `AWAITING_APPROVAL` or beyond; absent while `ELIGIBLE`. */
+  approvalId?: Id;
+  /** Set once `status` becomes `APPROVED`. */
+  approvedAt?: IsoTimestamp;
+}
+
+/**
+ * Cross-turn apply-preview mechanics (Sprint 2s, ADR-0040), confined behind one collaborator exactly
+ * like ApprovalFlow/ScopeClarificationFlow — so the runtime stays stateless and the correlation source
+ * is wired once.
+ */
+export interface ApplyPreviewFlow {
+  /** Derive the session's apply-preview anchor, if any and still valid (project unchanged). A returned
+   *  anchor is not always "pending" anything — it may be `ELIGIBLE` or already `APPROVED`; callers
+   *  branch on `.status`. */
+  findAnchor(session: Session): Promise<ApplyPreviewAnchor | null>;
+  /** Anchor (or re-anchor, on every status transition) the apply-preview fact set. Always creates a
+   *  fresh Task and re-points `session.activeTaskId` — same shape as the other two flows. */
+  anchor(session: Session, anchor: ApplyPreviewAnchor): Promise<void>;
+  /** Consume/clear the anchor — called only on deny/cancel (approving re-anchors as `APPROVED` instead).
+   *  A no-op unless `session.activeTaskId` still points at THIS flow's own anchor Task. */
+  clear(session: Session): Promise<void>;
+}
+
 export interface ConversationRuntimeDeps {
   readonly actors: { resolveFromContext(context: ConversationContext): Promise<Actor> };
   readonly sessions: {
@@ -188,9 +247,23 @@ export interface ConversationRuntimeDeps {
     run(request: ExecutionRequest, cancelToken?: CancelToken): Promise<ExecutionOutcome>;
     resume(request: ExecutionRequest, prior: ExecutionOutcome, cancelToken?: CancelToken): Promise<ExecutionOutcome>;
   };
-  readonly approvals: { decide(approvalId: Id, decision: ApprovalDecision): Promise<ApprovalRequest> };
+  readonly approvals: {
+    decide(approvalId: Id, decision: ApprovalDecision): Promise<ApprovalRequest>;
+    /** Reused for the ambiguous-retry prompt on the apply gate (Sprint 2s) — a type-only widening, not
+     *  a new method (`ApprovalManager.get` already exists). */
+    get(approvalId: Id): Promise<ApprovalRequest | null>;
+    /** Reused for the second (apply) approval (Sprint 2s, ADR-0040) — not a new capability/port; the
+     *  same already-registered ApprovalManager instance already implements this. */
+    requestForRisk(input: {
+      executionPlanRef: ExecutionPlanRef;
+      riskLevel: RiskLevel;
+      reason: string;
+      requestedBy: string;
+    }): Promise<ApprovalRequest>;
+  };
   readonly approvalFlow: ApprovalFlow;
   readonly scopeClarificationFlow: ScopeClarificationFlow;
+  readonly applyPreviewFlow: ApplyPreviewFlow;
   /** Reused for post-approval preview generation (Sprint 2q, ADR-0038) — not a new capability/port. */
   readonly codeGeneration: {
     generate(input: GenerateCodeInput): Promise<CodeGeneration>;
@@ -202,6 +275,12 @@ export interface ConversationRuntimeDeps {
 const APPROVE_WORDS = ['승인', '진행', '좋아', 'yes', 'y', 'ok'];
 const DENY_WORDS = ['거절', '아니', 'no', 'n'];
 const CANCEL_WORDS = ['취소', '중단', '그만'];
+
+/** Explicit apply-only phrases (Sprint 2s, ADR-0040) — "좋아"/"오케이"/"확인"/"괜찮네" must NEVER match;
+ *  those stay in APPROVE_WORDS for the ordinary approval flow but are insufficient to authorize file
+ *  modification. "이대로 진행" (multi-word) is deliberately distinct from APPROVE_WORDS' bare "진행" —
+ *  the two word-sets are non-overlapping by construction, not by coincidence. */
+const APPLY_WORDS = ['적용', '반영', '이대로 진행'];
 
 /** Bound on how many extracted target-path candidates trigger a workspace.list call per turn
  *  (Sprint 2o, ADR-0036) — a chat message must never drive an unbounded number of workspace scans. */
@@ -288,6 +367,13 @@ export class ConversationRuntime {
     return 'ambiguous';
   }
 
+  /** Explicit apply intent only (Sprint 2s, ADR-0040) — deliberately NOT interpretDecision/APPROVE_WORDS;
+   *  "좋아"/"오케이"/"확인"/"괜찮네" must never authorize file modification (Critical Product Rule). */
+  static interpretApplyIntent(text: string): boolean {
+    const t = text.trim().toLowerCase();
+    return APPLY_WORDS.some((w) => t.includes(w));
+  }
+
   /**
    * Handle one inbound message → one transient `TurnResult` (with an `OutboundMessage`). Never sends
    * to the platform (delivery is the facade's job) and never persists runtime state.
@@ -312,6 +398,28 @@ export class ConversationRuntime {
     if (pendingScope) {
       return this.handleScopeClarificationTurn(message, session, actor, pendingScope);
     }
+
+    // (A3) Apply-preview routing (Sprint 2s, ADR-0040) — checked after approvalFlow/scopeClarificationFlow
+    // so neither is ever pre-empted.
+    const applyAnchor = await this.deps.applyPreviewFlow.findAnchor(session);
+    // A real second ApprovalRequest is pending decision — intercepts EVERY turn, exactly like the first
+    // approval does, regardless of whether the message is an apply phrase.
+    if (applyAnchor?.status === 'AWAITING_APPROVAL') {
+      return this.handleApplyApprovalTurn(message, session, actor, applyAnchor);
+    }
+    if (ConversationRuntime.interpretApplyIntent(message.text)) {
+      if (applyAnchor?.status === 'ELIGIBLE') {
+        return this.handleApplyIntentTurn(message, session, actor, applyAnchor); // creates approval #2
+      }
+      if (applyAnchor?.status === 'APPROVED') {
+        return this.handleApplyAlreadyApprovedTurn(message, session); // don't re-ask, don't re-approve
+      }
+      // No anchor at all (or a stale one, already auto-cleared by findAnchor). An explicit apply phrase
+      // must NEVER be reinterpreted as a new, unscoped code-change request (CA review).
+      return this.handleApplyPreviewUnavailableTurn(message, session);
+    }
+    // Anything else: fall through untouched — an ELIGIBLE/APPROVED anchor is an optional follow-up
+    // opportunity, never a hard gate ordinary conversation must route around.
 
     const intent = await this.deps.classifier.classify(message);
     this.deps.logger.info('intent classified', {
@@ -502,7 +610,112 @@ export class ConversationRuntime {
 
     const diffPreview = toCodeDiffPreview(diff, outOfScopeWarnings);
     const reply = this.deps.composer.composeCodeDiffPreview(message.context, diffPreview);
+    // Sprint 2s (ADR-0040): remember what was just previewed, in case the user explicitly asks to apply
+    // it on a later turn. A plan-less Task anchor — never discoverable by approvalFlow.
+    await this.deps.applyPreviewFlow.anchor(session, {
+      kind: 'code-preview-apply',
+      status: 'ELIGIBLE',
+      executionPlanRef: planRef,
+      workspaceRef: request.workspaceRef,
+      targetFiles,
+      codeGenerationRef: codeGenerationRef(generation),
+      codeProposalRef: codeProposalRef(proposal),
+      instruction: request.instruction,
+      ...(session.activeProjectId ? { projectId: session.activeProjectId } : {}),
+      createdAt: now(),
+    });
     return this.respondComposed(message, session, reply, outcome);
+  }
+
+  /** No eligible apply-preview anchor exists at all (Sprint 2s, ADR-0040) — an explicit apply phrase is
+   *  never reinterpreted as a new, unscoped code-change request. Never reaches the classifier or the
+   *  Orchestrator. */
+  private async handleApplyPreviewUnavailableTurn(message: InboundMessage, session: Session): Promise<TurnResult> {
+    const reply = this.deps.composer.composeApplyPreviewUnavailable(message.context);
+    await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+    return this.responded(session, reply);
+  }
+
+  /** The apply approval was already decided APPROVED and the user asked to apply again (Sprint 2s,
+   *  ADR-0040) — never re-asks, never creates a duplicate approval. */
+  private async handleApplyAlreadyApprovedTurn(message: InboundMessage, session: Session): Promise<TurnResult> {
+    const reply = this.deps.composer.composeApplyApprovalRecorded(message.context);
+    await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+    return this.responded(session, reply);
+  }
+
+  /**
+   * An explicit apply phrase arrived while the anchor is ELIGIBLE (Sprint 2s, ADR-0040) — create the
+   * second, HIGH-risk ApprovalRequest and halt. Never calls ExecutionOrchestrator, Patch, WorkspaceWrite,
+   * or CommandExecution.
+   */
+  private async handleApplyIntentTurn(
+    message: InboundMessage,
+    session: Session,
+    actor: Actor,
+    anchor: ApplyPreviewAnchor,
+  ): Promise<TurnResult> {
+    if (!anchor.workspaceRef || !anchor.targetFiles.length || !anchor.codeProposalRef) {
+      // Defensive — the anchor is always written complete (runCodeGenerationPreview), but never trust
+      // it blindly.
+      const reply = this.deps.composer.composeApplyPreviewUnavailable(message.context);
+      return this.failComposed(message, session, reply);
+    }
+    const approval = await this.deps.approvals.requestForRisk({
+      executionPlanRef: anchor.executionPlanRef,
+      riskLevel: RiskLevel.HIGH, // apply approval is unconditionally HIGH, never auto-approved
+      reason:
+        `Apply AI code proposal ${anchor.codeProposalRef.id} from generation ${anchor.codeGenerationRef.id} ` +
+        `to ${anchor.targetFiles.join(', ')}`,
+      requestedBy: actor.id,
+    });
+    await this.deps.applyPreviewFlow.anchor(session, { ...anchor, status: 'AWAITING_APPROVAL', approvalId: approval.id });
+    const reply = this.deps.composer.composeApplyApprovalRequested(message.context, anchor.targetFiles);
+    await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+    return { status: 'AWAITING_APPROVAL', reply, sessionId: session.id };
+  }
+
+  /**
+   * Decide the already-created second (apply) approval (Sprint 2s, ADR-0040). Reuses the same
+   * interpretDecision/APPROVE_WORDS/DENY_WORDS/CANCEL_WORDS the first approval uses — only the
+   * *creation* trigger needed a distinct word-set, not the decision itself. Approving re-anchors as
+   * APPROVED (never clears) so a future Apply sprint can recover every ref; denying/cancelling clears.
+   */
+  private async handleApplyApprovalTurn(
+    message: InboundMessage,
+    session: Session,
+    actor: Actor,
+    anchor: ApplyPreviewAnchor,
+  ): Promise<TurnResult> {
+    const decision = ConversationRuntime.interpretDecision(message.text);
+    if (decision === 'ambiguous') {
+      const fresh = await this.deps.approvals.get(anchor.approvalId!);
+      const reply = fresh
+        ? this.deps.composer.composeApprovalNotice(message.context, fresh)
+        : this.deps.composer.composeApplyPreviewUnavailable(message.context); // pathological
+      await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+      return { status: 'AWAITING_APPROVAL', reply, sessionId: session.id };
+    }
+
+    const approved = decision === 'approve';
+    await this.deps.approvals.decide(anchor.approvalId!, this.decisionOf(anchor.approvalId!, actor.id, approved));
+
+    if (!approved) {
+      // deny / cancel — nothing left to preserve.
+      await this.deps.applyPreviewFlow.clear(session);
+      const replyStatus: ExecutionReplyStatus = decision === 'deny' ? 'DENIED' : 'CANCELLED';
+      const reply = this.deps.composer.composeExecutionResult(message.context, replyStatus);
+      await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+      return { status: decision === 'deny' ? 'DENIED' : 'CANCELLED', reply, sessionId: session.id };
+    }
+
+    // approve — Sprint 2s stops here (no Patch/WorkspaceWrite/CommandExecution/git call), but the
+    // approved context MUST survive for a future Apply sprint. Re-anchor (never clear): every ref this
+    // anchor carries is exactly what that future sprint will need.
+    await this.deps.applyPreviewFlow.anchor(session, { ...anchor, status: 'APPROVED', approvedAt: now() });
+    const reply = this.deps.composer.composeApplyApprovalRecorded(message.context);
+    await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+    return { status: 'RESPONDED', reply, sessionId: session.id };
   }
 
   /** (C) Resolve the workspace (if the capability needs it), run the execution, and frame the reply. */
