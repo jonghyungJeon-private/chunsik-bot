@@ -37,6 +37,18 @@ export interface TestResultDetail {
   stderr: string;
 }
 
+/**
+ * Display-relevant shape of an AI code-change proposal (AI Code Generation Preview, ADR-0038).
+ * Application-layer, not domain, not persisted — deliberately narrower than `CodeProposal` (no
+ * id/Ref/providerId). `changes` contains only paths that normalized-matched the validated
+ * `targetFiles` the request was approved for; `outOfScopeWarnings` holds everything else the AI
+ * proposed touching, which is never rendered as content — AI-proposed paths are untrusted.
+ */
+export interface CodeChangePreview {
+  changes: Array<{ path: string; kind: 'update' | 'delete'; excerpt?: string }>;
+  outOfScopeWarnings: string[];
+}
+
 /** Per-stream tail kept in a reply excerpt (lines), before the char cap applies. */
 const MAX_SUMMARY_LINES = 20;
 /** Char cap on the rendered excerpt, leaving headroom under Discord's 2000-char message limit. */
@@ -45,6 +57,10 @@ const MAX_SUMMARY_CHARS = 1200;
 const MAX_MESSAGE_CHARS = 1900;
 /** The command-runner adapter's own truncation marker (`maskCommandOutput`, ADR-0028). */
 const ADAPTER_TRUNCATION_MARKER = '…[truncated]';
+/** Per-file excerpt cap before the overall message clamp applies (AI Code Generation Preview, ADR-0038). */
+const MAX_PREVIEW_EXCERPT_CHARS = 800;
+/** Bound on how many out-of-scope paths are listed before truncating (ADR-0038). */
+const MAX_OUT_OF_SCOPE_WARNING_PATHS = 5;
 
 /** Which stream a rendered excerpt came from, and which non-empty stream was left out. */
 interface OutputSummary {
@@ -122,6 +138,24 @@ function renderExcerptBlock(summary: OutputSummary): string {
 /** Defensive final-length guard (CA review, required change #6) — belt-and-suspenders over the excerpt cap. */
 function clampToMessageBudget(text: string): string {
   return text.length > MAX_MESSAGE_CHARS ? `${text.slice(0, MAX_MESSAGE_CHARS - 1)}…` : text;
+}
+
+/**
+ * A fence guaranteed longer than any backtick run already inside `excerpt` (AI Code Generation
+ * Preview, ADR-0038 — CA Round 1) — untrusted AI content can never break the surrounding message's
+ * Markdown structure.
+ */
+function fenceFor(excerpt: string): string {
+  const longestRun = Math.max(2, ...(excerpt.match(/`+/g) ?? ['']).map((r) => r.length));
+  return '`'.repeat(longestRun + 1);
+}
+
+/** Bounded, comma-joined out-of-scope path list with a "외 N개" suffix when truncated (ADR-0038). */
+function renderOutOfScopeWarning(paths: string[]): string | undefined {
+  if (!paths.length) return undefined;
+  const shown = paths.slice(0, MAX_OUT_OF_SCOPE_WARNING_PATHS);
+  const suffix = paths.length > shown.length ? ` 외 ${paths.length - shown.length}개` : '';
+  return `참고: ${shown.join(', ')}${suffix}에도 변경을 제안했지만, 확인된 대상 파일이 아니라서 보여드리지 않았어요.`;
 }
 
 /**
@@ -311,5 +345,45 @@ export class ResponseComposer {
       context,
       text: '코드 변경 요청을 취소했어요. 다시 필요하시면 파일 경로와 함께 새로 요청해 주세요.',
     };
+  }
+
+  /**
+   * A successful AI code-change proposal preview (AI Code Generation Preview, ADR-0038). Repeats,
+   * not merely mentions once, that nothing was applied — never uses wording that could be read as
+   * "적용했어요"/"수정했어요"/"반영했어요"/"변경 완료". AI content is rendered inside a fence
+   * guaranteed safe against backticks already present in the (untrusted) excerpt.
+   */
+  composeCodeGenerationPreview(context: ConversationContext, preview: CodeChangePreview): OutboundMessage {
+    const lines = [
+      '코드 변경 제안이 준비됐어요. 아직 실제로 적용되지 않았어요. 파일은 수정되지 않았어요.',
+      ...preview.changes.map((c) => {
+        if (c.kind === 'delete') return `- ${c.path} (삭제 제안 — 아직 적용되지 않음)`;
+        const excerpt = (c.excerpt ?? '').slice(0, MAX_PREVIEW_EXCERPT_CHARS);
+        const fence = fenceFor(excerpt);
+        return `- ${c.path}\n${fence}\n${excerpt}\n${fence}`;
+      }),
+    ];
+    const warning = renderOutOfScopeWarning(preview.outOfScopeWarnings);
+    if (warning) lines.push(warning);
+    lines.push('이 제안을 실제로 적용하는 기능은 아직 지원하지 않아요.');
+    return { context, text: clampToMessageBudget(lines.join('\n')) };
+  }
+
+  /** AI Code Generation failed to produce a usable proposal (ADR-0038). CA-specified wording verbatim. */
+  composeCodeGenerationPreviewFailed(context: ConversationContext): OutboundMessage {
+    return { context, text: '코드 변경 제안을 생성하지 못했어요.\n파일은 수정되지 않았어요.' };
+  }
+
+  /**
+   * Every proposed path was outside the validated targetFiles (AI Code Generation Preview, ADR-0038).
+   * Distinct from {@link composeCodeGenerationPreviewFailed}: generation itself succeeded, but
+   * nothing it proposed matched the confirmed target — a different, more precise claim. Never
+   * presented as a successful proposal.
+   */
+  composeCodeGenerationPreviewNoValidChange(context: ConversationContext, outOfScopeWarnings: string[]): OutboundMessage {
+    const lines = ['AI가 제안한 변경이 확인된 대상 파일과 일치하지 않아 보여드릴 수 없어요.', '파일은 수정되지 않았어요.'];
+    const warning = renderOutOfScopeWarning(outOfScopeWarnings);
+    if (warning) lines.push(warning);
+    return { context, text: clampToMessageBudget(lines.join('\n')) };
   }
 }

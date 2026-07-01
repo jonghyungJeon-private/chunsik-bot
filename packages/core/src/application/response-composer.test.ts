@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ConversationContext } from '../domain';
 import { ResponseComposer } from './response-composer';
-import type { TestResultDetail } from './response-composer';
+import type { CodeChangePreview, TestResultDetail } from './response-composer';
 
 const CTX: ConversationContext = { platform: 'test', channelId: 'c1', userId: 'u1' };
 const composer = new ResponseComposer();
@@ -211,5 +211,110 @@ describe('ResponseComposer.composeScopeClarificationCancelled', () => {
     const scopeCancel = composer.composeScopeClarificationCancelled(CTX);
     const generic = composer.composeExecutionResult(CTX, 'CANCELLED');
     expect(scopeCancel.text).not.toBe(generic.text);
+  });
+});
+
+// ── Sprint 2q — AI Code Generation Preview (ADR-0038) ───────────────────────────────────────────
+
+const FORBIDDEN_MUTATION_WORDS = ['적용했어요', '수정했어요', '반영했어요', '변경 완료'];
+
+describe('ResponseComposer.composeCodeGenerationPreview', () => {
+  const previewOf = (o: Partial<CodeChangePreview> = {}): CodeChangePreview => ({
+    changes: [{ path: 'packages/core/src/application/foo.ts', kind: 'update', excerpt: 'fixed content' }],
+    outOfScopeWarnings: [],
+    ...o,
+  });
+
+  it('states, at least twice, that nothing was applied yet', () => {
+    const reply = composer.composeCodeGenerationPreview(CTX, previewOf());
+    const notAppliedMentions = (reply.text.match(/적용되지 않|지원하지 않/g) ?? []).length;
+    expect(notAppliedMentions).toBeGreaterThanOrEqual(2);
+  });
+
+  it('never uses wording that implies a completed mutation', () => {
+    const reply = composer.composeCodeGenerationPreview(CTX, previewOf());
+    for (const word of FORBIDDEN_MUTATION_WORDS) {
+      expect(reply.text).not.toContain(word);
+    }
+  });
+
+  it('lists the changed file path and a bounded excerpt', () => {
+    const reply = composer.composeCodeGenerationPreview(CTX, previewOf());
+    expect(reply.text).toContain('packages/core/src/application/foo.ts');
+    expect(reply.text).toContain('fixed content');
+  });
+
+  it('a delete change is shown without an excerpt', () => {
+    const reply = composer.composeCodeGenerationPreview(
+      CTX,
+      previewOf({ changes: [{ path: 'packages/core/old.ts', kind: 'delete' }] }),
+    );
+    expect(reply.text).toContain('packages/core/old.ts');
+    expect(reply.text).toContain('삭제 제안');
+  });
+
+  it('includes the out-of-scope warning line when present, omits it when absent', () => {
+    const withWarning = composer.composeCodeGenerationPreview(CTX, previewOf({ outOfScopeWarnings: ['other.ts'] }));
+    expect(withWarning.text).toContain('other.ts');
+    const withoutWarning = composer.composeCodeGenerationPreview(CTX, previewOf({ outOfScopeWarnings: [] }));
+    expect(withoutWarning.text).not.toContain('참고:');
+  });
+
+  it('more than the warning cap shows a truncated list with an "외 N개" suffix', () => {
+    const manyPaths = Array.from({ length: 8 }, (_, i) => `packages/core/extra-${i}.ts`);
+    const reply = composer.composeCodeGenerationPreview(CTX, previewOf({ outOfScopeWarnings: manyPaths }));
+    expect(reply.text).toContain('외 3개');
+    expect(reply.text).not.toContain('extra-7.ts');
+  });
+
+  it('an excerpt containing a run of triple backticks does not break the rendered fence', () => {
+    const reply = composer.composeCodeGenerationPreview(
+      CTX,
+      previewOf({ changes: [{ path: 'foo.ts', kind: 'update', excerpt: 'before\n```\nnested\n```\nafter' }] }),
+    );
+    // A safe render uses a fence strictly longer than the longest backtick run already present.
+    expect(reply.text).toContain('````');
+    expect(reply.text).toContain('nested');
+  });
+
+  it('stays within the existing message-length bound even with a near-limit excerpt', () => {
+    const reply = composer.composeCodeGenerationPreview(
+      CTX,
+      previewOf({ changes: [{ path: 'foo.ts', kind: 'update', excerpt: 'x'.repeat(5000) }] }),
+    );
+    expect(reply.text.length).toBeLessThanOrEqual(1900);
+  });
+});
+
+describe('ResponseComposer.composeCodeGenerationPreviewFailed', () => {
+  it('matches the CA-specified wording exactly', () => {
+    const reply = composer.composeCodeGenerationPreviewFailed(CTX);
+    expect(reply.text).toBe('코드 변경 제안을 생성하지 못했어요.\n파일은 수정되지 않았어요.');
+  });
+
+  it('does not imply a file was written or a patch was created', () => {
+    const reply = composer.composeCodeGenerationPreviewFailed(CTX);
+    for (const word of FORBIDDEN_MUTATION_WORDS) {
+      expect(reply.text).not.toContain(word);
+    }
+  });
+});
+
+describe('ResponseComposer.composeCodeGenerationPreviewNoValidChange', () => {
+  it('does not claim a successful proposal; states the file was not modified', () => {
+    const reply = composer.composeCodeGenerationPreviewNoValidChange(CTX, ['other.ts']);
+    expect(reply.text).not.toContain('제안이 준비됐어요');
+    expect(reply.text).toContain('수정되지 않았어요');
+  });
+
+  it('includes the bounded out-of-scope warning when paths are given', () => {
+    const reply = composer.composeCodeGenerationPreviewNoValidChange(CTX, ['other.ts']);
+    expect(reply.text).toContain('other.ts');
+  });
+
+  it('is distinct from composeCodeGenerationPreviewFailed — generation succeeded, just out of scope', () => {
+    const noValidChange = composer.composeCodeGenerationPreviewNoValidChange(CTX, ['other.ts']);
+    const failed = composer.composeCodeGenerationPreviewFailed(CTX);
+    expect(noValidChange.text).not.toBe(failed.text);
   });
 });

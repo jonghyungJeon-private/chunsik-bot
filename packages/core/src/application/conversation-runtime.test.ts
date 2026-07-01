@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ApprovalStatus,
   Capability,
+  CodeGenerationStatus,
   CommandExecutionStatus,
   IntentType,
   RiskLevel,
@@ -10,8 +11,11 @@ import {
 import type {
   Actor,
   ApprovalRequest,
+  CodeGeneration,
+  CodeProposal,
   CommandExecution,
   ConversationContext,
+  GenerateCodeInput,
   InboundMessage,
   Intent,
   Project,
@@ -26,7 +30,7 @@ import type { CapabilityRouter } from './capability-router';
 import { IntentResolver } from './intent-resolver';
 import { ExecutionOutcomeStatus, ExecutionStage } from './execution-orchestrator';
 import type { ExecutionOutcome, ExecutionRequest } from './execution-orchestrator';
-import { ConversationRuntime } from './conversation-runtime';
+import { ConversationRuntime, toCodeChangePreview } from './conversation-runtime';
 import type { ApprovalFlow, ConversationRuntimeDeps, PendingScopeClarification, ScopeClarificationFlow } from './conversation-runtime';
 import { StatelessApprovalFlow } from './stateless-approval-flow';
 
@@ -107,6 +111,27 @@ const TARGET_FILE = 'packages/core/src/application/foo.ts';
 /** Fake `workspace.list` that reports an exact hit only for `path`, nothing for anything else. */
 const hitsFor = (path: string) => (glob?: string): string[] => (glob === path ? [path] : []);
 
+/** Default SUCCEEDED generation + in-scope proposal used by makeDeps' codeGeneration fake (Sprint 2q). */
+const codeGenerationOf = (o: Partial<CodeGeneration> = {}): CodeGeneration => ({
+  id: 'gen-1',
+  executionPlanRef: { id: 'plan-1', goal: 'g' },
+  capability: Capability.CODE_IMPLEMENTATION,
+  status: CodeGenerationStatus.SUCCEEDED,
+  codeProposalRef: { id: 'prop-1', status: CodeGenerationStatus.SUCCEEDED },
+  createdAt: TS,
+  updatedAt: TS,
+  ...o,
+});
+
+const codeProposalOf = (o: Partial<CodeProposal> = {}): CodeProposal => ({
+  id: 'prop-1',
+  codeGenerationRef: { id: 'gen-1', status: CodeGenerationStatus.SUCCEEDED },
+  proposal: [{ path: TARGET_FILE, newContent: 'fixed content' }],
+  providerId: 'fake',
+  createdAt: TS,
+  ...o,
+});
+
 interface Calls {
   run: number;
   resume: number;
@@ -122,6 +147,9 @@ interface Calls {
   scopeFindPending: number;
   lastScopeAnchor?: PendingScopeClarification;
   recordAssistant: number;
+  codeGenerationGenerate: number;
+  codeGenerationGetProposal: number;
+  lastCodeGenerationInput?: GenerateCodeInput;
 }
 
 interface Opts {
@@ -139,6 +167,12 @@ interface Opts {
   /** Initial pending scope clarification (Sprint 2p) — the fake is stateful: `anchor` sets it,
    *  `clear` nulls it, so a test can drive multiple sequential `handle()` calls realistically. */
   pendingScope?: PendingScopeClarification | null;
+  /** `codeGeneration.generate` result (Sprint 2q) — defaults to a SUCCEEDED generation; pass
+   *  'throw' to simulate an unexpected error. */
+  codeGeneration?: CodeGeneration | 'throw';
+  /** `codeGeneration.getProposal` result (Sprint 2q) — defaults to an in-scope proposal for
+   *  TARGET_FILE; pass null to simulate a missing proposal. */
+  codeProposal?: CodeProposal | null;
 }
 
 function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Calls } {
@@ -155,6 +189,8 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
     scopeClear: 0,
     scopeFindPending: 0,
     recordAssistant: 0,
+    codeGenerationGenerate: 0,
+    codeGenerationGetProposal: 0,
   };
   const composer = new ResponseComposer();
   const intentResolver = new IntentResolver();
@@ -261,6 +297,18 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
     },
     approvalFlow,
     scopeClarificationFlow,
+    codeGeneration: {
+      async generate(input) {
+        calls.codeGenerationGenerate++;
+        calls.lastCodeGenerationInput = input;
+        if (opts.codeGeneration === 'throw') throw new Error('boom');
+        return opts.codeGeneration ?? codeGenerationOf();
+      },
+      async getProposal() {
+        calls.codeGenerationGetProposal++;
+        return opts.codeProposal === undefined ? codeProposalOf() : opts.codeProposal;
+      },
+    },
     logger: silentLogger,
   };
   return { deps, calls };
@@ -499,7 +547,7 @@ describe('Live Code Change Planning — runtime', () => {
     expect(result.reply.text).not.toBe(new ResponseComposer().composeApprovalRequired(CTX).text);
   });
 
-  it('next turn "승인" on a planningOnly pending approval → composePlanningOnlyApproved, never a fake "완료"', async () => {
+  it('next turn "승인" on a planningOnly pending approval with no workspaceRef/targetFiles → guarded preview failure, never a fake "완료" (ADR-0038 supersedes composePlanningOnlyApproved)', async () => {
     const { deps, calls } = makeDeps({
       pending: pendingApprovalOf(),
       reconstruct: {
@@ -509,6 +557,8 @@ describe('Live Code Change Planning — runtime', () => {
           requiredCapabilities: [Capability.CODE_IMPLEMENTATION],
           requestedBy: 'actor-1',
           planningOnly: true,
+          // No workspaceRef/targetFiles — Sprint 2q's guard must reject this before calling
+          // codeGeneration.generate at all, exactly as it would for any pre-Sprint-2o request.
         },
         prior: outcomeOf(ExecutionOutcomeStatus.AWAITING_APPROVAL),
       },
@@ -516,8 +566,9 @@ describe('Live Code Change Planning — runtime', () => {
     const result = await new ConversationRuntime(deps).handle(messageOf('승인'));
     expect(calls.decide).toBe(1);
     expect(calls.resume).toBe(1);
-    expect(result.status).toBe('RESPONDED');
-    expect(result.reply.text).toBe(new ResponseComposer().composePlanningOnlyApproved(CTX).text);
+    expect(calls.codeGenerationGenerate).toBe(0);
+    expect(result.status).toBe('FAILED');
+    expect(result.reply.text).toBe(new ResponseComposer().composeCodeGenerationPreviewFailed(CTX).text);
     expect(result.reply.text).not.toBe(new ResponseComposer().composeExecutionResult(CTX, 'COMPLETED').text);
     expect(result.reply.text).not.toContain('완료');
   });
@@ -746,6 +797,231 @@ describe('Multi-turn Code Scope Clarification — runtime', () => {
   });
 });
 
+// ── Sprint 2q — AI Code Generation Preview (ADR-0038) ───────────────────────────────────────────
+
+/** A resumable planningOnly ExecutionRequest with the workspaceRef/targetFiles a real Sprint 2o/2p
+ *  flow would have anchored (Sprint 2q tests default to the "everything present" happy path). */
+const planningOnlyRequestOf = (o: Partial<ExecutionRequest> = {}): ExecutionRequest => ({
+  goal: '이 버그 고쳐줘',
+  instruction: '이 버그 고쳐줘',
+  requiredCapabilities: [Capability.CODE_IMPLEMENTATION],
+  requestedBy: 'actor-1',
+  planningOnly: true,
+  workspaceRef: WORKSPACE,
+  targetFiles: [TARGET_FILE],
+  ...o,
+});
+
+/** Drive the approval-turn "승인" path with a given reconstructed request/resume-outcome. */
+async function approveWith(
+  opts: Opts,
+  request: ExecutionRequest,
+  resumeOutcome?: ExecutionOutcome,
+): Promise<{ result: Awaited<ReturnType<ConversationRuntime['handle']>>; calls: Calls }> {
+  const { deps, calls } = makeDeps({
+    ...opts,
+    pending: pendingApprovalOf(),
+    reconstruct: { request, prior: outcomeOf(ExecutionOutcomeStatus.AWAITING_APPROVAL) },
+    ...(resumeOutcome ? { resumeOutcome } : {}),
+  });
+  const result = await new ConversationRuntime(deps).handle(messageOf('승인'));
+  return { result, calls };
+}
+
+describe('AI Code Generation Preview — runtime', () => {
+  it('successful in-scope proposal → composeCodeGenerationPreview, RESPONDED, generate called exactly once', async () => {
+    const { result, calls } = await approveWith({}, planningOnlyRequestOf());
+    expect(calls.codeGenerationGenerate).toBe(1);
+    expect(calls.codeGenerationGetProposal).toBe(1);
+    expect(result.status).toBe('RESPONDED');
+    expect(result.reply.text).toBe(
+      new ResponseComposer().composeCodeGenerationPreview(CTX, {
+        changes: [{ path: TARGET_FILE, kind: 'update', excerpt: 'fixed content' }],
+        outOfScopeWarnings: [],
+      }).text,
+    );
+  });
+
+  it('generate() input uses the original summary, the resumed plan ref, and the validated workspaceRef/targetFiles', async () => {
+    const { calls } = await approveWith({}, planningOnlyRequestOf());
+    expect(calls.lastCodeGenerationInput?.executionPlanRef).toEqual({ id: 'plan-1', goal: 'g' });
+    expect(calls.lastCodeGenerationInput?.instruction).toBe('이 버그 고쳐줘');
+    expect(calls.lastCodeGenerationInput?.workspaceRef).toEqual(WORKSPACE);
+    expect(calls.lastCodeGenerationInput?.targetFiles).toEqual([TARGET_FILE]);
+    expect(calls.lastCodeGenerationInput?.capability).toBe(Capability.CODE_IMPLEMENTATION);
+  });
+
+  it('missing executionPlanRef on the resume outcome → generate never called, failed preview, FAILED', async () => {
+    const noRefOutcome: ExecutionOutcome = {
+      status: ExecutionOutcomeStatus.COMPLETED,
+      lastStage: ExecutionStage.APPROVAL,
+      selectedStages: [ExecutionStage.PLANNING, ExecutionStage.APPROVAL],
+      refs: {},
+    };
+    const { result, calls } = await approveWith({}, planningOnlyRequestOf(), noRefOutcome);
+    expect(calls.codeGenerationGenerate).toBe(0);
+    expect(result.status).toBe('FAILED');
+    expect(result.reply.text).toBe(new ResponseComposer().composeCodeGenerationPreviewFailed(CTX).text);
+  });
+
+  it('missing workspaceRef on the reconstructed request → generate never called, failed preview, FAILED', async () => {
+    const { result, calls } = await approveWith({}, planningOnlyRequestOf({ workspaceRef: undefined }));
+    expect(calls.codeGenerationGenerate).toBe(0);
+    expect(result.status).toBe('FAILED');
+    expect(result.reply.text).toBe(new ResponseComposer().composeCodeGenerationPreviewFailed(CTX).text);
+  });
+
+  it('undefined targetFiles → generate never called, failed preview, FAILED', async () => {
+    const { result, calls } = await approveWith({}, planningOnlyRequestOf({ targetFiles: undefined }));
+    expect(calls.codeGenerationGenerate).toBe(0);
+    expect(result.status).toBe('FAILED');
+    expect(result.reply.text).toBe(new ResponseComposer().composeCodeGenerationPreviewFailed(CTX).text);
+  });
+
+  it('empty targetFiles ([]) → generate never called, failed preview, FAILED', async () => {
+    const { result, calls } = await approveWith({}, planningOnlyRequestOf({ targetFiles: [] }));
+    expect(calls.codeGenerationGenerate).toBe(0);
+    expect(result.status).toBe('FAILED');
+    expect(result.reply.text).toBe(new ResponseComposer().composeCodeGenerationPreviewFailed(CTX).text);
+  });
+
+  it('FAILED generation → getProposal not called, failed preview, FAILED', async () => {
+    const { result, calls } = await approveWith(
+      { codeGeneration: codeGenerationOf({ status: CodeGenerationStatus.FAILED, codeProposalRef: undefined }) },
+      planningOnlyRequestOf(),
+    );
+    expect(calls.codeGenerationGetProposal).toBe(0);
+    expect(result.status).toBe('FAILED');
+    expect(result.reply.text).toBe(new ResponseComposer().composeCodeGenerationPreviewFailed(CTX).text);
+  });
+
+  it('generate() throws → failed preview, FAILED, never an unhandled rejection', async () => {
+    const { result } = await approveWith({ codeGeneration: 'throw' }, planningOnlyRequestOf());
+    expect(result.status).toBe('FAILED');
+    expect(result.reply.text).toBe(new ResponseComposer().composeCodeGenerationPreviewFailed(CTX).text);
+  });
+
+  it('SUCCEEDED generation with a null proposal → failed preview, FAILED', async () => {
+    const { result } = await approveWith({ codeProposal: null }, planningOnlyRequestOf());
+    expect(result.status).toBe('FAILED');
+    expect(result.reply.text).toBe(new ResponseComposer().composeCodeGenerationPreviewFailed(CTX).text);
+  });
+
+  it('a proposal path outside targetFiles is never rendered as content, only as a warning', async () => {
+    const { result } = await approveWith(
+      { codeProposal: codeProposalOf({ proposal: [{ path: 'packages/core/other.ts', newContent: 'x' }] }) },
+      planningOnlyRequestOf(),
+    );
+    expect(result.status).toBe('FAILED'); // the only proposed path was out of scope — no valid change
+    expect(result.reply.text).toBe(
+      new ResponseComposer().composeCodeGenerationPreviewNoValidChange(CTX, ['packages/core/other.ts']).text,
+    );
+    expect(result.reply.text).not.toContain('x'); // out-of-scope content is never rendered
+  });
+
+  it('a mix of in-scope and out-of-scope paths renders only the in-scope one, with a warning for the rest', async () => {
+    const { result } = await approveWith(
+      {
+        codeProposal: codeProposalOf({
+          proposal: [
+            { path: TARGET_FILE, newContent: 'fixed content' },
+            { path: 'packages/core/other.ts', newContent: 'unexpected' },
+          ],
+        }),
+      },
+      planningOnlyRequestOf(),
+    );
+    expect(result.status).toBe('RESPONDED');
+    expect(result.reply.text).toContain(TARGET_FILE);
+    expect(result.reply.text).toContain('fixed content');
+    expect(result.reply.text).not.toContain('unexpected');
+    expect(result.reply.text).toContain('packages/core/other.ts'); // named only in the warning line
+  });
+
+  it('a proposal path that normalizes-equal to targetFiles but is formatted differently still renders using the validated path', async () => {
+    const { result } = await approveWith(
+      { codeProposal: codeProposalOf({ proposal: [{ path: `./${TARGET_FILE}`, newContent: 'fixed content' }] }) },
+      planningOnlyRequestOf(),
+    );
+    expect(result.status).toBe('RESPONDED');
+    expect(result.reply.text).toContain(TARGET_FILE); // the validated targetFiles value, not "./..."
+    expect(result.reply.text).not.toContain(`./${TARGET_FILE}`);
+  });
+
+  it('deny ("거절") never calls codeGeneration.generate', async () => {
+    const { deps, calls } = makeDeps({ pending: pendingApprovalOf() });
+    await new ConversationRuntime(deps).handle(messageOf('거절'));
+    expect(calls.codeGenerationGenerate).toBe(0);
+  });
+
+  it('cancel ("취소") never calls codeGeneration.generate', async () => {
+    const { deps, calls } = makeDeps({ pending: pendingApprovalOf() });
+    await new ConversationRuntime(deps).handle(messageOf('취소'));
+    expect(calls.codeGenerationGenerate).toBe(0);
+  });
+
+  it('reconstructResume failure (re-ask) never calls codeGeneration.generate', async () => {
+    const { deps, calls } = makeDeps({ pending: pendingApprovalOf(), reconstruct: null });
+    await new ConversationRuntime(deps).handle(messageOf('승인'));
+    expect(calls.codeGenerationGenerate).toBe(0);
+  });
+
+  it('a non-planningOnly approval resume never calls codeGeneration.generate', async () => {
+    const { result, calls } = await approveWith({}, {
+      goal: 'g',
+      instruction: 'g',
+      requiredCapabilities: [Capability.CODE_IMPLEMENTATION],
+      requestedBy: 'actor-1',
+      // planningOnly deliberately absent
+    });
+    expect(calls.codeGenerationGenerate).toBe(0);
+    expect(result.status).toBe('RESPONDED'); // falls through to the existing generic replyForOutcome path
+  });
+
+  it('a successful preview TurnResult preserves executionOutcome', async () => {
+    const resumeOutcome = outcomeOf(ExecutionOutcomeStatus.COMPLETED);
+    const { result } = await approveWith({}, planningOnlyRequestOf(), resumeOutcome);
+    expect(result.executionOutcome).toBe(resumeOutcome);
+  });
+
+  it('a failed preview TurnResult preserves executionOutcome when one is available', async () => {
+    const resumeOutcome = outcomeOf(ExecutionOutcomeStatus.COMPLETED);
+    const { result } = await approveWith({ codeGeneration: 'throw' }, planningOnlyRequestOf(), resumeOutcome);
+    expect(result.executionOutcome).toBe(resumeOutcome);
+  });
+
+});
+
+describe('toCodeChangePreview (Sprint 2q, ADR-0038)', () => {
+  it('an in-scope change passes through with its excerpt and the validated target path', () => {
+    const preview = toCodeChangePreview([{ path: TARGET_FILE, newContent: 'x' }], [TARGET_FILE]);
+    expect(preview.changes).toEqual([{ path: TARGET_FILE, kind: 'update', excerpt: 'x' }]);
+    expect(preview.outOfScopeWarnings).toEqual([]);
+  });
+
+  it('a delete change has no excerpt', () => {
+    const preview = toCodeChangePreview([{ path: TARGET_FILE, delete: true }], [TARGET_FILE]);
+    expect(preview.changes).toEqual([{ path: TARGET_FILE, kind: 'delete' }]);
+  });
+
+  it('an out-of-scope path is excluded from changes and appears in outOfScopeWarnings using the AI raw string', () => {
+    const preview = toCodeChangePreview([{ path: 'other.ts', newContent: 'x' }], [TARGET_FILE]);
+    expect(preview.changes).toEqual([]);
+    expect(preview.outOfScopeWarnings).toEqual(['other.ts']);
+  });
+
+  it('a differently-formatted but normalize-equal path is in-scope and rendered with the validated value', () => {
+    const preview = toCodeChangePreview([{ path: `./${TARGET_FILE}`, newContent: 'x' }], [TARGET_FILE]);
+    expect(preview.changes).toEqual([{ path: TARGET_FILE, kind: 'update', excerpt: 'x' }]);
+  });
+
+  it('an empty targetFiles list treats every proposed path as out of scope', () => {
+    const preview = toCodeChangePreview([{ path: TARGET_FILE, newContent: 'x' }], []);
+    expect(preview.changes).toEqual([]);
+    expect(preview.outOfScopeWarnings).toEqual([TARGET_FILE]);
+  });
+});
+
 // ── Production-like resume (Sprint 2k, retained) ─────────────────────────────────────────────────
 
 describe('ConversationRuntime + StatelessApprovalFlow (production-like)', () => {
@@ -766,11 +1042,11 @@ describe('ConversationRuntime + StatelessApprovalFlow (production-like)', () => 
     };
     const approvalFlow = new StatelessApprovalFlow(store);
 
-    const base = makeDeps({
+    const { deps: base, calls } = makeDeps({
       intent: codeIntent,
       runOutcome: outcomeOf(ExecutionOutcomeStatus.AWAITING_APPROVAL),
       workspaceList: hitsFor(TARGET_FILE),
-    }).deps;
+    });
     const deps: ConversationRuntimeDeps = {
       ...base,
       approvalFlow,
@@ -799,5 +1075,8 @@ describe('ConversationRuntime + StatelessApprovalFlow (production-like)', () => 
     const t2 = await runtime.handle(messageOf('승인'));
     expect(resumeCalls).toBe(1);
     expect(t2.status).toBe('RESPONDED');
+    // ADR-0038: the resumed planningOnly request's real, anchored/reconstructed targetFiles/
+    // workspaceRef reach the preview step, and CodeGeneration runs exactly once.
+    expect(calls.codeGenerationGenerate).toBe(1);
   });
 });

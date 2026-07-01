@@ -1,13 +1,16 @@
 import { describeAiFailure } from './ai-failure';
-import { Capability, CommandExecutionStatus, IntentType, TaskStatus } from '../domain';
+import { Capability, CodeGenerationStatus, CommandExecutionStatus, IntentType, TaskStatus } from '../domain';
 import type {
   Actor,
   ApprovalDecision,
   ApprovalRequest,
   Artifact,
+  CodeGeneration,
+  CodeProposal,
   CommandExecution,
   ContextBundle,
   ConversationContext,
+  GenerateCodeInput,
   Id,
   InboundMessage,
   Intent,
@@ -15,6 +18,7 @@ import type {
   OutboundMessage,
   Project,
   PromptSpec,
+  ProposedChange,
   RiskLevel,
   Session,
   Task,
@@ -23,7 +27,7 @@ import type {
 } from '../domain';
 import type { AiProvider, AiRequest, Logger, ProjectReadout } from '../ports';
 import { now } from '../util/clock';
-import type { ResponseComposer, ExecutionReplyStatus, TestResultDetail } from './response-composer';
+import type { ResponseComposer, CodeChangePreview, ExecutionReplyStatus, TestResultDetail } from './response-composer';
 import type { IntentResolutionContext } from './intent-resolver';
 import { extractTargetPathCandidates, normalizeRelativePath } from './target-scope';
 import type {
@@ -177,6 +181,11 @@ export interface ConversationRuntimeDeps {
   readonly approvals: { decide(approvalId: Id, decision: ApprovalDecision): Promise<ApprovalRequest> };
   readonly approvalFlow: ApprovalFlow;
   readonly scopeClarificationFlow: ScopeClarificationFlow;
+  /** Reused for post-approval preview generation (Sprint 2q, ADR-0038) — not a new capability/port. */
+  readonly codeGeneration: {
+    generate(input: GenerateCodeInput): Promise<CodeGeneration>;
+    getProposal(generation: CodeGeneration): Promise<CodeProposal | null>;
+  };
   readonly logger: Logger;
 }
 
@@ -191,6 +200,31 @@ const MAX_TARGET_CANDIDATES = 5;
 /** Map an Execution Orchestrator outcome status to the ResponseComposer reply status. */
 function toReplyStatus(status: ExecutionOutcomeStatus): ExecutionReplyStatus {
   return status as unknown as ExecutionReplyStatus; // identical string values (ADR-0032)
+}
+
+/**
+ * Split a proposal into in-scope changes (path normalizes to a validated targetFiles entry) and
+ * everything else, reported as a warning and never rendered as content (AI Code Generation Preview,
+ * ADR-0038). AI-proposed paths are untrusted; targetFiles is the authoritative scope. Exported (not a
+ * private class method) so it is directly unit-testable, matching `target-scope.ts`'s pattern.
+ */
+export function toCodeChangePreview(proposal: ProposedChange[], targetFiles: string[]): CodeChangePreview {
+  const normalizedTargets = new Map(targetFiles.map((p) => [normalizeRelativePath(p), p]));
+  const changes: CodeChangePreview['changes'] = [];
+  const outOfScopeWarnings: string[] = [];
+  for (const change of proposal) {
+    const validatedPath = normalizedTargets.get(normalizeRelativePath(change.path));
+    if (!validatedPath) {
+      outOfScopeWarnings.push(change.path);
+      continue;
+    }
+    changes.push({
+      path: validatedPath, // the validated targetFiles value — never the AI's raw path
+      kind: change.delete ? 'delete' : 'update',
+      ...(change.delete ? {} : { excerpt: change.newContent }),
+    });
+  }
+  return { changes, outOfScopeWarnings };
 }
 
 export class ConversationRuntime {
@@ -309,12 +343,14 @@ export class ConversationRuntime {
       }
       await this.deps.approvals.decide(pending.id, this.decisionOf(pending.id, actor.id, true));
       const outcome = await this.deps.orchestrator.resume(ctx.request, ctx.prior);
-      // ADR-0035: a planningOnly request never mutates, so "완료했어요" would be misleading —
-      // nothing was generated/patched/written. Say so explicitly instead of the generic COMPLETED text.
+      // ADR-0038: a cleanly-resumed planningOnly request now runs an AI CodeGeneration preview
+      // (never Patch/WorkspaceWrite/CommandExecution). A resume outcome that did NOT complete cleanly
+      // (rare — e.g. the approval re-fetch failed) falls back to the existing generic handling.
       if (ctx.request.planningOnly) {
-        const reply = this.deps.composer.composePlanningOnlyApproved(message.context);
-        await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
-        return { status: 'RESPONDED', reply, sessionId: session.id, executionOutcome: outcome };
+        if (outcome.status !== ('COMPLETED' as ExecutionOutcomeStatus)) {
+          return this.replyForOutcome(message.context, session, outcome);
+        }
+        return this.runCodeGenerationPreview(message, session, ctx.request, outcome);
       }
       return this.replyForOutcome(message.context, session, outcome);
     }
@@ -326,6 +362,73 @@ export class ConversationRuntime {
     const reply = this.deps.composer.composeExecutionResult(message.context, replyStatus);
     await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
     return { status, reply, sessionId: session.id };
+  }
+
+  /**
+   * After a planningOnly CODE_IMPLEMENTATION approval resumes cleanly, run AI Code Generation once,
+   * in preview mode, and render the result (ADR-0038). Never calls ExecutionOrchestrator, Patch,
+   * WorkspaceWrite, or CommandExecution — this method's only side effect is at most one
+   * CodeGenerationManager.generate() call (which itself never touches the filesystem, CAP-008).
+   *
+   * executionPlanRef, workspaceRef, and a non-empty targetFiles must ALL be present before
+   * generate() is ever called — targetFiles is the only allowed scope source; there is no AI
+   * target-file guessing in this sprint.
+   */
+  private async runCodeGenerationPreview(
+    message: InboundMessage,
+    session: Session,
+    request: ExecutionRequest,
+    outcome: ExecutionOutcome,
+  ): Promise<TurnResult> {
+    const planRef = outcome.refs.executionPlanRef;
+    const targetFiles = request.targetFiles;
+    if (!planRef || !request.workspaceRef || !targetFiles?.length) {
+      return this.failComposed(
+        message, session, this.deps.composer.composeCodeGenerationPreviewFailed(message.context), outcome,
+      );
+    }
+
+    let generation: CodeGeneration;
+    try {
+      generation = await this.deps.codeGeneration.generate({
+        executionPlanRef: planRef,
+        capability: Capability.CODE_IMPLEMENTATION,
+        instruction: request.instruction,
+        workspaceRef: request.workspaceRef,
+        targetFiles,
+      });
+    } catch {
+      return this.failComposed(
+        message, session, this.deps.composer.composeCodeGenerationPreviewFailed(message.context), outcome,
+      );
+    }
+    if (generation.status !== CodeGenerationStatus.SUCCEEDED) {
+      return this.failComposed(
+        message, session, this.deps.composer.composeCodeGenerationPreviewFailed(message.context), outcome,
+      );
+    }
+
+    const proposal = await this.deps.codeGeneration.getProposal(generation);
+    if (!proposal) {
+      return this.failComposed(
+        message, session, this.deps.composer.composeCodeGenerationPreviewFailed(message.context), outcome,
+      );
+    }
+
+    const preview = toCodeChangePreview(proposal.proposal, targetFiles);
+    if (preview.changes.length === 0) {
+      // Every proposed path was outside the validated targetFiles — never present this as a
+      // successful code-change proposal.
+      return this.failComposed(
+        message,
+        session,
+        this.deps.composer.composeCodeGenerationPreviewNoValidChange(message.context, preview.outOfScopeWarnings),
+        outcome,
+      );
+    }
+
+    const reply = this.deps.composer.composeCodeGenerationPreview(message.context, preview);
+    return this.respondComposed(message, session, reply, outcome);
   }
 
   /** (C) Resolve the workspace (if the capability needs it), run the execution, and frame the reply. */
@@ -532,9 +635,10 @@ export class ConversationRuntime {
     message: InboundMessage,
     session: Session,
     reply: OutboundMessage,
+    outcome?: ExecutionOutcome,
   ): Promise<TurnResult> {
     await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
-    return { status: 'RESPONDED', reply, sessionId: session.id };
+    return { status: 'RESPONDED', reply, sessionId: session.id, ...(outcome ? { executionOutcome: outcome } : {}) };
   }
 
   private async failComposed(

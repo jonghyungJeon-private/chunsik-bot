@@ -1961,3 +1961,93 @@ ADR-0036 (Code Change Scope Collection — the single-turn gate this sprint exte
 ADR-0035 (Live Code Change Planning — `planningOnly`, `CODE_IMPLEMENTATION` risk, both unchanged),
 ADR-0032 (Conversation Runtime — `StatelessApprovalFlow`'s Task-anchor pattern, generalized here).
 Supersedes nothing. Plan: `docs/plans/sprint-2p-multiturn-code-scope-clarification-plan.md`.
+
+## ADR-0038 — AI Code Generation Preview (proposal text only, no Patch/Write)
+
+- **Status:** ✅ Accepted (v2, Phase 2, Sprint 2q — Product Construction), Chief Architect Review:
+  APPROVED WITH CHANGES (Round 1).
+- **Date:** 2026-07-01
+- **Scope:** Sprint 2q is **AI CodeGeneration preview, not Patch/Write.** After a user approves a
+  `planningOnly` `CODE_IMPLEMENTATION` request, `ConversationRuntime` runs the existing AI Code
+  Generation capability (CAP-008) once, in preview mode, and shows the proposed change as bounded
+  text. No `Patch`, no `WorkspaceWrite`, no `CommandExecution`, no file mutation.
+
+### Most important rule
+> **`targetFiles` is the only allowed scope source, and it is untrusted from the AI's side.**
+> `CodeGenerationManager.generate()` is called only when `executionPlanRef`, `workspaceRef`, and a
+> non-empty `targetFiles` are all present. Whatever the AI proposes is then filtered against that same
+> `targetFiles` set (normalized exact-match, not raw string comparison) — anything outside it is
+> dropped from the rendered content and surfaced only as a warning. If nothing survives filtering, the
+> turn is reported as a failure, never as a successful proposal.
+
+### Decision
+- **`ConversationRuntime` composes `CodeGenerationManager` directly — `ExecutionOrchestrator` is not
+  touched.** `ExecutionOrchestrator.run()`'s stage order has always meant "`CODE_GENERATION`, if
+  selected, runs before `APPROVAL`" (pre-approval authoring). Sprint 2q's preview runs *after*
+  approval, with nothing following it — forcing this into the Orchestrator's stage-selection model
+  would give `selectedStages` two different meanings depending on whether `run()` or `resume()` is
+  executing it. `ConversationRuntime` is already an Application-layer composer of capability managers
+  outside the Orchestrator (it already reads `CommandExecutionManager` directly for
+  `frameTestResult`) — calling `CodeGenerationManager.generate()`/`getProposal()` directly is the same
+  shape of composition. No new `ExecutionStage`, no `ExecutionOrchestrator` contract change, no
+  resume-only stage override.
+- **`planningOnly`'s meaning is unchanged — no rename.** It remains scoped to the Orchestrator:
+  `ExecutionOrchestrator` selects `PLANNING`+`APPROVAL` only for a `planningOnly` request, exactly as
+  ADR-0035 defined. The new preview step is a `ConversationRuntime`-level addition entirely outside
+  that flag's scope of meaning.
+- **Every guard is explicit, before any `generate()` call.** `executionPlanRef` (from the resume
+  outcome), `workspaceRef`, and a **non-empty** `targetFiles` (both from the reconstructed
+  `ExecutionRequest` — already anchored/reconstructed by `StatelessApprovalFlow`, zero new plumbing)
+  must all be present. Missing any one of them means `generate()` is never called at all.
+- **AI-proposed paths are untrusted; `targetFiles` is authoritative.** The proposal is filtered using
+  the same `normalizeRelativePath` exact-match discipline Sprint 2o/2p already established for
+  user-supplied paths — never a raw string comparison. The rendered path is always the validated
+  `targetFiles` value, never the AI's raw string. Anything outside `targetFiles` is dropped from
+  rendered content and surfaced only as a bounded warning list. **If every proposed path is out of
+  scope, the turn is not presented as a successful preview** — a distinct
+  `composeCodeGenerationPreviewNoValidChange` reply is used instead.
+- **Preview text is bounded and safe against Markdown breakage.** Per-file excerpts are capped; the
+  full rendered message reuses the existing `MAX_MESSAGE_CHARS`/`clampToMessageBudget` guard (ADR-0034);
+  code fences are rendered with a backtick run longer than any backtick sequence already present in
+  the (untrusted) AI content.
+- **Preview text repeats, not merely mentions once, that nothing was applied.** Forbidden wording:
+  "적용했어요"/"수정했어요"/"반영했어요"/"변경 완료" — anything that could read as a completed mutation.
+- **Failure — including the all-out-of-scope case — reports `RuntimeTurnStatus.FAILED`, never
+  `RESPONDED`.** A genuinely failed attempt to produce a usable preview must not look like an ordinary
+  successful reply at the Runtime-status level. A successful preview's `TurnResult` preserves
+  `executionOutcome`, matching every other successful execution-outcome reply in this codebase.
+- **`composePlanningOnlyApproved` (ADR-0035) is retained but no longer reached in production** for an
+  approved `planningOnly` `CODE_IMPLEMENTATION` request — the non-`COMPLETED` resume-outcome branch now
+  calls the existing generic `replyForOutcome`, not `composePlanningOnlyApproved`. It is not deleted;
+  its own tests still pass; becoming unreachable in production is an accepted, explicit consequence of
+  this sprint, not an oversight.
+- **No Core/Orchestrator contract change; no new aggregate/repository/migration/capability/port.**
+
+### Not implemented (out of scope)
+`Patch` generation · `PatchSet` application · `WorkspaceWrite` · file mutation · git mutation · command
+execution · test execution after generation · retry loop · autonomous agent loop · directory scope ·
+module scope as sufficient target · semantic repository search · repository indexing · AI target-file
+guessing · multi-file selection · Discord button UI · `ExecutionOrchestrator` contract change ·
+general-purpose execution-stage override system · `Core` contract change.
+
+### Consequences
+- + The AI Code Generation capability (CAP-008) is reachable from a live user turn for the first
+  time, at the exact narrow boundary the product has been building toward since Sprint 2n — a
+  proposal the user can read, never a mutation they didn't ask to apply.
+- + The untrusted-output-vs-validated-scope pattern established in Sprint 2o/2p (regex extraction vs.
+  Workspace) generalizes cleanly to AI output vs. `targetFiles`, reusing the same normalization
+  primitive rather than inventing a second one.
+- − `composePlanningOnlyApproved` becomes effectively dead code in production (still tested, not
+  deleted) — an accepted, explicit trade-off rather than a cleanup left undone.
+- − No unified-diff-style preview against current file content this sprint (would require a
+  `WorkspaceManager.diff` read) — deferred as a low-risk future enhancement, not a limitation of the
+  chosen design.
+
+### Relations
+ADR-0029 (AI Code Generation, CAP-008 — the capability this sprint finally activates), ADR-0035 (Live
+Code Change Planning — `planningOnly`, unchanged), ADR-0036 (Code Change Scope Collection —
+`normalizeRelativePath`, reused), ADR-0037 (Multi-turn Code Scope Clarification — `targetFiles`
+preservation through approval resume, reused), ADR-0031 (Execution Orchestrator — the stage-selection
+model this sprint deliberately does not extend), ADR-0034 (Test Result Detail UX —
+`MAX_MESSAGE_CHARS`/`clampToMessageBudget`, reused). Supersedes nothing.
+Plan: `docs/plans/sprint-2q-ai-code-generation-preview-plan.md`.
