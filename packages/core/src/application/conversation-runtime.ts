@@ -24,6 +24,7 @@ import type { AiProvider, AiRequest, Logger, ProjectReadout } from '../ports';
 import { now } from '../util/clock';
 import type { ResponseComposer, ExecutionReplyStatus, TestResultDetail } from './response-composer';
 import type { IntentResolutionContext } from './intent-resolver';
+import { extractTargetPathCandidates, normalizeRelativePath } from './target-scope';
 import type {
   CancelToken,
   ExecutionOutcome,
@@ -110,6 +111,8 @@ export interface ConversationRuntimeDeps {
   readonly workspace: {
     prepare(task: Task): Promise<WorkspaceRef | undefined>;
     open(project: { id: Id; rootPath: string }): Promise<WorkspaceRef>;
+    /** Reused for target-scope validation (Sprint 2o, ADR-0036) — not a new port/capability. */
+    list(ref: WorkspaceRef, glob?: string): Promise<string[]>;
   };
   readonly commandExecutions: { get(id: Id): Promise<CommandExecution | null> };
   readonly contextBuilder: { build(task: Task, excludeMemoryIds: Id[]): Promise<ContextBundle> };
@@ -137,6 +140,10 @@ export interface ConversationRuntimeDeps {
 const APPROVE_WORDS = ['승인', '진행', '좋아', 'yes', 'y', 'ok'];
 const DENY_WORDS = ['거절', '아니', 'no', 'n'];
 const CANCEL_WORDS = ['취소', '중단', '그만'];
+
+/** Bound on how many extracted target-path candidates trigger a workspace.list call per turn
+ *  (Sprint 2o, ADR-0036) — a chat message must never drive an unbounded number of workspace scans. */
+const MAX_TARGET_CANDIDATES = 5;
 
 /** Map an Execution Orchestrator outcome status to the ResponseComposer reply status. */
 function toReplyStatus(status: ExecutionOutcomeStatus): ExecutionReplyStatus {
@@ -293,10 +300,34 @@ export class ConversationRuntime {
       }
     }
 
+    // ADR-0036: a code-change request needs a validated target before it may reach Planning/Approval.
+    let targetFiles: string[] | undefined;
+    if (intent.capability === Capability.CODE_IMPLEMENTATION) {
+      const candidates = extractTargetPathCandidates(message.text).slice(0, MAX_TARGET_CANDIDATES);
+      for (const candidate of candidates) {
+        const hits = await this.deps.workspace.list(workspaceRef!, candidate);
+        // Never assume list()'s glob is exact-match — verify the returned hit normalizes to the
+        // same path as the candidate, and use THAT hit as targetFiles, never the raw candidate.
+        const matched = hits.find((hit) => normalizeRelativePath(hit) === normalizeRelativePath(candidate));
+        if (matched) {
+          targetFiles = [matched];
+          break;
+        }
+      }
+      if (!targetFiles) {
+        return this.respondComposed(
+          message,
+          session,
+          this.deps.composer.composeTargetScopeClarification(message.context),
+        );
+      }
+    }
+
     const request = this.deps.intentResolver.resolve(intent, {
       requestedBy: actor.id,
       ...(session.activeProjectId ? { projectId: session.activeProjectId } : {}),
       ...(workspaceRef ? { workspaceRef } : {}),
+      ...(targetFiles ? { targetFiles } : {}),
     });
     if (!request) {
       // Defensive: isExecution() gated this path, so resolve should not return null.

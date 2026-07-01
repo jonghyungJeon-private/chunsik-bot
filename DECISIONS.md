@@ -1685,6 +1685,7 @@ contract change.
 ### Relations
 ADR-0033 (Live Test Execution), ADR-0032 (Conversation Runtime), ADR-0028 (Command Execution /
 masking-and-capping). Supersedes nothing (extends ADR-0033's `composeTestResult`/`frameTestResult`).
+Plan: `docs/plans/sprint-2m-test-result-detail-ux-plan.md`.
 
 ## ADR-0035 — Live Code Change Planning (code-change intent → Planning/Approval halt, no mutation)
 
@@ -1780,4 +1781,88 @@ ADR-0033 (Live Test Execution — `raw.kind` classifier pattern, workspace resol
 (Conversation Runtime — text-ownership invariant), ADR-0031 (Execution Orchestrator — stage
 selection), ADR-0025 (Approval Capability), ADR-0024 (Planning Capability). Supersedes nothing.
 Plan: `docs/plans/sprint-2n-live-code-change-planning-plan.md`.
-Plan: `docs/plans/sprint-2m-test-result-detail-ux-plan.md`.
+
+## ADR-0036 — Code Change Scope Collection (validated target file before Planning/Approval)
+
+- **Status:** ✅ Accepted (v2, Phase 2, Sprint 2o — Product Construction), Chief Architect Review:
+  APPROVED WITH CHANGES (Round 1).
+- **Date:** 2026-07-01
+- **Scope:** Sprint 2o is **scope collection, not code generation.** It inserts one gate in front of
+  Sprint 2n's `IMPLEMENT_CODE → planningOnly → Planning → Approval` path: a code-change request must
+  name a real, Workspace-validated target file before it may reach `ExecutionOrchestrator.run` at all.
+  Insufficient scope creates **no** `ExecutionPlan` and **no** `ApprovalRequest` — the gate runs before
+  the orchestrator is ever invoked, not inside it.
+
+### Most important rule
+> **The Workspace boundary is the authoritative security check, not the extraction regex.** Candidate
+> extraction (`target-scope.ts`) is a permissive, best-effort heuristic; it may over-accept. The only
+> thing that may ever populate `ExecutionRequest.targetFiles` is a path `WorkspaceManager.list` (CAP-001,
+> ADR-0022) actually returned for the active project's workspace, verified by exact-match comparison —
+> never the raw candidate string, and never trusted on `hits.length > 0` alone.
+
+### Decision
+- **Reused, no new enum/capability/port.** `IntentClassifier` stays target-free — it still only emits
+  `IntentType.IMPLEMENT_CODE` + `Capability.CODE_IMPLEMENTATION` + `raw.kind` (ADR-0035), never a
+  target guess. `IntentResolver.resolve()` is **unchanged** — it already forwarded
+  `context.targetFiles` into `ExecutionRequest.targetFiles` before this sprint existed.
+- **`target-scope.ts` is a pure Application-layer parser helper — not a capability, not a domain
+  service, not a port/adapter/repository.** No class, no DI, no Workspace access, no AI. It exports
+  `extractTargetPathCandidates` (deterministic, requires a `/` in the candidate — rejects bare
+  filenames, `Node.js`, `e.g.`, `v1.2.3` at zero Workspace-call cost) and `normalizeRelativePath` (used
+  only to verify an exact match between a candidate and a Workspace-returned hit).
+- **`ConversationRuntime` owns the pre-execution scope gate.** Gated strictly on
+  `intent.capability === Capability.CODE_IMPLEMENTATION`, inserted after the existing
+  workspace-resolution step and before `IntentResolver.resolve()`. For each of up to
+  `MAX_TARGET_CANDIDATES = 5` extracted candidates, it calls the existing `WorkspaceManager.list(ref,
+  candidate)` and accepts a hit **only if** `normalizeRelativePath(hit) === normalizeRelativePath
+  (candidate)` — `list()`'s glob semantics are never assumed to be exact-match. `targetFiles` is
+  populated from the **Workspace-returned hit**, never the raw candidate.
+- **No new Workspace port or capability.** `ConversationRuntimeDeps.workspace`'s narrow structural
+  interface widens to include `list`, a method the real `WorkspaceManager` (CAP-001) already
+  implements — this is a structural interface widening, not a new port, and required no DI change.
+- **Insufficient scope stops before any Execution-layer aggregate exists.** No target validated →
+  `ConversationRuntime` replies with `ResponseComposer.composeTargetScopeClarification` and returns —
+  `IntentResolver.resolve()`, `ExecutionOrchestrator.run`, `ExecutionPlan`, and `ApprovalRequest` are
+  all skipped entirely. Stronger than Sprint 2n's in-orchestrator halt: this halts before the
+  orchestrator is ever called.
+- **Clarification wording (CA-required) asks for a file path as the sufficient ask, not natural-
+  language module/area text.** It also instructs the user to re-send the **full** request together
+  with the path (e.g. "packages/core/src/application/foo.ts 파일에서 이 버그 고쳐줘") — compensating for
+  the sprint's deliberate absence of multi-turn memory.
+- **No multi-turn clarification-answer correlation this sprint.** Building one would need a new,
+  persisted, stateless-correlation mechanism analogous to `ApprovalFlow` — but `ApprovalFlow` derives
+  its state from an existing aggregate (`Task`/`ExecutionPlan`/`ApprovalRequest`), and an
+  insufficient-scope request creates none of those. Inventing a new aggregate/repository/migration
+  just to remember "a clarification is pending" is explicitly out of scope; the clarification wording
+  compensates by teaching the correct single-turn shape instead.
+- **`planningOnly` and `CODE_IMPLEMENTATION`'s `HIGH` risk (ADR-0035) are untouched.** A code-change
+  request with a validated `targetFiles` still stops at `PLANNING → APPROVAL` — this sprint decides
+  only *whether* a request may reach that point, never *what happens once it does*. No AI Code
+  Generation, `WorkspaceDiff`, `Patch`, `WorkspaceWrite`, or `CommandExecution` this sprint.
+- **No Core/Orchestrator contract change; no new aggregate/repository/migration/capability/port.**
+
+### Not implemented (out of scope)
+AI Code Generation · `ProviderSelector`/Claude/Ollama/Codex invocation · semantic search · repository
+indexing · AI target-file guessing · directory scope · natural-language module/area text as sufficient
+target · patch generation · `WorkspaceWrite` · command execution · retry · autonomous agent loop ·
+Discord button UI · multi-turn clarification-answer persistence · new aggregate/repository/migration/
+capability/port · Core-contract change · `ExecutionOrchestrator` contract change · a general-purpose
+execution-stage override system.
+
+### Consequences
+- + A code-change request that names no real file now gets a specific, actionable clarification
+  instead of silently reaching `AWAITING_APPROVAL` for an unknown target — closing a real Product gap
+  Sprint 2n left open.
+- + The no-mutation guarantee for an insufficient-scope request is even stronger than Sprint 2n's: the
+  orchestrator is never invoked at all, not merely halted inside it.
+- − No memory across turns: a bare follow-up reply naming only a path (no verb) is not recognized as
+  answering the clarification — mitigated by wording that teaches the correct single-message shape,
+  not by a new correlation mechanism.
+- − Bare root-level filenames (e.g. `foo.ts`, `README.md`) are not accepted as sufficient scope this
+  sprint — a deliberate, conservative exclusion, not a limitation of the underlying mechanism.
+
+### Relations
+ADR-0035 (Live Code Change Planning — `planningOnly`, `CODE_IMPLEMENTATION` risk, the halt this sprint
+gates in front of), ADR-0032 (Conversation Runtime — text-ownership invariant), ADR-0022 (Workspace
+Capability — the read-only sandbox this sprint's validation reuses entirely). Supersedes nothing.
+Plan: `docs/plans/sprint-2o-code-change-scope-collection-plan.md`.
