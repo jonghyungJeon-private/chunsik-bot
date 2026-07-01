@@ -27,7 +27,7 @@ import { IntentResolver } from './intent-resolver';
 import { ExecutionOutcomeStatus, ExecutionStage } from './execution-orchestrator';
 import type { ExecutionOutcome, ExecutionRequest } from './execution-orchestrator';
 import { ConversationRuntime } from './conversation-runtime';
-import type { ApprovalFlow, ConversationRuntimeDeps } from './conversation-runtime';
+import type { ApprovalFlow, ConversationRuntimeDeps, PendingScopeClarification, ScopeClarificationFlow } from './conversation-runtime';
 import { StatelessApprovalFlow } from './stateless-approval-flow';
 
 const TS = '2026-07-01T00:00:00.000Z';
@@ -116,6 +116,11 @@ interface Calls {
   sessionWrites: Session[];
   lastRunRequest?: ExecutionRequest;
   workspaceList: number;
+  classify: number;
+  scopeAnchor: number;
+  scopeClear: number;
+  scopeFindPending: number;
+  lastScopeAnchor?: PendingScopeClarification;
 }
 
 interface Opts {
@@ -130,10 +135,25 @@ interface Opts {
   reconstruct?: { request: ExecutionRequest; prior: ExecutionOutcome } | null;
   /** Fake `workspace.list` result per glob — defaults to reporting no hits at all (Sprint 2o). */
   workspaceList?: (glob?: string) => string[];
+  /** Initial pending scope clarification (Sprint 2p) — the fake is stateful: `anchor` sets it,
+   *  `clear` nulls it, so a test can drive multiple sequential `handle()` calls realistically. */
+  pendingScope?: PendingScopeClarification | null;
 }
 
 function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Calls } {
-  const calls: Calls = { run: 0, resume: 0, decide: 0, anchor: 0, sessionTouch: 0, sessionWrites: [], workspaceList: 0 };
+  const calls: Calls = {
+    run: 0,
+    resume: 0,
+    decide: 0,
+    anchor: 0,
+    sessionTouch: 0,
+    sessionWrites: [],
+    workspaceList: 0,
+    classify: 0,
+    scopeAnchor: 0,
+    scopeClear: 0,
+    scopeFindPending: 0,
+  };
   const composer = new ResponseComposer();
   const intentResolver = new IntentResolver();
 
@@ -151,6 +171,25 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
     },
   };
 
+  // Stateful fake (Sprint 2p): anchor()/clear() actually mutate what findPending() next reports,
+  // so a test can drive several sequential handle() calls and see realistic next-turn-only behavior.
+  let currentPendingScope: PendingScopeClarification | null = opts.pendingScope ?? null;
+  const scopeClarificationFlow: ScopeClarificationFlow = {
+    async findPending() {
+      calls.scopeFindPending++;
+      return currentPendingScope;
+    },
+    async anchor(_session, pending) {
+      calls.scopeAnchor++;
+      calls.lastScopeAnchor = pending;
+      currentPendingScope = pending;
+    },
+    async clear() {
+      calls.scopeClear++;
+      currentPendingScope = null;
+    },
+  };
+
   const deps: ConversationRuntimeDeps = {
     actors: { async resolveFromContext() { return ACTOR; } },
     sessions: {
@@ -163,7 +202,10 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
       async recordToolMemory() { return undefined; },
     },
     classifier: {
-      async classify() { return opts.intent ?? intentOf(Capability.GENERAL_CHAT, IntentType.CHAT, false); },
+      async classify() {
+        calls.classify++;
+        return opts.intent ?? intentOf(Capability.GENERAL_CHAT, IntentType.CHAT, false);
+      },
     },
     projects: {
       async register() { return { ok: true, message: 'registered' }; },
@@ -216,6 +258,7 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
       async decide(id) { calls.decide++; return { ...pendingApprovalOf(), id, status: ApprovalStatus.REJECTED }; },
     },
     approvalFlow,
+    scopeClarificationFlow,
     logger: silentLogger,
   };
   return { deps, calls };
@@ -507,6 +550,7 @@ describe('Code Change Scope Collection — runtime', () => {
     expect(calls.workspaceList).toBe(0); // no candidates to try
     expect(result.status).toBe('RESPONDED');
     expect(result.reply.text).toBe(new ResponseComposer().composeTargetScopeClarification(CTX).text);
+    expect(calls.scopeAnchor).toBe(1); // ADR-0037: anchors so the next turn can recover this request
   });
 
   it('module/area text only ("로그인 처리 부분 수정해줘") → clarification, no run (CA Case 3)', async () => {
@@ -514,6 +558,7 @@ describe('Code Change Scope Collection — runtime', () => {
     const result = await new ConversationRuntime(deps).handle(messageOf('로그인 처리 부분 수정해줘'));
     expect(calls.run).toBe(0);
     expect(result.reply.text).toBe(new ResponseComposer().composeTargetScopeClarification(CTX).text);
+    expect(calls.scopeAnchor).toBe(1);
   });
 
   it('a path candidate that does not validate (fake workspace.list returns []) → clarification, no run', async () => {
@@ -573,13 +618,14 @@ describe('Code Change Scope Collection — runtime', () => {
     expect(calls.workspaceList).toBe(5);
   });
 
-  it('TEST_EXECUTION never calls workspace.list (gate is CODE_IMPLEMENTATION-only)', async () => {
+  it('TEST_EXECUTION never calls workspace.list nor anchors a scope clarification (gate is CODE_IMPLEMENTATION-only)', async () => {
     const { deps, calls } = makeDeps({ intent: testIntent, runOutcome: outcomeOf(ExecutionOutcomeStatus.COMPLETED, 'cmd-1') });
     await new ConversationRuntime(deps).handle(messageOf('테스트 돌려줘'));
     expect(calls.workspaceList).toBe(0);
+    expect(calls.scopeAnchor).toBe(0);
   });
 
-  it('PROJECT_ANALYSIS never calls workspace.list', async () => {
+  it('PROJECT_ANALYSIS never calls workspace.list nor anchors a scope clarification', async () => {
     // PROJECT_ANALYSIS isn't an execution capability — it never reaches handleExecutionIntent at
     // all, so it can't hit this sprint's new gate; gate the analyzer itself to keep the fake
     // harness from exercising the unrelated work-turn/task machinery.
@@ -587,27 +633,110 @@ describe('Code Change Scope Collection — runtime', () => {
     const notReady = { ...deps, analyzer: { async prepare() { return { ready: false, message: '아직 준비되지 않았어요.' }; } } };
     await new ConversationRuntime(notReady).handle(messageOf('이 프로젝트 구조 설명해줘'));
     expect(calls.workspaceList).toBe(0);
+    expect(calls.scopeAnchor).toBe(0);
   });
 
-  it('CHAT never calls workspace.list', async () => {
+  it('CHAT never calls workspace.list nor anchors a scope clarification', async () => {
     const { deps, calls } = makeDeps();
     await new ConversationRuntime(deps).handle(messageOf('안녕'));
     expect(calls.workspaceList).toBe(0);
+    expect(calls.scopeAnchor).toBe(0);
   });
 
-  it('no active project + a path in the message → still composeNeedsProject, no run, no workspace.list', async () => {
+  it('no active project + a path in the message → still composeNeedsProject, no run, no workspace.list, no anchor', async () => {
     const { deps, calls } = makeDeps({ intent: codeIntent, session: sessionOf({ activeProjectId: undefined }) });
     const result = await new ConversationRuntime(deps).handle(messageOf(`${TARGET_FILE}에서 이 버그 고쳐줘`));
     expect(calls.run).toBe(0);
     expect(calls.workspaceList).toBe(0);
     expect(result.reply.text).toBe(new ResponseComposer().composeNeedsProject(CTX).text);
+    expect(calls.scopeAnchor).toBe(0); // CA Round 1 Required Change #10 — anchor requires an active project
   });
 
-  it('workspace-open failure + a path in the message → still composeWorkspaceUnavailable, no run', async () => {
+  it('workspace-open failure + a path in the message → still composeWorkspaceUnavailable, no run, no anchor', async () => {
     const { deps, calls } = makeDeps({ intent: codeIntent, workspaceOpenThrows: true });
     const result = await new ConversationRuntime(deps).handle(messageOf(`${TARGET_FILE}에서 이 버그 고쳐줘`));
     expect(calls.run).toBe(0);
     expect(result.reply.text).toBe(new ResponseComposer().composeWorkspaceUnavailable(CTX).text);
+    expect(calls.scopeAnchor).toBe(0); // CA Round 1 Required Change #10 — anchor requires the workspace to open
+  });
+});
+
+// ── Sprint 2p — Multi-turn Code Scope Clarification (ADR-0037) ─────────────────────────────────
+
+describe('Multi-turn Code Scope Clarification — runtime', () => {
+  it('Case 2: a bare path reply (no verb) recovers the original request using ITS summary, not the follow-up text', async () => {
+    const { deps, calls } = makeDeps({
+      intent: codeIntent, // classifier fake returns this for turn 1 only — turn 2 never calls it
+      runOutcome: outcomeOf(ExecutionOutcomeStatus.AWAITING_APPROVAL),
+      workspaceList: hitsFor(TARGET_FILE),
+    });
+    await new ConversationRuntime(deps).handle(messageOf('이 버그 고쳐줘')); // turn 1: anchors
+    expect(calls.scopeAnchor).toBe(1);
+    expect(calls.lastScopeAnchor?.summary).toBe(codeIntent.summary);
+
+    const classifyCallsBeforeTurn2 = calls.classify;
+    const result = await new ConversationRuntime(deps).handle(messageOf(TARGET_FILE)); // turn 2: bare path
+
+    expect(calls.classify).toBe(classifyCallsBeforeTurn2); // classifier never consulted for this turn (Q6)
+    expect(calls.run).toBe(1);
+    expect(calls.lastRunRequest?.goal).toBe(codeIntent.summary); // original summary, not "TARGET_FILE"
+    expect(calls.lastRunRequest?.instruction).toBe(codeIntent.summary);
+    expect(calls.lastRunRequest?.targetFiles).toEqual([TARGET_FILE]);
+    expect(calls.lastRunRequest?.planningOnly).toBe(true);
+    expect(result.status).toBe('AWAITING_APPROVAL');
+    expect(result.reply.text).toBe(new ResponseComposer().composeCodeChangeApprovalRequired(CTX).text);
+  });
+
+  it('Case 3: an invalid path reply clears the anchor without recovering, and does not re-anchor', async () => {
+    const { deps, calls } = makeDeps({ intent: codeIntent, workspaceList: () => [] });
+    await new ConversationRuntime(deps).handle(messageOf('이 버그 고쳐줘')); // turn 1: anchors
+    expect(calls.scopeAnchor).toBe(1);
+
+    const result = await new ConversationRuntime(deps).handle(messageOf('node_modules/foo.ts')); // turn 2: invalid
+
+    expect(calls.run).toBe(0);
+    expect(calls.scopeClear).toBe(1);
+    expect(calls.scopeAnchor).toBe(1); // still just the original anchor — no re-anchor on failure
+    expect(result.reply.text).toBe(new ResponseComposer().composeTargetScopeClarification(CTX).text);
+  });
+
+  it('Case 4: "취소" while pending clears the anchor and never claims a plan/patch/execution existed', async () => {
+    const { deps, calls } = makeDeps({ intent: codeIntent });
+    await new ConversationRuntime(deps).handle(messageOf('이 버그 고쳐줘')); // turn 1: anchors
+
+    const result = await new ConversationRuntime(deps).handle(messageOf('취소')); // turn 2: cancel
+
+    expect(calls.run).toBe(0);
+    expect(calls.scopeClear).toBe(1);
+    expect(result.status).toBe('CANCELLED');
+    expect(result.reply.text).toBe(new ResponseComposer().composeScopeClarificationCancelled(CTX).text);
+    expect(result.reply.text).not.toContain('완료');
+    expect(result.reply.text).not.toContain('계획');
+  });
+
+  it('next-turn-only: after a failed retry clears the anchor, a bare path alone is not classified as code-change either', async () => {
+    const { deps, calls } = makeDeps({ intent: codeIntent, workspaceList: () => [] });
+    await new ConversationRuntime(deps).handle(messageOf('이 버그 고쳐줘')); // turn 1: anchors
+    await new ConversationRuntime(deps).handle(messageOf('node_modules/foo.ts')); // turn 2: fails, clears
+    expect(calls.scopeClear).toBe(1);
+
+    // The anchor is genuinely gone (stateful fake mirrors StatelessScopeClarificationFlow.clear()).
+    expect(await deps.scopeClarificationFlow.findPending(sessionOf())).toBeNull();
+
+    // And without an anchor, the real classifier would not mistake a bare path for a code-change
+    // request either (no fix/change/refactor verb) — so a third message could never be silently
+    // recovered even by accident.
+    const realClassifier = new IntentClassifier({} as unknown as CapabilityRouter);
+    const intent = await realClassifier.classify(messageOf(TARGET_FILE));
+    expect(intent.type).not.toBe(IntentType.IMPLEMENT_CODE);
+  });
+
+  it('ordering: when an approval is pending, scopeClarificationFlow is never consulted', async () => {
+    const { deps, calls } = makeDeps({ pending: pendingApprovalOf() });
+    await new ConversationRuntime(deps).handle(messageOf(TARGET_FILE)); // could look like a clarification answer
+    expect(calls.scopeFindPending).toBe(0); // approvalFlow handled the turn first
+    expect(calls.scopeClear).toBe(0);
+    expect(calls.scopeAnchor).toBe(0);
   });
 });
 

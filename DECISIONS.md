@@ -1866,3 +1866,98 @@ ADR-0035 (Live Code Change Planning — `planningOnly`, `CODE_IMPLEMENTATION` ri
 gates in front of), ADR-0032 (Conversation Runtime — text-ownership invariant), ADR-0022 (Workspace
 Capability — the read-only sandbox this sprint's validation reuses entirely). Supersedes nothing.
 Plan: `docs/plans/sprint-2o-code-change-scope-collection-plan.md`.
+
+## ADR-0037 — Multi-turn Code Scope Clarification (Task reused as inert conversation anchor)
+
+- **Status:** ✅ Accepted (v2, Phase 2, Sprint 2p — Product Construction), Chief Architect Review:
+  APPROVED WITH CHANGES (Round 1).
+- **Date:** 2026-07-01
+- **Scope:** Sprint 2p is **multi-turn scope clarification, not code generation.** Sprint 2o already
+  asks for a target file and stops when one is missing; this sprint makes the user's very next reply —
+  even a bare file path with no verb — resume that same request, without inventing a new aggregate.
+
+### Most important rule
+> **The Task created by `ScopeClarificationFlow` is an inert conversation anchor, never an execution
+> task.** It must never enter Planning, `ExecutionOrchestrator`, `Patch`, `WorkspaceWrite`, or
+> `CommandExecution` by itself, and it is never transitioned past `TaskStatus.PENDING`. It exists
+> solely to hold `PendingScopeClarification` facts across exactly one follow-up turn.
+
+### Decision
+- **No new aggregate/repository/migration/capability/port.** Four options were evaluated
+  (`docs/plans/sprint-2p-multiturn-code-scope-clarification-plan.md` §2): a new Application-layer
+  correlation model was rejected as needless duplication of an already-shipped pattern; short-term
+  memory was rejected because recovering typed state by parsing free text is exactly what ADR-0032
+  already forbade for the approval case; `Session.metadata` was rejected because ADR-0032 explicitly
+  states *"Session must not store runtime snapshots."* `Task.metadata` was selected — `Task` is
+  already the accepted pending-work anchor for `ConversationRuntime` (`StatelessApprovalFlow` already
+  creates one purely to hold an anchor payload), and `Task.planId` is optional, so a Task can exist one
+  step earlier than usual, before any `ExecutionPlan`.
+- **Two independent signals distinguish the scope anchor from the approval anchor** — `planId`
+  absence (structural) **and** an explicit metadata discriminator, `kind: 'code-scope-clarification'`
+  (CA Round 1: `planId` absence alone was judged too implicit — a future feature could create an
+  unrelated plan-less Task and be silently misread as a scope anchor). `findPending` and `clear` both
+  require both signals before treating a Task as this flow's own.
+- **`clear()` is safe by construction.** It routes through the same "is this our anchor?" check as
+  `findPending` and is a no-op unless `session.activeTaskId` still points at a genuine
+  scope-clarification anchor — it must never clear an approval anchor sharing the same pointer slot
+  (CA Round 1).
+- **Field naming avoids collision.** `PendingScopeClarification.kind` is the anchor discriminator;
+  the classifier's intent tag is stored separately as `rawKind`. The two `kind`s are never the same
+  field (CA Round 1).
+- **`Session` stores only the `activeTaskId` pointer — never a snapshot.** Identical to the approval
+  case (ADR-0032). `ConversationRuntime` never directly reads/writes `storage.tasks`/
+  `storage.sessions` — `ScopeClarificationFlow` owns anchoring/derivation.
+- **Ordering is load-bearing.** `ConversationRuntime.handle()` checks `approvalFlow.findPending` first,
+  `scopeClarificationFlow.findPending` second, and only then classifies. An approval-pending session
+  can never be routed into scope-clarification handling.
+- **Anchoring is tightly scoped to one call site.** `scopeClarificationFlow.anchor` is called only from
+  the existing Sprint 2o gate, only for a fresh `CODE_IMPLEMENTATION` request, only after an active
+  project exists and the workspace opened successfully, and only when no candidate validated. It is
+  never called for `TEST_EXECUTION`/`PROJECT_ANALYSIS`/`CHAT`, and never when there is no active
+  project or the workspace failed to open.
+- **Invalidation is next-turn-only — an explicit, documented Product trade-off, not an oversight.** The
+  anchor is consumed unconditionally on the first follow-up check, regardless of outcome; an invalid
+  reply does not re-anchor, so a third message is not recovered even if it is itself a valid bare path.
+  Unbounded clarification retry would require a future plan. `createdAt` is stored for
+  observability/future policy only — it is **not** used for expiration in Sprint 2p.
+- **Project-change auto-clears the anchor.** If `session.activeProjectId` no longer matches the
+  anchor's stored `projectId`, `findPending` clears it (via the same safe `clear()`) and returns
+  `null` — the message is then handled as an ordinary fresh turn.
+- **Recovery uses the original request's summary, never the follow-up's text.** The recovered
+  `Intent.summary` is always `pending.summary` (the first message), so `ExecutionRequest.goal`/
+  `instruction` reflect what the user originally asked for, not the file path they replied with.
+- **A recovered, validated request enters the existing `planningOnly` flow unchanged** — reusing
+  Sprint 2o's `extractTargetPathCandidates`/`WorkspaceManager.list`/`normalizeRelativePath` validation
+  and the same shared `runResolvedExecution` tail a fresh sufficient-scope request already uses.
+  `IntentResolver.resolve()`, `planningOnly` (ADR-0035), and `CODE_IMPLEMENTATION`'s `HIGH` risk
+  (ADR-0036) are all unchanged.
+- **New `ResponseComposer.composeScopeClarificationCancelled`.** Replaces reuse of the generic
+  `composeExecutionResult('CANCELLED')`, whose "작업을 취소했어요" wording could be misread as
+  cancelling an execution that never existed (CA Round 1). `ConversationRuntime` still builds no text
+  of its own.
+- **No Core/Orchestrator contract change; no new aggregate/repository/migration/capability/port.**
+
+### Not implemented (out of scope)
+AI Code Generation · `ProviderSelector`/Claude/Ollama/Codex invocation · semantic search · repository
+indexing · AI target-file guessing · directory scope · module/area text as sufficient target ·
+multi-file target selection · patch generation · `WorkspaceWrite` · command execution · retry loop ·
+autonomous agent loop · Discord button UI · unbounded/persisted multi-turn clarification retry beyond
+one follow-up · new aggregate/repository/migration/capability/port · Core-contract change ·
+`ExecutionOrchestrator` contract change.
+
+### Consequences
+- + A bare file-path reply ("packages/core/src/application/foo.ts") now correctly resumes a code-
+  change request that Sprint 2o would otherwise have silently dropped as ordinary chat.
+- + The recovery mechanism is a direct generalization of an already-shipped, CA-approved pattern
+  (`StatelessApprovalFlow`) rather than new infrastructure — no new aggregate, no new store.
+- − Only one follow-up attempt is recovered; a second failed attempt requires the user to restate the
+  full request, verb included. This is an intentional Product trade-off, not a bug.
+- − Scope-clarification anchor Tasks, like approval-anchor Tasks before them, accumulate as inert
+  historical records rather than being cleaned up — an accepted, pre-existing pattern (ADR-0032), not
+  a new concern this sprint introduces.
+
+### Relations
+ADR-0036 (Code Change Scope Collection — the single-turn gate this sprint extends to two turns),
+ADR-0035 (Live Code Change Planning — `planningOnly`, `CODE_IMPLEMENTATION` risk, both unchanged),
+ADR-0032 (Conversation Runtime — `StatelessApprovalFlow`'s Task-anchor pattern, generalized here).
+Supersedes nothing. Plan: `docs/plans/sprint-2p-multiturn-code-scope-clarification-plan.md`.

@@ -11,6 +11,7 @@ import type {
   Id,
   InboundMessage,
   Intent,
+  IsoTimestamp,
   OutboundMessage,
   Project,
   PromptSpec,
@@ -78,6 +79,47 @@ export interface ApprovalFlow {
   ): Promise<{ request: ExecutionRequest; prior: ExecutionOutcome } | null>;
 }
 
+/**
+ * Minimal, non-secret facts needed to recover a code-change request on the next turn (Sprint 2p,
+ * ADR-0037). Never the generated code, a patch, a diff, or provider output — there is none yet.
+ *
+ * `kind` here is an ANCHOR DISCRIMINATOR, not the classifier's intent tag — deliberately named and
+ * typed differently from `rawKind` below so the two are never confused.
+ */
+export interface PendingScopeClarification {
+  /** Proves this Task's metadata is a scope-clarification anchor, not merely a plan-less Task for
+   *  some unrelated reason (`!task.planId` alone is too implicit). */
+  kind: 'code-scope-clarification';
+  /** The original intent's restated summary — becomes the recovered request's goal/instruction. Must
+   *  be the FIRST message's summary, never overwritten by the follow-up reply's text. */
+  summary: string;
+  /** The classifier's raw.kind tag ('fix' | 'change' | 'refactor'), if present. Named `rawKind` — not
+   *  `kind` — specifically to avoid colliding with the discriminator above. */
+  rawKind?: string;
+  /** The active project at anchor time — re-checked at recovery time. */
+  projectId?: Id;
+  /** Stored for observability/future policy only — NOT consulted for expiration in Sprint 2p. The
+   *  invalidation rule is next-turn-only consumption, not a TTL. */
+  createdAt: IsoTimestamp;
+}
+
+/**
+ * Cross-turn scope-clarification mechanics (ADR-0037), confined behind one collaborator exactly
+ * like ApprovalFlow — so the runtime stays stateless and the correlation source is wired once.
+ */
+export interface ScopeClarificationFlow {
+  /** Derive the session's pending clarification, if any and still valid (project unchanged). */
+  findPending(session: Session): Promise<PendingScopeClarification | null>;
+  /** Anchor a fresh insufficient-scope request so the next turn can recover it. Callers must only
+   *  invoke this after confirming an active project exists, the workspace opened successfully, and
+   *  no target validated. */
+  anchor(session: Session, pending: PendingScopeClarification): Promise<void>;
+  /** Consume/clear the anchor — called unconditionally once a pending clarification is checked
+   *  (next-turn-only semantics). Safe: a no-op unless `session.activeTaskId` still points at THIS
+   *  flow's own anchor Task — it must never clear an approval anchor. */
+  clear(session: Session): Promise<void>;
+}
+
 export interface ConversationRuntimeDeps {
   readonly actors: { resolveFromContext(context: ConversationContext): Promise<Actor> };
   readonly sessions: {
@@ -134,6 +176,7 @@ export interface ConversationRuntimeDeps {
   };
   readonly approvals: { decide(approvalId: Id, decision: ApprovalDecision): Promise<ApprovalRequest> };
   readonly approvalFlow: ApprovalFlow;
+  readonly scopeClarificationFlow: ScopeClarificationFlow;
   readonly logger: Logger;
 }
 
@@ -183,6 +226,15 @@ export class ConversationRuntime {
     const pending = await this.deps.approvalFlow.findPending(session);
     if (pending) {
       return this.handleApprovalTurn(message, session, actor, pending);
+    }
+
+    // (A2) Scope-clarification routing (ADR-0037) — checked BEFORE classification so a bare
+    // file-path reply doesn't need to re-trigger the classifier's fix/change/refactor keywords.
+    // Ordering is load-bearing: approvalFlow is checked first, so an approval-anchored session
+    // (planId present) is never routed here.
+    const pendingScope = await this.deps.scopeClarificationFlow.findPending(session);
+    if (pendingScope) {
+      return this.handleScopeClarificationTurn(message, session, actor, pendingScope);
     }
 
     const intent = await this.deps.classifier.classify(message);
@@ -283,22 +335,9 @@ export class ConversationRuntime {
     actor: Actor,
     intent: Intent,
   ): Promise<TurnResult> {
-    // Filesystem/command capabilities run in the active project's workspace (ADR-0033).
-    let workspaceRef: WorkspaceRef | undefined;
-    if (ConversationRuntime.needsWorkspace(intent.capability)) {
-      if (!session.activeProjectId) {
-        return this.respondComposed(message, session, this.deps.composer.composeNeedsProject(message.context));
-      }
-      const project = await this.deps.projects.get(session.activeProjectId);
-      if (!project) {
-        return this.respondComposed(message, session, this.deps.composer.composeNeedsProject(message.context));
-      }
-      try {
-        workspaceRef = await this.deps.workspace.open({ id: project.id, rootPath: project.rootPath });
-      } catch {
-        return this.failComposed(message, session, this.deps.composer.composeWorkspaceUnavailable(message.context));
-      }
-    }
+    const ws = await this.resolveExecutionWorkspace(message, session, intent.capability);
+    if ('status' in ws) return ws;
+    const workspaceRef = ws.workspaceRef;
 
     // ADR-0036: a code-change request needs a validated target before it may reach Planning/Approval.
     let targetFiles: string[] | undefined;
@@ -315,6 +354,16 @@ export class ConversationRuntime {
         }
       }
       if (!targetFiles) {
+        // ADR-0037: anchor so the user's very next reply (even a bare path) can recover this
+        // request. Reached only for a fresh CODE_IMPLEMENTATION request with an active project and
+        // an opened workspace (both already required to reach this line) and no validated target.
+        await this.deps.scopeClarificationFlow.anchor(session, {
+          kind: 'code-scope-clarification',
+          summary: intent.summary,
+          ...(typeof intent.raw?.kind === 'string' ? { rawKind: intent.raw.kind } : {}),
+          ...(session.activeProjectId ? { projectId: session.activeProjectId } : {}),
+          createdAt: now(),
+        });
         return this.respondComposed(
           message,
           session,
@@ -323,6 +372,40 @@ export class ConversationRuntime {
       }
     }
 
+    return this.runResolvedExecution(message, session, actor, intent, workspaceRef, targetFiles);
+  }
+
+  /** Resolve the active project's workspace for a needsWorkspace capability, or an early-return reply. */
+  private async resolveExecutionWorkspace(
+    message: InboundMessage,
+    session: Session,
+    capability: Capability,
+  ): Promise<{ workspaceRef?: WorkspaceRef } | TurnResult> {
+    if (!ConversationRuntime.needsWorkspace(capability)) return {};
+    if (!session.activeProjectId) {
+      return this.respondComposed(message, session, this.deps.composer.composeNeedsProject(message.context));
+    }
+    const project = await this.deps.projects.get(session.activeProjectId);
+    if (!project) {
+      return this.respondComposed(message, session, this.deps.composer.composeNeedsProject(message.context));
+    }
+    try {
+      const workspaceRef = await this.deps.workspace.open({ id: project.id, rootPath: project.rootPath });
+      return { workspaceRef };
+    } catch {
+      return this.failComposed(message, session, this.deps.composer.composeWorkspaceUnavailable(message.context));
+    }
+  }
+
+  /** Resolve → run → frame the halt/complete/fail reply. Shared tail for a ready ExecutionRequest. */
+  private async runResolvedExecution(
+    message: InboundMessage,
+    session: Session,
+    actor: Actor,
+    intent: Intent,
+    workspaceRef: WorkspaceRef | undefined,
+    targetFiles: string[] | undefined,
+  ): Promise<TurnResult> {
     const request = this.deps.intentResolver.resolve(intent, {
       requestedBy: actor.id,
       ...(session.activeProjectId ? { projectId: session.activeProjectId } : {}),
@@ -350,6 +433,52 @@ export class ConversationRuntime {
       return this.frameTestResult(message, session, outcome);
     }
     return this.replyForOutcome(message.context, session, outcome);
+  }
+
+  /**
+   * (A2) Recover a code-change request from a pending scope clarification (ADR-0037). Consumes the
+   * anchor unconditionally (next-turn-only) before evaluating the reply. The recovered request's
+   * goal/instruction always comes from `pending.summary` — the ORIGINAL first message — never from
+   * this follow-up message's text.
+   */
+  private async handleScopeClarificationTurn(
+    message: InboundMessage,
+    session: Session,
+    actor: Actor,
+    pending: PendingScopeClarification,
+  ): Promise<TurnResult> {
+    await this.deps.scopeClarificationFlow.clear(session); // next-turn-only: consumed either way
+
+    if (CANCEL_WORDS.some((w) => message.text.trim() === w || message.text.includes(w))) {
+      const reply = this.deps.composer.composeScopeClarificationCancelled(message.context);
+      await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+      return { status: 'CANCELLED', reply, sessionId: session.id };
+    }
+
+    const ws = await this.resolveExecutionWorkspace(message, session, Capability.CODE_IMPLEMENTATION);
+    if ('status' in ws) return ws; // no active project / workspace unavailable — same replies as fresh
+
+    const recovered: Intent = {
+      type: IntentType.IMPLEMENT_CODE,
+      capability: Capability.CODE_IMPLEMENTATION,
+      confidence: 1,
+      requiresWork: true,
+      summary: pending.summary,
+      ...(pending.rawKind ? { raw: { kind: pending.rawKind } } : {}),
+    };
+
+    const candidates = extractTargetPathCandidates(message.text).slice(0, MAX_TARGET_CANDIDATES);
+    for (const candidate of candidates) {
+      const hits = await this.deps.workspace.list(ws.workspaceRef!, candidate);
+      const matched = hits.find((hit) => normalizeRelativePath(hit) === normalizeRelativePath(candidate));
+      if (matched) {
+        return this.runResolvedExecution(message, session, actor, recovered, ws.workspaceRef, [matched]);
+      }
+    }
+
+    const reply = this.deps.composer.composeTargetScopeClarification(message.context);
+    await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+    return this.respondComposed(message, session, reply); // no re-anchor (next-turn-only)
   }
 
   /** Assemble the display-relevant facts for a ran/timed-out `CommandExecution` (ADR-0034). Raw only — no truncation, no text. */
