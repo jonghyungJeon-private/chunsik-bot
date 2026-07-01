@@ -140,4 +140,45 @@ describe('ApprovalManager.requestForRisk (Sprint 2s, ADR-0040)', () => {
     expect(req.status).toBe(ApprovalStatus.PENDING);
     expect(req.executionPlanRef).toEqual({ id: 'plan-1', goal: 'do the thing' });
   });
+
+  it('throws and does not save when reason is blank (CA Round 1)', async () => {
+    const storage = fakeStorage();
+    const saveSpy = vi.spyOn(storage.approvals, 'save');
+    const mgr = new ApprovalManager(storage, new ApprovalPolicy(new RiskPolicy()));
+    await expect(
+      mgr.requestForRisk({ executionPlanRef: { id: 'plan-1', goal: 'g' }, riskLevel: RiskLevel.HIGH, reason: '   ', requestedBy: 'alice' }),
+    ).rejects.toThrow(/reason/);
+    expect(saveSpy).not.toHaveBeenCalled();
+  });
+
+  it('throws and does not save when requestedBy is blank (CA Round 1)', async () => {
+    const storage = fakeStorage();
+    const saveSpy = vi.spyOn(storage.approvals, 'save');
+    const mgr = new ApprovalManager(storage, new ApprovalPolicy(new RiskPolicy()));
+    await expect(
+      mgr.requestForRisk({ executionPlanRef: { id: 'plan-1', goal: 'g' }, riskLevel: RiskLevel.HIGH, reason: 'r', requestedBy: '  ' }),
+    ).rejects.toThrow(/requestedBy/);
+    expect(saveSpy).not.toHaveBeenCalled();
+  });
+
+  it('throws and does not save for a non-HIGH/CRITICAL risk (CA Round 1 — bypasses policy, so must be narrow)', async () => {
+    const storage = fakeStorage();
+    const saveSpy = vi.spyOn(storage.approvals, 'save');
+    const mgr = new ApprovalManager(storage, new ApprovalPolicy(new RiskPolicy()));
+    await expect(
+      mgr.requestForRisk({ executionPlanRef: { id: 'plan-1', goal: 'g' }, riskLevel: RiskLevel.MEDIUM, reason: 'r', requestedBy: 'alice' }),
+    ).rejects.toThrow(/HIGH\/CRITICAL/);
+    expect(saveSpy).not.toHaveBeenCalled();
+  });
+
+  it('accepts CRITICAL risk as well as HIGH', async () => {
+    const req = await manager().requestForRisk({
+      executionPlanRef: { id: 'plan-1', goal: 'g' },
+      riskLevel: RiskLevel.CRITICAL,
+      reason: 'r',
+      requestedBy: 'alice',
+    });
+    expect(req.status).toBe(ApprovalStatus.PENDING);
+    expect(req.riskLevel).toBe(RiskLevel.CRITICAL);
+  });
 });

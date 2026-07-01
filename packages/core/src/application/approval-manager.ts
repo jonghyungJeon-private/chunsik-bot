@@ -1,7 +1,7 @@
 import { newId } from '../util/id';
 import { now } from '../util/clock';
-import { ApprovalStatus, executionPlanRef } from '../domain';
-import type { ApprovalDecision, ApprovalRequest, ExecutionPlan, ExecutionPlanRef, Id, RiskLevel } from '../domain';
+import { ApprovalStatus, RiskLevel, executionPlanRef } from '../domain';
+import type { ApprovalDecision, ApprovalRequest, ExecutionPlan, ExecutionPlanRef, Id } from '../domain';
 import type { StorageProvider } from '../ports';
 import type { ApprovalPolicy } from './approval-policy';
 
@@ -70,6 +70,10 @@ export class ApprovalManager {
    * level is supplied directly by the caller, which already knows it must require approval; this
    * deliberately bypasses ApprovalPolicy's plan-based evaluation and NEVER auto-approves — it does not
    * replace requestFor(plan) for the normal planning-approval path.
+   *
+   * Because it bypasses policy evaluation it is narrowly constrained (CA Round 1 review): a non-empty
+   * `reason` and `requestedBy` are required, and only HIGH/CRITICAL risk is accepted — a mutation-step
+   * approval that isn't at least HIGH would be a caller error, not something to persist silently.
    */
   async requestForRisk(input: {
     executionPlanRef: ExecutionPlanRef;
@@ -77,6 +81,11 @@ export class ApprovalManager {
     reason: string;
     requestedBy: string;
   }): Promise<ApprovalRequest> {
+    if (!input.reason.trim()) throw new Error('requestForRisk: a non-empty reason is required');
+    if (!input.requestedBy.trim()) throw new Error('requestForRisk: a non-empty requestedBy is required');
+    if (input.riskLevel !== RiskLevel.HIGH && input.riskLevel !== RiskLevel.CRITICAL) {
+      throw new Error('requestForRisk: only HIGH/CRITICAL risk is accepted (it bypasses ApprovalPolicy)');
+    }
     const ts = now();
     const request: ApprovalRequest = {
       id: newId(),

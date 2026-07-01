@@ -2209,7 +2209,10 @@ Plan: `docs/plans/sprint-2r-unified-diff-preview-plan.md`.
   for the normal planning-approval path.** It always creates `PENDING` (never auto-approves) and never
   calls `ApprovalPolicy` — it exists solely because `ExecutionPlan` (ADR-0024) is in-memory-only and does
   not survive to this later turn; the caller supplies the risk level directly because it already knows a
-  mutation-step approval must require one. This sprint's only caller always passes `RiskLevel.HIGH`.
+  mutation-step approval must require one. Because it bypasses policy evaluation it validates its own
+  inputs (CA Round 1 implementation review): a non-empty `reason` and `requestedBy` are required, and
+  **only `HIGH`/`CRITICAL` risk is accepted** — a mutation-step approval below `HIGH` would be a caller
+  error, not something to persist silently. This sprint's only caller always passes `RiskLevel.HIGH`.
 - **`APPLY_WORDS` (적용/반영/이대로 진행) is a dedicated word-set, deliberately never sharing anything
   with `APPROVE_WORDS`.** "좋아"/"오케이"/"확인"/"괜찮네" — already sufficient to decide the *first*
   approval — must never be sufficient to authorize file modification. The two word-sets are
