@@ -22,7 +22,7 @@ import type {
 } from '../domain';
 import type { AiProvider, AiRequest, Logger, ProjectReadout } from '../ports';
 import { now } from '../util/clock';
-import type { ResponseComposer, ExecutionReplyStatus } from './response-composer';
+import type { ResponseComposer, ExecutionReplyStatus, TestResultDetail } from './response-composer';
 import type { IntentResolutionContext } from './intent-resolver';
 import type {
   CancelToken,
@@ -307,11 +307,27 @@ export class ConversationRuntime {
     return this.replyForOutcome(message.context, session, outcome);
   }
 
+  /** Assemble the display-relevant facts for a ran/timed-out `CommandExecution` (ADR-0034). Raw only — no truncation, no text. */
+  private static toTestResultDetail(exec: CommandExecution): TestResultDetail {
+    const kind: 'test' | 'typecheck' = exec.args.includes('typecheck') ? 'typecheck' : 'test';
+    return {
+      kind,
+      command: exec.command,
+      args: exec.args,
+      durationMs: exec.durationMs,
+      stdout: exec.stdout,
+      stderr: exec.stderr,
+      ...(exec.exitCode !== undefined ? { exitCode: exec.exitCode } : {}),
+    };
+  }
+
   /**
-   * Frame a TEST_EXECUTION outcome (ADR-0033). A command that RAN → a **product test result**
-   * (pass/fail), read via the existing `CommandExecution` read path; a command that could NOT run
-   * (timeout / allow-list refusal / system error) → an execution-failure reply. The orchestrator's
-   * status contract is not reinterpreted — the runtime only chooses the user-facing framing.
+   * Frame a TEST_EXECUTION outcome (ADR-0033; detail three-way branch added in ADR-0034). A command
+   * that RAN → a **product test result** (pass/fail + detail), read via the existing
+   * `CommandExecution` read path; `TIMED_OUT` → a distinct timeout reply (not a test verdict); a
+   * command that never ran at all (allow-list refusal / system error, no `CommandExecution`) → an
+   * execution-failure reply. The orchestrator's status contract is not reinterpreted — the runtime
+   * only chooses which case applies and assembles raw facts; all text lives in `ResponseComposer`.
    */
   private async frameTestResult(
     message: InboundMessage,
@@ -325,12 +341,17 @@ export class ConversationRuntime {
       (exec.status === CommandExecutionStatus.SUCCEEDED || exec.status === CommandExecutionStatus.FAILED)
     ) {
       const passed = exec.status === CommandExecutionStatus.SUCCEEDED;
-      const kind: 'test' | 'typecheck' = exec.args.includes('typecheck') ? 'typecheck' : 'test';
-      const reply = this.deps.composer.composeTestResult(message.context, passed, kind);
+      const detail = ConversationRuntime.toTestResultDetail(exec);
+      const reply = this.deps.composer.composeTestResult(message.context, { ...detail, passed });
       await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
       return { status: 'RESPONDED', reply, sessionId: session.id, executionOutcome: outcome };
     }
-    // Command could not run (TIMED_OUT, gate refusal → no CommandExecution, spawn/system error).
+    if (exec && exec.status === CommandExecutionStatus.TIMED_OUT) {
+      const detail = ConversationRuntime.toTestResultDetail(exec);
+      const reply = this.deps.composer.composeTestTimedOut(message.context, detail);
+      return this.failComposed(message, session, reply, outcome);
+    }
+    // Command never ran at all (allow-list refusal → no CommandExecution, spawn/system error).
     return this.failComposed(message, session, this.deps.composer.composeCommandUnavailable(message.context), outcome);
   }
 

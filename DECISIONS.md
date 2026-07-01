@@ -1623,3 +1623,66 @@ ADR-0032 (Conversation Runtime), ADR-0031 (Execution Orchestrator), ADR-0028 (Co
 allow-list), ADR-0024 (Planning), ADR-0025 (Approval), ADR-0015 (failure taxonomy / kind replies),
 ADR-0018 (project registration). Supersedes nothing. Plan:
 `docs/plans/sprint-2l-live-test-execution-plan.md`.
+
+## ADR-0034 — Test Result Detail UX (CommandExecution facts → useful reply)
+
+- **Status:** ✅ Accepted (v2, Phase 2, Sprint 2m — Product Construction), Chief Architect Review:
+  APPROVED WITH CHANGES.
+- **Date:** 2026-07-01
+- **Scope:** Sprint 2m is **result-detail UX, not command expansion**. `CommandExecution` (Sprint 2l,
+  ADR-0028/0033) already carries `command`, `args`, `exitCode`, `stdout`, `stderr`, `durationMs`,
+  `status`; the user-facing reply only used `status` + `args`. This sprint spends the already-existing
+  facts on a safer, more useful reply — no new read path, no command-surface change.
+
+### Decision
+- **`TestResultDetail` is an Application-layer DTO, not domain.** Defined in `response-composer.ts`
+  alongside the existing `ExecutionReplyStatus` local type — not persisted, not an aggregate, no
+  `CommandExecutionStatus` inside it (status stays a Runtime branch concern, never re-interpreted by
+  the Composer).
+- **Runtime frames raw facts only.** `ConversationRuntime.frameTestResult` decides which of three
+  cases applies (`SUCCEEDED`/`FAILED` → ran; `TIMED_OUT` → killed; no `CommandExecution` → never ran)
+  and assembles `TestResultDetail` from the aggregate it already reads. It performs **no** string
+  truncation and writes **no** text.
+- **`ResponseComposer` owns summarization and all wording**, including the excerpt cut, stream
+  choice, duration formatting, and Korean phrasing — consistent with the ADR-0032 invariant that
+  reply text is built only by `ResponseComposer`.
+- **Output-stream choice:** prefer `stdout`; fall back to `stderr` only if `stdout` is empty — a
+  single stream, never merged. **CA-required:** when `stdout` is chosen and `stderr` is also
+  non-empty, the reply says so (`"stderr 출력도 있었지만, 여기서는 stdout 마지막 부분만 보여드려요."`)
+  — stdout-preference must never make stderr's existence invisible.
+- **Summary bound:** last `MAX_SUMMARY_LINES = 20` lines, then capped at `MAX_SUMMARY_CHARS = 1200`
+  chars (tail preserved either way) — headroom under Discord's 2000-char message limit. The full
+  rendered reply is additionally defended at `MAX_MESSAGE_CHARS = 1900`.
+- **No second masking pass.** `packages/command-local`'s `maskCommandOutput` (ADR-0028) already
+  redacts secret-shaped substrings and caps each stream at 100k chars **before** `CommandExecution`
+  is ever populated. This sprint's summarization is a length transform only, over already-safe text.
+  **CA-required constraint:** the reply must never assert a completeness/security guarantee (no
+  "전체 로그는 안전합니다" / "민감정보는 완전히 제거됐습니다" wording) — we trust the boundary
+  internally but do not claim it to the user.
+- **Timeout is not a test failure.** `composeTestTimedOut` (new) never phrases a `TIMED_OUT` run as
+  "테스트 실패", never shows an exit code (none exists — the process was killed, not evaluated), and
+  never claims a "configured timeout" value (`TestResultDetail` carries only the actual elapsed
+  `durationMs`, not the limit that was set).
+- **`ResponseComposer` API change.** `composeTestResult(context, passed, kind)` →
+  `composeTestResult(context, detail: TestResultDetail & { passed: boolean })` (single call site,
+  changed directly, no back-compat shim). New: `composeTestTimedOut(context, detail)`.
+  `composeCommandUnavailable` is unchanged — it remains the reply for the one case with no facts to
+  show (command never ran at all).
+- **No Core/Orchestrator contract change; no new aggregate/repository/migration/capability/port.**
+
+### Not implemented (out of scope)
+Command-surface expansion · user-supplied command · shell string · arbitrary/AI-generated command or
+summary · retry · patch/write/code modification · GitHub Actions integration · Discord rich UI · new
+aggregate/repository/migration/capability/port · Core-contract change · `ExecutionOrchestrator`
+contract change.
+
+### Consequences
+- + A user running tests/typecheck now sees command, exit code, duration, and a bounded, safe
+  excerpt of the actual output — not just pass/fail — while a killed (`TIMED_OUT`) run is clearly
+  distinguished from a failing test.
+- − The reply is longer per turn; bounded by `MAX_MESSAGE_CHARS` to stay within the Discord limit.
+
+### Relations
+ADR-0033 (Live Test Execution), ADR-0032 (Conversation Runtime), ADR-0028 (Command Execution /
+masking-and-capping). Supersedes nothing (extends ADR-0033's `composeTestResult`/`frameTestResult`).
+Plan: `docs/plans/sprint-2m-test-result-detail-ux-plan.md`.

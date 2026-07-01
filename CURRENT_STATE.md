@@ -5,21 +5,22 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** **Version 2, Phase 2 (Application Layer), Sprint 2l — Live Test Execution** (ADR-0033):
-  the **first reachable execution Product slice**. **Phase 1 (CAP-001…009) closed; Sprint 2j Execution
-  Orchestrator + Sprint 2k Conversation Runtime merged.** A user's "테스트 돌려줘" / "typecheck 돌려줘"
-  now runs the allow-listed test command in the active project and reports the result naturally:
-  `IntentClassifier → IntentResolver → ConversationRuntime → ExecutionOrchestrator → CommandExecution
-  → ResponseComposer`. Classifier gains deterministic `RUN_TESTS` (+`raw.kind`, reusing
-  `IntentType.RUN_TESTS`/`Capability.TEST_EXECUTION`); resolver owns the **fixed** command mapping
-  (only `pnpm test`/`pnpm typecheck` ever produced); runtime resolves the active-project workspace
-  via existing `WorkspaceManager.open` and frames the result by reading the `CommandExecution`
-  (exit≠0 that **ran** = a test-failure *result*, not a system error). Risk MEDIUM, no approval halt.
-  **Reuse only — no new capability/aggregate/repository/migration; no Core/Orchestrator contract
-  change.** Implemented on a branch — **awaiting CA implementation review, no merge.**
-- **Next:** Chief Architect implementation review of Sprint 2l; no merge until approved.
-- **Build/Test (validation runtime: Node 22):** `pnpm typecheck` PASS (exit 0); `pnpm test` 37 files /
-  255 tests PASS. (Under the `.nvmrc`-pinned Node 18, SQLite repo tests fail on a better-sqlite3 ABI
+- **Phase:** **Version 2, Phase 2 (Application Layer), Sprint 2m — Test Result Detail UX** (ADR-0034,
+  CA-directed): existing `CommandExecution` facts (`command`, `args`, `exitCode`, `stdout`, `stderr`,
+  `durationMs`) now reach the user, instead of bare pass/fail. **Sprint 2l (Live Test Execution,
+  ADR-0033) and Sprint 2j/2k (Execution Orchestrator / Conversation Runtime) merged; Phase 1
+  (CAP-001…009) closed.** `ConversationRuntime.frameTestResult` branches three ways
+  (`SUCCEEDED`/`FAILED` ran → detail result; `TIMED_OUT` → distinct timeout reply; no
+  `CommandExecution` → unchanged `composeCommandUnavailable`) and assembles a new Application-layer
+  `TestResultDetail` DTO (not domain, not persisted); `ResponseComposer.composeTestResult` (signature
+  changed) and the new `composeTestTimedOut` own all summarization (deterministic tail/char-capped
+  excerpt, stdout-preferred with an omitted-stream notice when `stderr` also had output) and Korean
+  wording. No second masking pass (adapter boundary, ADR-0028, already redacts/caps). **Reuse only —
+  no new capability/aggregate/repository/migration/port; no Core/Orchestrator contract change.**
+  Implemented on a branch — **awaiting CA implementation review, no merge.**
+- **Next:** Chief Architect implementation review of Sprint 2m; no merge until approved.
+- **Build/Test (validation runtime: Node 22):** `pnpm typecheck` PASS (exit 0); `pnpm test` 38 files /
+  270 tests PASS. (Under the `.nvmrc`-pinned Node 18, SQLite repo tests fail on a better-sqlite3 ABI
   mismatch — a Deferred (Environment) item; the suite is green on Node 22.)
 
 ## Implemented

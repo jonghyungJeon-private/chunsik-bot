@@ -80,6 +80,7 @@ const commandExecOf = (
   status: CommandExecutionStatus,
   args: string[] = ['test'],
   exitCode?: number,
+  streams: { stdout?: string; stderr?: string } = {},
 ): CommandExecution => ({
   id: 'cmd-1',
   executionPlanRef: { id: 'plan-1', goal: 'g' },
@@ -88,8 +89,8 @@ const commandExecOf = (
   args,
   commandHash: 'h',
   status,
-  stdout: '',
-  stderr: '',
+  stdout: streams.stdout ?? '',
+  stderr: streams.stderr ?? '',
   durationMs: 1,
   riskLevel: RiskLevel.MEDIUM,
   ...(exitCode !== undefined ? { exitCode } : {}),
@@ -349,33 +350,49 @@ describe('Live Test Execution — runtime', () => {
     expect(calls.lastRunRequest?.command).toEqual({ command: 'pnpm', args: ['test'] });
   });
 
-  it('tests pass (exit 0) → composeTestResult passed, RESPONDED', async () => {
+  it('tests pass (exit 0) → composeTestResult passed with detail, RESPONDED', async () => {
     const { deps } = makeDeps({
       intent: testIntent,
       runOutcome: outcomeOf(ExecutionOutcomeStatus.COMPLETED, 'cmd-1'),
-      commandExec: commandExecOf(CommandExecutionStatus.SUCCEEDED, ['test'], 0),
+      commandExec: commandExecOf(CommandExecutionStatus.SUCCEEDED, ['test'], 0, { stdout: 'ok\n' }),
     });
     const result = await new ConversationRuntime(deps).handle(messageOf('테스트 돌려줘'));
     expect(result.status).toBe('RESPONDED');
     expect(result.reply.text).toContain('통과');
+    expect(result.reply.text).toContain('pnpm test');
+    expect(result.reply.text).toContain('종료 코드: 0');
   });
 
-  it('tests fail (exit≠0, ran) → composeTestResult failed as a RESULT, not a system error', async () => {
+  it('tests fail (exit≠0, ran) → composeTestResult failed as a RESULT with detail, not a system error', async () => {
     const { deps } = makeDeps({
       intent: testIntent,
       runOutcome: outcomeOf(ExecutionOutcomeStatus.STOPPED_ON_FAILURE, 'cmd-1'),
-      commandExec: commandExecOf(CommandExecutionStatus.FAILED, ['test'], 1),
+      commandExec: commandExecOf(CommandExecutionStatus.FAILED, ['test'], 1, { stdout: 'FAIL src/x.test.ts\n' }),
     });
     const result = await new ConversationRuntime(deps).handle(messageOf('테스트 돌려줘'));
     expect(result.status).toBe('RESPONDED'); // a test result, not FAILED
     expect(result.reply.text).toContain('실패');
+    expect(result.reply.text).toContain('종료 코드: 1');
   });
 
-  it('command could not run (timeout) → composeCommandUnavailable, system failure', async () => {
+  it('command timed out → composeTestTimedOut (distinct from composeCommandUnavailable), system failure', async () => {
     const { deps } = makeDeps({
       intent: testIntent,
       runOutcome: outcomeOf(ExecutionOutcomeStatus.STOPPED_ON_FAILURE, 'cmd-1'),
       commandExec: commandExecOf(CommandExecutionStatus.TIMED_OUT, ['test']),
+    });
+    const result = await new ConversationRuntime(deps).handle(messageOf('테스트 돌려줘'));
+    expect(result.status).toBe('FAILED');
+    expect(result.reply.text).not.toBe(new ResponseComposer().composeCommandUnavailable(CTX).text);
+    expect(result.reply.text).toContain('제한 시간');
+    expect(result.reply.text).not.toContain('종료 코드');
+  });
+
+  it('command never ran at all (no CommandExecution) → composeCommandUnavailable, unchanged', async () => {
+    const { deps } = makeDeps({
+      intent: testIntent,
+      runOutcome: outcomeOf(ExecutionOutcomeStatus.STOPPED_ON_FAILURE),
+      commandExec: null,
     });
     const result = await new ConversationRuntime(deps).handle(messageOf('테스트 돌려줘'));
     expect(result.status).toBe('FAILED');
