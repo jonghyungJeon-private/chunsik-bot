@@ -5,23 +5,21 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** **Version 2, Phase 2 (Application Layer), Sprint 2k — Conversation Runtime** (ADR-0032):
-  the **first Product Construction** sprint — 춘식봇's conversation entry point. **Phase 1 (Capability
-  Layer, CAP-001…009) closed; Sprint 2j Execution Orchestrator merged.** Not a new capability/aggregate —
-  `ConversationRuntime.handle(message) → TurnResult` **composes** existing services into the full flow
-  (`User → ChunsikCore facade → ConversationRuntime → Intent Resolver → Execution Orchestrator →
-  Capability Managers → OutboundMessage`). `ChunsikCore` is now a **thin facade** delegating to it
-  (one entry, no parallel paths). **Transient** `TurnResult`/`RuntimeTurnStatus` (no aggregate/table);
-  **stateless approval halt→resume routing** — awaiting state **derived** from existing aggregates
-  (`Session.activeTaskId → Task.planId → approvals.findByExecutionPlan → PENDING`); the runtime
-  persists nothing and writes **no `Session` snapshot**. Decision interpretation only when pending
-  (approve→decide+resume · deny→DENIED · cancel→CANCELLED · ambiguous→re-ask). Short-term memory only;
-  `ResponseComposer.composeExecutionResult` added; orchestrator/intent-resolver now wired. **No
-  Core-contract change, no new aggregate/repository/migration.** Implemented on a branch — **awaiting
-  CA implementation review, no merge.**
-- **Next:** Chief Architect implementation review of Sprint 2k; no merge until approved.
+- **Phase:** **Version 2, Phase 2 (Application Layer), Sprint 2l — Live Test Execution** (ADR-0033):
+  the **first reachable execution Product slice**. **Phase 1 (CAP-001…009) closed; Sprint 2j Execution
+  Orchestrator + Sprint 2k Conversation Runtime merged.** A user's "테스트 돌려줘" / "typecheck 돌려줘"
+  now runs the allow-listed test command in the active project and reports the result naturally:
+  `IntentClassifier → IntentResolver → ConversationRuntime → ExecutionOrchestrator → CommandExecution
+  → ResponseComposer`. Classifier gains deterministic `RUN_TESTS` (+`raw.kind`, reusing
+  `IntentType.RUN_TESTS`/`Capability.TEST_EXECUTION`); resolver owns the **fixed** command mapping
+  (only `pnpm test`/`pnpm typecheck` ever produced); runtime resolves the active-project workspace
+  via existing `WorkspaceManager.open` and frames the result by reading the `CommandExecution`
+  (exit≠0 that **ran** = a test-failure *result*, not a system error). Risk MEDIUM, no approval halt.
+  **Reuse only — no new capability/aggregate/repository/migration; no Core/Orchestrator contract
+  change.** Implemented on a branch — **awaiting CA implementation review, no merge.**
+- **Next:** Chief Architect implementation review of Sprint 2l; no merge until approved.
 - **Build/Test (validation runtime: Node 22):** `pnpm typecheck` PASS (exit 0); `pnpm test` 37 files /
-  245 tests PASS. (Under the `.nvmrc`-pinned Node 18, SQLite repo tests fail on a better-sqlite3 ABI
+  255 tests PASS. (Under the `.nvmrc`-pinned Node 18, SQLite repo tests fail on a better-sqlite3 ABI
   mismatch — a Deferred (Environment) item; the suite is green on Node 22.)
 
 ## Implemented
@@ -98,7 +96,17 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   → PENDING`); persists nothing; **no `Session` snapshot**. Decision interpreted only when pending
   (approve→decide+resume · deny→DENIED · cancel→CANCELLED · ambiguous→re-ask). Short-term memory only;
   `ResponseComposer.composeExecutionResult` added; orchestrator/intent-resolver now wired into the
-  composition root. No Core change (ADR-0032). *(awaiting CA implementation review)*
+  composition root. No Core change (ADR-0032).
+- **Phase 2 · Live Test Execution (Product slice)** — the first execution reachable from a real user
+  message. "테스트 돌려줘" / "typecheck 돌려줘" → deterministic `RUN_TESTS` intent (+`raw.kind`,
+  reusing `IntentType.RUN_TESTS`/`Capability.TEST_EXECUTION`) → resolver's **fixed** command mapping
+  (only `pnpm test`/`pnpm typecheck`) → runtime resolves the active-project workspace via existing
+  `WorkspaceManager.open` → `ExecutionOrchestrator` → `CommandExecution` → natural result. A command
+  that **ran** with exit≠0 is a **test-failure result** (not a system error); couldn't-run
+  (timeout/refusal/open-failure) is a system-failure reply. `ResponseComposer` gains
+  `composeTestResult`/`composeNeedsProject`/`composeWorkspaceUnavailable`/`composeCommandUnavailable`.
+  Risk MEDIUM, no approval halt. Reuse only — no new capability/aggregate/repository/migration, no
+  Core/Orchestrator contract change (ADR-0033). *(awaiting CA implementation review)*
 
 ## Deferred
 
@@ -142,7 +150,7 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 
 ## Validation
 
-- `pnpm typecheck` — passes (exit 0). `pnpm test` — 37 files / 245 tests pass (validation runtime: Node 22).
+- `pnpm typecheck` — passes (exit 0). `pnpm test` — 37 files / 255 tests pass (validation runtime: Node 22).
 - Boundary enforced — Core cannot resolve adapter packages.
 - **Live (Sprint 1g):** real `node dist/main.js` Discord round-trip — register a
   project, then a structure question routed to PROJECT_ANALYSIS, read real files,

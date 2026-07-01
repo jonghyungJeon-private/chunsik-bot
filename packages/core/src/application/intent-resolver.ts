@@ -32,8 +32,18 @@ export interface IntentResolutionContext {
  * classification and execution-mapping responsibilities unmixed (CA Round-2).
  */
 export class IntentResolver {
+  /** Whether this intent should enter the Execution Orchestrator chain (vs. chat/analysis). */
+  isExecution(intent: Intent): boolean {
+    return EXECUTION_CAPABILITIES.has(intent.capability);
+  }
+
   resolve(intent: Intent, context: IntentResolutionContext): ExecutionRequest | null {
     if (!EXECUTION_CAPABILITIES.has(intent.capability)) return null;
+    // The command is DERIVED, never taken from user text: a TEST_EXECUTION intent maps its
+    // classifier `raw.kind` to exactly one of two allow-listed commands (ADR-0033). Other execution
+    // capabilities may carry a caller-supplied command via context.
+    const command =
+      intent.capability === Capability.TEST_EXECUTION ? testCommandFor(intent) : context.command;
     return {
       goal: intent.summary,
       instruction: intent.summary,
@@ -42,7 +52,14 @@ export class IntentResolver {
       ...(context.projectId ? { projectId: context.projectId } : {}),
       ...(context.workspaceRef ? { workspaceRef: context.workspaceRef } : {}),
       ...(context.targetFiles ? { targetFiles: context.targetFiles } : {}),
-      ...(context.command ? { command: context.command } : {}),
+      ...(command ? { command } : {}),
     };
   }
+}
+
+/** Fixed, allow-listed command for a TEST_EXECUTION intent — never a user-supplied string. */
+function testCommandFor(intent: Intent): { command: string; args: string[] } {
+  return intent.raw?.kind === 'typecheck'
+    ? { command: 'pnpm', args: ['typecheck'] }
+    : { command: 'pnpm', args: ['test'] };
 }

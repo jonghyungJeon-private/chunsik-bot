@@ -320,7 +320,7 @@ const application: Provider[] = [
       sessions: SessionManager,
       memory: MemoryManager,
       classifier: IntentClassifier,
-      projects: ProjectManager,
+      projectManager: ProjectManager,
       analyzer: ProjectAnalyzer,
       tasks: TaskManager,
       workspace: WorkspaceManager,
@@ -334,6 +334,7 @@ const application: Provider[] = [
       intentResolver: IntentResolver,
       orchestrator: ExecutionOrchestrator,
       approvals: ApprovalManager,
+      commandExecutions: CommandExecutionManager,
     ) => {
       // ADR-0032: production ApprovalFlow — stateless, derived from existing aggregates
       // (Session.activeTaskId → Task.planId → approvals.findByExecutionPlan → PENDING); anchors the
@@ -348,10 +349,15 @@ const application: Provider[] = [
         sessions,
         memory,
         classifier,
-        projects,
+        // register via ProjectManager; get via the existing projects repository (ADR-0033 read path).
+        projects: {
+          register: (path, session) => projectManager.register(path, session),
+          get: (id) => storage.projects.get(id),
+        },
         analyzer,
         tasks,
         workspace,
+        commandExecutions,
         contextBuilder,
         promptComposer,
         promptRenderer,
@@ -386,6 +392,7 @@ const application: Provider[] = [
       IntentResolver,
       ExecutionOrchestrator,
       ApprovalManager,
+      CommandExecutionManager,
     ],
   },
   // Thin platform-entry facade (ADR-0032): delegates to ConversationRuntime, then delivers.

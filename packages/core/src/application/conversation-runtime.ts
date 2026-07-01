@@ -1,16 +1,18 @@
 import { describeAiFailure } from './ai-failure';
-import { Capability, IntentType, TaskStatus } from '../domain';
+import { Capability, CommandExecutionStatus, IntentType, TaskStatus } from '../domain';
 import type {
   Actor,
   ApprovalDecision,
   ApprovalRequest,
   Artifact,
+  CommandExecution,
   ContextBundle,
   ConversationContext,
   Id,
   InboundMessage,
   Intent,
   OutboundMessage,
+  Project,
   PromptSpec,
   RiskLevel,
   Session,
@@ -89,6 +91,7 @@ export interface ConversationRuntimeDeps {
   readonly classifier: { classify(message: InboundMessage): Promise<Intent> };
   readonly projects: {
     register(path: string, session: Session): Promise<{ ok: boolean; message: string; project?: { id: Id } }>;
+    get(id: Id): Promise<Project | null>;
   };
   readonly analyzer: {
     prepare(session: Session): Promise<{ ready: boolean; message?: string; readout?: ProjectReadout }>;
@@ -104,7 +107,11 @@ export interface ConversationRuntimeDeps {
     completeRun(run: TaskRun, opts: { artifactIds: Id[]; providerId?: string }): Promise<unknown>;
     failRun(run: TaskRun, summary: string, opts: { providerId?: string }): Promise<unknown>;
   };
-  readonly workspace: { prepare(task: Task): Promise<WorkspaceRef | undefined> };
+  readonly workspace: {
+    prepare(task: Task): Promise<WorkspaceRef | undefined>;
+    open(project: { id: Id; rootPath: string }): Promise<WorkspaceRef>;
+  };
+  readonly commandExecutions: { get(id: Id): Promise<CommandExecution | null> };
   readonly contextBuilder: { build(task: Task, excludeMemoryIds: Id[]): Promise<ContextBundle> };
   readonly promptComposer: { compose(task: Task, bundle: ContextBundle, readout?: ProjectReadout): PromptSpec };
   readonly promptRenderer: {
@@ -114,7 +121,10 @@ export interface ConversationRuntimeDeps {
   readonly artifacts: { persistAll(taskId: Id, runId: Id, artifacts: Artifact[]): Promise<Id[]> };
   readonly composer: ResponseComposer;
   readonly risk: { requiresApproval(level: RiskLevel): boolean };
-  readonly intentResolver: { resolve(intent: Intent, context: IntentResolutionContext): ExecutionRequest | null };
+  readonly intentResolver: {
+    resolve(intent: Intent, context: IntentResolutionContext): ExecutionRequest | null;
+    isExecution(intent: Intent): boolean;
+  };
   readonly orchestrator: {
     run(request: ExecutionRequest, cancelToken?: CancelToken): Promise<ExecutionOutcome>;
     resume(request: ExecutionRequest, prior: ExecutionOutcome, cancelToken?: CancelToken): Promise<ExecutionOutcome>;
@@ -182,13 +192,9 @@ export class ConversationRuntime {
       return this.responded(session, { context: message.context, text: result.message });
     }
 
-    // (C) Execution intent → Intent Resolver → Execution Orchestrator (Sprint 2j/2k).
-    const executionRequest = this.deps.intentResolver.resolve(intent, {
-      requestedBy: actor.id,
-      ...(session.activeProjectId ? { projectId: session.activeProjectId } : {}),
-    });
-    if (executionRequest) {
-      return this.handleExecutionTurn(message, session, executionRequest);
+    // (C) Execution intent → resolve workspace (if needed) → Intent Resolver → Execution Orchestrator.
+    if (this.deps.intentResolver.isExecution(intent)) {
+      return this.handleExecutionIntent(message, session, actor, intent);
     }
 
     // (D) Gated project analysis (ADR-0019) — gather a read-only readout to feed the prompt.
@@ -256,17 +262,95 @@ export class ConversationRuntime {
     return { status, reply, sessionId: session.id };
   }
 
-  /** (C) Run a fresh execution; halt at approval, else map the outcome to a reply. */
-  private async handleExecutionTurn(
+  /** (C) Resolve the workspace (if the capability needs it), run the execution, and frame the reply. */
+  private async handleExecutionIntent(
     message: InboundMessage,
     session: Session,
-    request: ExecutionRequest,
+    actor: Actor,
+    intent: Intent,
   ): Promise<TurnResult> {
+    // Filesystem/command capabilities run in the active project's workspace (ADR-0033).
+    let workspaceRef: WorkspaceRef | undefined;
+    if (ConversationRuntime.needsWorkspace(intent.capability)) {
+      if (!session.activeProjectId) {
+        return this.respondComposed(message, session, this.deps.composer.composeNeedsProject(message.context));
+      }
+      const project = await this.deps.projects.get(session.activeProjectId);
+      if (!project) {
+        return this.respondComposed(message, session, this.deps.composer.composeNeedsProject(message.context));
+      }
+      try {
+        workspaceRef = await this.deps.workspace.open({ id: project.id, rootPath: project.rootPath });
+      } catch {
+        return this.failComposed(message, session, this.deps.composer.composeWorkspaceUnavailable(message.context));
+      }
+    }
+
+    const request = this.deps.intentResolver.resolve(intent, {
+      requestedBy: actor.id,
+      ...(session.activeProjectId ? { projectId: session.activeProjectId } : {}),
+      ...(workspaceRef ? { workspaceRef } : {}),
+    });
+    if (!request) {
+      // Defensive: isExecution() gated this path, so resolve should not return null.
+      return this.failComposed(message, session, this.deps.composer.composeCommandUnavailable(message.context));
+    }
+
     const outcome = await this.deps.orchestrator.run(request);
     if (outcome.status === ('AWAITING_APPROVAL' as ExecutionOutcomeStatus)) {
       await this.deps.approvalFlow.anchor(session, request, outcome); // enable next-turn resume
+      return this.replyForOutcome(message.context, session, outcome);
+    }
+    if (intent.capability === Capability.TEST_EXECUTION) {
+      return this.frameTestResult(message, session, outcome);
     }
     return this.replyForOutcome(message.context, session, outcome);
+  }
+
+  /**
+   * Frame a TEST_EXECUTION outcome (ADR-0033). A command that RAN → a **product test result**
+   * (pass/fail), read via the existing `CommandExecution` read path; a command that could NOT run
+   * (timeout / allow-list refusal / system error) → an execution-failure reply. The orchestrator's
+   * status contract is not reinterpreted — the runtime only chooses the user-facing framing.
+   */
+  private async frameTestResult(
+    message: InboundMessage,
+    session: Session,
+    outcome: ExecutionOutcome,
+  ): Promise<TurnResult> {
+    const id = outcome.refs.commandExecutionId;
+    const exec: CommandExecution | null = id ? await this.deps.commandExecutions.get(id) : null;
+    if (
+      exec &&
+      (exec.status === CommandExecutionStatus.SUCCEEDED || exec.status === CommandExecutionStatus.FAILED)
+    ) {
+      const passed = exec.status === CommandExecutionStatus.SUCCEEDED;
+      const kind: 'test' | 'typecheck' = exec.args.includes('typecheck') ? 'typecheck' : 'test';
+      const reply = this.deps.composer.composeTestResult(message.context, passed, kind);
+      await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+      return { status: 'RESPONDED', reply, sessionId: session.id, executionOutcome: outcome };
+    }
+    // Command could not run (TIMED_OUT, gate refusal → no CommandExecution, spawn/system error).
+    return this.failComposed(message, session, this.deps.composer.composeCommandUnavailable(message.context), outcome);
+  }
+
+  private async respondComposed(
+    message: InboundMessage,
+    session: Session,
+    reply: OutboundMessage,
+  ): Promise<TurnResult> {
+    await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+    return { status: 'RESPONDED', reply, sessionId: session.id };
+  }
+
+  private async failComposed(
+    message: InboundMessage,
+    session: Session,
+    reply: OutboundMessage,
+    outcome?: ExecutionOutcome,
+  ): Promise<TurnResult> {
+    await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+    return { status: 'FAILED', reply, sessionId: session.id, ...(outcome ? { executionOutcome: outcome } : {}) };
   }
 
   /** Map an ExecutionOutcome to a TurnResult + recorded reply. */

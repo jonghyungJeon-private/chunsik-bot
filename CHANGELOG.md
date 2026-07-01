@@ -7,6 +7,40 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Sprint 2l · Live Test Execution (first reachable execution Product slice)
+
+- **The execution pipeline is now reachable from a real user message** (ADR-0033). "테스트 돌려줘" /
+  "typecheck 돌려줘" runs the allow-listed test command in the active project and reports the result
+  naturally: `IntentClassifier → IntentResolver → ConversationRuntime → ExecutionOrchestrator →
+  CommandExecution → ResponseComposer`. **Reuse only** — no new capability/aggregate/repository/
+  migration; no Core or `ExecutionOrchestrator` contract change.
+- **`IntentClassifier`** gains deterministic **`RUN_TESTS`** recognition → `IntentType.RUN_TESTS` +
+  `Capability.TEST_EXECUTION` (both **reused**) + a normalized `raw.kind: 'test' | 'typecheck'` (the
+  classifier judges intent only, never a command).
+- **`IntentResolver`** owns the **fixed command mapping**: `typecheck → pnpm typecheck`, else
+  `pnpm test`. **Only those two commands are ever produced** — user text is never turned into a
+  command; the `CommandExecution` allow-list re-checks it. Adds `isExecution(intent)`.
+- **`ConversationRuntime`** resolves the active project's workspace via the existing
+  `WorkspaceManager.open` (no active project → `composeNeedsProject`, no run; open failure →
+  `composeWorkspaceUnavailable`), then runs the execution and **frames the test result** by reading
+  the produced `CommandExecution` (`CommandExecutionManager.get`).
+- **Test-failure framing (Product UX):** a command that **ran** with exit ≠ 0 is reported as a
+  **test-failure result** (not a bot/system error); a command that **could not run** (timeout /
+  allow-list refusal / workspace-open / spawn) is a system-failure reply.
+- **Risk:** `pnpm test`/`pnpm typecheck` are bounded, allow-listed project commands — lower-risk than
+  patch/write/deploy, **but not guaranteed non-mutating** (package scripts may run arbitrary
+  project-defined logic). Risk **MEDIUM**; **no approval halt** this sprint. `RiskPolicy`/
+  `ApprovalManager` unchanged.
+- **`ResponseComposer`** gains `composeTestResult` / `composeNeedsProject` /
+  `composeWorkspaceUnavailable` / `composeCommandUnavailable`; the runtime builds no reply text itself.
+- **Out of scope (CA-confirmed):** code change · patch/write · AI code-gen live · Agent Runtime ·
+  retry/reflection · Discord UI · telemetry · free-form/AI-generated/shell commands.
+- Tests (+10, fake/integration): "테스트 돌려줘"→RUN_TESTS/TEST_EXECUTION; kind→command mapping;
+  user command ignored; no-active-project (no run); workspace-open failure; run invoked with the
+  resolved workspaceRef+fixed command; pass→result; fail(exit≠0)→result (not system error);
+  timeout→system failure. **Validation runtime: Node 22** — `pnpm typecheck` PASS; `pnpm test` 37
+  files / **255 tests** PASS. Plan: `docs/plans/sprint-2l-live-test-execution-plan.md`.
+
 ### Added — Sprint 2k · Conversation Runtime (Application Layer — the conversation entry; first Product Construction)
 
 - **춘식봇's conversation entry point** (ADR-0032). Turns one user message into one natural assistant

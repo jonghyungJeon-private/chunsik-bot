@@ -29,6 +29,20 @@ export class IntentClassifier {
       };
     }
 
+    // Test-run request (CAP live execution, ADR-0033). The classifier judges the intent + a
+    // normalized `raw.kind` ONLY — the concrete command is the IntentResolver's decision.
+    const testKind = IntentClassifier.detectTestRun(text);
+    if (testKind) {
+      return {
+        type: IntentType.RUN_TESTS,
+        capability: Capability.TEST_EXECUTION,
+        confidence: 1,
+        requiresWork: true,
+        summary: text.slice(0, 200) || 'Run tests',
+        raw: { kind: testKind },
+      };
+    }
+
     if (IntentClassifier.isProjectAnalysis(text)) {
       return {
         type: IntentType.PROJECT_ANALYSIS,
@@ -46,6 +60,18 @@ export class IntentClassifier {
       requiresWork: true,
       summary: text.slice(0, 200) || '(empty message)',
     };
+  }
+
+  /**
+   * Detect a test-run request → its kind, or undefined. Deterministic, conservative (KO + EN). The
+   * kind is a classification tag only; the resolver maps it to a fixed allow-listed command (ADR-0033).
+   */
+  private static detectTestRun(text: string): 'typecheck' | 'test' | undefined {
+    if (/(typecheck|타입\s*체크|type\s*check)/i.test(text)) return 'typecheck';
+    const mentionsTest = /(테스트|\btest\b)/i.test(text);
+    const actionVerb = /(돌려|실행|run|해줘|해 줘)/i.test(text);
+    if ((mentionsTest && actionVerb) || /\bpnpm\s+test\b/i.test(text)) return 'test';
+    return undefined;
   }
 
   /** First absolute POSIX path in the text, if any. */

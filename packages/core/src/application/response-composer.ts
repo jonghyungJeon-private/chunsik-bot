@@ -84,4 +84,39 @@ export class ResponseComposer {
   composeError(context: ConversationContext, userMessage: string): OutboundMessage {
     return { context, text: userMessage };
   }
+
+  /**
+   * A **product test result** (Live Test Execution, ADR-0033). A failing test (exit ≠ 0) is the
+   * project's result — NOT a bot/system error — so it is phrased as such. The runtime passes only
+   * the facts (`passed`, `kind`); the wording lives here.
+   */
+  composeTestResult(
+    context: ConversationContext,
+    passed: boolean,
+    kind: 'test' | 'typecheck' = 'test',
+  ): OutboundMessage {
+    const label = kind === 'typecheck' ? '타입체크' : '테스트';
+    const text = passed
+      ? `${label}가 모두 통과했어요. ✅`
+      : `${label}에서 실패가 있었어요. 결과를 확인해 주세요. ❌`;
+    return { context, text };
+  }
+
+  /** No active project — guide the user to register one first (ADR-0033). */
+  composeNeedsProject(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '먼저 사용할 프로젝트를 등록해 주세요. (예: "이 프로젝트 등록해줘: /path/to/project")',
+    };
+  }
+
+  /** The active project's workspace could not be opened (ADR-0033). */
+  composeWorkspaceUnavailable(context: ConversationContext): OutboundMessage {
+    return { context, text: '프로젝트 작업 공간을 열 수 없었어요. 프로젝트 경로를 확인해 주세요.' };
+  }
+
+  /** The command could not be run (timeout / refused / system error) — not a test result (ADR-0033). */
+  composeCommandUnavailable(context: ConversationContext): OutboundMessage {
+    return { context, text: '명령을 실행할 수 없었어요. 잠시 후 다시 시도해 주세요.' };
+  }
 }

@@ -1564,3 +1564,62 @@ Agent Runtime; Tool Calling; Retry / loop / reflection; Workflow Engine; Backgro
 ADR-0001 (Session, thin), ADR-0017 (short-term memory), ADR-0031 (Execution Orchestrator),
 ADR-0025 (Approval), ADR-0015 (failure taxonomy / kind replies), ADR-0003 (prompt/context layering).
 Supersedes nothing. Plan: `docs/plans/sprint-2k-conversation-runtime-plan.md`.
+
+## ADR-0033 — Live Test Execution (first reachable execution Product slice)
+
+- **Status:** ✅ Accepted (v2, Phase 2, Sprint 2l — Product Construction)
+- **Date:** 2026-07-01
+- **Scope:** Open the (already-built but unreachable) execution pipeline for the smallest, safest
+  Product slice: a user asking to run tests. **Reuse only** — no new capability/aggregate/repository/
+  migration, no Core or `ExecutionOrchestrator` contract change.
+
+### Most important rule
+> **Only two fixed, allow-listed commands are ever produced — `pnpm test` and `pnpm typecheck`.** The
+> bot never runs a user-supplied command, a shell string, or a synthesized command; the classifier
+> emits only an intent + a `raw.kind` tag, and the resolver maps that tag to one of the two commands.
+
+### Decision
+- **First reachable execution slice.** `IntentClassifier` gains deterministic **`RUN_TESTS`**
+  recognition (same style as REGISTER_PROJECT / PROJECT_ANALYSIS) → `IntentType.RUN_TESTS` +
+  `Capability.TEST_EXECUTION` (both **reused**, no new enum) + `raw.kind: 'test' | 'typecheck'`.
+- **Command ownership.** The classifier emits **intent + `raw.kind` only**; the **`IntentResolver`
+  owns the fixed command mapping**: `typecheck → ['pnpm','typecheck']`, else `['pnpm','test']`. No
+  user text is ever concatenated into a command; the `CommandExecution` allow-list re-checks it.
+- **Workspace.** An active project is **required**. `ConversationRuntime` reads
+  `session.activeProjectId`, loads the `Project` (`storage.projects.get`), and resolves the
+  `WorkspaceRef` via the **existing `WorkspaceManager.open`** (workspace ownership stays with the
+  Workspace capability), passing it into the resolver context / `ExecutionRequest.workspaceRef`.
+- **Risk (CA change #1).** `pnpm test`/`pnpm typecheck` are **bounded, allow-listed project commands.
+  They are lower-risk than patch/write/deploy commands, but NOT guaranteed non-mutating** — a package
+  script may execute arbitrary project-defined logic. **Risk level: MEDIUM; approval halt: not
+  required** for Sprint 2l (user-requested local project command, allow-listed shape, active project
+  required, no bot-generated arbitrary command). `RiskPolicy`/`ApprovalManager` unchanged.
+- **Result framing (CA change #2 + Q5).** `ConversationRuntime` may frame TEST_EXECUTION output by
+  reading the existing `CommandExecution` result **through an existing application read path**
+  (`CommandExecutionManager.get(refs.commandExecutionId)`). It introduces **no new repository/port**
+  and does **not** change the `ExecutionOrchestrator` contract or move `CommandExecution` ownership.
+  - Command **ran** with a clean exit → a **product test result**: `SUCCEEDED` (exit 0) → tests
+    passed; `FAILED` (exit ≠ 0) → tests failed — **reported as a result, not a bot/system error.**
+  - Command **could not run** (`TIMED_OUT`, allow-list refusal, workspace-open failure, spawn/system
+    error) → an **execution/system-failure** reply.
+- **ResponseComposer boundary.** The runtime builds **no** user-facing text. Added (minimal):
+  `composeTestResult`, `composeNeedsProject`, `composeWorkspaceUnavailable`, `composeCommandUnavailable`.
+
+### Not implemented (out of scope)
+Code change · patch · workspace write · AI code-generation live execution · Agent Runtime ·
+tool-calling loop · retry/reflection · Discord UI · telemetry · new capability/aggregate/repository/
+migration · Core-contract change · `ExecutionOrchestrator` contract change · free-form/AI-generated/
+shell commands.
+
+### Consequences
+- + First time a user's message ("테스트 돌려줘") flows all the way through
+  `Runtime → Orchestrator → CommandExecution` to a real action + natural result — the pipeline is now
+  reachable, with the smallest safe slice.
+- − Test execution runs project-defined scripts (bounded but not provably side-effect-free); mitigated
+  by the fixed allow-listed command shape, MEDIUM risk, and active-project requirement.
+
+### Relations
+ADR-0032 (Conversation Runtime), ADR-0031 (Execution Orchestrator), ADR-0028 (Command Execution /
+allow-list), ADR-0024 (Planning), ADR-0025 (Approval), ADR-0015 (failure taxonomy / kind replies),
+ADR-0018 (project registration). Supersedes nothing. Plan:
+`docs/plans/sprint-2l-live-test-execution-plan.md`.
