@@ -33,3 +33,4 @@ export * from './intent-resolver';
 export * from './target-scope';
 export * from './conversation-runtime';
 export * from './stateless-approval-flow';
+export * from './stateless-scope-clarification-flow';

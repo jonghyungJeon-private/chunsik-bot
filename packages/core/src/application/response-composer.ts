@@ -298,4 +298,18 @@ export class ResponseComposer {
         '추가로 적어주면 더 좋아요.',
     };
   }
+
+  /**
+   * Reply for "취소" while a code-change scope clarification is pending (Multi-turn Code Scope
+   * Clarification, ADR-0037). No ExecutionPlan/ApprovalRequest/Patch ever existed for this request —
+   * the wording must not imply an execution or plan was cancelled, only that the request itself was
+   * dropped. Distinct from composeExecutionResult('CANCELLED')'s "작업을 취소했어요", which could be
+   * misread as cancelling in-flight work that never existed.
+   */
+  composeScopeClarificationCancelled(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '코드 변경 요청을 취소했어요. 다시 필요하시면 파일 경로와 함께 새로 요청해 주세요.',
+    };
+  }
 }

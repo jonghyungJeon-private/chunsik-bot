@@ -45,6 +45,7 @@ import {
   IntentResolver,
   ConversationRuntime,
   StatelessApprovalFlow,
+  StatelessScopeClarificationFlow,
   ConnectorManager,
   ResponseComposer,
   RiskPolicy,
@@ -344,6 +345,13 @@ const application: Provider[] = [
         tasks: storage.tasks,
         approvals: storage.approvals,
       });
+      // ADR-0037: production ScopeClarificationFlow — same shape as StatelessApprovalFlow, one step
+      // earlier (before any ExecutionPlan exists). The anchored Task is an inert conversation
+      // anchor, distinguished from an approval anchor by planId absence + a metadata discriminator.
+      const scopeClarificationFlow = new StatelessScopeClarificationFlow({
+        sessions: storage.sessions,
+        tasks: storage.tasks,
+      });
       return new ConversationRuntime({
         actors,
         sessions,
@@ -369,6 +377,7 @@ const application: Provider[] = [
         orchestrator,
         approvals,
         approvalFlow,
+        scopeClarificationFlow,
         logger: coreLogger,
       });
     },

@@ -189,3 +189,27 @@ describe('ResponseComposer.composeTargetScopeClarification', () => {
     expect(reply.text).not.toMatch(/또는\s*"로그인 처리 부분"/);
   });
 });
+
+// ── Sprint 2p — Multi-turn Code Scope Clarification (ADR-0037) ─────────────────────────────────
+
+describe('ResponseComposer.composeScopeClarificationCancelled', () => {
+  it('does not claim a plan/patch/execution was created or cancelled', () => {
+    const reply = composer.composeScopeClarificationCancelled(CTX);
+    expect(reply.text).not.toContain('완료');
+    expect(reply.text).not.toContain('계획');
+    expect(reply.text).not.toContain('작업을 취소');
+  });
+
+  it('states the request itself was dropped and how to try again', () => {
+    const reply = composer.composeScopeClarificationCancelled(CTX);
+    expect(reply.text).toContain('요청');
+    expect(reply.text).toContain('취소');
+    expect(reply.text).toContain('파일 경로');
+  });
+
+  it('is distinct from the generic composeExecutionResult("CANCELLED") wording', () => {
+    const scopeCancel = composer.composeScopeClarificationCancelled(CTX);
+    const generic = composer.composeExecutionResult(CTX, 'CANCELLED');
+    expect(scopeCancel.text).not.toBe(generic.text);
+  });
+});
