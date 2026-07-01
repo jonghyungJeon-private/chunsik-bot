@@ -2149,3 +2149,114 @@ resume, reused), ADR-0035 (Live Code Change Planning — `planningOnly`, unchang
 Orchestrator — the stage-selection model this sprint deliberately does not extend), ADR-0034 (Test
 Result Detail UX — `MAX_MESSAGE_CHARS`/`clampToMessageBudget`, reused). Supersedes nothing.
 Plan: `docs/plans/sprint-2r-unified-diff-preview-plan.md`.
+
+## ADR-0040 — Explicit Preview Apply Approval (second gate, still no mutation)
+
+- **Status:** ✅ Accepted (v2, Phase 2, Sprint 2s — Product Construction), Chief Architect Review:
+  APPROVED WITH CHANGES (Round 1).
+- **Date:** 2026-07-02
+- **Scope:** Sprint 2s separates **"approved a preview"** from **"approved modifying files."** After
+  Sprint 2r's diff preview, an **explicit** apply phrase ("적용해줘"/"반영해줘"/"이대로 진행해") creates a
+  *second*, HIGH-risk `ApprovalRequest` and halts at `AWAITING_APPROVAL`. Still no `Patch`, no
+  `WorkspaceWrite`, no `CommandExecution`, no file/git mutation — actual apply is a future sprint's job,
+  and this sprint's job is to preserve, not destroy, the context that sprint will need.
+
+### Most important rule
+> **Two things this sprint discovered by reading the existing code, not by assumption, before any design
+> could be trusted: (1) a second `ApprovalRequest` referencing the same `executionPlanRef` would be
+> silently swallowed by `StatelessApprovalFlow.findPending`'s plan-scoped lookup unless its anchoring
+> Task is deliberately kept plan-less; and (2) `ExecutionPlan` is documented as in-memory-only — by the
+> time a user says "적용해줘," the object `ApprovalManager.requestFor` needs no longer exists.** Both are
+> resolved by construction, not by convention: a third, plan-less anchor flow (mirroring
+> `StatelessScopeClarificationFlow` exactly), and one small additive method, `ApprovalManager.
+> requestForRisk`, for approvals with a known risk and no live plan to re-evaluate.
+
+### Decision
+- **The apply-preview anchor Task never carries a `planId`.** `StatelessApprovalFlow.findPending`
+  discovers the first approval solely via `Session.activeTaskId → Task.planId → approvals.
+  findByExecutionPlan(planId) → PENDING`. If the second approval's anchor Task carried the same
+  `planId` (the same `executionPlanRef.id` the new approval must still reference), that existing flow
+  would discover it as if it were its own and misroute its `approve` branch into `reconstructResume`,
+  which would fail (wrong anchor key) and loop into an unrelated re-ask prompt — the apply approval could
+  never actually be decided. Keeping the anchor Task's `planId` `undefined` — exactly like
+  `StatelessScopeClarificationFlow`'s anchor already is — makes `StatelessApprovalFlow.findPending`'s
+  very first guard skip it unconditionally.
+- **A new, plan-less third flow — `ApplyPreviewFlow`/`StatelessApplyPreviewFlow` — owns finding,
+  anchoring, and clearing this anchor**, discriminated the same way scope-clarification is: `!task.
+  planId` **and** an explicit `kind: 'code-preview-apply'` metadata discriminator. Structurally identical
+  to `StatelessScopeClarificationFlow` (ADR-0037) — same store shape, same technique, applied a second
+  time to a new problem of the same shape.
+- **The anchor carries an explicit three-state lifecycle: `ELIGIBLE → AWAITING_APPROVAL → APPROVED`.**
+  `ELIGIBLE` is written once, right after a successful diff preview (Sprint 2r), recording
+  `{executionPlanRef, workspaceRef, targetFiles, codeGenerationRef, codeProposalRef, instruction}`. An
+  explicit apply phrase moves it to `AWAITING_APPROVAL` (creating the second `ApprovalRequest`).
+  **Approving moves it to `APPROVED` — it does NOT clear the anchor.** `ApprovalRequest` itself carries
+  no `workspaceRef`/`targetFiles`/`codeProposalRef`; clearing the anchor on approve would have made the
+  approved decision unrecoverable to a future Apply sprint. Denying or cancelling **does** clear it —
+  there is nothing left worth preserving. This was a required correction in CA Round 1 review; the
+  original draft cleared on every decision, including approve.
+- **An explicit apply phrase with no eligible anchor (or a stale one) gets a direct, honest reply — it is
+  never reinterpreted as a new, unscoped code-change request.** "적용해줘" is a different intent from "새
+  코드 변경을 해줘," even though both might otherwise reach the same classifier keywords. This was a
+  required correction in CA Round 1 review; the original draft's answer here ("falls through to normal
+  classification") was rejected as conflating two distinct user intents.
+- **Once `AWAITING_APPROVAL`, every turn is intercepted for a decision — not only messages matching an
+  apply phrase** — exactly like the first approval's pending-decision behavior. `ELIGIBLE`/`APPROVED`
+  anchors, by contrast, are a soft, optional follow-up opportunity: anything that isn't an explicit apply
+  phrase falls through to ordinary conversation untouched, proven by a dedicated non-"좋아" ordinary-chat
+  test case.
+- **`ApprovalManager.requestForRisk` is additive, narrowly constrained, and does not replace `requestFor`
+  for the normal planning-approval path.** It always creates `PENDING` (never auto-approves) and never
+  calls `ApprovalPolicy` — it exists solely because `ExecutionPlan` (ADR-0024) is in-memory-only and does
+  not survive to this later turn; the caller supplies the risk level directly because it already knows a
+  mutation-step approval must require one. This sprint's only caller always passes `RiskLevel.HIGH`.
+- **`APPLY_WORDS` (적용/반영/이대로 진행) is a dedicated word-set, deliberately never sharing anything
+  with `APPROVE_WORDS`.** "좋아"/"오케이"/"확인"/"괜찮네" — already sufficient to decide the *first*
+  approval — must never be sufficient to authorize file modification. The two word-sets are
+  non-overlapping by construction: `APPROVE_WORDS`' bare "진행" is distinct from `APPLY_WORDS`' multi-word
+  "이대로 진행."
+- **Approval #2's `reason` carries `codeProposalRef.id`/`codeGenerationRef.id`, not just target file
+  names**, for auditability — `ApprovalRequest` has no metadata field, so this machine-facing string is
+  the only trace on the aggregate itself pointing back to which proposal was approved (the anchor remains
+  the actual source of rich, structured context).
+- **The diff itself is never persisted.** Source of truth remains the anchored refs
+  (`workspaceRef`/`targetFiles`/`codeProposalRef`); a future Apply sprint recomputes the diff on demand
+  (Sprint 2r's `workspace.diff`) and must revalidate against the latest file content before any mutation
+  — this sprint's approval wording already tells the user that will happen.
+- **No Core/Orchestrator contract change; no new aggregate/repository/migration/capability/port.**
+
+### Not implemented (out of scope)
+Actual `WorkspaceWrite` apply · `PatchSet` generation/application · `CommandExecution` · test execution
+after apply · git mutation · file mutation · retry loop · autonomous agent loop · multi-file selection ·
+directory/module scope · semantic repository search · repository indexing · AI target-file guessing ·
+new-file creation/`changeKind: 'add'` support · provider-specific apply behavior · treating the first
+(preview) approval as permission to mutate files · `ExecutionOrchestrator` contract change · `Core`
+contract change.
+
+### Consequences
+- + File modification now requires a second, explicit, HIGH-risk human decision — distinct from and
+  strictly later than the decision that only authorized generating a preview. The two risks (seeing AI
+  output vs. letting it touch a real file) are no longer conflated into one approval.
+- + The plan-less-Task collision-avoidance pattern established for scope-clarification (ADR-0037)
+  generalizes cleanly to a second, unrelated problem — the same technique, not a new one, each time a new
+  kind of conversation-anchored fact set needs to coexist with the original approval flow.
+- + Approving preserves exactly the context (`workspaceRef`/`targetFiles`/`codeProposalRef`) a future
+  Apply sprint needs, rather than requiring that sprint to invent its own recovery mechanism from
+  scratch.
+- − `ApprovalManager` gains a second construction path (`requestForRisk`) alongside `requestFor` — an
+  accepted, narrowly-scoped exception to the "zero Capability-layer changes" precedent Sprint 2q/2r held,
+  forced by `ExecutionPlan`'s documented non-persistence (ADR-0024), not a design preference.
+- − An approved-but-never-decided-by-a-future-sprint apply anchor persists indefinitely as an inert Task
+  — the same accepted "historical record" trade-off already made for approval/scope-clarification anchors
+  (ADR-0032/0037), now made a third time.
+
+### Relations
+ADR-0037 (Multi-turn Code Scope Clarification — the plan-less anchor + discriminator technique reused a
+second time), ADR-0032 (Conversation Runtime — `StatelessApprovalFlow`'s Task-anchor pattern, the
+collision this sprint had to design around), ADR-0025 (CAP-004 Approval Capability + Aggregate Ownership
+Rule — `requestForRisk` stays inside `ApprovalManager`, the aggregate's sole owner), ADR-0024 (CAP-003
+Planning Capability — `ExecutionPlan`'s in-memory-only nature, the reason `requestForRisk` exists),
+ADR-0038/0039 (AI Code Generation Preview / Unified Diff Preview — the `codeGenerationRef`/
+`codeProposalRef`/`workspaceRef`/`targetFiles` this sprint's anchor threads through, unchanged),
+ADR-0035 (Live Code Change Planning — `planningOnly`, unchanged). Supersedes nothing.
+Plan: `docs/plans/sprint-2s-explicit-apply-approval-plan.md`.

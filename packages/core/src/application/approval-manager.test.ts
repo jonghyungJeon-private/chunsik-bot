@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ApprovalManager } from './approval-manager';
 import { ApprovalPolicy } from './approval-policy';
 import { RiskPolicy } from './risk-policy';
@@ -101,5 +101,43 @@ describe('ApprovalManager (CAP-004, ADR-0025)', () => {
     const snapshot = JSON.stringify(p);
     await manager().requestFor(p, 'alice');
     expect(JSON.stringify(p)).toBe(snapshot); // plan unchanged
+  });
+});
+
+// ── Sprint 2s — Explicit Preview Apply Approval (ADR-0040) ─────────────────────────────────────────
+
+describe('ApprovalManager.requestForRisk (Sprint 2s, ADR-0040)', () => {
+  it('creates a PENDING request with the given executionPlanRef/riskLevel/reason/requestedBy', async () => {
+    const req = await manager().requestForRisk({
+      executionPlanRef: { id: 'plan-1', goal: 'do the thing' },
+      riskLevel: RiskLevel.HIGH,
+      reason: 'Apply AI code proposal prop-1 from generation gen-1 to foo.ts',
+      requestedBy: 'alice',
+    });
+    expect(req.status).toBe(ApprovalStatus.PENDING);
+    expect(req.riskLevel).toBe(RiskLevel.HIGH);
+    expect(req.executionPlanRef).toEqual({ id: 'plan-1', goal: 'do the thing' });
+    expect(req.reason).toBe('Apply AI code proposal prop-1 from generation gen-1 to foo.ts');
+    expect(req.requestedBy).toBe('alice');
+    expect(req.decision).toBeUndefined(); // never auto-approved
+  });
+
+  it('never calls ApprovalPolicy.evaluate — there is no live ExecutionPlan to re-evaluate', async () => {
+    const policy = new ApprovalPolicy(new RiskPolicy());
+    const evaluateSpy = vi.spyOn(policy, 'evaluate');
+    const mgr = new ApprovalManager(fakeStorage(), policy);
+    await mgr.requestForRisk({
+      executionPlanRef: { id: 'plan-1', goal: 'g' },
+      riskLevel: RiskLevel.HIGH,
+      reason: 'r',
+      requestedBy: 'alice',
+    });
+    expect(evaluateSpy).not.toHaveBeenCalled();
+  });
+
+  it('requestFor behavior remains unchanged (regression)', async () => {
+    const req = await manager().requestFor(plan(RiskLevel.HIGH), 'alice');
+    expect(req.status).toBe(ApprovalStatus.PENDING);
+    expect(req.executionPlanRef).toEqual({ id: 'plan-1', goal: 'do the thing' });
   });
 });

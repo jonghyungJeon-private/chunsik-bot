@@ -483,4 +483,44 @@ export class ResponseComposer {
     lines.push(...footerLines);
     return { context, text: clampToMessageBudget(lines.join('\n')) };
   }
+
+  /**
+   * The second approval exists to authorize FILE MODIFICATION — distinct from the first approval (which
+   * only authorized generating a preview) (Explicit Preview Apply Approval, ADR-0040). Must say so
+   * explicitly, mention that actual apply will re-validate/re-diff against the latest file content, and
+   * name all three decision words (not just 승인/취소).
+   */
+  composeApplyApprovalRequested(context: ConversationContext, targetFiles: string[]): OutboundMessage {
+    return {
+      context,
+      text:
+        `AI가 준비한 코드 변경을 실제 파일(${targetFiles.join(', ')})에 적용하려면 별도 승인이 필요해요.\n` +
+        '이 승인은 미리보기 생성이 아니라 실제 파일 수정을 위한 것이에요. 아직 파일은 수정되지 않았어요.\n' +
+        '실제 적용 시에는 최신 파일 내용으로 다시 확인해요.\n' +
+        '진행하려면 "승인", 거절하려면 "거절", 그만두려면 "취소"라고 답해 주세요.',
+    };
+  }
+
+  /**
+   * Explicit apply intent detected, but no eligible preview/refs to apply (ADR-0040). Never creates an
+   * approval.
+   */
+  composeApplyPreviewUnavailable(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '적용할 수 있는 코드 변경 미리보기가 없어요. 먼저 코드 변경을 요청하고 미리보기를 확인해 주세요.',
+    };
+  }
+
+  /**
+   * The apply approval was recorded (or was already approved and the user asked again) — this sprint
+   * does not implement the apply step itself (ADR-0040). Must not read as if the task is complete —
+   * never "적용 완료"/"반영 완료"/"수정했어요".
+   */
+  composeApplyApprovalRecorded(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '적용 승인만 기록했어요.\n아직 실제 파일 적용은 수행하지 않았어요.\n파일은 수정되지 않았어요.',
+    };
+  }
 }

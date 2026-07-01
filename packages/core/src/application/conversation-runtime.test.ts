@@ -15,6 +15,7 @@ import type {
   CodeProposal,
   CommandExecution,
   ConversationContext,
+  ExecutionPlanRef,
   GenerateCodeInput,
   InboundMessage,
   Intent,
@@ -33,7 +34,14 @@ import { IntentResolver } from './intent-resolver';
 import { ExecutionOutcomeStatus, ExecutionStage } from './execution-orchestrator';
 import type { ExecutionOutcome, ExecutionRequest } from './execution-orchestrator';
 import { ConversationRuntime, filterInScopeChanges, toCodeChangePreview, toCodeDiffPreview } from './conversation-runtime';
-import type { ApprovalFlow, ConversationRuntimeDeps, PendingScopeClarification, ScopeClarificationFlow } from './conversation-runtime';
+import type {
+  ApplyPreviewAnchor,
+  ApplyPreviewFlow,
+  ApprovalFlow,
+  ConversationRuntimeDeps,
+  PendingScopeClarification,
+  ScopeClarificationFlow,
+} from './conversation-runtime';
 import { StatelessApprovalFlow } from './stateless-approval-flow';
 
 const TS = '2026-07-01T00:00:00.000Z';
@@ -150,6 +158,20 @@ const workspaceDiffOf = (changes: ProposedChange[]): WorkspaceDiff => ({
   truncated: false,
 });
 
+/** Default ELIGIBLE apply-preview anchor (Sprint 2s) matching the fixtures above. */
+const applyAnchorOf = (o: Partial<ApplyPreviewAnchor> = {}): ApplyPreviewAnchor => ({
+  kind: 'code-preview-apply',
+  status: 'ELIGIBLE',
+  executionPlanRef: { id: 'plan-1', goal: 'g' },
+  workspaceRef: WORKSPACE,
+  targetFiles: [TARGET_FILE],
+  codeGenerationRef: { id: 'gen-1', status: CodeGenerationStatus.SUCCEEDED },
+  codeProposalRef: { id: 'prop-1' },
+  instruction: '이 버그 고쳐줘',
+  createdAt: TS,
+  ...o,
+});
+
 interface Calls {
   run: number;
   resume: number;
@@ -170,6 +192,18 @@ interface Calls {
   lastCodeGenerationInput?: GenerateCodeInput;
   workspaceDiff: number;
   lastWorkspaceDiffInput?: ProposedChange[];
+  applyFindAnchor: number;
+  applyAnchorSet: number;
+  applyClear: number;
+  lastApplyAnchor?: ApplyPreviewAnchor;
+  approvalsGet: number;
+  requestForRisk: number;
+  lastRequestForRiskInput?: {
+    executionPlanRef: ExecutionPlanRef;
+    riskLevel: RiskLevel;
+    reason: string;
+    requestedBy: string;
+  };
 }
 
 interface Opts {
@@ -198,6 +232,12 @@ interface Opts {
    *  failure, or a literal `WorkspaceDiff` to force a specific (e.g. empty, or `changeKind: 'add'`)
    *  result. */
   workspaceDiff?: WorkspaceDiff | 'throw';
+  /** Initial apply-preview anchor (Sprint 2s) — the fake is stateful: `anchor()` sets it, `clear()`
+   *  nulls it, so a test can drive multiple sequential `handle()` calls realistically. */
+  applyAnchor?: ApplyPreviewAnchor | null;
+  /** `approvals.get` result for the apply-approval ambiguous-retry path — defaults to a fresh PENDING
+   *  ApprovalRequest matching whatever id was requested. */
+  approvalsGetResult?: ApprovalRequest | null;
 }
 
 function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Calls } {
@@ -217,6 +257,11 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
     codeGenerationGenerate: 0,
     codeGenerationGetProposal: 0,
     workspaceDiff: 0,
+    applyFindAnchor: 0,
+    applyAnchorSet: 0,
+    applyClear: 0,
+    approvalsGet: 0,
+    requestForRisk: 0,
   };
   const composer = new ResponseComposer();
   const intentResolver = new IntentResolver();
@@ -251,6 +296,25 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
     async clear() {
       calls.scopeClear++;
       currentPendingScope = null;
+    },
+  };
+
+  // Stateful fake (Sprint 2s): anchor()/clear() actually mutate what findAnchor() next reports, so a
+  // test can drive several sequential handle() calls through ELIGIBLE -> AWAITING_APPROVAL -> APPROVED.
+  let currentApplyAnchor: ApplyPreviewAnchor | null = opts.applyAnchor ?? null;
+  const applyPreviewFlow: ApplyPreviewFlow = {
+    async findAnchor() {
+      calls.applyFindAnchor++;
+      return currentApplyAnchor;
+    },
+    async anchor(_session, anchor) {
+      calls.applyAnchorSet++;
+      calls.lastApplyAnchor = anchor;
+      currentApplyAnchor = anchor;
+    },
+    async clear() {
+      calls.applyClear++;
+      currentApplyAnchor = null;
     },
   };
 
@@ -326,9 +390,28 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
     },
     approvals: {
       async decide(id) { calls.decide++; return { ...pendingApprovalOf(), id, status: ApprovalStatus.REJECTED }; },
+      async get(id) {
+        calls.approvalsGet++;
+        return opts.approvalsGetResult === undefined ? { ...pendingApprovalOf(), id } : opts.approvalsGetResult;
+      },
+      async requestForRisk(input) {
+        calls.requestForRisk++;
+        calls.lastRequestForRiskInput = input;
+        return {
+          id: 'apply-appr-1',
+          executionPlanRef: input.executionPlanRef,
+          status: ApprovalStatus.PENDING,
+          riskLevel: input.riskLevel,
+          reason: input.reason,
+          requestedBy: input.requestedBy,
+          createdAt: TS,
+          updatedAt: TS,
+        };
+      },
     },
     approvalFlow,
     scopeClarificationFlow,
+    applyPreviewFlow,
     codeGeneration: {
       async generate(input) {
         calls.codeGenerationGenerate++;
@@ -1081,6 +1164,203 @@ describe('AI Code Generation Preview — runtime', () => {
     expect(result.executionOutcome).toBe(resumeOutcome);
   });
 
+  it('a successful diff preview anchors an ELIGIBLE apply-preview with the same refs (Sprint 2s, ADR-0040)', async () => {
+    const { calls } = await approveWith({}, planningOnlyRequestOf());
+    expect(calls.applyAnchorSet).toBe(1);
+    expect(calls.lastApplyAnchor).toMatchObject({
+      kind: 'code-preview-apply',
+      status: 'ELIGIBLE',
+      executionPlanRef: { id: 'plan-1', goal: 'g' },
+      workspaceRef: WORKSPACE,
+      targetFiles: [TARGET_FILE],
+      instruction: '이 버그 고쳐줘',
+    });
+    expect(calls.lastApplyAnchor?.approvalId).toBeUndefined();
+  });
+
+  it('a failed preview never anchors an apply-preview', async () => {
+    const { calls } = await approveWith({ codeGeneration: 'throw' }, planningOnlyRequestOf());
+    expect(calls.applyAnchorSet).toBe(0);
+  });
+});
+
+describe('Explicit Preview Apply Approval — runtime (Sprint 2s, ADR-0040)', () => {
+  it.each(['적용해줘', '반영해줘', '이대로 진행해'])(
+    '"%s" with an ELIGIBLE anchor creates a second approval and returns AWAITING_APPROVAL',
+    async (text) => {
+      const { deps, calls } = makeDeps({ applyAnchor: applyAnchorOf() });
+      const result = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.requestForRisk).toBe(1);
+      expect(result.status).toBe('AWAITING_APPROVAL');
+      expect(result.reply.text).toBe(
+        new ResponseComposer().composeApplyApprovalRequested(CTX, [TARGET_FILE]).text,
+      );
+    },
+  );
+
+  it.each(['좋아', '오케이', '확인', '괜찮네'])(
+    '"%s" with an ELIGIBLE anchor does not create an apply approval (Critical Product Rule)',
+    async (text) => {
+      const { deps, calls } = makeDeps({ applyAnchor: applyAnchorOf() });
+      const result = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.requestForRisk).toBe(0);
+      expect(calls.classify).toBe(1); // falls through to normal handling
+      expect(result.status).toBe('RESPONDED');
+    },
+  );
+
+  it('ordinary non-apply chat with an ELIGIBLE anchor falls through normally (soft hook)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: applyAnchorOf() });
+    const result = await new ConversationRuntime(deps).handle(messageOf('오늘 뭐 할까?'));
+    expect(calls.requestForRisk).toBe(0);
+    expect(calls.classify).toBe(1);
+    expect(result.status).toBe('RESPONDED');
+  });
+
+  it.each(['적용해줘', '반영해줘', '이대로 진행해'])(
+    '"%s" with no anchor returns apply-unavailable — never a new code-change request',
+    async (text) => {
+      const { deps, calls } = makeDeps(); // applyAnchor defaults to null
+      const result = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.requestForRisk).toBe(0);
+      expect(result.reply.text).toBe(new ResponseComposer().composeApplyPreviewUnavailable(CTX).text);
+    },
+  );
+
+  it('the no-anchor explicit-apply path calls neither the classifier nor the Orchestrator', async () => {
+    const { deps, calls } = makeDeps();
+    await new ConversationRuntime(deps).handle(messageOf('적용해줘'));
+    expect(calls.classify).toBe(0);
+    expect(calls.run).toBe(0);
+    expect(calls.resume).toBe(0);
+  });
+
+  it('apply intent with a missing codeProposalRef on the anchor does not create an approval', async () => {
+    const broken = { ...applyAnchorOf(), codeProposalRef: undefined } as unknown as ApplyPreviewAnchor;
+    const { deps, calls } = makeDeps({ applyAnchor: broken });
+    const result = await new ConversationRuntime(deps).handle(messageOf('적용해줘'));
+    expect(calls.requestForRisk).toBe(0);
+    expect(result.status).toBe('FAILED');
+    expect(result.reply.text).toBe(new ResponseComposer().composeApplyPreviewUnavailable(CTX).text);
+  });
+
+  it('apply intent with a missing workspaceRef on the anchor does not create an approval', async () => {
+    const broken = { ...applyAnchorOf(), workspaceRef: undefined } as unknown as ApplyPreviewAnchor;
+    const { deps, calls } = makeDeps({ applyAnchor: broken });
+    const result = await new ConversationRuntime(deps).handle(messageOf('적용해줘'));
+    expect(calls.requestForRisk).toBe(0);
+    expect(result.status).toBe('FAILED');
+  });
+
+  it('apply intent with empty targetFiles on the anchor does not create an approval', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: applyAnchorOf({ targetFiles: [] }) });
+    const result = await new ConversationRuntime(deps).handle(messageOf('적용해줘'));
+    expect(calls.requestForRisk).toBe(0);
+    expect(result.status).toBe('FAILED');
+  });
+
+  it('requestForRisk is called with the anchor executionPlanRef, HIGH risk, and a reason naming both refs and target files', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: applyAnchorOf() });
+    await new ConversationRuntime(deps).handle(messageOf('적용해줘'));
+    expect(calls.lastRequestForRiskInput?.executionPlanRef).toEqual({ id: 'plan-1', goal: 'g' });
+    expect(calls.lastRequestForRiskInput?.riskLevel).toBe(RiskLevel.HIGH);
+    expect(calls.lastRequestForRiskInput?.reason).toContain(TARGET_FILE);
+    expect(calls.lastRequestForRiskInput?.reason).toContain('prop-1');
+    expect(calls.lastRequestForRiskInput?.reason).toContain('gen-1');
+  });
+
+  it('after creating the approval, the anchor is re-anchored AWAITING_APPROVAL with the new approvalId and every original ref', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: applyAnchorOf() });
+    await new ConversationRuntime(deps).handle(messageOf('적용해줘'));
+    expect(calls.lastApplyAnchor?.status).toBe('AWAITING_APPROVAL');
+    expect(calls.lastApplyAnchor?.approvalId).toBe('apply-appr-1');
+    expect(calls.lastApplyAnchor?.workspaceRef).toEqual(WORKSPACE);
+    expect(calls.lastApplyAnchor?.targetFiles).toEqual([TARGET_FILE]);
+    expect(calls.lastApplyAnchor?.codeGenerationRef).toEqual({ id: 'gen-1', status: CodeGenerationStatus.SUCCEEDED });
+    expect(calls.lastApplyAnchor?.codeProposalRef).toEqual({ id: 'prop-1' });
+  });
+
+  it('explicit apply intent while the anchor is already APPROVED does not re-ask or create a duplicate approval', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: applyAnchorOf({ status: 'APPROVED', approvalId: 'apply-appr-1', approvedAt: TS }) });
+    const result = await new ConversationRuntime(deps).handle(messageOf('적용해줘'));
+    expect(calls.requestForRisk).toBe(0);
+    expect(result.status).toBe('RESPONDED');
+    expect(result.reply.text).toBe(new ResponseComposer().composeApplyApprovalRecorded(CTX).text);
+  });
+
+  it('approve on a pending apply gate calls approvals.decide exactly once', async () => {
+    const pendingAnchor = applyAnchorOf({ status: 'AWAITING_APPROVAL', approvalId: 'apply-appr-1' });
+    const { deps, calls } = makeDeps({ applyAnchor: pendingAnchor });
+    await new ConversationRuntime(deps).handle(messageOf('승인'));
+    expect(calls.decide).toBe(1);
+  });
+
+  it('approve on a pending apply gate re-anchors APPROVED (does not clear) and preserves every ref', async () => {
+    const pendingAnchor = applyAnchorOf({ status: 'AWAITING_APPROVAL', approvalId: 'apply-appr-1' });
+    const { deps, calls } = makeDeps({ applyAnchor: pendingAnchor });
+    const result = await new ConversationRuntime(deps).handle(messageOf('승인'));
+    expect(calls.applyClear).toBe(0);
+    expect(calls.lastApplyAnchor?.status).toBe('APPROVED');
+    expect(calls.lastApplyAnchor?.approvedAt).toBeTruthy();
+    expect(calls.lastApplyAnchor?.workspaceRef).toEqual(WORKSPACE);
+    expect(calls.lastApplyAnchor?.targetFiles).toEqual([TARGET_FILE]);
+    expect(calls.lastApplyAnchor?.codeGenerationRef).toEqual({ id: 'gen-1', status: CodeGenerationStatus.SUCCEEDED });
+    expect(calls.lastApplyAnchor?.codeProposalRef).toEqual({ id: 'prop-1' });
+    expect(result.status).toBe('RESPONDED');
+    expect(result.reply.text).toBe(new ResponseComposer().composeApplyApprovalRecorded(CTX).text);
+    // No Orchestrator/mutation call reachable from this path — no such dependency exists on it.
+    expect(calls.run).toBe(0);
+    expect(calls.resume).toBe(0);
+  });
+
+  it('deny on a pending apply gate clears the anchor and reports DENIED', async () => {
+    const pendingAnchor = applyAnchorOf({ status: 'AWAITING_APPROVAL', approvalId: 'apply-appr-1' });
+    const { deps, calls } = makeDeps({ applyAnchor: pendingAnchor });
+    const result = await new ConversationRuntime(deps).handle(messageOf('거절'));
+    expect(calls.applyClear).toBe(1);
+    expect(result.status).toBe('DENIED');
+  });
+
+  it('cancel on a pending apply gate clears the anchor and reports CANCELLED', async () => {
+    const pendingAnchor = applyAnchorOf({ status: 'AWAITING_APPROVAL', approvalId: 'apply-appr-1' });
+    const { deps, calls } = makeDeps({ applyAnchor: pendingAnchor });
+    const result = await new ConversationRuntime(deps).handle(messageOf('취소'));
+    expect(calls.applyClear).toBe(1);
+    expect(result.status).toBe('CANCELLED');
+  });
+
+  it('an ambiguous reply while the apply approval is pending returns the generic approval notice and never classifies', async () => {
+    const pendingAnchor = applyAnchorOf({ status: 'AWAITING_APPROVAL', approvalId: 'apply-appr-1' });
+    const { deps, calls } = makeDeps({ applyAnchor: pendingAnchor });
+    const result = await new ConversationRuntime(deps).handle(messageOf('뭐였지?'));
+    expect(result.status).toBe('AWAITING_APPROVAL');
+    expect(calls.classify).toBe(0);
+    expect(calls.decide).toBe(0);
+    expect(calls.applyClear).toBe(0);
+  });
+
+  it('the first (Sprint 2n) approval pending takes priority — apply routing never runs', async () => {
+    const pendingAnchor = applyAnchorOf({ status: 'AWAITING_APPROVAL', approvalId: 'apply-appr-1' });
+    const { deps, calls } = makeDeps({ pending: pendingApprovalOf(), applyAnchor: pendingAnchor });
+    await new ConversationRuntime(deps).handle(messageOf('적용해줘'));
+    expect(calls.applyFindAnchor).toBe(0);
+    expect(calls.requestForRisk).toBe(0);
+  });
+
+  it('a pending scope clarification (Sprint 2p) takes priority over apply routing', async () => {
+    const { deps, calls } = makeDeps({
+      pendingScope: { kind: 'code-scope-clarification', summary: 'x', createdAt: TS },
+      applyAnchor: applyAnchorOf(),
+    });
+    await new ConversationRuntime(deps).handle(messageOf('적용해줘'));
+    expect(calls.applyFindAnchor).toBe(0);
+    expect(calls.requestForRisk).toBe(0);
+  });
+
+  // A project-mismatched anchor's auto-clear behavior is unit-tested directly against the production
+  // StatelessApplyPreviewFlow (stateless-apply-preview-flow.test.ts) — this file's applyPreviewFlow
+  // fake is a simple stateful pass-through and does not model that staleness check, matching the same
+  // convention already used for scopeClarificationFlow's fake here.
 });
 
 describe('toCodeChangePreview (Sprint 2q, ADR-0038)', () => {

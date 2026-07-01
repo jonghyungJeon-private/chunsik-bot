@@ -1,7 +1,7 @@
 import { newId } from '../util/id';
 import { now } from '../util/clock';
 import { ApprovalStatus, executionPlanRef } from '../domain';
-import type { ApprovalDecision, ApprovalRequest, ExecutionPlan, Id } from '../domain';
+import type { ApprovalDecision, ApprovalRequest, ExecutionPlan, ExecutionPlanRef, Id, RiskLevel } from '../domain';
 import type { StorageProvider } from '../ports';
 import type { ApprovalPolicy } from './approval-policy';
 
@@ -61,6 +61,34 @@ export class ApprovalManager {
 
   async get(approvalId: Id): Promise<ApprovalRequest | null> {
     return this.storage.approvals.get(approvalId);
+  }
+
+  /**
+   * Create a PENDING ApprovalRequest when there is no live ExecutionPlan to re-evaluate (ADR-0024: the
+   * plan is in-memory only and does not survive past its originating turn) — e.g. a later, explicit
+   * approval for a mutation step derived from an already-approved plan (Sprint 2s, ADR-0040). The risk
+   * level is supplied directly by the caller, which already knows it must require approval; this
+   * deliberately bypasses ApprovalPolicy's plan-based evaluation and NEVER auto-approves — it does not
+   * replace requestFor(plan) for the normal planning-approval path.
+   */
+  async requestForRisk(input: {
+    executionPlanRef: ExecutionPlanRef;
+    riskLevel: RiskLevel;
+    reason: string;
+    requestedBy: string;
+  }): Promise<ApprovalRequest> {
+    const ts = now();
+    const request: ApprovalRequest = {
+      id: newId(),
+      executionPlanRef: input.executionPlanRef,
+      status: ApprovalStatus.PENDING, // unconditional — this method never auto-approves
+      riskLevel: input.riskLevel,
+      reason: input.reason,
+      requestedBy: input.requestedBy,
+      createdAt: ts,
+      updatedAt: ts,
+    };
+    return this.storage.approvals.save(request);
   }
 
   /** Whether a given ExecutionPlan currently has an APPROVED request. */
