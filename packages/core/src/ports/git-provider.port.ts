@@ -1,4 +1,4 @@
-import type { GitCommitResult, GitDiff, GitStatus, RepositoryInfo } from '../domain';
+import type { GitCommitResult, GitDiff, GitPushResult, GitStatus, RepositoryInfo } from '../domain';
 
 /**
  * PORT: read-only git **repository** inspection (CAP-002, ADR-0023).
@@ -44,4 +44,15 @@ export interface GitProvider {
    * any git call). Approval gating is done by `GitManager.commitFiles`; this port takes no ApprovalRef.
    */
   commitFiles(rootPath: string, files: string[], message: string): Promise<GitCommitResult>;
+
+  /**
+   * The SECOND mutating method (CAP-002, ADR-0048) — the first REMOTE mutation. Pushes EXACTLY the current
+   * HEAD to `<remote> HEAD:<branch>` and returns the provider-reported target (NOT an independent remote
+   * verification). A single `git --no-pager push <remote> HEAD:<branch>`, argument-array only (never a shell
+   * string), timeout, masked stderr. NEVER `--force`/`-f`/`--tags`/`--all`/`-u`/`--set-upstream`/bare `git
+   * push`, no arbitrary refspec, no user-provided remote/branch. Validates remote/branch with conservative
+   * git ref rules BEFORE any git call (unsafe target never reaches argv). Approval gating is done by
+   * `GitManager.pushApprovedCommit`; this port takes no ApprovalRef.
+   */
+  pushApprovedCommit(rootPath: string, remote: string, branch: string, commitHash: string): Promise<GitPushResult>;
 }

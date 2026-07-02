@@ -23,6 +23,7 @@ import type {
   GenerateCodeInput,
   GitCommitResult,
   GitDiff,
+  GitPushResult,
   GitStatus,
   RepositoryInfo,
   InboundMessage,
@@ -164,6 +165,19 @@ const repoInfoOf = (o: Partial<RepositoryInfo> = {}): RepositoryInfo => ({
   branch: 'main',
   headSha: HEAD_SHA,
   detached: false,
+  ...o,
+});
+
+/** A valid GitPushResult (Sprint 3a) — echoes the approved push input, so the runtime's result-integrity
+ *  gate passes by default. Override any field to force a mismatch. */
+const gitPushResultOf = (
+  input: { remote: string; branch: string; commitHash: string },
+  o: Partial<GitPushResult> = {},
+): GitPushResult => ({
+  remote: input.remote,
+  branch: input.branch,
+  upstreamRef: `${input.remote}/${input.branch}`,
+  commitHash: input.commitHash,
   ...o,
 });
 
@@ -342,10 +356,12 @@ interface Calls {
   gitDiff: number;
   gitCommit: number;
   gitInfo: number;
+  gitPush: number;
   lastGitStatusRoot?: string;
   lastGitDiffRoot?: string;
   lastGitCommitInput?: { rootPath: string; files: string[]; message: string; approvalRef: ApprovalRef };
   lastGitInfoRoot?: string;
+  lastGitPushInput?: { rootPath: string; remote: string; branch: string; commitHash: string; approvalRef: ApprovalRef };
   commandExecGet: number;
   loggerWarn: number;
 }
@@ -410,6 +426,9 @@ interface Opts {
   /** `git.info` result (Sprint 2z) — defaults to `repoInfoOf()` (HEAD == HEAD_SHA); pass 'throw' to simulate
    *  a read error, or a literal RepositoryInfo to force detached / moved-HEAD. */
   gitInfo?: RepositoryInfo | 'throw';
+  /** `git.pushApprovedCommit` result (Sprint 3a) — defaults to a valid `gitPushResultOf` echoing the input;
+   *  pass 'throw' to simulate a push failure, or a literal GitPushResult to force an integrity mismatch. */
+  gitPush?: GitPushResult | 'throw';
   /** When true, `commandExecutions.get` throws (Sprint 2w — validation-lookup failure must not fail preview). */
   commandExecGetThrows?: boolean;
 }
@@ -446,6 +465,7 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
     gitDiff: 0,
     gitCommit: 0,
     gitInfo: 0,
+    gitPush: 0,
     commandExecGet: 0,
     loggerWarn: 0,
   };
@@ -676,6 +696,12 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
         calls.lastGitInfoRoot = rootPath;
         if (opts.gitInfo === 'throw') throw new Error('git info boom');
         return opts.gitInfo ?? repoInfoOf();
+      },
+      async pushApprovedCommit(input) {
+        calls.gitPush++;
+        calls.lastGitPushInput = input;
+        if (opts.gitPush === 'throw') throw new Error('git push boom');
+        return opts.gitPush ?? gitPushResultOf(input);
       },
     },
     logger: { ...silentLogger, warn: () => { calls.loggerWarn++; } },
@@ -3422,6 +3448,321 @@ describe('Explicit Git Push Approval — runtime (Sprint 2z, ADR-0047)', () => {
     expect(calls.resume).toBe(0);
     // the git dep exposes no push method (structural)
     expect(Object.keys(deps.git)).not.toContain('push');
+  });
+});
+
+// ── Sprint 3a — Approved Git Push Execution (PUSH_APPROVED → git push, ADR-0048) ───────────────────
+
+describe('Approved Git Push Execution — runtime (Sprint 3a, ADR-0048)', () => {
+  const REMOTE = 'origin';
+  const BRANCH = 'main';
+  const UPSTREAM = 'origin/main';
+  /** A PUSH_APPROVED anchor with complete, valid execution context. */
+  const pushApprovedAnchor = (o: Partial<ApplyPreviewAnchor> = {}): ApplyPreviewAnchor =>
+    approvedAnchorOf({
+      status: 'PUSH_APPROVED',
+      workspaceChangeRef: { id: 'wc-1', status: WorkspaceChangeStatus.APPLIED },
+      postApplyValidationRef: { id: 'cmd-test', status: CommandExecutionStatus.SUCCEEDED },
+      commitApprovalId: 'apply-appr-1',
+      commitHash: HEAD_SHA,
+      committedFiles: [TARGET_FILE],
+      pushApprovalId: 'apply-appr-1',
+      pushCommitHash: HEAD_SHA,
+      pushRemote: REMOTE,
+      pushBranch: BRANCH,
+      pushUpstreamRef: UPSTREAM,
+      ...o,
+    });
+  /** A GIT_PUSHED anchor (a push already executed). */
+  const pushedAnchor = (o: Partial<ApplyPreviewAnchor> = {}): ApplyPreviewAnchor =>
+    pushApprovedAnchor({
+      status: 'GIT_PUSHED',
+      pushedCommitHash: HEAD_SHA,
+      pushedRemote: REMOTE,
+      pushedBranch: BRANCH,
+      pushedUpstreamRef: UPSTREAM,
+      ...o,
+    });
+  /** A clean, ahead-1, not-diverged status whose upstream matches the approved target. */
+  const execReady = { clean: true, staged: [] as string[], unstaged: [] as string[], untracked: [] as string[], upstream: UPSTREAM, ahead: 1, behind: 0 };
+  const execDeps = (o: Partial<Opts> = {}): ReturnType<typeof makeDeps> =>
+    makeDeps({
+      applyAnchor: pushApprovedAnchor(),
+      approvalsGetResult: approvedApprovalOf(),
+      gitInfo: repoInfoOf(),
+      gitStatus: gitStatusOf(execReady),
+      ...o,
+    });
+  const composer = new ResponseComposer();
+  const EXEC_PHRASES = ['승인된 push 실행해줘', 'push 실행해줘', '이제 실제 push 해줘', 'execute approved push', 'push approved commit'];
+
+  // ── execute + gating (CA 1–12) ──────────────────────────────────────────────────────────────
+  it('PUSH_APPROVED + each execution phrase → git.pushApprovedCommit once, GIT_PUSHED (CA 1–5)', async () => {
+    for (const text of EXEC_PHRASES) {
+      const { deps, calls } = execDeps();
+      const result = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.gitPush, text).toBe(1);
+      expect(calls.lastApplyAnchor?.status, text).toBe('GIT_PUSHED');
+      expect(result.status, text).toBe('RESPONDED');
+      expect(result.reply.text, text).toBe(composer.composePushExecuted(CTX, { commitHash: HEAD_SHA, remote: REMOTE, branch: BRANCH }).text);
+    }
+  });
+
+  it('ambiguous words at PUSH_APPROVED do not execute (CA 6)', async () => {
+    for (const text of ['좋아', '오케이', '확인', '진행해', '다음 단계']) {
+      const { deps, calls } = execDeps();
+      await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.gitPush, text).toBe(0);
+    }
+  });
+
+  it('no anchor + execution phrase → no push (CA 7)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: null });
+    await new ConversationRuntime(deps).handle(messageOf('승인된 push 실행해줘'));
+    expect(calls.gitPush).toBe(0);
+  });
+
+  it('GIT_COMMITTED + push-execution phrase → 2z push APPROVAL, no pushApprovedCommit (CA 8–9)', async () => {
+    for (const text of ['이제 실제 push 해줘', 'execute approved push']) {
+      const anchor = approvedAnchorOf({ status: 'GIT_COMMITTED', workspaceChangeRef: { id: 'wc-1', status: WorkspaceChangeStatus.APPLIED }, commitApprovalId: 'apply-appr-1', commitHash: HEAD_SHA, committedFiles: [TARGET_FILE] });
+      const { deps, calls } = makeDeps({ applyAnchor: anchor, gitInfo: repoInfoOf(), gitStatus: gitStatusOf(execReady) });
+      await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.gitPush, text).toBe(0);
+      expect(calls.requestForRisk, text).toBe(1); // 2z CRITICAL push approval
+      expect(calls.lastRequestForRiskInput?.riskLevel, text).toBe(RiskLevel.CRITICAL);
+      expect(calls.lastApplyAnchor?.status, text).toBe('PUSH_APPROVAL_PENDING');
+    }
+  });
+
+  it('PUSH_APPROVAL_PENDING + execution phrase → 2z decision flow (ambiguous re-prompt), no push (CA 10–11)', async () => {
+    for (const text of ['execute approved push', '승인된 push 실행해줘']) {
+      const pending = approvedAnchorOf({ status: 'PUSH_APPROVAL_PENDING', workspaceChangeRef: { id: 'wc-1', status: WorkspaceChangeStatus.APPLIED }, commitApprovalId: 'apply-appr-1', commitHash: HEAD_SHA, committedFiles: [TARGET_FILE], pushApprovalId: 'apply-appr-1', pushCommitHash: HEAD_SHA, pushRemote: REMOTE, pushBranch: BRANCH, pushUpstreamRef: UPSTREAM });
+      const { deps, calls } = makeDeps({ applyAnchor: pending, approvalsGetResult: { ...pendingApprovalOf(), id: 'apply-appr-1' } });
+      const result = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.gitPush, text).toBe(0);
+      expect(calls.decide, text).toBe(0);
+      expect(result.status, text).toBe('AWAITING_APPROVAL');
+    }
+  });
+
+  it('COMMIT_APPROVED / WORKSPACE_APPLIED do not execute push (CA 12)', async () => {
+    for (const status of ['COMMIT_APPROVED', 'WORKSPACE_APPLIED'] as const) {
+      const anchor = approvedAnchorOf({ status, workspaceChangeRef: { id: 'wc-1', status: WorkspaceChangeStatus.APPLIED }, commitApprovalId: 'apply-appr-1', proposedCommitMessage: 'chore: x', commitCandidateFiles: [TARGET_FILE] });
+      const { deps, calls } = makeDeps({ applyAnchor: anchor });
+      await new ConversationRuntime(deps).handle(messageOf('승인된 push 실행해줘'));
+      expect(calls.gitPush, status).toBe(0);
+    }
+  });
+
+  // ── companion / force (CA 13–19) ────────────────────────────────────────────────────────────
+  it('push + force/--force/-f/PR/deploy/tag/branch/reset → reject, no push (CA 13–19)', async () => {
+    for (const text of ['force push 실행해줘', 'push --force', 'push -f', 'push and PR', '푸시하고 배포', 'push tag 실행', 'push하고 reset']) {
+      const { deps, calls } = execDeps();
+      const result = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.gitPush, text).toBe(0);
+      expect(result.reply.text, text).toBe(composer.composePushUnsupportedCompanion(CTX).text);
+    }
+  });
+
+  // ── context / verification guards (CA 20–48) ────────────────────────────────────────────────
+  it('incomplete approved push context → composePushExecutionUnavailable, no push, log never throws (CA 20–26)', async () => {
+    const bad: Array<[string, Partial<ApplyPreviewAnchor>]> = [
+      ['missing pushApprovalId', { pushApprovalId: undefined }],
+      ['missing pushCommitHash', { pushCommitHash: undefined }],
+      ['missing pushRemote', { pushRemote: undefined }],
+      ['missing pushBranch', { pushBranch: undefined }],
+      ['missing pushUpstreamRef', { pushUpstreamRef: undefined }],
+      ['missing commitHash', { commitHash: undefined }],
+      ['missing executionPlanRef', { executionPlanRef: undefined }],
+    ];
+    for (const [label, patch] of bad) {
+      const { deps, calls } = execDeps({ applyAnchor: pushApprovedAnchor(patch) });
+      const result = await new ConversationRuntime(deps).handle(messageOf('승인된 push 실행해줘')); // must not throw
+      expect(calls.gitPush, label).toBe(0);
+      expect(result.reply.text, label).toBe(composer.composePushExecutionUnavailable(CTX).text);
+    }
+  });
+
+  it('unsafe/malformed persisted target in anchor → no pushApprovedCommit (CA 27–31)', async () => {
+    const bad: Array<[string, Partial<ApplyPreviewAnchor>]> = [
+      ['unsafe pushRemote', { pushRemote: 'ori gin' }],
+      ['unsafe pushBranch', { pushBranch: 'bad:branch' }],
+      ['malformed pushUpstreamRef', { pushUpstreamRef: 'originmain' }],
+      ['upstream/remote-branch mismatch', { pushUpstreamRef: 'origin/other' }],
+      ['invalid pushCommitHash', { pushCommitHash: 'nothex' }],
+      ['invalid commitHash', { commitHash: 'nothex' }],
+    ];
+    for (const [label, patch] of bad) {
+      const { deps, calls } = execDeps({ applyAnchor: pushApprovedAnchor(patch) });
+      const result = await new ConversationRuntime(deps).handle(messageOf('승인된 push 실행해줘'));
+      expect(calls.gitPush, label).toBe(0);
+      expect(result.reply.text, label).toBe(composer.composePushExecutionUnavailable(CTX).text);
+    }
+  });
+
+  it('approval null / not-APPROVED / plan-mismatch → no push (CA 32–34)', async () => {
+    const cases: Array<[string, ApprovalRequest | null]> = [
+      ['missing', null],
+      ['not APPROVED', { ...pendingApprovalOf(), id: 'apply-appr-1' }],
+      ['plan mismatch', { ...approvedApprovalOf(), executionPlanRef: { id: 'other-plan', goal: 'g' } }],
+    ];
+    for (const [label, approval] of cases) {
+      const { deps, calls } = execDeps({ approvalsGetResult: approval });
+      const result = await new ConversationRuntime(deps).handle(messageOf('승인된 push 실행해줘'));
+      expect(calls.gitPush, label).toBe(0);
+      expect(result.reply.text, label).toBe(composer.composePushExecutionUnavailable(CTX).text);
+    }
+  });
+
+  it('git.info / git.status read failure → composePushStatusUnavailable, no push (CA 35–36)', async () => {
+    const infoThrow = execDeps({ gitInfo: 'throw' });
+    const r1 = await new ConversationRuntime(infoThrow.deps).handle(messageOf('승인된 push 실행해줘'));
+    expect(infoThrow.calls.gitPush).toBe(0);
+    expect(r1.reply.text).toBe(composer.composePushStatusUnavailable(CTX).text);
+
+    const statusThrow = execDeps({ gitStatus: 'throw' });
+    const r2 = await new ConversationRuntime(statusThrow.deps).handle(messageOf('승인된 push 실행해줘'));
+    expect(statusThrow.calls.gitPush).toBe(0);
+    expect(r2.reply.text).toBe(composer.composePushStatusUnavailable(CTX).text);
+  });
+
+  it('detached / HEAD ≠ pushCommitHash / commitHash ≠ pushCommitHash → no push (CA 37–39)', async () => {
+    const detached = execDeps({ gitInfo: repoInfoOf({ detached: true, branch: '', headSha: undefined }) });
+    expect((await new ConversationRuntime(detached.deps).handle(messageOf('승인된 push 실행해줘'))).reply.text).toBe(composer.composePushExecutionUnavailable(CTX).text);
+    expect(detached.calls.gitPush).toBe(0);
+
+    const moved = execDeps({ gitInfo: repoInfoOf({ headSha: 'f'.repeat(40) }) });
+    await new ConversationRuntime(moved.deps).handle(messageOf('승인된 push 실행해줘'));
+    expect(moved.calls.gitPush).toBe(0);
+
+    const commitDrift = execDeps({ applyAnchor: pushApprovedAnchor({ commitHash: 'a'.repeat(40) }) }); // commitHash ≠ pushCommitHash
+    await new ConversationRuntime(commitDrift.deps).handle(messageOf('승인된 push 실행해줘'));
+    expect(commitDrift.calls.gitPush).toBe(0);
+  });
+
+  it('dirty tree / upstream drift / not-ahead / diverged → no push (CA 40–48)', async () => {
+    const blocked: Array<[string, Partial<GitStatus>, (c: ReturnType<typeof makeDeps>['deps']['composer']) => string]> = [
+      ['no upstream', { upstream: undefined, ahead: undefined, behind: undefined }, (c) => c.composePushExecutionUnavailable(CTX).text],
+      ['upstream differs', { upstream: 'origin/other' }, (c) => c.composePushExecutionUnavailable(CTX).text],
+      ['ahead 0', { ahead: 0 }, (c) => c.composePushNothingToPush(CTX).text],
+      ['behind > 0', { ahead: 1, behind: 2 }, (c) => c.composePushDiverged(CTX).text],
+      ['staged dirty', { clean: false, staged: ['x.ts'] }, (c) => c.composePushDirtyWorkingTree(CTX).text],
+      ['unstaged dirty', { clean: false, unstaged: ['y.ts'] }, (c) => c.composePushDirtyWorkingTree(CTX).text],
+      ['untracked dirty', { clean: false, untracked: ['z.ts'] }, (c) => c.composePushDirtyWorkingTree(CTX).text],
+    ];
+    for (const [label, over, expected] of blocked) {
+      const { deps, calls } = execDeps({ gitStatus: gitStatusOf({ ...execReady, ...over }) });
+      const result = await new ConversationRuntime(deps).handle(messageOf('승인된 push 실행해줘'));
+      expect(calls.gitPush, label).toBe(0);
+      expect(result.reply.text, label).toBe(expected(composer));
+    }
+  });
+
+  // ── pushApprovedCommit input (CA 49–53) ─────────────────────────────────────────────────────
+  it('valid context calls git.pushApprovedCommit once with exact approved remote/branch/hash + ApprovalRef (CA 49–53)', async () => {
+    const { deps, calls } = execDeps();
+    await new ConversationRuntime(deps).handle(messageOf('승인된 push 실행해줘'));
+    expect(calls.gitPush).toBe(1);
+    expect(calls.lastGitPushInput?.remote).toBe(REMOTE);
+    expect(calls.lastGitPushInput?.branch).toBe(BRANCH);
+    expect(calls.lastGitPushInput?.commitHash).toBe(HEAD_SHA);
+    expect(calls.lastGitPushInput?.rootPath).toBe(WORKSPACE.rootPath);
+    expect(calls.lastGitPushInput?.approvalRef).toEqual({ id: 'apply-appr-1', status: ApprovalStatus.APPROVED, executionPlanRef: { id: 'plan-1', goal: 'g' } });
+  });
+
+  // ── result integrity / success / repeat (CA 79–105) ─────────────────────────────────────────
+  it('result-integrity mismatch → composePushResultUnverified, keep PUSH_APPROVED, no GIT_PUSHED (CA 79–86)', async () => {
+    const badResults: Array<[string, GitPushResult]> = [
+      ['wrong commitHash', gitPushResultOf({ remote: REMOTE, branch: BRANCH, commitHash: HEAD_SHA }, { commitHash: 'b'.repeat(40) })],
+      ['wrong remote', gitPushResultOf({ remote: REMOTE, branch: BRANCH, commitHash: HEAD_SHA }, { remote: 'upstream' })],
+      ['wrong branch', gitPushResultOf({ remote: REMOTE, branch: BRANCH, commitHash: HEAD_SHA }, { branch: 'dev' })],
+      ['wrong upstreamRef', gitPushResultOf({ remote: REMOTE, branch: BRANCH, commitHash: HEAD_SHA }, { upstreamRef: 'origin/dev' })],
+    ];
+    for (const [label, result] of badResults) {
+      const { deps, calls } = execDeps({ gitPush: result });
+      const turn = await new ConversationRuntime(deps).handle(messageOf('승인된 push 실행해줘'));
+      expect(calls.gitPush, label).toBe(1);
+      expect(calls.lastApplyAnchor?.status, label).not.toBe('GIT_PUSHED');
+      expect(turn.reply.text, label).toBe(composer.composePushResultUnverified(CTX).text);
+    }
+  });
+
+  it('success re-anchors GIT_PUSHED, stores pushed target, preserves full audit context (CA 87–92)', async () => {
+    const { deps, calls } = execDeps();
+    await new ConversationRuntime(deps).handle(messageOf('승인된 push 실행해줘'));
+    const a = calls.lastApplyAnchor;
+    expect(a?.status).toBe('GIT_PUSHED');
+    expect(a?.pushedCommitHash).toBe(HEAD_SHA);
+    expect(a?.pushedRemote).toBe(REMOTE);
+    expect(a?.pushedBranch).toBe(BRANCH);
+    expect(a?.pushedUpstreamRef).toBe(UPSTREAM);
+    expect(a?.pushApprovalId).toBe('apply-appr-1');
+    expect(a?.pushCommitHash).toBe(HEAD_SHA);
+    expect(a?.pushRemote).toBe(REMOTE);
+    expect(a?.pushBranch).toBe(BRANCH);
+    expect(a?.pushUpstreamRef).toBe(UPSTREAM);
+    expect(a?.commitApprovalId).toBe('apply-appr-1');
+    expect(a?.commitHash).toBe(HEAD_SHA);
+    expect(a?.committedFiles).toEqual([TARGET_FILE]);
+    expect(a?.workspaceRef).toEqual(WORKSPACE);
+    expect(a?.executionPlanRef).toEqual({ id: 'plan-1', goal: 'g' });
+    expect(a?.postApplyValidationRef).toEqual({ id: 'cmd-test', status: CommandExecutionStatus.SUCCEEDED });
+  });
+
+  it('success reply says pushed to remote target + no PR/deployment, no readiness claims (CA 93–95)', async () => {
+    const { deps } = execDeps();
+    const result = await new ConversationRuntime(deps).handle(messageOf('승인된 push 실행해줘'));
+    expect(result.reply.text).toContain(HEAD_SHA.slice(0, 7));
+    expect(result.reply.text).toContain(`${REMOTE}/${BRANCH}`);
+    expect(result.reply.text).toContain('PR 생성과 배포는 하지 않았어요');
+    for (const bad of ['배포 준비', 'ready to deploy', 'push-safe', 'deployed']) expect(result.reply.text).not.toContain(bad);
+  });
+
+  it('provider push throw → composePushExecutionFailed, keep PUSH_APPROVED, no GIT_PUSHED (CA 96–100)', async () => {
+    const { deps, calls } = execDeps({ gitPush: 'throw' });
+    const result = await new ConversationRuntime(deps).handle(messageOf('승인된 push 실행해줘'));
+    expect(calls.gitPush).toBe(1);
+    expect(calls.lastApplyAnchor?.status).not.toBe('GIT_PUSHED');
+    expect(result.status).toBe('FAILED');
+    expect(result.reply.text).toBe(composer.composePushExecutionFailed(CTX).text);
+    expect(result.reply.text).not.toContain('원격 변경 없음');
+    expect(result.reply.text).toContain('rollback은 하지 않았어요');
+  });
+
+  it('GIT_PUSHED + execution/push phrase again → already pushed, no new push (CA 101–103)', async () => {
+    for (const text of ['승인된 push 실행해줘', 'execute approved push', 'push approved commit', '푸시해줘']) {
+      const { deps, calls } = makeDeps({ applyAnchor: pushedAnchor() });
+      const result = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.gitPush, text).toBe(0);
+      expect(result.reply.text, text).toBe(composer.composePushAlreadyPushed(CTX, { commitHash: HEAD_SHA, remote: REMOTE, branch: BRANCH }).text);
+    }
+  });
+
+  it('GIT_PUSHED + PR/deploy phrase → already-pushed + future sprint, no PR/deploy (CA 104–105)', async () => {
+    for (const text of ['PR 만들어줘', '배포해줘']) {
+      const { deps, calls } = makeDeps({ applyAnchor: pushedAnchor() });
+      const result = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.gitPush, text).toBe(0);
+      expect(result.reply.text, text).toBe(composer.composePushPrDeployUnsupported(CTX).text);
+    }
+  });
+
+  // ── no side effects (CA 106–113) ────────────────────────────────────────────────────────────
+  it('the push-execution path performs no command/WorkspaceWrite/Patch/CodeGen/Orchestrator/commit call (CA 106–113)', async () => {
+    const { deps, calls } = execDeps();
+    await new ConversationRuntime(deps).handle(messageOf('승인된 push 실행해줘'));
+    expect(calls.gitPush).toBe(1);
+    expect(calls.gitInfo).toBe(1);
+    expect(calls.gitStatus).toBe(1);
+    expect(calls.gitCommit).toBe(0);
+    expect(calls.gitDiff).toBe(0);
+    expect(calls.commandRun).toBe(0);
+    expect(calls.workspaceApply).toBe(0);
+    expect(calls.patchGenerate).toBe(0);
+    expect(calls.patchGet).toBe(0);
+    expect(calls.codeGenerationGenerate).toBe(0);
+    expect(calls.run).toBe(0);
+    expect(calls.resume).toBe(0);
   });
 });
 

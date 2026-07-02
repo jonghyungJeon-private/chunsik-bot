@@ -319,6 +319,85 @@ describe('LocalGitProvider.commitFiles — the first git mutation (CAP-002, ADR-
   });
 });
 
+describe('LocalGitProvider.pushApprovedCommit — the first REMOTE mutation (CAP-002, ADR-0048)', () => {
+  /** A recording runner that succeeds (code 0) for the single push call. */
+  const pushRunner = (): { runner: GitRunner; calls: string[][] } => {
+    const calls: string[][] = [];
+    const runner: GitRunner = (args) => {
+      calls.push(args);
+      return { code: 0, stdout: '', stderr: '', timedOut: false, failed: false };
+    };
+    return { runner, calls };
+  };
+
+  it('runs exactly `push <remote> HEAD:<branch>` (one refspec argv element), argument-array only; NEVER --force/-f/--tags/--all/-u/--set-upstream/bare-push or any other mutating subcommand; returns the provider-reported approved target (CA 59–64, 79–82, 114–125)', async () => {
+    const { runner, calls } = pushRunner();
+    const sha = 'a'.repeat(40);
+    const res = await new LocalGitProvider(runner).pushApprovedCommit('/repo', 'origin', 'main', sha);
+    expect(calls).toHaveLength(1); // exactly one git command
+    expect(Array.isArray(calls[0])).toBe(true); // argument-array, never a shell string
+    expect(calls[0]).toEqual(['--no-pager', 'push', 'origin', 'HEAD:main']); // the current HEAD → approved branch
+    expect(calls[0]?.filter((a) => a.startsWith('HEAD:'))).toEqual(['HEAD:main']); // exactly one refspec element
+    for (const forbidden of [
+      '--force', '-f', '--force-with-lease', '--tags', '--all', '-u', '--set-upstream', '--mirror', '--delete',
+      'add', 'commit', 'reset', 'checkout', 'stash', 'branch', 'merge', 'rebase', 'tag', 'pull', 'fetch',
+    ]) {
+      expect(calls[0], forbidden).not.toContain(forbidden);
+    }
+    expect(res).toEqual({ remote: 'origin', branch: 'main', upstreamRef: 'origin/main', commitHash: sha }); // provider-reported target
+  });
+
+  it('rejects an unsafe remote / branch / commitHash BEFORE any git command runs — an unsafe branch never reaches argv as HEAD:<branch> (CA 65–67)', async () => {
+    const bad: Array<[string, string, string]> = [
+      ['--upload-pack=evil', 'main', 'a'.repeat(40)], // unsafe remote (leading-dash option injection)
+      ['origin', 'evil:ref', 'a'.repeat(40)], // unsafe branch (extra refspec colon)
+      ['origin', 'main', 'not-a-sha'], // invalid (non-SHA) commitHash
+    ];
+    for (const [remote, branch, hash] of bad) {
+      const { runner, calls } = pushRunner();
+      await expect(new LocalGitProvider(runner).pushApprovedCommit('/repo', remote, branch, hash)).rejects.toThrow();
+      expect(calls.length, `${remote}|${branch}|${hash}`).toBe(0); // NO git command ran
+      expect(calls.flat(), branch).not.toContain(`HEAD:${branch}`); // the unsafe branch never reached argv
+    }
+  });
+
+  it('allows a slashed branch → argv `push origin HEAD:feature/x`, upstream origin/feature/x (CA 68)', async () => {
+    const { runner, calls } = pushRunner();
+    const res = await new LocalGitProvider(runner).pushApprovedCommit('/repo', 'origin', 'feature/x', 'b'.repeat(40));
+    expect(calls[0]).toEqual(['--no-pager', 'push', 'origin', 'HEAD:feature/x']);
+    expect(res.branch).toBe('feature/x');
+    expect(res.upstreamRef).toBe('origin/feature/x');
+  });
+
+  it('rejects an unsafe branch (colon / whitespace / control / leading-dash / leading-slash / ".." / "@{" / ".lock" / trailing-slash / "//" / ~^?*[\\) — no git runs (CA 69–74)', async () => {
+    for (const branch of ['a:b', 'a b', 'a\tb', '-lead', '/lead', 'a..b', 'a@{0}', 'feat.lock', 'trail/', 'a//b', 'a~b', 'a^b', 'a?b', 'a*b', 'a[b', 'a\\b', '']) {
+      const { runner, calls } = pushRunner();
+      await expect(new LocalGitProvider(runner).pushApprovedCommit('/repo', 'origin', branch, 'c'.repeat(40))).rejects.toThrow(/unsafe branch/);
+      expect(calls.length, JSON.stringify(branch)).toBe(0);
+    }
+  });
+
+  it('rejects an unsafe remote (leading-dash / colon / slash / whitespace / control / empty) — no git runs (CA 75–78)', async () => {
+    for (const remote of ['-force', 'ori:gin', 'ori/gin', 'ori gin', 'ori\tgin', '']) {
+      const { runner, calls } = pushRunner();
+      await expect(new LocalGitProvider(runner).pushApprovedCommit('/repo', remote, 'main', 'd'.repeat(40))).rejects.toThrow(/unsafe remote/);
+      expect(calls.length, JSON.stringify(remote)).toBe(0);
+    }
+  });
+
+  it('surfaces a sanitized failure when the push fails — no fake success, credentials masked', async () => {
+    const failing: GitRunner = (args) =>
+      args.includes('push')
+        ? { code: 1, stdout: '', stderr: 'fatal: unable to access https://user:sekrettoken@github.com/x/y.git', timedOut: false, failed: false }
+        : { code: 0, stdout: '', stderr: '', timedOut: false, failed: false };
+    const err: Error = await new LocalGitProvider(failing)
+      .pushApprovedCommit('/repo', 'origin', 'main', 'e'.repeat(40))
+      .then(() => { throw new Error('expected push to reject'); }, (e: Error) => e);
+    expect(err.message).toMatch(/git push failed \(exit 1\)/);
+    expect(err.message).not.toContain('sekrettoken');
+  });
+});
+
 describe('parsePorcelain', () => {
   it('parses branch, staged, unstaged, untracked', () => {
     const out = parsePorcelain(['## main...origin/main [ahead 1]', 'M  a.ts', ' M b.ts', '?? c.ts'].join('\n'));

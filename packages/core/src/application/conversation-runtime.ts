@@ -35,6 +35,7 @@ import type {
   GenerateCodeInput,
   GitCommitResult,
   GitDiff,
+  GitPushResult,
   GitStatus,
   RepositoryInfo,
   Id,
@@ -70,6 +71,7 @@ import type {
 import type { IntentResolutionContext } from './intent-resolver';
 import { extractTargetPathCandidates, normalizeRelativePath } from './target-scope';
 import { MAX_COMMIT_MESSAGE_CHARS, isValidCommitMessage } from './commit-message';
+import { isSafePushBranch, isSafePushRemote } from './push-target';
 import type {
   CancelToken,
   ExecutionOutcome,
@@ -204,10 +206,15 @@ export type ApplyPreviewAnchorStatus =
    */
   | 'PUSH_APPROVAL_PENDING'
   /**
-   * The git-push approval was granted (Sprint 2z, ADR-0047) — a point-in-time snapshot preserved for a
-   * future push-execution sprint. NOT pushed; there is deliberately NO `GIT_PUSHED`/`PUSHED` state.
+   * The git-push approval was granted (Sprint 2z, ADR-0047) — a point-in-time snapshot preserved for the
+   * Sprint 3a executor. NOT pushed — approval only.
    */
-  | 'PUSH_APPROVED';
+  | 'PUSH_APPROVED'
+  /**
+   * An approved git push was executed (Sprint 3a, ADR-0048) — the approved commit was pushed to the approved
+   * upstream. The first state that means pushed to a remote. NOT PR-created, NOT deployed.
+   */
+  | 'GIT_PUSHED';
 
 /**
  * Anchored fact set for "a diff preview was shown; the user may explicitly ask to apply it" (Sprint 2s,
@@ -273,6 +280,15 @@ export interface ApplyPreviewAnchor {
   pushBranch?: string;
   /** Full upstream tracking ref the push targets (Sprint 2z) — e.g. "origin/main". */
   pushUpstreamRef?: string;
+  /** Set once `status` becomes `GIT_PUSHED` (Sprint 3a, ADR-0048) — the commit sha actually pushed
+   *  (== the approved `pushCommitHash`). Pushed to the approved upstream only; NOT PR-created/deployed. */
+  pushedCommitHash?: string;
+  /** The remote the approved commit was pushed to (Sprint 3a) — == the approved `pushRemote`. */
+  pushedRemote?: string;
+  /** The branch the approved commit was pushed to (Sprint 3a) — == the approved `pushBranch`. */
+  pushedBranch?: string;
+  /** The upstream ref the approved commit was pushed to (Sprint 3a) — == the approved `pushUpstreamRef`. */
+  pushedUpstreamRef?: string;
 }
 
 /**
@@ -406,6 +422,10 @@ export interface ConversationRuntimeDeps {
     /** Reused for read-only push-approval inspection (Sprint 2z, ADR-0047) — `GitManager.info` already
      *  exists (branch/headSha/detached). READ-ONLY, no network fetch, no mutation; a type-only widening. */
     info(rootPath: string): Promise<RepositoryInfo>;
+    /** Reused for the approved git push (Sprint 3a, ADR-0048) — the same already-registered GitManager. The
+     *  ONLY remote mutation; Ref-gated (APPROVED), pushes exactly the approved commit to the approved
+     *  upstream (`git push <remote> HEAD:<branch>`), never force/tags/all/-u, never a PR/deploy. */
+    pushApprovedCommit(input: { rootPath: string; remote: string; branch: string; commitHash: string; approvalRef: ApprovalRef }): Promise<GitPushResult>;
   };
   readonly logger: Logger;
 }
@@ -497,6 +517,14 @@ const PUSH_FORBIDDEN_COMPANION =
 
 /** Bound on user-controllable git ref (remote/branch/upstream) display length (Sprint 2z, CA #6). */
 const MAX_GIT_REF_DISPLAY = 80;
+
+/** Explicit git-push-EXECUTION phrases (Sprint 3a, ADR-0048) — distinct from the 2z push-approval words;
+ *  a bare 좋아/오케이/확인/진행해/다음 단계 never matches. Only consulted at PUSH_APPROVED / GIT_PUSHED. */
+const PUSH_EXECUTION_WORDS =
+  /(승인된?\s*(푸시|push)\s*실행|(푸시|push)\s*실행|이제\s*실제\s*(푸시|push)|execute\s+(the\s+)?approved\s+push|run\s+approved\s+push|push\s+approved\s+commit)/i;
+/** PR / deploy phrases (Sprint 3a) — at GIT_PUSHED these get an "already pushed; PR/deploy is a future
+ *  sprint" reply (never a PR/deploy). */
+const PR_DEPLOY_WORDS = /(\bpr\b|pull\s*request|풀\s*리퀘|배포|deploy)/i;
 
 /** Git-commit display/approval bounds (Sprint 2x, CA #7). */
 const MAX_COMMIT_OUT_OF_SCOPE_SHOWN = 10;
@@ -811,6 +839,23 @@ export class ConversationRuntime {
   }
 
   /**
+   * Explicit git-push-EXECUTION intent (Sprint 3a, ADR-0048) — only consulted inside the PUSH_APPROVED /
+   * GIT_PUSHED routing guards. A forbidden-companion is classified ONLY when a push/exec word is present
+   * (2z CA #2 lesson), so a bare "배포"/"branch"/"reset" is NOT push handling. Returns:
+   *  - `null` → no push/exec word, OR a bare push word without an execution phrase (→ 2z already-approved);
+   *  - `'push-unsupported'` → push bundled with force/PR/deploy/tag/branch/reset/checkout/stash/merge/rebase;
+   *  - `'execute'` → an explicit execution phrase ("승인된 push 실행해줘"/"push 실행해줘"/"이제 실제 push"/
+   *    "execute approved push"/"push approved commit"/…).
+   */
+  static interpretPushExecutionIntent(text: string): 'execute' | 'push-unsupported' | null {
+    const t = text.trim().toLowerCase();
+    if (!PUSH_EXECUTION_WORDS.test(t) && !PUSH_WORDS.test(t)) return null; // no push/exec word → not push handling
+    if (PUSH_FORBIDDEN_COMPANION.test(t)) return 'push-unsupported'; // push + force/PR/deploy/tag/branch/…
+    if (PUSH_EXECUTION_WORDS.test(t)) return 'execute';
+    return null; // a bare push word (no exec word) → leave to the 2z already-approved reply at PUSH_APPROVED
+  }
+
+  /**
    * Resolve the commit message for a commit-approval turn (Sprint 2x, CA #6/#7/#8). If the text carries a
    * user message (a single quoted segment after a `메시지`/`message` keyword) it is accepted only when it is
    * exactly one candidate, single-line, ≤120 chars, control-char-free, and trimmed non-empty — otherwise
@@ -897,12 +942,26 @@ export class ConversationRuntime {
       if (execKind === 'push-unsupported') return this.handleCommitPushUnsupportedTurn(message, session);
       if (execKind === 'execute') return this.handleCommitAlreadyCommittedTurn(message, session, applyAnchor);
     }
-    // (Sprint 2z, ADR-0047) push EXECUTION-APPROVAL already granted — a repeat push phrase says already
-    // approved (not pushed); a push+forbidden phrase → unsupported companion. NO git push.
+    // (Sprint 3a, ADR-0048) approved git push EXECUTION — checked before the 2z already-approved so
+    // "승인된 push 실행해줘" executes rather than re-printing already-approved. A bare push phrase (no exec
+    // word) falls to the 2z already-approved reply. A push+forbidden phrase → unsupported companion.
     if (applyAnchor?.status === 'PUSH_APPROVED') {
+      const exKind = ConversationRuntime.interpretPushExecutionIntent(message.text);
+      if (exKind === 'push-unsupported') return this.handlePushUnsupportedCompanionTurn(message, session);
+      if (exKind === 'execute') return this.handlePushExecutionTurn(message, session, actor, applyAnchor);
+      // (Sprint 2z) a bare push phrase at PUSH_APPROVED → already approved (not pushed).
       const pushKind = ConversationRuntime.interpretPushIntent(message.text);
       if (pushKind === 'push-unsupported') return this.handlePushUnsupportedCompanionTurn(message, session);
       if (pushKind === 'push') return this.handlePushAlreadyApprovedTurn(message, session);
+    }
+    // (Sprint 3a, ADR-0048) already pushed — a repeat execution/push phrase says already pushed (no new
+    // push); a push+forbidden → unsupported companion; a PR/deploy phrase → already-pushed + future-sprint.
+    if (applyAnchor?.status === 'GIT_PUSHED') {
+      const exKind = ConversationRuntime.interpretPushExecutionIntent(message.text);
+      if (exKind === 'push-unsupported') return this.handlePushUnsupportedCompanionTurn(message, session);
+      if (exKind === 'execute') return this.handlePushAlreadyPushedTurn(message, session, applyAnchor);
+      if (PR_DEPLOY_WORDS.test(message.text)) return this.handlePushPrDeployUnsupportedTurn(message, session);
+      if (ConversationRuntime.interpretPushIntent(message.text) === 'push') return this.handlePushAlreadyPushedTurn(message, session, applyAnchor);
     }
     // (CA #1) NO global/no-anchor push handling is installed — push handling is anchored to GIT_COMMITTED /
     // PUSH_APPROVAL_PENDING / PUSH_APPROVED only; every other state keeps its existing behavior.
@@ -2173,7 +2232,14 @@ export class ConversationRuntime {
       this.logPushApprovalFailed(session, anchor, 'pending push approval context incomplete');
       return this.failComposed(message, session, this.deps.composer.composePushApprovalUnavailable(message.context));
     }
-    const decision = ConversationRuntime.interpretDecision(message.text);
+    // (Sprint 3a, ADR-0048) A push-EXECUTION phrase ("승인된 push 실행해줘" — note the "승인" substring) or a
+    // push+forbidden phrase is a premature push request while approval is still PENDING, NOT a clean approve
+    // of THIS approval. Classify it ambiguous so it re-prompts (matching the 2z push-phrase intent above)
+    // instead of auto-approving on the "승인" substring; a bare "승인"/"거절"/"취소" still decides normally.
+    const decision =
+      ConversationRuntime.interpretPushExecutionIntent(message.text) !== null
+        ? 'ambiguous'
+        : ConversationRuntime.interpretDecision(message.text);
     if (decision === 'ambiguous') {
       // (CA #3) push/force/deploy phrases land here too (not approve/deny/cancel) → re-prompt, preserve
       // context; no decide, no new approval, no re-anchor, no push.
@@ -2242,6 +2308,196 @@ export class ConversationRuntime {
    *  Optional field access so it never throws on incomplete context (Sprint 2x lesson). */
   private logPushApprovalFailed(session: Session, anchor: ApplyPreviewAnchor, reason: string): void {
     this.deps.logger.warn('push approval failed', {
+      reason,
+      sessionId: session.id,
+      executionPlanId: anchor.executionPlanRef?.id,
+      pushApprovalId: anchor.pushApprovalId,
+    }); // deliberately NO diff text / file content / stderr
+  }
+
+  /**
+   * Execute the approved git push (Sprint 3a, ADR-0048) — the FIRST real remote mutation. Reached ONLY at
+   * PUSH_APPROVED with an explicit push-execution phrase (§5.6). Re-verifies the live approval + the
+   * persisted approved target, re-reads `git.info` + `git.status`, and re-validates HEAD/upstream/ahead/
+   * behind/clean-tree against the approved snapshot, then pushes the exact approved commit to the exact
+   * approved upstream via the Ref-gated `GitManager.pushApprovedCommit`. NO force, NO PR, NO deploy, NO
+   * rollback, NO CommandExecution/shell, NO WorkspaceWrite/Patch/CodeGeneration, NO ExecutionOrchestrator.
+   * Remote-mutation safety (CA #2/#10/#11): a pre-push failure may say push was not attempted; a provider
+   * failure never claims the remote is unchanged; a result-integrity mismatch after a reported success says
+   * the push could not be verified — and neither re-anchors GIT_PUSHED nor rolls back.
+   */
+  private async handlePushExecutionTurn(
+    message: InboundMessage,
+    session: Session,
+    _actor: Actor,
+    anchor: ApplyPreviewAnchor,
+  ): Promise<TurnResult> {
+    // 1. Complete approved push context, else safe failure (pre-push, no push). Log never throws.
+    if (
+      anchor.status !== 'PUSH_APPROVED' ||
+      !anchor.pushApprovalId ||
+      !anchor.pushCommitHash ||
+      !anchor.pushRemote ||
+      !anchor.pushBranch ||
+      !anchor.pushUpstreamRef ||
+      !anchor.commitHash ||
+      !anchor.workspaceRef ||
+      !anchor.executionPlanRef
+    ) {
+      this.logPushExecutionFailed(session, anchor, 'approved push context incomplete');
+      return this.failComposed(message, session, this.deps.composer.composePushExecutionUnavailable(message.context));
+    }
+    // 2. (CA #3) safe persisted target strings — a malformed anchor fails BEFORE any mutation attempt.
+    const parsedApproved = parsePushUpstream(anchor.pushUpstreamRef);
+    if (
+      !isSafePushRemote(anchor.pushRemote) ||
+      !isSafePushBranch(anchor.pushBranch) ||
+      !parsedApproved ||
+      parsedApproved.remote !== anchor.pushRemote ||
+      parsedApproved.branch !== anchor.pushBranch ||
+      !/^[0-9a-f]{7,40}$/i.test(anchor.pushCommitHash) ||
+      !/^[0-9a-f]{7,40}$/i.test(anchor.commitHash)
+    ) {
+      this.logPushExecutionFailed(session, anchor, 'persisted approved push target unsafe/malformed');
+      return this.failComposed(message, session, this.deps.composer.composePushExecutionUnavailable(message.context));
+    }
+    // 3. (Constraint 4) live approval APPROVED + same plan → derive the ApprovalRef.
+    const request = await this.deps.approvals.get(anchor.pushApprovalId);
+    if (
+      !request ||
+      request.status !== ApprovalStatus.APPROVED ||
+      request.executionPlanRef.id !== anchor.executionPlanRef.id
+    ) {
+      this.logPushExecutionFailed(session, anchor, 'push approval not APPROVED/plan-mismatched/missing');
+      return this.failComposed(message, session, this.deps.composer.composePushExecutionUnavailable(message.context));
+    }
+    const gitApprovalRef = approvalRef(request);
+    // 4. Fresh read-only info (Constraint 3). Throw → composePushStatusUnavailable (pre-push, not attempted).
+    //    (CA #6) info.branch is used ONLY for detached detection + logging, never as the push target.
+    let info: RepositoryInfo;
+    try {
+      info = await this.deps.git.info(anchor.workspaceRef.rootPath);
+    } catch {
+      this.logPushExecutionFailed(session, anchor, 'git info read failed');
+      return this.failComposed(message, session, this.deps.composer.composePushStatusUnavailable(message.context));
+    }
+    // 5. (Q5/Q6) not detached AND HEAD == pushCommitHash == commitHash — else the committed state changed.
+    if (
+      info.detached ||
+      !info.headSha ||
+      info.headSha !== anchor.pushCommitHash ||
+      anchor.commitHash !== anchor.pushCommitHash
+    ) {
+      this.logPushExecutionFailed(session, anchor, 'HEAD detached or differs from approved commit');
+      return this.failComposed(message, session, this.deps.composer.composePushExecutionUnavailable(message.context));
+    }
+    // 6. Fresh read-only status. Throw → composePushStatusUnavailable.
+    let status: GitStatus;
+    try {
+      status = await this.deps.git.status(anchor.workspaceRef.rootPath);
+    } catch {
+      this.logPushExecutionFailed(session, anchor, 'git status read failed');
+      return this.failComposed(message, session, this.deps.composer.composePushStatusUnavailable(message.context));
+    }
+    // 7. (Q9) clean working tree.
+    if (status.staged.length > 0 || status.unstaged.length > 0 || status.untracked.length > 0) {
+      return this.respondComposed(message, session, this.deps.composer.composePushDirtyWorkingTree(message.context));
+    }
+    // 8. (Q6) upstream present, parses, equals the approved upstream, parsed remote/branch equal the approved.
+    const parsedNow = status.upstream ? parsePushUpstream(status.upstream) : null;
+    if (
+      !status.upstream ||
+      !parsedNow ||
+      status.upstream !== anchor.pushUpstreamRef ||
+      parsedNow.remote !== anchor.pushRemote ||
+      parsedNow.branch !== anchor.pushBranch
+    ) {
+      this.logPushExecutionFailed(session, anchor, 'upstream drifted from approved target');
+      return this.failComposed(message, session, this.deps.composer.composePushExecutionUnavailable(message.context));
+    }
+    // 9. (Q7/Q8) ahead ≥ 1 else nothing to push; behind == 0 else diverged.
+    if (!status.ahead || status.ahead < 1) {
+      return this.respondComposed(message, session, this.deps.composer.composePushNothingToPush(message.context));
+    }
+    if (status.behind && status.behind > 0) {
+      return this.respondComposed(message, session, this.deps.composer.composePushDiverged(message.context));
+    }
+
+    // 10. (first REMOTE mutation) push the exact approved target through the Ref-gated capability. A throw →
+    //     composePushExecutionFailed (could-not-complete / check remote / NO rollback; never "remote
+    //     unchanged"). KEEP PUSH_APPROVED, preserve context, NO GIT_PUSHED (CA #2/#11).
+    let result: GitPushResult;
+    try {
+      result = await this.deps.git.pushApprovedCommit({
+        rootPath: anchor.workspaceRef.rootPath,
+        remote: anchor.pushRemote,
+        branch: anchor.pushBranch,
+        commitHash: anchor.pushCommitHash,
+        approvalRef: gitApprovalRef,
+      });
+    } catch {
+      this.logPushExecutionFailed(session, anchor, 'git push failed');
+      return this.failComposed(message, session, this.deps.composer.composePushExecutionFailed(message.context));
+    }
+
+    // 11. (Constraint 9/10, CA #10) result-integrity gate. On mismatch AFTER a reported success → do NOT
+    //     claim not-pushed, do NOT rollback, do NOT set GIT_PUSHED → composePushResultUnverified. KEEP
+    //     PUSH_APPROVED, preserve context.
+    if (
+      result.remote !== anchor.pushRemote ||
+      result.branch !== anchor.pushBranch ||
+      result.upstreamRef !== anchor.pushUpstreamRef ||
+      result.commitHash !== anchor.pushCommitHash
+    ) {
+      this.logPushExecutionFailed(session, anchor, 'push result integrity mismatch');
+      return this.failComposed(message, session, this.deps.composer.composePushResultUnverified(message.context));
+    }
+
+    // 12. (Q12, CA #12) success → re-anchor GIT_PUSHED, store the pushed target, preserve full audit context.
+    await this.deps.applyPreviewFlow.anchor(session, {
+      ...anchor,
+      status: 'GIT_PUSHED',
+      pushedCommitHash: result.commitHash,
+      pushedRemote: result.remote,
+      pushedBranch: result.branch,
+      pushedUpstreamRef: result.upstreamRef,
+    });
+    const reply = this.deps.composer.composePushExecuted(message.context, {
+      commitHash: result.commitHash,
+      remote: result.remote,
+      branch: result.branch,
+    });
+    await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+    return this.responded(session, reply);
+  }
+
+  /** A push/execution phrase while already GIT_PUSHED (Sprint 3a, Q13/CA #7) — already pushed; no new push. */
+  private async handlePushAlreadyPushedTurn(
+    message: InboundMessage,
+    session: Session,
+    anchor: ApplyPreviewAnchor,
+  ): Promise<TurnResult> {
+    const reply = this.deps.composer.composePushAlreadyPushed(message.context, {
+      commitHash: anchor.pushedCommitHash,
+      remote: anchor.pushedRemote,
+      branch: anchor.pushedBranch,
+    });
+    await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+    return this.responded(session, reply);
+  }
+
+  /** A PR/deploy phrase while GIT_PUSHED (Sprint 3a, Q14/CA #13) — already pushed; PR/deploy is a future
+   *  sprint; no PR, no deployment. */
+  private async handlePushPrDeployUnsupportedTurn(message: InboundMessage, session: Session): Promise<TurnResult> {
+    const reply = this.deps.composer.composePushPrDeployUnsupported(message.context);
+    await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+    return this.responded(session, reply);
+  }
+
+  /** Structured, no-content failure log for a push-EXECUTION error (Sprint 3a) — never logs diff/file
+   *  content or stderr. Optional field access so it never throws on incomplete context (Sprint 2x lesson). */
+  private logPushExecutionFailed(session: Session, anchor: ApplyPreviewAnchor, reason: string): void {
+    this.deps.logger.warn('push execution failed', {
       reason,
       sessionId: session.id,
       executionPlanId: anchor.executionPlanRef?.id,

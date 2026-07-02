@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
-import type { GitCommitResult, GitDiff, GitProvider, GitStatus, RepositoryInfo } from '@chunsik/core';
+import type { GitCommitResult, GitDiff, GitProvider, GitPushResult, GitStatus, RepositoryInfo } from '@chunsik/core';
+import { isSafePushBranch, isSafePushRemote } from '@chunsik/core';
 
 /** Per-call git timeout (ms). */
 const GIT_TIMEOUT_MS = 5000;
@@ -68,6 +69,17 @@ export function assertSafeCommitPaths(files: string[]): string[] {
     }
   }
   return safe;
+}
+
+/**
+ * Defensively validate a push target (ADR-0048, CA #4/#5) — conservative git ref rules (reusing core
+ * `isSafePushRemote`/`isSafePushBranch`) + a SHA-shaped commitHash. Throws BEFORE any git command runs on
+ * an unsafe target, so an unsafe branch never reaches argv as `HEAD:<branch>`.
+ */
+export function assertSafePushTarget(remote: string, branch: string, commitHash: string): void {
+  if (!isSafePushRemote(remote)) throw new Error(`git push rejects an unsafe remote: ${remote}`);
+  if (!isSafePushBranch(branch)) throw new Error(`git push rejects an unsafe branch: ${branch}`);
+  if (!/^[0-9a-f]{7,40}$/i.test(commitHash)) throw new Error('git push rejects an invalid commitHash');
 }
 
 function isDir(path: string): boolean {
@@ -259,5 +271,21 @@ export class LocalGitProvider implements GitProvider {
     const headRes = this.exec(rootPath, ['--no-pager', 'rev-parse', 'HEAD']);
     if (headRes.code !== 0) throw this.failure('commit', headRes);
     return { commitHash: headRes.stdout.trim(), committedFiles: safeFiles, message };
+  }
+
+  /**
+   * The SECOND mutating git operation (CAP-002, ADR-0048) — the first REMOTE mutation. Pushes EXACTLY the
+   * current HEAD to `<remote> HEAD:<branch>`. Argument-array only (no shell); a single `git --no-pager push
+   * <remote> HEAD:<branch>` — NEVER `--force`/`-f`/`--tags`/`--all`/`-u`/`--set-upstream`/bare `git push`/an
+   * arbitrary refspec. The target is conservatively validated first (CA #4/#5) → throws with NO git command
+   * run on an unsafe remote/branch/hash. Returns the provider-reported target (NOT independent remote
+   * verification). Approval gating is the manager's job.
+   */
+  async pushApprovedCommit(rootPath: string, remote: string, branch: string, commitHash: string): Promise<GitPushResult> {
+    assertSafePushTarget(remote, branch, commitHash); // throws (no git run) on an unsafe target
+    // exactly one refspec argv element `HEAD:<branch>` (never a shell string); pushes the current HEAD.
+    const res = this.exec(rootPath, ['--no-pager', 'push', remote, `HEAD:${branch}`]);
+    if (res.code !== 0) throw this.failure('push', res);
+    return { remote, branch, upstreamRef: `${remote}/${branch}`, commitHash };
   }
 }

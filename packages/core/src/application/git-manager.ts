@@ -1,8 +1,9 @@
 import { WorkspaceNotSafeError } from '../errors';
 import { ApprovalStatus } from '../domain';
-import type { ApprovalRef, GitCommitResult, GitDiff, GitStatus, RepositoryInfo } from '../domain';
+import type { ApprovalRef, GitCommitResult, GitDiff, GitPushResult, GitStatus, RepositoryInfo } from '../domain';
 import type { GitProvider } from '../ports';
 import { isValidCommitMessage } from './commit-message';
+import { isSafePushBranch, isSafePushRemote } from './push-target';
 
 /** Reject an absolute / `..` traversal / empty commit pathspec (ADR-0046 defensive gate). */
 function isUnsafeCommitPath(p: string): boolean {
@@ -68,6 +69,31 @@ export class GitManager {
     if (new Set(cleaned).size !== cleaned.length) throw new Error('git commit rejects duplicate files');
     if (!isValidCommitMessage(input.message)) throw new Error('git commit rejects an invalid message');
     return this.provider.commitFiles(input.rootPath, cleaned, input.message);
+  }
+
+  /**
+   * Approved git push (CAP-002, ADR-0048 — the first remote mutation). Ref-gated (mirrors commitFiles):
+   * validates `approvalRef.status === APPROVED` + defensive inputs (non-empty rootPath, conservative-safe
+   * remote/branch, SHA-shaped commitHash) BEFORE delegating. The runtime performs the full context/state
+   * re-validation first; this is the capability-level backstop. The provider runs the argv-only
+   * `git push <remote> HEAD:<branch>` and returns the reported target. The ApprovalRef is consumed here and
+   * NOT passed to the provider. No generic push method is exposed.
+   */
+  async pushApprovedCommit(input: {
+    rootPath: string;
+    remote: string;
+    branch: string;
+    commitHash: string;
+    approvalRef: ApprovalRef;
+  }): Promise<GitPushResult> {
+    if (input.approvalRef.status !== ApprovalStatus.APPROVED) {
+      throw new Error(`git push requires an APPROVED approval (got ${input.approvalRef.status})`);
+    }
+    if (!input.rootPath.trim()) throw new Error('git push requires a rootPath');
+    if (!isSafePushRemote(input.remote)) throw new Error('git push rejects an unsafe remote');
+    if (!isSafePushBranch(input.branch)) throw new Error('git push rejects an unsafe branch');
+    if (!/^[0-9a-f]{7,40}$/i.test(input.commitHash)) throw new Error('git push rejects an invalid commitHash');
+    return this.provider.pushApprovedCommit(input.rootPath, input.remote, input.branch, input.commitHash);
   }
 
   /** Convenience: whether the working tree is clean. */
