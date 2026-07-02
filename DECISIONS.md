@@ -2746,3 +2746,103 @@ Git Status Preview — read-only `git.status` reused; `git.diff` deliberately no
 ADR-0023 (CAP-002 Git — read-only; **no mutation method added**), ADR-0031 (Execution Orchestrator —
 deliberately not extended or called). Supersedes nothing. Plan:
 `docs/plans/sprint-2x-explicit-git-commit-approval-plan.md`.
+
+## ADR-0046 — Approved Git Commit Execution (COMMIT_APPROVED → single exact-file `git commit`, first Git mutation)
+
+- **Status:** ✅ Accepted (v2, Phase 2, Sprint 2y — Product Construction), Chief Architect Review:
+  APPROVED WITH CHANGES (14 required changes applied) → PROCEED.
+- **Date:** 2026-07-03
+- **Scope:** After Sprint 2x leaves a `COMMIT_APPROVED` anchor (a HIGH commit approval was granted, but
+  nothing was committed), an explicit commit-**execution** command ("승인된 커밋 실행해줘") re-reads git status,
+  re-verifies the live approval + exact candidate scope against the fresh working tree, and performs **a
+  single exact-file `git commit`** via the Git capability. This is the product's **FIRST real git mutation**.
+  **NO `git add`, NO push, NO PR, NO deployment, NO rollback, NO CommandExecution/shell, NO
+  WorkspaceWrite/Patch/CodeGeneration, NO ExecutionOrchestrator change.**
+
+### Most important rule
+> **The commit is executed only when the approved scope still exactly matches a freshly-read working tree.**
+> The runtime re-reads `git.status`, re-verifies the live `ApprovalRequest` (exists, APPROVED, same plan) and
+> that the in-scope tracked-changed set **equals** the approved candidate set, then commits exactly those
+> tracked files through the Ref-gated `GitManager.commitFiles`. `GIT_COMMITTED` means **committed locally,
+> never pushed/deployed** — every reply says so. Any scope drift, stale approval, untracked candidate, or
+> result-integrity mismatch → **safe failure, no commit** (a new approval is required).
+
+### Decision
+- **First mutating Git API (Q1, CA #1/#6/#7/#8/#13).** `GitCommitResult {commitHash, committedFiles, message}`
+  (domain) + `GitProvider.commitFiles(rootPath, files, message)` (the **first** mutating port method) +
+  `GitManager.commitFiles({rootPath, files, message, approvalRef})`. The **manager** is Ref-gated
+  (`approvalRef.status === APPROVED`, mirrors `WorkspaceWriteManager.apply`) **plus** defensive input
+  validation (non-empty rootPath/files, safe relative paths, unique after trim, valid bounded single-line
+  message); the **provider** independently validates + de-dups paths (absolute/`..`/empty rejected **before
+  any git runs**) and is argv-only. **`ApprovalRef` goes to the manager, not the provider (CA #13).**
+- **No pre-commit `git add`; tracked-file exact commit only (Q2, CA #1/#2).** The adapter runs a single
+  `git commit --only -m <message> -- <files>` of the exact **tracked** pathspecs, then `rev-parse HEAD` for
+  the sha. A separate `git add` was rejected: it would persist a partial stage if the commit then failed, and
+  Sprint 2y has **no rollback**. **Untracked approved candidates are blocked** with a DISTINCT reply
+  (`composeCommitExecutionUntrackedUnsupported`, CA #3) — a new-file commit needs a separate future step.
+- **`ConversationRuntime` composes it directly.** New anchor status `GIT_COMMITTED` (a commit was executed) +
+  fields `commitHash`/`committedFiles`. **No `GitCommit` aggregate** (Q9) — the hash + files live on the anchor.
+- **Trigger + routing (§5.4, CA #4).** `interpretCommitExecutionIntent`: a push/reset/… phrase →
+  `'push-unsupported'` (checked first); an explicit execution phrase ("승인된 커밋 실행"/"커밋 실행"/"이제 실제
+  커밋"/"execute commit"/…) → `'execute'`; bare 좋아/오케이/확인/진행해/다음 단계 → null. Execution handling is
+  **gated to commit-relevant states only** — inside `COMMIT_APPROVED` (execute → run) and `GIT_COMMITTED`
+  (execute → already-committed) blocks, checked **before** the 2x commit-intent so "이제 실제 커밋해줘" executes
+  rather than re-printing already-approved. An explicit `'execute'` phrase with no commit-relevant anchor →
+  scoped `composeCommitExecutionUnavailable`. push-only outside commit states is left to existing 2w/2x handling.
+- **Exact-scope re-validation against fresh status (§5.5, Q3/Q4/Q5/Q6, CA #2/#11).** Sets are normalized via
+  `safeRelativePath` + de-duplicated (a candidate in BOTH staged and unstaged is still eligible). Block (→
+  new approval required) on: an unsafe/out-of-`targetFiles` approved candidate; any unsafe changed path; a
+  candidate no longer a tracked change (`missing`, Q5); an extra in-scope tracked change beyond the candidates
+  (`extraInScope`, Q6); any changed file (tracked or untracked) outside `targetFiles` (`outOfScope`, Q4); any
+  staged file outside the candidates (`stagedOutsideCandidates`, Q3). An untracked approved candidate → the
+  DISTINCT untracked-unsupported reply. The approved message is re-checked with `isValidCommitMessage`;
+  invalid → new approval required (Q7). Never regenerate, ask AI, or accept a new message at execution.
+- **Result-integrity gate BEFORE trusting the commit (Q10, CA #8).** After `git.commitFiles`: `commitHash`
+  non-empty + SHA-shaped (`/^[0-9a-f]{7,40}$/i`); `committedFiles` (normalized) **exactly equal** the approved
+  candidates; `message` **equals** the approved message. Any mismatch → safe failure
+  (`composeCommitExecutionFailed`), **`GIT_COMMITTED` not set**, do not claim committed.
+- **On success (Q9/Q10, CA #9).** Re-anchor `GIT_COMMITTED` storing `commitHash` + `committedFiles`;
+  **preserve `commitApprovalId`** (audit/threading) + `workspaceRef`/`workspaceChangeRef`/`targetFiles`/
+  `executionPlanRef`/`postApplyValidationRef` (a future push sprint needs them); **clear**
+  `proposedCommitMessage` + `commitCandidateFiles` (replaced by `committedFiles`/hash). Reply: short hash +
+  bounded files + **no push**. Repeat execution at `GIT_COMMITTED` → `composeCommitAlreadyCommitted` (hash
+  shown), **no new commit** (Q11).
+- **Failure wording (Q8, CA #10).** A `git commit` throw or integrity mismatch → `composeCommitExecutionFailed`,
+  which states **not committed + no push + rollback NOT performed + re-check git state**; it MUST NOT claim
+  변경 없음 / 원상복구 완료 / index unchanged / 안전하게 되돌렸어요. Raw stderr never reaches the reply (adapter
+  masks). A `git.status` read throw reuses `composeCommitStatusUnavailable` (2x).
+- **No Core/Orchestrator contract change; no `app.module.ts` change** (the `git` runtime dep already carries
+  the already-registered `GitManager`; `commitFiles` is a type-only widening). No CommandExecution/shell git,
+  no WorkspaceWrite/Patch/CodeGeneration/Orchestrator, no runtime shell-out.
+
+### Not implemented (out of scope)
+`git add`/`push`/`reset`/`checkout`/`stash`/`branch`/`tag`/`merge`/`rebase` · untracked/new-file commit ·
+automatic commit · AI commit messages · accepting a new message at execution · a `GitCommit` aggregate ·
+CommandExecution-based git · runtime shell-out · WorkspaceWrite · Patch · CodeGeneration ·
+ExecutionOrchestrator change · PR creation · deployment · rollback/revert · pushing/deploying the commit ·
+overclaim (pushed/deployed/ready-to-push/safe-to-deploy).
+
+### Consequences
+- + The user can, for the first time, execute a git commit of the bot-applied change — behind an explicit
+  execution command, gated by a still-valid HIGH approval and an exact-scope re-check against a freshly-read
+  working tree, committing exactly the approved tracked files and nothing else.
+- + Ref-gating the manager (mirroring `WorkspaceWriteManager`) plus independent provider path validation and a
+  post-commit result-integrity gate keeps the first git mutation conservative and auditable; a mismatch never
+  claims success.
+- + Reusing the plan-less anchor + status interception keeps `findPending` from hijacking the flow and adds no
+  new capability/port/aggregate/dep.
+- − `ApplyPreviewAnchor` gains one status + two fields; `GitProvider`/`GitManager` gain one mutating method
+  each — a justified, individually-reviewed extension, not scope creep. Nothing is persisted beyond the hash +
+  committed paths on the anchor (no raw diff, no aggregate).
+- − Only a commit is performed; **push/deploy remain a separate, individually-reviewed future sprint**, and
+  untracked/new-file commits are deliberately deferred (no `git add` this sprint).
+
+### Relations
+ADR-0045 (Explicit Git Commit Approval — provides the `COMMIT_APPROVED` anchor + `commitApprovalId`/
+`proposedCommitMessage`/`commitCandidateFiles` this sprint consumes; the plan-less anchor + status-interception
+pattern reused), ADR-0042 (PatchRef → WorkspaceWrite Apply — the **Ref-gate model** `GitManager.commitFiles`
+mirrors `WorkspaceWriteManager.apply`), ADR-0025 (CAP-004 Approval — `ApprovalManager.get`/`approvalRef`
+reused), ADR-0044 (Post-Validation Git Status Preview — read-only `git.status` reused for the fresh re-read),
+ADR-0023 (CAP-002 Git — **extended from read-only with its first mutating method**, argv-only, no push),
+ADR-0031 (Execution Orchestrator — deliberately not extended or called). Supersedes nothing. Plan:
+`docs/plans/sprint-2y-approved-git-commit-execution-plan.md`.

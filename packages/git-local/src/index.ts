@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
-import type { GitDiff, GitProvider, GitStatus, RepositoryInfo } from '@chunsik/core';
+import type { GitCommitResult, GitDiff, GitProvider, GitStatus, RepositoryInfo } from '@chunsik/core';
 
 /** Per-call git timeout (ms). */
 const GIT_TIMEOUT_MS = 5000;
@@ -48,6 +48,27 @@ export const defaultGitRunner: GitRunner = (args, { cwd, timeoutMs }) => {
     failed: !!res.error && !timedOut,
   };
 };
+
+/**
+ * Defensively validate + dedup commit pathspecs (ADR-0046, CA #7) — the provider does not trust caller path
+ * strings blindly. Rejects absolute / `..` traversal / empty paths BEFORE any git command runs; deduplicates.
+ */
+export function assertSafeCommitPaths(files: string[]): string[] {
+  if (files.length === 0) throw new Error('git commit requires at least one file');
+  const seen = new Set<string>();
+  const safe: string[] = [];
+  for (const raw of files) {
+    const p = typeof raw === 'string' ? raw.trim() : '';
+    if (p.length === 0) throw new Error('git commit rejects an empty file path');
+    if (/^([a-zA-Z]:[\\/]|[\\/])/.test(p)) throw new Error(`git commit rejects an absolute file path: ${p}`);
+    if (p === '..' || p.split(/[\\/]/).includes('..')) throw new Error(`git commit rejects a traversal file path: ${p}`);
+    if (!seen.has(p)) {
+      seen.add(p);
+      safe.push(p);
+    }
+  }
+  return safe;
+}
 
 function isDir(path: string): boolean {
   try {
@@ -180,5 +201,24 @@ export class LocalGitProvider implements GitProvider {
     const truncated = raw.length > MAX_DIFF_CHARS;
     const unified = truncated ? raw.slice(0, MAX_DIFF_CHARS) : raw;
     return { files, unified, truncated };
+  }
+
+  /**
+   * The ONLY mutating git operation (CAP-002, ADR-0046) — commit EXACTLY the given tracked files with
+   * `message`. Argument-array only (no shell), NO separate `git add` (CA #1 — avoids a partial-stage side
+   * effect that would persist on commit failure, since Sprint 2y has no rollback): a single
+   * `git commit --only -m <message> -- <files>` of the exact pathspecs, then `rev-parse HEAD` for the sha.
+   * Paths are validated + de-duped first (CA #7) → throws with NO git command run on an unsafe path. Never
+   * runs add/push/reset/checkout/stash/branch/tag/merge/rebase. Approval gating is the manager's job.
+   */
+  async commitFiles(rootPath: string, files: string[], message: string): Promise<GitCommitResult> {
+    const safeFiles = assertSafeCommitPaths(files); // throws (no git run) on absolute/traversal/empty
+    // `--only` commits exactly these pathspecs from the working tree, ignoring other index entries; the
+    // message is a single argv element (never shell-interpolated); `--` separates the pathspecs.
+    const commitRes = this.exec(rootPath, ['--no-pager', 'commit', '--only', '-m', message, '--', ...safeFiles]);
+    if (commitRes.code !== 0) throw this.failure('commit', commitRes);
+    const headRes = this.exec(rootPath, ['--no-pager', 'rev-parse', 'HEAD']);
+    if (headRes.code !== 0) throw this.failure('commit', headRes);
+    return { commitHash: headRes.stdout.trim(), committedFiles: safeFiles, message };
   }
 }

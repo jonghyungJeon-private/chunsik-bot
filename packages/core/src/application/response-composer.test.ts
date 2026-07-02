@@ -934,3 +934,79 @@ describe('ResponseComposer.composeCommit* replies (ADR-0045)', () => {
     expect(set.size).toBe(11);
   });
 });
+
+describe('ResponseComposer.composeCommitExecution* replies (Sprint 2y, ADR-0046)', () => {
+  const HASH = '0123456789abcdef0123456789abcdef01234567';
+  const OVERCLAIM = ['pushed', 'deployed', 'ready to push', 'ready to deploy', 'safe to deploy', '푸시 완료', '배포 완료', '배포했'];
+
+  it('composeCommitExecuted states committed with hash + files, and no push (CA 83)', () => {
+    const reply = composer.composeCommitExecuted(CTX, { commitHash: HASH, files: ['a.ts', 'b.ts'] });
+    expect(reply.text).toContain('커밋했어요');
+    expect(reply.text).toContain(HASH.slice(0, 7));
+    expect(reply.text).toContain('a.ts');
+    expect(reply.text).toContain('git push는 하지 않았어요');
+    for (const f of OVERCLAIM) expect(reply.text, f).not.toContain(f);
+  });
+
+  it('composeCommitExecuted bounds the committed file list', () => {
+    const many = Array.from({ length: 40 }, (_, i) => `f${i}.ts`);
+    const reply = composer.composeCommitExecuted(CTX, { commitHash: HASH, files: many });
+    expect(reply.text).toContain('외 10개');
+  });
+
+  it('composeCommitExecutionFailed says not committed / no push / no rollback; never clean-index/원상복구 (CA 84)', () => {
+    const reply = composer.composeCommitExecutionFailed(CTX);
+    expect(reply.text).toContain('완료하지 못했어요');
+    expect(reply.text).toContain('git push는 하지 않았어요');
+    expect(reply.text).toContain('rollback은 수행하지 않았어요');
+    expect(reply.text).toContain('다시 확인');
+    for (const bad of ['변경 없음', '원상복구', '되돌렸', 'index unchanged']) expect(reply.text, bad).not.toContain(bad);
+    for (const f of OVERCLAIM) expect(reply.text, f).not.toContain(f);
+  });
+
+  it('composeCommitExecutionUnavailable says a new commit approval is needed, no commit (CA 85)', () => {
+    const reply = composer.composeCommitExecutionUnavailable(CTX);
+    expect(reply.text).toContain('다시 커밋 승인을 받아 주세요');
+    expect(reply.text).toContain('하지 않았어요');
+    for (const f of OVERCLAIM) expect(reply.text, f).not.toContain(f);
+  });
+
+  it('composeCommitAlreadyCommitted includes the hash and says no new commit / no push (CA 86)', () => {
+    const reply = composer.composeCommitAlreadyCommitted(CTX, HASH);
+    expect(reply.text).toContain('이미 커밋했어요');
+    expect(reply.text).toContain(HASH.slice(0, 7));
+    expect(reply.text).toContain('git push는 하지 않았어요');
+    for (const f of OVERCLAIM) expect(reply.text, f).not.toContain(f);
+    // tolerates a missing hash without throwing
+    expect(composer.composeCommitAlreadyCommitted(CTX).text).toContain('이미 커밋했어요');
+  });
+
+  it('composeCommitPushUnsupported says push not supported / no push (CA 87)', () => {
+    const reply = composer.composeCommitPushUnsupported(CTX);
+    expect(reply.text).toContain('push는 아직 지원하지 않아요');
+    expect(reply.text).toContain('커밋만');
+    for (const f of OVERCLAIM) expect(reply.text, f).not.toContain(f);
+  });
+
+  it('untracked-unsupported is DISTINCT from unavailable, mentions new file + separate step + no push (CA 88)', () => {
+    const untracked = composer.composeCommitExecutionUntrackedUnsupported(CTX);
+    const unavailable = composer.composeCommitExecutionUnavailable(CTX);
+    expect(untracked.text).not.toBe(unavailable.text);
+    expect(untracked.text).toContain('untracked');
+    expect(untracked.text).toContain('별도');
+    expect(untracked.text).toContain('git push는 하지 않았어요');
+    for (const f of OVERCLAIM) expect(untracked.text, f).not.toContain(f);
+  });
+
+  it('the six commit-execution replies are all distinct', () => {
+    const set = new Set([
+      composer.composeCommitExecuted(CTX, { commitHash: HASH, files: ['a.ts'] }).text,
+      composer.composeCommitExecutionFailed(CTX).text,
+      composer.composeCommitExecutionUnavailable(CTX).text,
+      composer.composeCommitExecutionUntrackedUnsupported(CTX).text,
+      composer.composeCommitAlreadyCommitted(CTX, HASH).text,
+      composer.composeCommitPushUnsupported(CTX).text,
+    ]);
+    expect(set.size).toBe(6);
+  });
+});
