@@ -339,6 +339,7 @@ const application: Provider[] = [
       commandExecutions: CommandExecutionManager,
       codeGeneration: CodeGenerationManager,
       patch: PatchManager,
+      workspaceWrite: WorkspaceWriteManager,
     ) => {
       // ADR-0032: production ApprovalFlow — stateless, derived from existing aggregates
       // (Session.activeTaskId → Task.planId → approvals.findByExecutionPlan → PENDING); anchors the
@@ -397,6 +398,9 @@ const application: Provider[] = [
         // storage.codeProposals — no new provider.
         patch,
         codeProposals: { get: (id) => storage.codeProposals.get(id) },
+        // ADR-0042: reuses the same, already-registered WorkspaceWriteManager provider (the sole file
+        // mutator) ExecutionOrchestrator already depends on — no new provider.
+        workspaceWrite,
         logger: coreLogger,
       });
     },
@@ -423,6 +427,7 @@ const application: Provider[] = [
       CommandExecutionManager,
       CodeGenerationManager,
       PatchManager,
+      WorkspaceWriteManager,
     ],
   },
   // Thin platform-entry facade (ADR-0032): delegates to ConversationRuntime, then delivers.

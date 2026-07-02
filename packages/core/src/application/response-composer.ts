@@ -604,4 +604,55 @@ export class ResponseComposer {
       text: '이미 패치 미리보기를 만들어 뒀어요.\n아직 실제 파일 적용은 하지 않았어요.\n파일은 수정되지 않았어요.',
     };
   }
+
+  /**
+   * Successful workspace file mutation (PatchRef → WorkspaceWrite Apply, ADR-0042). CA Round 1 #5/#6/Q10:
+   * says the file was modified, git COMMANDS were not run, commit/push were not performed, tests were not
+   * run, and the working tree may now hold the change. Never "git 변경 없음"/committed/pushed/deployed/
+   * verified/적용 완료 — after a write the working tree is NOT clean.
+   */
+  composeWorkspaceApplied(context: ConversationContext, targetFiles: string[]): OutboundMessage {
+    return {
+      context,
+      text:
+        `파일을 수정했어요: ${targetFiles.join(', ')}\n` +
+        'git 명령은 실행하지 않았어요. 커밋/푸시는 하지 않았어요.\n' +
+        '작업 트리에는 방금 적용한 파일 변경이 남아 있을 수 있어요.\n' +
+        '테스트도 실행하지 않았어요.',
+    };
+  }
+
+  /**
+   * No PATCH_READY apply context to write (ADR-0042, CA Q4) — no anchor / not PATCH_READY / PATCH_READY
+   * without patchRef. Never implies anything was written.
+   */
+  composeWorkspaceApplyUnavailable(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '지금 파일에 적용할 수 있는 준비된 패치가 없어요. 먼저 코드 변경 요청 → 승인 → 패치 생성을 완료해 주세요.',
+    };
+  }
+
+  /**
+   * PATCH_READY but the PatchSet is missing/invalid/unsupported, or WorkspaceWrite failed / the diff no
+   * longer applies cleanly (stale/conflict) (ADR-0042, CA Q5/Q6). Safe; the reason is logged separately,
+   * never here. CA Round 1 #5: "git 명령이나 테스트는 실행하지 않았어요", never "git 변경 없음".
+   */
+  composeWorkspaceApplyFailed(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '이 패치를 파일에 적용하지 못했어요. 파일 내용이 바뀌었거나 지원하지 않는 변경일 수 있어요. git 명령이나 테스트는 실행하지 않았어요.',
+    };
+  }
+
+  /**
+   * WORKSPACE_APPLIED + another final/patch/apply command (ADR-0042) — no re-apply, and must not hide the
+   * applied state (CA Round 1 #8). CA Round 1 #5: "git 명령이나 테스트는 실행하지 않았어요".
+   */
+  composeWorkspaceAlreadyApplied(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '이미 파일을 수정했어요. git 명령이나 테스트는 실행하지 않았어요.',
+    };
+  }
 }

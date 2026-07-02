@@ -5,15 +5,19 @@ import {
   CodeGenerationStatus,
   CommandExecutionStatus,
   IntentType,
+  PatchStatus,
   RiskLevel,
   TaskStatus,
+  WorkspaceChangeStatus,
   approvalRef,
   codeGenerationRef,
   codeProposalRef,
   patchRef,
+  workspaceChangeRef,
 } from '../domain';
 import type {
   Actor,
+  ApplyInput,
   ApprovalDecision,
   ApprovalRequest,
   Artifact,
@@ -40,6 +44,8 @@ import type {
   Session,
   Task,
   TaskRun,
+  WorkspaceChange,
+  WorkspaceChangeRef,
   WorkspaceDiff,
   WorkspaceRef,
 } from '../domain';
@@ -156,8 +162,18 @@ export interface ScopeClarificationFlow {
  * `PATCH_READY` (Sprint 2t) means: a PatchSet **representation** has been generated and stored (a
  * `patchRef` is available). It does NOT mean the patch was applied — no workspace file was modified, no
  * command was executed, no git operation happened.
+ *
+ * `WORKSPACE_APPLIED` (Sprint 2u, ADR-0042) means: WorkspaceWrite mutated the workspace file(s) (a
+ * `workspaceChangeRef` is available). It does NOT mean committed, pushed, deployed, verified by tests, or
+ * that the working tree is clean — no git command ran, no test/command ran, and the working tree now
+ * holds the applied change.
  */
-export type ApplyPreviewAnchorStatus = 'ELIGIBLE' | 'AWAITING_APPROVAL' | 'APPROVED' | 'PATCH_READY';
+export type ApplyPreviewAnchorStatus =
+  | 'ELIGIBLE'
+  | 'AWAITING_APPROVAL'
+  | 'APPROVED'
+  | 'PATCH_READY'
+  | 'WORKSPACE_APPLIED';
 
 /**
  * Anchored fact set for "a diff preview was shown; the user may explicitly ask to apply it" (Sprint 2s,
@@ -187,6 +203,10 @@ export interface ApplyPreviewAnchor {
    *  preserved for Sprint 2u. Its presence makes a repeated patch command idempotent. A PatchSet
    *  representation existing does NOT mean it was applied — no file/command/git mutation occurred. */
   patchRef?: PatchRef;
+  /** Set once `status` becomes `WORKSPACE_APPLIED` (Sprint 2u, ADR-0042) — the WorkspaceChange record of
+   *  the file mutation, preserved for a future git/test sprint. Files mutated; git commands / tests NOT
+   *  run; the working tree is NOT clean. */
+  workspaceChangeRef?: WorkspaceChangeRef;
 }
 
 /**
@@ -287,11 +307,20 @@ export interface ConversationRuntimeDeps {
     getProposal(generation: CodeGeneration): Promise<CodeProposal | null>;
   };
   /** Reused for PatchSet generation (Sprint 2t, ADR-0041) — the same already-registered PatchManager
-   *  ExecutionOrchestrator already depends on. Representation-only (CAP-005); never applies. */
-  readonly patch: { generate(input: PatchGenerationInput): Promise<PatchSet> };
+   *  ExecutionOrchestrator already depends on. Representation-only (CAP-005); never applies.
+   *  `get` (Sprint 2u) loads the generated PatchSet from anchor.patchRef — PatchManager.get already
+   *  exists; a type-only widening, not a new method. */
+  readonly patch: {
+    generate(input: PatchGenerationInput): Promise<PatchSet>;
+    get(id: Id): Promise<PatchSet | null>;
+  };
   /** Read-only load of the approved CodeProposal by ref (Sprint 2t) — backed by storage.codeProposals,
    *  already in the runtime factory's scope. Not a new port. */
   readonly codeProposals: { get(id: Id): Promise<CodeProposal | null> };
+  /** Reused for the first real file mutation (Sprint 2u, ADR-0042) — the same already-registered
+   *  WorkspaceWriteManager ExecutionOrchestrator already depends on. The ONLY thing that mutates files;
+   *  Ref-gated, never queries ApprovalManager, never calls git/command execution. */
+  readonly workspaceWrite: { apply(input: ApplyInput): Promise<WorkspaceChange> };
   readonly logger: Logger;
 }
 
@@ -319,6 +348,20 @@ const PATCH_WORDS = [
   'generate patch',
   'patchset 만들어',
   '다음 단계 진행',
+];
+
+/** Explicit final workspace-apply phrases (Sprint 2u, ADR-0042) — the first real file mutation. Distinct
+ *  from APPROVE_WORDS/APPLY_WORDS/PATCH_WORDS: every entry is a QUALIFIED apply phrase, so a bare "적용"/
+ *  "반영"/"좋아"/"오케이"/"확인"/"다음 단계 진행" never triggers a file write (CA Q3). No overlap with
+ *  PATCH_WORDS; checked before APPLY_WORDS so "패치 적용해줘" (which also contains the apply-word "적용")
+ *  routes to file-apply, not Sprint 2s apply-intent. */
+const FINAL_APPLY_WORDS = [
+  '최종 적용',
+  '파일에 적용',
+  '패치 적용',
+  'workspace에 적용',
+  'apply patch',
+  'apply to workspace',
 ];
 
 /** Bound on how many extracted target-path candidates trigger a workspace.list call per turn
@@ -420,6 +463,14 @@ export class ConversationRuntime {
     return PATCH_WORDS.some((w) => t.includes(w));
   }
 
+  /** Explicit final workspace-apply intent only (Sprint 2u, ADR-0042) — qualified phrases only; a bare
+   *  "적용"/"다음 단계 진행"/"좋아" never triggers a file write. Combined with routing, a write only fires
+   *  on a PATCH_READY anchor. Checked before apply-intent so "패치 적용해줘" is a file-apply. */
+  static interpretFinalApplyIntent(text: string): boolean {
+    const t = text.trim().toLowerCase();
+    return FINAL_APPLY_WORDS.some((w) => t.includes(w));
+  }
+
   /**
    * Handle one inbound message → one transient `TurnResult` (with an `OutboundMessage`). Never sends
    * to the platform (delivery is the facade's job) and never persists runtime state.
@@ -453,15 +504,31 @@ export class ConversationRuntime {
     if (applyAnchor?.status === 'AWAITING_APPROVAL') {
       return this.handleApplyApprovalTurn(message, session, actor, applyAnchor);
     }
-    // (Sprint 2t, ADR-0041) Explicit patch command → PatchSet representation. Checked before apply-intent;
-    // PATCH_WORDS and APPLY_WORDS are non-overlapping, and patch is the later product step. Generation
-    // only ever fires on an APPROVED anchor.
+    // (Sprint 2u, ADR-0042) Explicit final workspace-apply → the first real file mutation. Checked before
+    // patch- and apply-intent (FINAL_APPLY_WORDS is non-overlapping with PATCH_WORDS and precedes
+    // APPLY_WORDS so "패치 적용해줘" is a file-apply, not a Sprint 2s apply-intent). Only fires on PATCH_READY.
+    if (ConversationRuntime.interpretFinalApplyIntent(message.text)) {
+      if (applyAnchor?.status === 'PATCH_READY') {
+        return this.handleWorkspaceApplyTurn(message, session, applyAnchor);
+      }
+      if (applyAnchor?.status === 'WORKSPACE_APPLIED') {
+        return this.handleWorkspaceAlreadyAppliedTurn(message, session); // never re-applies
+      }
+      // no anchor / ELIGIBLE / APPROVED / PATCH_READY-without-patchRef — never a new code-change request.
+      return this.handleWorkspaceApplyUnavailableTurn(message, session);
+    }
+    // (Sprint 2t, ADR-0041) Explicit patch command → PatchSet representation. Generation only on APPROVED.
+    // CA Round 1 #8: at WORKSPACE_APPLIED, route to the workspace-already-applied reply (never a
+    // "preview generated" reply that would hide the stronger applied state).
     if (ConversationRuntime.interpretPatchIntent(message.text)) {
       if (applyAnchor?.status === 'APPROVED') {
         return this.handlePatchGenerationTurn(message, session, applyAnchor);
       }
       if (applyAnchor?.status === 'PATCH_READY') {
         return this.handlePatchAlreadyGeneratedTurn(message, session); // don't regenerate
+      }
+      if (applyAnchor?.status === 'WORKSPACE_APPLIED') {
+        return this.handleWorkspaceAlreadyAppliedTurn(message, session);
       }
       // patch command with no APPROVED/PATCH_READY anchor (none / ELIGIBLE) — never falls through to a
       // new code-change request, mirroring the apply-unavailable handling.
@@ -474,12 +541,17 @@ export class ConversationRuntime {
       if (applyAnchor?.status === 'APPROVED' || applyAnchor?.status === 'PATCH_READY') {
         return this.handleApplyAlreadyApprovedTurn(message, session); // don't re-ask, don't re-approve
       }
+      // CA Round 1 #8: at WORKSPACE_APPLIED, "적용해줘" must not say "아직 적용하지 않았어요" — the files
+      // were already applied. Route to the workspace-already-applied reply.
+      if (applyAnchor?.status === 'WORKSPACE_APPLIED') {
+        return this.handleWorkspaceAlreadyAppliedTurn(message, session);
+      }
       // No anchor at all (or a stale one, already auto-cleared by findAnchor). An explicit apply phrase
       // must NEVER be reinterpreted as a new, unscoped code-change request (CA review).
       return this.handleApplyPreviewUnavailableTurn(message, session);
     }
-    // Anything else: fall through untouched — an ELIGIBLE/APPROVED/PATCH_READY anchor is an optional
-    // follow-up opportunity, never a hard gate ordinary conversation must route around.
+    // Anything else: fall through untouched — an ELIGIBLE/APPROVED/PATCH_READY/WORKSPACE_APPLIED anchor is
+    // an optional follow-up opportunity, never a hard gate ordinary conversation must route around.
 
     const intent = await this.deps.classifier.classify(message);
     this.deps.logger.info('intent classified', {
@@ -878,6 +950,121 @@ export class ConversationRuntime {
       executionPlanId: anchor.executionPlanRef.id,
       approvalId: anchor.approvalId,
       codeProposalId: anchor.codeProposalRef.id,
+      targetFiles: anchor.targetFiles.join(', '),
+    }); // deliberately NO diff text / file content
+  }
+
+  /**
+   * An explicit final workspace-apply command arrived while the anchor is PATCH_READY (Sprint 2u,
+   * ADR-0042) — the first real file mutation. Loads the PatchSet by patchRef, verifies its integrity
+   * (identity/status/approval/plan/single-`update`-op/in-scope), applies exactly one `update` op through
+   * WorkspaceWrite (the ONLY file mutator; its applyPatch re-validates the diff against current content),
+   * verifies the returned WorkspaceChange, and re-anchors WORKSPACE_APPLIED. Never calls git,
+   * CommandExecution, ExecutionOrchestrator, PatchManager.generate, or CodeGeneration.
+   */
+  private async handleWorkspaceApplyTurn(
+    message: InboundMessage,
+    session: Session,
+    anchor: ApplyPreviewAnchor,
+  ): Promise<TurnResult> {
+    // 1. Anchor-state guard: PATCH_READY must carry a patchRef + the refs we need.
+    if (!anchor.patchRef || !anchor.workspaceRef || !anchor.approvalId || !anchor.executionPlanRef) {
+      return this.failComposed(message, session, this.deps.composer.composeWorkspaceApplyUnavailable(message.context));
+    }
+
+    // 2. Load the PatchSet — the artifact to apply (CA Q2).
+    const patchSet = await this.deps.patch.get(anchor.patchRef.id);
+    if (!patchSet) {
+      this.logWorkspaceApplyFailed(session, anchor, 'patch set not found');
+      return this.failComposed(message, session, this.deps.composer.composeWorkspaceApplyFailed(message.context));
+    }
+
+    // 3. PatchSet integrity (CA Q5 + CA Round 1 #1/#2). Sprint 2u accepts exactly one `update` op whose
+    //    path is within the user-approved targetFiles; add/delete/binary/multi-op all rejected.
+    const op = patchSet.operations[0];
+    const badIntegrity =
+      patchSet.id !== anchor.patchRef.id ||
+      patchSet.status !== PatchStatus.GENERATED ||
+      patchSet.approvalRef.status !== ApprovalStatus.APPROVED ||
+      patchSet.approvalRef.id !== anchor.approvalId ||
+      patchSet.executionPlanRef.id !== anchor.executionPlanRef.id ||
+      patchSet.operations.length !== 1 ||
+      !op ||
+      op.operation !== 'update' ||
+      op.metadata?.['binary'] === true ||
+      !anchor.targetFiles.some((tf) => normalizeRelativePath(tf) === normalizeRelativePath(op.path));
+    if (badIntegrity || !op) {
+      this.logWorkspaceApplyFailed(session, anchor, 'patch set failed integrity/support checks');
+      return this.failComposed(message, session, this.deps.composer.composeWorkspaceApplyFailed(message.context));
+    }
+
+    // 4. Apply through WorkspaceWrite — the ONLY file mutation. Its per-file applyPatch re-validates the
+    //    `update` diff against current content (CA Round 1 #4): a stale diff → 'failed', file unchanged.
+    let change: WorkspaceChange;
+    try {
+      change = await this.deps.workspaceWrite.apply({
+        patchSet,
+        approvalRef: patchSet.approvalRef, // the approval that authorized THIS patch (§5.3)
+        workspaceRef: anchor.workspaceRef,
+      });
+    } catch {
+      this.logWorkspaceApplyFailed(session, anchor, 'workspace write threw');
+      return this.failComposed(message, session, this.deps.composer.composeWorkspaceApplyFailed(message.context));
+    }
+
+    // 5. Result-integrity gate (CA Round 1 #3/#4). Success requires APPLIED AND a full match of the
+    //    returned change to the artifact/context; anything else → no WORKSPACE_APPLIED, safe failure.
+    const r = change.results[0];
+    const applyOk =
+      change.status === WorkspaceChangeStatus.APPLIED &&
+      change.patchRef.id === patchSet.id &&
+      change.approvalRef.id === patchSet.approvalRef.id &&
+      change.executionPlanRef.id === patchSet.executionPlanRef.id &&
+      change.workspaceRef.id === anchor.workspaceRef.id &&
+      change.results.length === 1 &&
+      r?.status === 'applied' &&
+      r?.path === op.path;
+    if (!applyOk) {
+      this.logWorkspaceApplyFailed(session, anchor, `workspace change not cleanly applied (status ${change.status})`);
+      return this.failComposed(message, session, this.deps.composer.composeWorkspaceApplyFailed(message.context));
+    }
+
+    // 6. Success — re-anchor WORKSPACE_APPLIED, preserving the WorkspaceChangeRef for a future git/test sprint.
+    await this.deps.applyPreviewFlow.anchor(session, {
+      ...anchor,
+      status: 'WORKSPACE_APPLIED',
+      workspaceChangeRef: workspaceChangeRef(change),
+    });
+    const reply = this.deps.composer.composeWorkspaceApplied(message.context, anchor.targetFiles);
+    await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+    return this.responded(session, reply);
+  }
+
+  /** A final/patch/apply command arrived while the anchor is WORKSPACE_APPLIED (Sprint 2u) — never
+   *  re-applies, and never understates the applied state (CA Round 1 #8). */
+  private async handleWorkspaceAlreadyAppliedTurn(message: InboundMessage, session: Session): Promise<TurnResult> {
+    const reply = this.deps.composer.composeWorkspaceAlreadyApplied(message.context);
+    await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+    return this.responded(session, reply);
+  }
+
+  /** A final-apply command arrived with no PATCH_READY/WORKSPACE_APPLIED apply context (Sprint 2u) —
+   *  never a new code-change request, never reaches the classifier or the Orchestrator. */
+  private async handleWorkspaceApplyUnavailableTurn(message: InboundMessage, session: Session): Promise<TurnResult> {
+    const reply = this.deps.composer.composeWorkspaceApplyUnavailable(message.context);
+    await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+    return this.responded(session, reply);
+  }
+
+  /** Structured, no-content failure log for workspace apply (Sprint 2u, ADR-0042 — CA Round 1) — so
+   *  operators can trace failures without the user seeing internals and without leaking diff/file text. */
+  private logWorkspaceApplyFailed(session: Session, anchor: ApplyPreviewAnchor, reason: string): void {
+    this.deps.logger.warn('workspace apply failed', {
+      reason,
+      sessionId: session.id,
+      executionPlanId: anchor.executionPlanRef.id,
+      approvalId: anchor.approvalId,
+      patchId: anchor.patchRef?.id,
       targetFiles: anchor.targetFiles.join(', '),
     }); // deliberately NO diff text / file content
   }
