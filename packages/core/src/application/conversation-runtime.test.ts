@@ -24,6 +24,7 @@ import type {
   GitCommitResult,
   GitDiff,
   GitStatus,
+  RepositoryInfo,
   InboundMessage,
   Intent,
   PatchGenerationInput,
@@ -149,6 +150,20 @@ const gitCommitResultOf = (
   commitHash: '0123456789abcdef0123456789abcdef01234567',
   committedFiles: input.files,
   message: input.message,
+  ...o,
+});
+
+/** A SHA-shaped commit hash reused across Sprint 2y/2z fixtures (matches the default commit result). */
+const HEAD_SHA = '0123456789abcdef0123456789abcdef01234567';
+
+/** Read-only RepositoryInfo (Sprint 2z) — attached branch `main`, HEAD == HEAD_SHA by default so a
+ *  GIT_COMMITTED push turn passes the HEAD-matches-committed-hash gate. Override to force detached/moved. */
+const repoInfoOf = (o: Partial<RepositoryInfo> = {}): RepositoryInfo => ({
+  isRepository: true,
+  rootPath: '/repo',
+  branch: 'main',
+  headSha: HEAD_SHA,
+  detached: false,
   ...o,
 });
 
@@ -326,9 +341,11 @@ interface Calls {
   gitStatus: number;
   gitDiff: number;
   gitCommit: number;
+  gitInfo: number;
   lastGitStatusRoot?: string;
   lastGitDiffRoot?: string;
   lastGitCommitInput?: { rootPath: string; files: string[]; message: string; approvalRef: ApprovalRef };
+  lastGitInfoRoot?: string;
   commandExecGet: number;
   loggerWarn: number;
 }
@@ -390,6 +407,9 @@ interface Opts {
   /** `git.commitFiles` result (Sprint 2y) — defaults to a valid `gitCommitResultOf` echoing the input; pass
    *  'throw' to simulate a commit failure, or a literal GitCommitResult to force an integrity mismatch. */
   gitCommit?: GitCommitResult | 'throw';
+  /** `git.info` result (Sprint 2z) — defaults to `repoInfoOf()` (HEAD == HEAD_SHA); pass 'throw' to simulate
+   *  a read error, or a literal RepositoryInfo to force detached / moved-HEAD. */
+  gitInfo?: RepositoryInfo | 'throw';
   /** When true, `commandExecutions.get` throws (Sprint 2w — validation-lookup failure must not fail preview). */
   commandExecGetThrows?: boolean;
 }
@@ -425,6 +445,7 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
     gitStatus: 0,
     gitDiff: 0,
     gitCommit: 0,
+    gitInfo: 0,
     commandExecGet: 0,
     loggerWarn: 0,
   };
@@ -649,6 +670,12 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
         calls.lastGitCommitInput = input;
         if (opts.gitCommit === 'throw') throw new Error('git commit boom');
         return opts.gitCommit ?? gitCommitResultOf(input);
+      },
+      async info(rootPath) {
+        calls.gitInfo++;
+        calls.lastGitInfoRoot = rootPath;
+        if (opts.gitInfo === 'throw') throw new Error('git info boom');
+        return opts.gitInfo ?? repoInfoOf();
       },
     },
     logger: { ...silentLogger, warn: () => { calls.loggerWarn++; } },
@@ -2860,11 +2887,12 @@ describe('Approved Git Commit Execution — runtime (Sprint 2y, ADR-0046)', () =
     }
   });
 
-  it('GIT_COMMITTED + push → reject, no push (CA 13)', async () => {
+  it('GIT_COMMITTED + push → no commit execution; push is now Sprint 2z push-approval flow (CA 13, superseded by 2z)', async () => {
     const { deps, calls } = makeDeps({ applyAnchor: committedAnchor() });
     const result = await new ConversationRuntime(deps).handle(messageOf('push 해줘'));
-    expect(calls.gitCommit).toBe(0);
-    expect(result.reply.text).toBe(composer.composeCommitPushUnsupported(CTX).text);
+    expect(calls.gitCommit).toBe(0); // never a commit mutation
+    // Sprint 2z (ADR-0047) owns push at GIT_COMMITTED — no longer the 2y commit-push-unsupported reply.
+    expect(result.reply.text).not.toBe(composer.composeCommitPushUnsupported(CTX).text);
   });
 
   // ── context / approval guards (CA 14–20) ────────────────────────────────────────────────────
@@ -3064,6 +3092,336 @@ describe('Approved Git Commit Execution — runtime (Sprint 2y, ADR-0046)', () =
     expect(calls.run).toBe(0);
     expect(calls.resume).toBe(0);
     expect(calls.gitDiff).toBe(0); // only status + commitFiles touch git
+  });
+});
+
+// ── Sprint 2z — Explicit Git Push Approval (GIT_COMMITTED → approval halt, ADR-0047) ───────────────
+
+describe('Explicit Git Push Approval — runtime (Sprint 2z, ADR-0047)', () => {
+  /** A GIT_COMMITTED anchor with complete commit context (HEAD == HEAD_SHA). */
+  const committedAnchor = (o: Partial<ApplyPreviewAnchor> = {}): ApplyPreviewAnchor =>
+    approvedAnchorOf({
+      status: 'GIT_COMMITTED',
+      workspaceChangeRef: { id: 'wc-1', status: WorkspaceChangeStatus.APPLIED },
+      commitApprovalId: 'apply-appr-1',
+      commitHash: HEAD_SHA,
+      committedFiles: [TARGET_FILE],
+      ...o,
+    });
+  /** A PUSH_APPROVAL_PENDING anchor with complete resume context. */
+  const pushPendingAnchor = (o: Partial<ApplyPreviewAnchor> = {}): ApplyPreviewAnchor =>
+    committedAnchor({
+      status: 'PUSH_APPROVAL_PENDING',
+      pushApprovalId: 'apply-appr-1',
+      pushCommitHash: HEAD_SHA,
+      pushRemote: 'origin',
+      pushBranch: 'main',
+      pushUpstreamRef: 'origin/main',
+      ...o,
+    });
+  const pushApprovedAnchor = (o: Partial<ApplyPreviewAnchor> = {}): ApplyPreviewAnchor =>
+    pushPendingAnchor({ status: 'PUSH_APPROVED', ...o });
+  /** A clean, ahead-1, not-diverged status with an upstream — the push-ready shape. */
+  const pushReady = { clean: true, staged: [] as string[], unstaged: [] as string[], untracked: [] as string[], upstream: 'origin/main', ahead: 1, behind: 0 };
+  const pushDeps = (o: Partial<Opts> = {}): ReturnType<typeof makeDeps> =>
+    makeDeps({ applyAnchor: committedAnchor(), gitInfo: repoInfoOf(), gitStatus: gitStatusOf(pushReady), ...o });
+  const composer = new ResponseComposer();
+  const PUSH_PHRASES = ['푸시해줘', 'git push 해줘', '원격에 올려줘', 'push this commit'];
+
+  // ── trigger + approval (CA 1–9) ─────────────────────────────────────────────────────────────
+  it('GIT_COMMITTED + each push phrase → one CRITICAL push approval, PUSH_APPROVAL_PENDING (CA 1–4)', async () => {
+    for (const text of PUSH_PHRASES) {
+      const { deps, calls } = pushDeps();
+      const result = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.requestForRisk, text).toBe(1);
+      expect(calls.lastRequestForRiskInput?.riskLevel, text).toBe(RiskLevel.CRITICAL);
+      expect(calls.lastApplyAnchor?.status, text).toBe('PUSH_APPROVAL_PENDING');
+      expect(result.status, text).toBe('AWAITING_APPROVAL');
+      expect(result.reply.text, text).toBe(
+        composer.composePushApprovalRequested(CTX, { commitHash: HEAD_SHA, remote: 'origin', branch: 'main', upstream: 'origin/main', ahead: 1 }).text,
+      );
+    }
+  });
+
+  it('ambiguous words at GIT_COMMITTED do not create push approval (CA 5)', async () => {
+    for (const text of ['좋아', '오케이', '확인', '진행해', '다음 단계']) {
+      const { deps, calls } = pushDeps();
+      await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.requestForRisk, text).toBe(0);
+      expect(calls.gitInfo, text).toBe(0);
+    }
+  });
+
+  it('no anchor + push phrase → no push approval and does not enter push flow (CA 1/6)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: null });
+    await new ConversationRuntime(deps).handle(messageOf('푸시해줘'));
+    expect(calls.requestForRisk).toBe(0);
+    expect(calls.gitInfo).toBe(0);
+    expect(calls.gitStatus).toBe(0);
+  });
+
+  it('WORKSPACE_APPLIED + push phrase → existing 2w mutating reject, no push approval (CA 7)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: approvedAnchorOf({ status: 'WORKSPACE_APPLIED', workspaceChangeRef: { id: 'wc-1', status: WorkspaceChangeStatus.APPLIED } }) });
+    const result = await new ConversationRuntime(deps).handle(messageOf('푸시해줘'));
+    expect(calls.requestForRisk).toBe(0);
+    expect(calls.gitInfo).toBe(0);
+    expect(result.reply.text).toBe(composer.composeGitMutationNotSupported(CTX).text);
+  });
+
+  it('COMMIT_APPROVED + push phrase → existing 2y push-unsupported, no push approval (CA 8)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: committedAnchor({ status: 'COMMIT_APPROVED', proposedCommitMessage: 'chore: x', commitCandidateFiles: [TARGET_FILE] }) });
+    const result = await new ConversationRuntime(deps).handle(messageOf('푸시해줘'));
+    expect(calls.requestForRisk).toBe(0);
+    expect(calls.gitInfo).toBe(0);
+    expect(result.reply.text).toBe(composer.composeCommitPushUnsupported(CTX).text);
+  });
+
+  it('PUSH_APPROVED + push phrase → already approved, not pushed, no new approval (CA 9)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: pushApprovedAnchor() });
+    const result = await new ConversationRuntime(deps).handle(messageOf('푸시해줘'));
+    expect(calls.requestForRisk).toBe(0);
+    expect(result.reply.text).toBe(composer.composePushAlreadyApproved(CTX).text);
+  });
+
+  // ── companion / force (CA 10–17) ────────────────────────────────────────────────────────────
+  it('deploy-only / branch-only at GIT_COMMITTED (no push word) → no push flow (CA 2/10/11)', async () => {
+    for (const text of ['배포해줘', '브랜치 만들어줘']) {
+      const { deps, calls } = pushDeps();
+      const result = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.requestForRisk, text).toBe(0);
+      expect(calls.gitInfo, text).toBe(0);
+      expect(result.reply.text, text).not.toBe(composer.composePushUnsupportedCompanion(CTX).text);
+    }
+  });
+
+  it('push bundled with force/--force/deploy/PR/tag/branch/reset → unsupported companion, no approval (CA 12–17)', async () => {
+    for (const text of ['force push 해줘', 'push --force', '푸시하고 배포해줘', 'push and PR', 'push tag 해줘', 'push branch 해줘', 'push하고 reset']) {
+      const { deps, calls } = pushDeps();
+      const result = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.requestForRisk, text).toBe(0);
+      expect(calls.gitInfo, text).toBe(0);
+      expect(result.reply.text, text).toBe(composer.composePushUnsupportedCompanion(CTX).text);
+    }
+  });
+
+  // ── context / verification guards (CA 18–32) ────────────────────────────────────────────────
+  it('incomplete committed context → safe failure, no approval, logger never throws (CA 18–22)', async () => {
+    const bad: Array<[string, Partial<ApplyPreviewAnchor>]> = [
+      ['missing commitHash', { commitHash: undefined }],
+      ['invalid commitHash', { commitHash: 'nothex!!' }],
+      ['missing committedFiles', { committedFiles: [] }],
+      ['missing workspaceRef', { workspaceRef: undefined }],
+      ['missing executionPlanRef', { executionPlanRef: undefined }],
+    ];
+    for (const [label, patch] of bad) {
+      const { deps, calls } = pushDeps({ applyAnchor: committedAnchor(patch) });
+      const result = await new ConversationRuntime(deps).handle(messageOf('푸시해줘')); // must not throw
+      expect(calls.requestForRisk, label).toBe(0);
+      expect(result.reply.text, label).toBe(composer.composePushApprovalUnavailable(CTX).text);
+    }
+  });
+
+  it('git info / status read failure → composePushStatusUnavailable, no approval (CA 23–24)', async () => {
+    const infoThrow = pushDeps({ gitInfo: 'throw' });
+    const r1 = await new ConversationRuntime(infoThrow.deps).handle(messageOf('푸시해줘'));
+    expect(infoThrow.calls.requestForRisk).toBe(0);
+    expect(r1.reply.text).toBe(composer.composePushStatusUnavailable(CTX).text);
+
+    const statusThrow = pushDeps({ gitStatus: 'throw' });
+    const r2 = await new ConversationRuntime(statusThrow.deps).handle(messageOf('푸시해줘'));
+    expect(statusThrow.calls.requestForRisk).toBe(0);
+    expect(r2.reply.text).toBe(composer.composePushStatusUnavailable(CTX).text);
+  });
+
+  it('HEAD moved / detached → composePushHeadMovedUnavailable, no approval (CA 25–26)', async () => {
+    const moved = pushDeps({ gitInfo: repoInfoOf({ headSha: 'f'.repeat(40) }) });
+    const r1 = await new ConversationRuntime(moved.deps).handle(messageOf('푸시해줘'));
+    expect(moved.calls.requestForRisk).toBe(0);
+    expect(r1.reply.text).toBe(composer.composePushHeadMovedUnavailable(CTX).text);
+
+    const detached = pushDeps({ gitInfo: repoInfoOf({ detached: true, branch: '', headSha: undefined }) });
+    const r2 = await new ConversationRuntime(detached.deps).handle(messageOf('푸시해줘'));
+    expect(detached.calls.requestForRisk).toBe(0);
+    expect(r2.reply.text).toBe(composer.composePushHeadMovedUnavailable(CTX).text);
+  });
+
+  it('no / unparseable upstream → composePushNoUpstream, no approval (CA 27–30)', async () => {
+    const cases: Array<[string, Partial<GitStatus>]> = [
+      ['no upstream', { upstream: undefined, ahead: undefined, behind: undefined }],
+      ['no slash', { upstream: 'originmain' }],
+      ['empty remote', { upstream: '/main' }],
+      ['empty branch', { upstream: 'origin/' }],
+      ['control char', { upstream: 'origin/main' }],
+    ];
+    for (const [label, over] of cases) {
+      const { deps, calls } = pushDeps({ gitStatus: gitStatusOf({ ...pushReady, ...over }) });
+      const result = await new ConversationRuntime(deps).handle(messageOf('푸시해줘'));
+      expect(calls.requestForRisk, label).toBe(0);
+      expect(result.reply.text, label).toBe(composer.composePushNoUpstream(CTX).text);
+    }
+  });
+
+  it('branch not ahead → nothing to push; behind > 0 → diverged; no approval (CA 31–32)', async () => {
+    const notAhead = pushDeps({ gitStatus: gitStatusOf({ ...pushReady, ahead: 0 }) });
+    const r1 = await new ConversationRuntime(notAhead.deps).handle(messageOf('푸시해줘'));
+    expect(notAhead.calls.requestForRisk).toBe(0);
+    expect(r1.reply.text).toBe(composer.composePushNothingToPush(CTX).text);
+
+    const diverged = pushDeps({ gitStatus: gitStatusOf({ ...pushReady, ahead: 1, behind: 2 }) });
+    const r2 = await new ConversationRuntime(diverged.deps).handle(messageOf('푸시해줘'));
+    expect(diverged.calls.requestForRisk).toBe(0);
+    expect(r2.reply.text).toBe(composer.composePushDiverged(CTX).text);
+  });
+
+  // ── dirty working tree (CA 33–35) ───────────────────────────────────────────────────────────
+  it('dirty working tree (staged/unstaged/untracked) → composePushDirtyWorkingTree, no approval (CA 33–35)', async () => {
+    const dirties: Array<[string, Partial<GitStatus>]> = [
+      ['staged', { clean: false, staged: ['x.ts'] }],
+      ['unstaged', { clean: false, unstaged: ['y.ts'] }],
+      ['untracked', { clean: false, untracked: ['z.ts'] }],
+    ];
+    for (const [label, over] of dirties) {
+      const { deps, calls } = pushDeps({ gitStatus: gitStatusOf({ ...pushReady, ...over }) });
+      const result = await new ConversationRuntime(deps).handle(messageOf('푸시해줘'));
+      expect(calls.requestForRisk, label).toBe(0);
+      expect(result.reply.text, label).toBe(composer.composePushDirtyWorkingTree(CTX).text);
+    }
+  });
+
+  // ── valid + upstream parsing (CA 36–37) ─────────────────────────────────────────────────────
+  it('origin/feature/x parses remote=origin branch=feature/x and approves (CA 36–37)', async () => {
+    const { deps, calls } = pushDeps({ gitStatus: gitStatusOf({ ...pushReady, upstream: 'origin/feature/x' }) });
+    await new ConversationRuntime(deps).handle(messageOf('푸시해줘'));
+    expect(calls.requestForRisk).toBe(1);
+    expect(calls.lastApplyAnchor?.pushRemote).toBe('origin');
+    expect(calls.lastApplyAnchor?.pushBranch).toBe('feature/x');
+    expect(calls.lastApplyAnchor?.pushUpstreamRef).toBe('origin/feature/x');
+  });
+
+  // ── approval reason (CA 41–49) ──────────────────────────────────────────────────────────────
+  it('approval reason includes commit/remote/upstream/branch/ahead + no-push + permission + not-in-2z + future-step + CRITICAL, no diff (CA 41–49)', async () => {
+    const { deps, calls } = pushDeps();
+    await new ConversationRuntime(deps).handle(messageOf('푸시해줘'));
+    const reason = calls.lastRequestForRiskInput?.reason ?? '';
+    expect(reason).toContain(HEAD_SHA);
+    expect(reason).toContain('origin');
+    expect(reason).toContain('origin/main');
+    expect(reason).toContain('no git push has been performed');
+    expect(reason).toContain('records permission only');
+    expect(reason).toContain('NOT executed in Sprint 2z');
+    expect(reason).toContain('future execution requires a separate step');
+    expect(reason).toContain('point-in-time');
+    expect(reason).not.toContain('diff --git');
+    expect(calls.lastRequestForRiskInput?.riskLevel).toBe(RiskLevel.CRITICAL);
+  });
+
+  // ── decision flow (CA 50–58) ────────────────────────────────────────────────────────────────
+  it('PUSH_APPROVAL_PENDING + ambiguous / push / force / deploy phrase → re-prompt, no decide (CA 50–53)', async () => {
+    for (const text of ['음 글쎄', '푸시해줘', 'push --force', '푸시하고 배포']) {
+      const { deps, calls } = makeDeps({ applyAnchor: pushPendingAnchor() });
+      const result = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.decide, text).toBe(0);
+      expect(calls.requestForRisk, text).toBe(0);
+      expect(calls.applyAnchorSet, text).toBe(0); // no re-anchor
+      expect(result.status, text).toBe('AWAITING_APPROVAL');
+    }
+  });
+
+  it('PUSH_APPROVAL_PENDING approve verifies the ApprovalRequest (missing / not-PENDING / plan-mismatch → no decide) (CA 54)', async () => {
+    const gone = makeDeps({ applyAnchor: pushPendingAnchor(), approvalsGetResult: null });
+    await new ConversationRuntime(gone.deps).handle(messageOf('승인'));
+    expect(gone.calls.decide).toBe(0);
+
+    const mismatch = makeDeps({ applyAnchor: pushPendingAnchor(), approvalsGetResult: { ...pendingApprovalOf(), id: 'apply-appr-1', executionPlanRef: { id: 'other-plan', goal: 'g' } } });
+    await new ConversationRuntime(mismatch.deps).handle(messageOf('승인'));
+    expect(mismatch.calls.decide).toBe(0);
+  });
+
+  it('PUSH_APPROVAL_PENDING + "승인" → PUSH_APPROVED only, no push (CA 55)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: pushPendingAnchor() });
+    const result = await new ConversationRuntime(deps).handle(messageOf('승인'));
+    expect(calls.decide).toBe(1);
+    expect(calls.lastApplyAnchor?.status).toBe('PUSH_APPROVED');
+    expect(result.reply.text).toBe(composer.composePushApprovalRecorded(CTX).text);
+  });
+
+  it('PUSH_APPROVAL_PENDING + "거절"/"취소" → GIT_COMMITTED, clear only push fields, commit context preserved, no push (CA 56–57)', async () => {
+    for (const [text, expected] of [['거절', 'DENIED'], ['취소', 'CANCELLED']] as const) {
+      const { deps, calls } = makeDeps({ applyAnchor: pushPendingAnchor() });
+      const result = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.decide, text).toBe(1);
+      expect(result.status, text).toBe(expected);
+      expect(calls.lastApplyAnchor?.status, text).toBe('GIT_COMMITTED');
+      expect(calls.lastApplyAnchor?.pushApprovalId, text).toBeUndefined();
+      expect(calls.lastApplyAnchor?.pushRemote, text).toBeUndefined();
+      expect(calls.lastApplyAnchor?.pushUpstreamRef, text).toBeUndefined();
+      expect(calls.lastApplyAnchor?.commitHash, text).toBe(HEAD_SHA); // commit context preserved
+      expect(calls.lastApplyAnchor?.committedFiles, text).toEqual([TARGET_FILE]);
+      const wanted = text === '거절' ? composer.composePushApprovalDenied(CTX).text : composer.composePushApprovalCancelled(CTX).text;
+      expect(result.reply.text, text).toBe(wanted);
+    }
+  });
+
+  it('PUSH_APPROVAL_PENDING with incomplete context → safe failure, no decide (CA 58)', async () => {
+    const bad: Array<[string, Partial<ApplyPreviewAnchor>]> = [
+      ['missing pushApprovalId', { pushApprovalId: undefined }],
+      ['missing pushUpstreamRef', { pushUpstreamRef: undefined }],
+      ['missing pushCommitHash', { pushCommitHash: undefined }],
+      ['missing commitHash', { commitHash: undefined }],
+    ];
+    for (const [label, patch] of bad) {
+      const { deps, calls } = makeDeps({ applyAnchor: pushPendingAnchor(patch) });
+      const result = await new ConversationRuntime(deps).handle(messageOf('승인')); // must not throw
+      expect(calls.decide, label).toBe(0);
+      expect(result.reply.text, label).toBe(composer.composePushApprovalUnavailable(CTX).text);
+    }
+  });
+
+  // ── PUSH_APPROVED context + repeats (CA 59–62) ──────────────────────────────────────────────
+  it('approve preserves ALL push + commit context on PUSH_APPROVED (CA 59–60)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: pushPendingAnchor() });
+    await new ConversationRuntime(deps).handle(messageOf('승인'));
+    const a = calls.lastApplyAnchor;
+    expect(a?.status).toBe('PUSH_APPROVED');
+    expect(a?.pushApprovalId).toBe('apply-appr-1');
+    expect(a?.pushCommitHash).toBe(HEAD_SHA);
+    expect(a?.pushRemote).toBe('origin');
+    expect(a?.pushBranch).toBe('main');
+    expect(a?.pushUpstreamRef).toBe('origin/main');
+    expect(a?.commitHash).toBe(HEAD_SHA);
+    expect(a?.committedFiles).toEqual([TARGET_FILE]);
+    expect(a?.commitApprovalId).toBe('apply-appr-1');
+    expect(a?.workspaceRef).toEqual(WORKSPACE);
+    expect(a?.executionPlanRef).toEqual({ id: 'plan-1', goal: 'g' });
+  });
+
+  it('PUSH_APPROVED + push → already approved; + ambiguous → no push (CA 61–62)', async () => {
+    const approved = makeDeps({ applyAnchor: pushApprovedAnchor() });
+    const r1 = await new ConversationRuntime(approved.deps).handle(messageOf('푸시해줘'));
+    expect(r1.reply.text).toBe(composer.composePushAlreadyApproved(CTX).text);
+
+    const ambiguous = makeDeps({ applyAnchor: pushApprovedAnchor() });
+    await new ConversationRuntime(ambiguous.deps).handle(messageOf('좋아'));
+    expect(ambiguous.calls.requestForRisk).toBe(0);
+  });
+
+  // ── no side effects (CA 63–82) ──────────────────────────────────────────────────────────────
+  it('the push-approval path performs no git push/commit/command/WorkspaceWrite/Patch/CodeGen/Orchestrator call (CA 63–82)', async () => {
+    const { deps, calls } = pushDeps();
+    await new ConversationRuntime(deps).handle(messageOf('푸시해줘'));
+    expect(calls.gitInfo).toBe(1); // read-only info
+    expect(calls.gitStatus).toBe(1); // read-only status
+    expect(calls.gitCommit).toBe(0); // no commit/push mutation
+    expect(calls.gitDiff).toBe(0);
+    expect(calls.commandRun).toBe(0);
+    expect(calls.workspaceApply).toBe(0);
+    expect(calls.patchGenerate).toBe(0);
+    expect(calls.patchGet).toBe(0);
+    expect(calls.codeGenerationGenerate).toBe(0);
+    expect(calls.run).toBe(0);
+    expect(calls.resume).toBe(0);
+    // the git dep exposes no push method (structural)
+    expect(Object.keys(deps.git)).not.toContain('push');
   });
 });
 

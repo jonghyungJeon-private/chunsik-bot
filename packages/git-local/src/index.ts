@@ -84,10 +84,12 @@ export function parsePorcelain(stdout: string): GitStatus {
   const unstaged: string[] = [];
   const untracked: string[] = [];
   let branch = '';
+  let tracking: { upstream?: string; ahead?: number; behind?: number } = {};
   for (const line of stdout.split('\n')) {
     if (line.length === 0) continue;
     if (line.startsWith('## ')) {
       branch = parseBranchLine(line);
+      tracking = parseBranchTracking(line);
       continue;
     }
     if (line.length < 3) continue;
@@ -104,7 +106,16 @@ export function parsePorcelain(stdout: string): GitStatus {
     if (y !== ' ' && y !== '?') unstaged.push(path);
   }
   const clean = staged.length === 0 && unstaged.length === 0 && untracked.length === 0;
-  return { clean, branch, staged, unstaged, untracked };
+  return {
+    clean,
+    branch,
+    staged,
+    unstaged,
+    untracked,
+    ...(tracking.upstream !== undefined ? { upstream: tracking.upstream } : {}),
+    ...(tracking.ahead !== undefined ? { ahead: tracking.ahead } : {}),
+    ...(tracking.behind !== undefined ? { behind: tracking.behind } : {}),
+  };
 }
 
 /** Extract the branch name from a porcelain `## ...` header line. */
@@ -115,6 +126,34 @@ function parseBranchLine(line: string): string {
   b = b.split('...')[0] ?? b;
   b = b.split(' ')[0] ?? b;
   return b;
+}
+
+/**
+ * Parse the upstream tracking ref + ahead/behind from a porcelain `## <branch>...<remote>/<branch>
+ * [ahead N, behind M]` header (Sprint 2z, ADR-0047). READ-ONLY: this data is ALREADY fetched by
+ * `git status --porcelain=v1 -b` — no network fetch, no new git command. When the branch has no
+ * `...upstream`, all three are `undefined` (distinct from `0` = in sync). Detached / unborn branches
+ * have no upstream.
+ */
+function parseBranchTracking(line: string): { upstream?: string; ahead?: number; behind?: number } {
+  const body = line.slice(3).trim();
+  if (body.startsWith('HEAD (no branch)') || body.startsWith('No commits yet on ')) return {};
+  const sep = body.indexOf('...');
+  if (sep === -1) return {}; // no upstream
+  const afterSep = body.slice(sep + 3);
+  const bracket = afterSep.indexOf(' [');
+  const upstream = (bracket === -1 ? afterSep : afterSep.slice(0, bracket)).trim();
+  if (upstream.length === 0) return {};
+  let ahead = 0;
+  let behind = 0;
+  if (bracket !== -1) {
+    const track = afterSep.slice(bracket); // " [ahead N, behind M]" / " [ahead N]" / " [behind M]"
+    const a = track.match(/ahead (\d+)/);
+    const b = track.match(/behind (\d+)/);
+    if (a?.[1]) ahead = Number(a[1]);
+    if (b?.[1]) behind = Number(b[1]);
+  }
+  return { upstream, ahead, behind };
 }
 
 /**

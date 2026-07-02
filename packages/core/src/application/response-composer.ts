@@ -99,6 +99,9 @@ const MAX_OUT_OF_SCOPE_WARNING_PATHS = 5;
  *  other files' blocks within MAX_MESSAGE_CHARS (CA Round 1 Required Change #2). */
 const MAX_DIFF_LINES_PER_FILE = 40;
 const MAX_DIFF_CHARS_PER_FILE = 1000;
+/** Bound on displayed user-controllable git refs (remote/branch/upstream) in push replies (Sprint 2z,
+ *  ADR-0047, CA #6) — a defensive display cap even though upstream parsing already rejects over-long refs. */
+const MAX_GIT_REF_DISPLAY = 80;
 /** Fixed upper bound on the "N개 파일... 생략했어요" notice's length (N is bounded by
  *  MAX_TARGET_CANDIDATES = 5 upstream, so always short) — reserved up front so the notice never has to
  *  compete for budget after the fact (ADR-0039). */
@@ -1091,6 +1094,133 @@ export class ResponseComposer {
     return {
       context,
       text: 'push는 아직 지원하지 않아요. 커밋만 가능해요. push는 하지 않았어요.',
+    };
+  }
+
+  /**
+   * Git-push approval REQUESTED (Explicit Git Push Approval, Sprint 2z, ADR-0047). AWAITING_APPROVAL prompt:
+   * short hash + bounded remote/branch + ahead count + 승인/거절. States approving does NOT run `git push`
+   * in this step and that the approval is a point-in-time snapshot (re-check before actual push) (CA #4/#6).
+   * Never says pushed / ready-to-push / push-safe / deployed.
+   */
+  composePushApprovalRequested(
+    context: ConversationContext,
+    input: { commitHash: string; remote: string; branch: string; upstream: string; ahead: number },
+  ): OutboundMessage {
+    const shortHash = input.commitHash.slice(0, 7);
+    const remote = input.remote.slice(0, MAX_GIT_REF_DISPLAY);
+    const branch = input.branch.slice(0, MAX_GIT_REF_DISPLAY);
+    const text = clampToMessageBudget(
+      [
+        'push 승인을 요청했어요.',
+        `커밋: ${shortHash}`,
+        `대상: ${remote}/${branch} (원격보다 ${input.ahead}개 앞섬)`,
+        '승인해도 이번 단계에서는 실제 git push를 하지 않아요.',
+        '승인은 현재 확인한 Git 상태 기준이에요. 실제 push 실행 전에는 다시 확인이 필요해요.',
+        '진행하려면 "승인", 원치 않으면 "거절"이라고 알려 주세요.',
+      ].join('\n'),
+    );
+    return { context, text };
+  }
+
+  /** Push approval RECORDED after "승인" (Sprint 2z) — records permission only; never says pushed. */
+  composePushApprovalRecorded(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: 'push 승인은 기록했어요.\n아직 실제 git push는 하지 않았어요. (실제 push는 이후 단계에서 Git 상태를 다시 확인한 뒤 진행돼요)',
+    };
+  }
+
+  /** Push approval DENIED (Sprint 2z) — the local commit remains; nothing pushed. */
+  composePushApprovalDenied(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: 'push 승인을 거절했어요.\n커밋은 로컬에 그대로 있어요. git push는 하지 않았어요.',
+    };
+  }
+
+  /** Push approval CANCELLED (Sprint 2z) — the local commit remains; nothing pushed. */
+  composePushApprovalCancelled(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: 'push 승인을 취소했어요.\n커밋은 로컬에 그대로 있어요. git push는 하지 않았어요.',
+    };
+  }
+
+  /** Push approval not available — wrong state / incomplete or stale pending context (Sprint 2z). No push. */
+  composePushApprovalUnavailable(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '지금은 push 승인을 준비할 수 없어요. 먼저 커밋을 완료(GIT_COMMITTED)한 뒤에 push를 요청해 주세요. git push는 하지 않았어요.',
+    };
+  }
+
+  /**
+   * Read-only Git inspection failed on the push path (Sprint 2z) — a read WAS attempted, so it does NOT say
+   * "git 명령은 실행하지 않았어요"; states no approval, no push, and no CommandExecution/shell fallback.
+   */
+  composePushStatusUnavailable(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text:
+        'push 준비를 위해 읽기 전용 Git 상태를 확인하는 중 문제가 발생했어요.\n' +
+        'push 승인 요청은 만들지 않았어요. git push는 하지 않았고, CommandExecution/shell fallback도 쓰지 않았어요.',
+    };
+  }
+
+  /** HEAD moved / detached — no longer the committed hash (Sprint 2z). Committed state changed; re-review; no push. */
+  composePushHeadMovedUnavailable(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '커밋 이후 Git 상태(HEAD)가 바뀌었어요. push 승인을 만들지 않았어요. 다시 검토하고 승인을 받아 주세요. git push는 하지 않았어요.',
+    };
+  }
+
+  /** Working tree has uncommitted changes (Sprint 2z, CA #10) — commit/clean first; no approval, no push. */
+  composePushDirtyWorkingTree(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '로컬에 커밋되지 않은 변경이 있어서 push 승인을 만들지 않았어요. 먼저 커밋하거나 변경을 정리해 주세요. git push는 하지 않았어요.',
+    };
+  }
+
+  /** No (or unparseable) upstream (Sprint 2z) — 2z does not create/ask for an upstream; no approval, no push. */
+  composePushNoUpstream(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '업스트림(추적 브랜치)을 확인할 수 없어 push 대상을 정할 수 없어요. 이번 단계에서는 업스트림을 새로 만들지 않아요. push 승인은 만들지 않았어요.',
+    };
+  }
+
+  /** Nothing to push — the branch is not ahead of its upstream (Sprint 2z). No approval, no push. */
+  composePushNothingToPush(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '원격보다 앞선 커밋이 없어 push할 게 없어요. push 승인은 만들지 않았어요.',
+    };
+  }
+
+  /** Branch has diverged (behind > 0) (Sprint 2z) — resolve first; no approval, no force push. */
+  composePushDiverged(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '브랜치가 원격과 갈라졌어요(diverged). 먼저 정리가 필요해요. 강제 push는 하지 않아요. push 승인은 만들지 않았어요.',
+    };
+  }
+
+  /** Push already approved (PUSH_APPROVED, Sprint 2z) — not pushed; no new approval. */
+  composePushAlreadyApproved(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '이미 push 승인을 받아 뒀어요.\n아직 실제 git push는 하지 않았어요. (실제 push는 이후 단계에서 다시 확인 후 진행돼요)',
+    };
+  }
+
+  /** Push bundled with force/PR/deploy/tag/branch/… (Sprint 2z) — push approval only; no approval, no git. */
+  composePushUnsupportedCompanion(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: 'push 승인만 준비할 수 있어요. force push/PR/배포/태그/브랜치/reset 같은 다른 작업은 지원하지 않아요. git push는 하지 않았어요.',
     };
   }
 }

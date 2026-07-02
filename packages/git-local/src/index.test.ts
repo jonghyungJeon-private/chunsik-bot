@@ -333,6 +333,64 @@ describe('parsePorcelain', () => {
     expect(parsePorcelain('## HEAD (no branch)').branch).toBe('HEAD');
     expect(parsePorcelain('## main').clean).toBe(true);
   });
+
+  // ── Sprint 2z (ADR-0047): upstream / ahead / behind from the `-b` header (read-only, no fetch) ──
+  it('parses upstream + ahead + behind from "## main...origin/main [ahead 2, behind 1]"', () => {
+    const out = parsePorcelain('## main...origin/main [ahead 2, behind 1]');
+    expect(out.upstream).toBe('origin/main');
+    expect(out.ahead).toBe(2);
+    expect(out.behind).toBe(1);
+  });
+
+  it('in-sync upstream "## main...origin/main" → upstream set, ahead 0, behind 0', () => {
+    const out = parsePorcelain('## main...origin/main');
+    expect(out.upstream).toBe('origin/main');
+    expect(out.ahead).toBe(0);
+    expect(out.behind).toBe(0);
+  });
+
+  it('ahead-only "## main...origin/main [ahead 3]" → ahead 3, behind 0', () => {
+    const out = parsePorcelain('## main...origin/main [ahead 3]');
+    expect(out.ahead).toBe(3);
+    expect(out.behind).toBe(0);
+  });
+
+  it('no upstream "## main" → upstream/ahead/behind all undefined (NOT 0) (CA 12)', () => {
+    const out = parsePorcelain('## main');
+    expect(out.upstream).toBeUndefined();
+    expect(out.ahead).toBeUndefined();
+    expect(out.behind).toBeUndefined();
+  });
+
+  it('detached / unborn have no upstream', () => {
+    expect(parsePorcelain('## HEAD (no branch)').upstream).toBeUndefined();
+    expect(parsePorcelain('## No commits yet on main').upstream).toBeUndefined();
+  });
+
+  it('a slashed upstream branch "## wip...origin/feature/x [ahead 1]" keeps the full upstream', () => {
+    const out = parsePorcelain('## wip...origin/feature/x [ahead 1]');
+    expect(out.upstream).toBe('origin/feature/x');
+    expect(out.ahead).toBe(1);
+    expect(out.behind).toBe(0);
+  });
+});
+
+describe('LocalGitProvider.status argv stays read-only (Sprint 2z, ADR-0047, CA 82)', () => {
+  it('status uses exactly `status --porcelain=v1 -b`; no mutating subcommand', async () => {
+    const calls: string[][] = [];
+    const runner: GitRunner = (args) => {
+      calls.push(args);
+      return { code: 0, stdout: '## main...origin/main [ahead 1]\n', stderr: '', timedOut: false, failed: false };
+    };
+    const status = await new LocalGitProvider(runner).status('/repo');
+    expect(calls).toContainEqual(['status', '--porcelain=v1', '-b']);
+    expect(status.upstream).toBe('origin/main');
+    for (const c of calls) {
+      for (const forbidden of ['push', 'commit', 'add', 'reset', 'checkout', 'stash', 'branch', 'merge', 'rebase', 'tag']) {
+        expect(c).not.toContain(forbidden);
+      }
+    }
+  });
 });
 
 describe('sanitizeGitStderr', () => {
