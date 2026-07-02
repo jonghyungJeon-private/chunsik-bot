@@ -2263,3 +2263,98 @@ ADR-0038/0039 (AI Code Generation Preview / Unified Diff Preview — the `codeGe
 `codeProposalRef`/`workspaceRef`/`targetFiles` this sprint's anchor threads through, unchanged),
 ADR-0035 (Live Code Change Planning — `planningOnly`, unchanged). Supersedes nothing.
 Plan: `docs/plans/sprint-2s-explicit-apply-approval-plan.md`.
+
+## ADR-0041 — Approved Apply Context → PatchSet Preview (representation only, still no mutation)
+
+- **Status:** ✅ Accepted (v2, Phase 2, Sprint 2t — Product Construction), Chief Architect Review:
+  APPROVED WITH CHANGES (Round 1).
+- **Date:** 2026-07-02
+- **Scope:** Sprint 2t turns an **APPROVED** apply anchor (Sprint 2s) into a `PatchSet` **representation**
+  via the existing Patch capability (CAP-005), and shows a PatchSet **preview**. After an explicit patch
+  command, the runtime recovers the approved context, re-validates against the latest workspace content,
+  and calls `PatchManager.generate`. Still no `WorkspaceWrite`, no file mutation, no `CommandExecution`, no
+  git mutation. Actual apply is Sprint 2u.
+
+### Most important rule
+> **PatchSet generation ≠ file apply. `PATCH_READY` means a PatchSet representation exists — patchRef
+> available, no workspace file modified, no command run, no git operation — NOT "applied" or "ready to
+> apply."** The Patch capability stays representation-only: `PatchManager` validates only the passed
+> `ApprovalRef` (status + plan-scope) and never queries `ApprovalManager` or touches the
+> filesystem/git/WorkspaceWrite/CommandExecution. The Application layer recovers the `ApprovalRef`
+> (`anchor.approvalId → approvals.get → approvalRef(request)`) and injects it.
+
+### Decision
+- **Reuses `PatchManager`/`PatchSet` (CAP-005, ADR-0026) unchanged — representation-only, verified against
+  source (CA Q1):** `PatchManager.generate` validates `input.approvalRef.status === APPROVED` and the
+  plan-scope match, maps each in-scope `ProposedChange` to a `PatchOperation` using the matching
+  `FileDiff`, and `storage.patches.save`s the set. It imports no other capability manager and never
+  touches the filesystem/git — persisting a `PatchSet` is representation storage, not mutation.
+- **`ConversationRuntime` composes it directly** (like `CodeGenerationManager`/`WorkspaceManager.diff`
+  before it): on an explicit patch command with an `APPROVED` anchor, it loads the `CodeProposal` by
+  `codeProposalRef.id` (`storage.codeProposals.get` — the source of truth, never rendered diff text or
+  chat history), re-filters against the authoritative `targetFiles` (`filterInScopeChanges`), **re-runs
+  `WorkspaceManager.diff` against the current content** (CA Q6 — staleness/add/binary/empty check), derives
+  the `ApprovalRef` and calls `PatchManager.generate({executionPlanRef, approvalRef, changes: inScope,
+  diff})`. No `ExecutionOrchestrator` call, no new `ExecutionStage`.
+- **The Application layer recovers and injects the `ApprovalRef`; `PatchManager` never queries
+  `ApprovalManager` (CA Q2).** `PatchManager.generate` independently re-validates the ref as a
+  belt-and-suspenders check.
+- **Latest content is re-validated before generation, and anything unrenderable rejects the whole set
+  (CA Q7).** `workspace.diff` throwing, an empty `diff.files`, any `changeKind: 'add'`, any binary, or any
+  empty `unified` (oversized/size-skipped) yields no PatchSet and a `composePatchGenerationFailed` reply —
+  a `PatchOperation` carrying an unapplyable diff would be unsafe for a future `WorkspaceWrite`.
+- **New anchor state `PATCH_READY` + `patchRef?: PatchRef`, narrowly defined (CA Round 1 Required Change
+  #1).** After generation the apply anchor is re-anchored `PATCH_READY`, preserving `patchRef` plus every
+  prior ref (`executionPlanRef`, `workspaceRef`, `targetFiles`, `codeProposalRef`, `approvalId`) as the
+  Sprint 2u handoff (CA Q12). `PATCH_READY` asserts only that a PatchSet representation exists — **not**
+  that anything was applied; the enum carries this in its doc comment and the preview wording reinforces
+  it. A repeated patch command at `PATCH_READY` is idempotent (`composePatchAlreadyGenerated`, no
+  regeneration). `StatelessApplyPreviewFlow` needs no logic change (its status→`TaskStatus` mapping only
+  special-cases `AWAITING_APPROVAL`; `PATCH_READY` is an inert `PENDING` anchor).
+- **Explicit patch trigger, narrowed (CA Round 1 Required Change #2).** A dedicated `PATCH_WORDS` set of
+  explicit patch phrases (`'패치 만들어'`, `'패치 생성'`, `'패치로 만들어'`, `'patch 만들어'`, `'generate
+  patch'`, `'patchset 만들어'`, `'다음 단계 진행'`) — the ambiguous standalone `'계속 진행'` is deliberately
+  excluded, and `'좋아'`/`'오케이'`/`'확인'` never match. Non-overlapping with `APPROVE_WORDS`/`APPLY_WORDS`
+  by construction. Generation only fires on an `APPROVED` anchor: explicit patch phrase + `APPROVED` ⇒
+  generation; a bare "continue" ⇒ never generation.
+- **User-facing wording uses "패치 미리보기" framing (CA Round 1 Required Change #3)** and repeats "아직
+  실제 파일에는 적용하지 않았어요 / 파일은 수정되지 않았어요"; forbidden: "적용했어요"/"반영했어요"/
+  "수정했어요"/"변경 완료"/"적용 완료".
+- **Generation failures are logged, structured, without diff/file content (CA Round 1 Required Change
+  #4)** — `logger.warn('PatchSet generation failed', {reason, sessionId, executionPlanId, approvalId,
+  codeProposalId, targetFiles})` — so operators can trace failures while the user sees only a safe reply.
+- **No Core/Orchestrator contract change; no new aggregate/repository/migration/capability/port.**
+  `PatchManager` is already a registered provider (reused, not newly registered).
+
+### Not implemented (out of scope)
+Actual `WorkspaceWrite` apply · filesystem mutation · git mutation · `CommandExecution` · test execution
+after patch generation · autonomous agent loop · retry loop · multi-file selection · directory/module
+scope · semantic repository search · repository indexing · AI target-file guessing · new-file creation/
+`changeKind: 'add'` support · provider-specific patch behavior · treating PatchSet generation as file
+application · `PatchManager` querying `ApprovalManager` · generating a PatchSet for binary/oversized/
+unrenderable changes · `ExecutionOrchestrator` contract change · `Core` contract change.
+
+### Consequences
+- + The approved modification now has a concrete, deterministic, scope-filtered `PatchSet` representation —
+  the last safe artifact before actual mutation — built from the existing Patch capability with zero
+  changes to it.
+- + The "recover refs from a plan-less anchor → compose a capability directly" pattern (Sprint 2q/2r/2s)
+  extends once more; `PatchManager` stays representation-only because the Application layer, not the
+  capability, recovers the `ApprovalRef`.
+- + Re-running `WorkspaceManager.diff` immediately before generation makes staleness a first-class,
+  tested rejection rather than a latent risk carried into a future apply.
+- − A fourth anchor state (`PATCH_READY`) and a `patchRef` field are added to `ApplyPreviewAnchor` — a
+  justified extension (Sprint 2u handoff + repeat-command idempotency), not scope creep.
+- − A generated-but-never-applied `PatchSet` persists in `storage.patches` as representation history — the
+  same accepted "inert record" trade-off as prior anchors; a future Rollback/GC concern, not this sprint's.
+
+### Relations
+ADR-0026 (CAP-005 Patch Capability — `PatchManager`/`PatchSet`/`PatchGenerationInput`/`patchRef`, reused
+representation-only), ADR-0040 (Explicit Preview Apply Approval — the `APPROVED` apply anchor + `approvalId`
+this sprint consumes and extends to `PATCH_READY`), ADR-0025 (CAP-004 Approval — `approvalRef` derivation,
+`ApprovalManager.get`; the boundary `PatchManager` must not cross), ADR-0039 (Unified Diff Preview —
+`WorkspaceManager.diff` re-run + bounded/backtick-safe rendering, reused), ADR-0036 (Code Change Scope
+Collection — `filterInScopeChanges`/`targetFiles` authority, reused), ADR-0029 (AI Code Generation —
+`CodeProposal` content source via `storage.codeProposals`), ADR-0031 (Execution Orchestrator — deliberately
+not extended). Supersedes nothing.
+Plan: `docs/plans/sprint-2t-approved-apply-to-patchset-preview-plan.md`.

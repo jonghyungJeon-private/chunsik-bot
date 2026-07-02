@@ -5,6 +5,7 @@ import {
   CodeGenerationStatus,
   CommandExecutionStatus,
   IntentType,
+  PatchStatus,
   RiskLevel,
   SessionStatus,
 } from '../domain';
@@ -19,6 +20,8 @@ import type {
   GenerateCodeInput,
   InboundMessage,
   Intent,
+  PatchGenerationInput,
+  PatchSet,
   ProposedChange,
   Project,
   Session,
@@ -172,6 +175,32 @@ const applyAnchorOf = (o: Partial<ApplyPreviewAnchor> = {}): ApplyPreviewAnchor 
   ...o,
 });
 
+/** An APPROVED apply anchor (Sprint 2t entry state) — approvalId present, ready for patch generation. */
+const approvedAnchorOf = (o: Partial<ApplyPreviewAnchor> = {}): ApplyPreviewAnchor =>
+  applyAnchorOf({ status: 'APPROVED', approvalId: 'apply-appr-1', approvedAt: TS, ...o });
+
+/** Default PatchSet the fake patch.generate returns, derived from the input changes/diff (Sprint 2t). */
+const patchSetOf = (input: PatchGenerationInput): PatchSet => ({
+  id: 'patch-1',
+  executionPlanRef: input.executionPlanRef,
+  approvalRef: input.approvalRef,
+  operations: input.changes.map((c) => ({
+    path: c.path,
+    operation: c.delete ? 'delete' : 'update',
+    diff: input.diff.files.find((f) => f.path === c.path)?.unified ?? '',
+  })),
+  status: PatchStatus.GENERATED,
+  createdAt: TS,
+});
+
+/** An APPROVED ApprovalRequest matching the apply anchor's approvalId (Sprint 2t). */
+const approvedApprovalOf = (): ApprovalRequest => ({
+  ...pendingApprovalOf(),
+  id: 'apply-appr-1',
+  status: ApprovalStatus.APPROVED,
+  decision: true,
+});
+
 interface Calls {
   run: number;
   resume: number;
@@ -204,6 +233,10 @@ interface Calls {
     reason: string;
     requestedBy: string;
   };
+  patchGenerate: number;
+  lastPatchInput?: PatchGenerationInput;
+  codeProposalsGet: number;
+  loggerWarn: number;
 }
 
 interface Opts {
@@ -238,6 +271,12 @@ interface Opts {
   /** `approvals.get` result for the apply-approval ambiguous-retry path — defaults to a fresh PENDING
    *  ApprovalRequest matching whatever id was requested. */
   approvalsGetResult?: ApprovalRequest | null;
+  /** `patch.generate` result (Sprint 2t) — defaults to a PatchSet derived from the changes/diff passed
+   *  in; pass 'throw' to simulate a generation failure (or a `no diff found` mismatch). */
+  patchGenerate?: PatchSet | 'throw';
+  /** `codeProposals.get` result (Sprint 2t) — defaults to the in-scope proposal for TARGET_FILE; pass
+   *  null to simulate a missing CodeProposal. */
+  codeProposalGet?: CodeProposal | null;
 }
 
 function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Calls } {
@@ -262,6 +301,9 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
     applyClear: 0,
     approvalsGet: 0,
     requestForRisk: 0,
+    patchGenerate: 0,
+    codeProposalsGet: 0,
+    loggerWarn: 0,
   };
   const composer = new ResponseComposer();
   const intentResolver = new IntentResolver();
@@ -424,7 +466,21 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
         return opts.codeProposal === undefined ? codeProposalOf() : opts.codeProposal;
       },
     },
-    logger: silentLogger,
+    patch: {
+      async generate(input) {
+        calls.patchGenerate++;
+        calls.lastPatchInput = input;
+        if (opts.patchGenerate === 'throw') throw new Error('patch boom');
+        return opts.patchGenerate ?? patchSetOf(input);
+      },
+    },
+    codeProposals: {
+      async get() {
+        calls.codeProposalsGet++;
+        return opts.codeProposalGet === undefined ? codeProposalOf() : opts.codeProposalGet;
+      },
+    },
+    logger: { ...silentLogger, warn: () => { calls.loggerWarn++; } },
   };
   return { deps, calls };
 }
@@ -1361,6 +1417,221 @@ describe('Explicit Preview Apply Approval — runtime (Sprint 2s, ADR-0040)', ()
   // StatelessApplyPreviewFlow (stateless-apply-preview-flow.test.ts) — this file's applyPreviewFlow
   // fake is a simple stateful pass-through and does not model that staleness check, matching the same
   // convention already used for scopeClarificationFlow's fake here.
+});
+
+describe('Approved Apply Context → PatchSet Preview — runtime (Sprint 2t, ADR-0041)', () => {
+  const approvedDeps = (o: Opts = {}) =>
+    makeDeps({ applyAnchor: approvedAnchorOf(), approvalsGetResult: approvedApprovalOf(), ...o });
+
+  it.each(['패치 만들어줘', '패치 생성해줘', '다음 단계 진행해'])(
+    '"%s" with an APPROVED anchor generates a PatchSet and returns a preview (RESPONDED)',
+    async (text) => {
+      const { deps, calls } = approvedDeps();
+      const result = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.patchGenerate).toBe(1);
+      expect(result.status).toBe('RESPONDED');
+      expect(result.reply.text).toContain('패치 미리보기');
+      expect(result.reply.text).toContain('파일은 수정되지 않았어요');
+    },
+  );
+
+  it('after generation the anchor is re-anchored PATCH_READY carrying patchRef and every prior ref', async () => {
+    const { deps, calls } = approvedDeps();
+    await new ConversationRuntime(deps).handle(messageOf('패치 만들어줘'));
+    expect(calls.lastApplyAnchor?.status).toBe('PATCH_READY');
+    expect(calls.lastApplyAnchor?.patchRef).toEqual({ id: 'patch-1', status: PatchStatus.GENERATED });
+    expect(calls.lastApplyAnchor?.workspaceRef).toEqual(WORKSPACE);
+    expect(calls.lastApplyAnchor?.targetFiles).toEqual([TARGET_FILE]);
+    expect(calls.lastApplyAnchor?.codeProposalRef).toEqual({ id: 'prop-1' });
+    expect(calls.lastApplyAnchor?.approvalId).toBe('apply-appr-1');
+  });
+
+  it('patch.generate receives an ApprovalRef (id/status/executionPlanRef), not an ApprovalRequest', async () => {
+    const { deps, calls } = approvedDeps();
+    await new ConversationRuntime(deps).handle(messageOf('패치 만들어줘'));
+    expect(calls.lastPatchInput?.approvalRef).toEqual({
+      id: 'apply-appr-1',
+      status: ApprovalStatus.APPROVED,
+      executionPlanRef: { id: 'plan-1', goal: 'g' },
+    });
+    // an ApprovalRequest would carry reason/requestedBy/createdAt — assert those are absent.
+    expect(calls.lastPatchInput?.approvalRef).not.toHaveProperty('reason');
+    expect(calls.lastPatchInput?.approvalRef).not.toHaveProperty('requestedBy');
+  });
+
+  it('WorkspaceManager.diff is re-run with the in-scope changes before patch.generate', async () => {
+    const { deps, calls } = approvedDeps();
+    await new ConversationRuntime(deps).handle(messageOf('패치 만들어줘'));
+    expect(calls.workspaceDiff).toBe(1);
+    expect(calls.lastWorkspaceDiffInput).toEqual([{ path: TARGET_FILE, newContent: 'fixed content' }]);
+    expect(calls.lastPatchInput?.changes).toEqual([{ path: TARGET_FILE, newContent: 'fixed content' }]);
+  });
+
+  it('an out-of-scope proposal path is never passed to patch.generate', async () => {
+    const { deps, calls } = approvedDeps({
+      codeProposalGet: codeProposalOf({
+        proposal: [
+          { path: TARGET_FILE, newContent: 'fixed content' },
+          { path: 'packages/core/other.ts', newContent: 'unexpected' },
+        ],
+      }),
+    });
+    await new ConversationRuntime(deps).handle(messageOf('패치 만들어줘'));
+    expect(calls.lastPatchInput?.changes).toEqual([{ path: TARGET_FILE, newContent: 'fixed content' }]);
+    expect(calls.lastWorkspaceDiffInput).toEqual([{ path: TARGET_FILE, newContent: 'fixed content' }]);
+  });
+
+  it('patch command with no anchor → composePatchUnavailable, no generation, no classifier/orchestrator', async () => {
+    const { deps, calls } = makeDeps(); // applyAnchor defaults to null
+    const result = await new ConversationRuntime(deps).handle(messageOf('패치 만들어줘'));
+    expect(calls.patchGenerate).toBe(0);
+    expect(calls.classify).toBe(0);
+    expect(calls.run).toBe(0);
+    expect(result.reply.text).toBe(new ResponseComposer().composePatchUnavailable(CTX).text);
+  });
+
+  it('patch command with an ELIGIBLE anchor → composePatchUnavailable, no generation', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: applyAnchorOf() }); // ELIGIBLE
+    const result = await new ConversationRuntime(deps).handle(messageOf('패치 만들어줘'));
+    expect(calls.patchGenerate).toBe(0);
+    expect(result.reply.text).toBe(new ResponseComposer().composePatchUnavailable(CTX).text);
+  });
+
+  it('APPROVED anchor missing approvalId → no generation, composePatchUnavailable', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: approvedAnchorOf({ approvalId: undefined }) });
+    const result = await new ConversationRuntime(deps).handle(messageOf('패치 만들어줘'));
+    expect(calls.patchGenerate).toBe(0);
+    expect(result.reply.text).toBe(new ResponseComposer().composePatchUnavailable(CTX).text);
+  });
+
+  it('approvalId not found (approvals.get → null) → no generation', async () => {
+    const { deps, calls } = approvedDeps({ approvalsGetResult: null });
+    await new ConversationRuntime(deps).handle(messageOf('패치 만들어줘'));
+    expect(calls.patchGenerate).toBe(0);
+  });
+
+  it('approval loaded but not APPROVED → no generation', async () => {
+    const { deps, calls } = approvedDeps({ approvalsGetResult: pendingApprovalOf() });
+    await new ConversationRuntime(deps).handle(messageOf('패치 만들어줘'));
+    expect(calls.patchGenerate).toBe(0);
+  });
+
+  it('CodeProposal not found → no generation', async () => {
+    const { deps, calls } = approvedDeps({ codeProposalGet: null });
+    await new ConversationRuntime(deps).handle(messageOf('패치 만들어줘'));
+    expect(calls.patchGenerate).toBe(0);
+    expect(calls.workspaceDiff).toBe(0);
+  });
+
+  it('proposal all out-of-scope → workspace.diff never called, no generation', async () => {
+    const { deps, calls } = approvedDeps({
+      codeProposalGet: codeProposalOf({ proposal: [{ path: 'packages/core/other.ts', newContent: 'x' }] }),
+    });
+    await new ConversationRuntime(deps).handle(messageOf('패치 만들어줘'));
+    expect(calls.workspaceDiff).toBe(0);
+    expect(calls.patchGenerate).toBe(0);
+  });
+
+  it('workspace.diff throws → composePatchGenerationFailed, no generation, failure logged', async () => {
+    const { deps, calls } = approvedDeps({ workspaceDiff: 'throw' });
+    const result = await new ConversationRuntime(deps).handle(messageOf('패치 만들어줘'));
+    expect(calls.patchGenerate).toBe(0);
+    expect(calls.loggerWarn).toBe(1);
+    expect(result.reply.text).toBe(new ResponseComposer().composePatchGenerationFailed(CTX).text);
+  });
+
+  it('empty diff.files → no generation, composePatchGenerationFailed', async () => {
+    const { deps, calls } = approvedDeps({
+      workspaceDiff: { refId: WORKSPACE.id, files: [], estimatedChangedLines: 0, truncated: false },
+    });
+    await new ConversationRuntime(deps).handle(messageOf('패치 만들어줘'));
+    expect(calls.patchGenerate).toBe(0);
+  });
+
+  it("changeKind 'add' → no generation", async () => {
+    const { deps, calls } = approvedDeps({
+      workspaceDiff: {
+        refId: WORKSPACE.id,
+        files: [{ path: TARGET_FILE, changeKind: 'add', unified: 'x', binary: false }],
+        estimatedChangedLines: 1,
+        truncated: false,
+      },
+    });
+    await new ConversationRuntime(deps).handle(messageOf('패치 만들어줘'));
+    expect(calls.patchGenerate).toBe(0);
+  });
+
+  it('binary diff → no generation; empty unified (oversized) → no generation', async () => {
+    const binary = approvedDeps({
+      workspaceDiff: {
+        refId: WORKSPACE.id,
+        files: [{ path: TARGET_FILE, changeKind: 'modify', unified: '', binary: true }],
+        estimatedChangedLines: 0,
+        truncated: false,
+      },
+    });
+    await new ConversationRuntime(binary.deps).handle(messageOf('패치 만들어줘'));
+    expect(binary.calls.patchGenerate).toBe(0);
+
+    const oversized = approvedDeps({
+      workspaceDiff: {
+        refId: WORKSPACE.id,
+        files: [{ path: TARGET_FILE, changeKind: 'modify', unified: '', binary: false }],
+        estimatedChangedLines: 0,
+        truncated: true,
+      },
+    });
+    await new ConversationRuntime(oversized.deps).handle(messageOf('패치 만들어줘'));
+    expect(oversized.calls.patchGenerate).toBe(0);
+  });
+
+  it('patch.generate throws (e.g. diff/path mismatch) → composePatchGenerationFailed, failure logged (CA Round 1 #5)', async () => {
+    const { deps, calls } = approvedDeps({ patchGenerate: 'throw' });
+    const result = await new ConversationRuntime(deps).handle(messageOf('패치 만들어줘'));
+    expect(calls.patchGenerate).toBe(1); // it was called, then threw
+    expect(calls.loggerWarn).toBe(1);
+    expect(result.reply.text).toBe(new ResponseComposer().composePatchGenerationFailed(CTX).text);
+  });
+
+  it('the PatchSet preview never uses forbidden mutation wording', async () => {
+    const { deps } = approvedDeps();
+    const result = await new ConversationRuntime(deps).handle(messageOf('패치 만들어줘'));
+    for (const word of ['적용했어요', '반영했어요', '수정했어요', '변경 완료', '적용 완료']) {
+      expect(result.reply.text).not.toContain(word);
+    }
+  });
+
+  it('PATCH_READY + repeat patch command → composePatchAlreadyGenerated, no regeneration', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: approvedAnchorOf({ status: 'PATCH_READY', patchRef: { id: 'patch-1', status: PatchStatus.GENERATED } }) });
+    const result = await new ConversationRuntime(deps).handle(messageOf('패치 만들어줘'));
+    expect(calls.patchGenerate).toBe(0);
+    expect(result.reply.text).toBe(new ResponseComposer().composePatchAlreadyGenerated(CTX).text);
+  });
+
+  it('apply command while PATCH_READY → already-approved reply, not patch generation', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: approvedAnchorOf({ status: 'PATCH_READY', patchRef: { id: 'patch-1', status: PatchStatus.GENERATED } }) });
+    const result = await new ConversationRuntime(deps).handle(messageOf('적용해줘'));
+    expect(calls.patchGenerate).toBe(0);
+    expect(result.reply.text).toBe(new ResponseComposer().composeApplyApprovalRecorded(CTX).text);
+  });
+
+  it('the full sequence performs no WorkspaceWrite/CommandExecution/Orchestrator call', async () => {
+    const { deps, calls } = approvedDeps();
+    await new ConversationRuntime(deps).handle(messageOf('패치 만들어줘'));
+    // No such deps exist on this path; assert the Orchestrator was never invoked either.
+    expect(calls.run).toBe(0);
+    expect(calls.resume).toBe(0);
+    expect(Object.keys(deps)).not.toContain('workspaceWrite');
+    expect(Object.keys(deps)).not.toContain('command');
+  });
+
+  it('"좋아"/"오케이"/"확인" and ordinary chat with an APPROVED anchor do not trigger patch generation', async () => {
+    for (const text of ['좋아', '오케이', '확인', '오늘 뭐 할까?']) {
+      const { deps, calls } = approvedDeps();
+      await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.patchGenerate).toBe(0);
+    }
+  });
 });
 
 describe('toCodeChangePreview (Sprint 2q, ADR-0038)', () => {

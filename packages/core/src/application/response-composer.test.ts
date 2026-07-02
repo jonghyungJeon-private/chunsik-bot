@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ConversationContext } from '../domain';
 import { ResponseComposer } from './response-composer';
-import type { CodeChangePreview, CodeDiffPreview, TestResultDetail } from './response-composer';
+import type { CodeChangePreview, CodeDiffPreview, PatchSetPreview, TestResultDetail } from './response-composer';
 
 const CTX: ConversationContext = { platform: 'test', channelId: 'c1', userId: 'u1' };
 const composer = new ResponseComposer();
@@ -508,5 +508,95 @@ describe('ResponseComposer.composeApplyApprovalRecorded', () => {
     }
     expect(reply.text).not.toContain('적용 완료');
     expect(reply.text).not.toContain('반영 완료');
+  });
+});
+
+// ── Sprint 2t — Approved Apply Context → PatchSet Preview (ADR-0041) ───────────────────────────────
+
+describe('ResponseComposer.composePatchSetPreview', () => {
+  const previewOf = (o: Partial<PatchSetPreview> = {}): PatchSetPreview => ({
+    operations: [
+      { path: 'packages/core/src/application/foo.ts', kind: 'update', unified: '@@ -1 +1 @@\n-old\n+new' },
+    ],
+    ...o,
+  });
+
+  it('uses "패치 미리보기" framing and states files were not modified (at least twice)', () => {
+    const reply = composer.composePatchSetPreview(CTX, previewOf());
+    expect(reply.text).toContain('패치 미리보기');
+    const notApplied = (reply.text.match(/적용하지 않았어요|적용은 아직 지원하지 않아요|수정되지 않았어요/g) ?? []).length;
+    expect(notApplied).toBeGreaterThanOrEqual(2);
+  });
+
+  it('lists the operation path and its diff', () => {
+    const reply = composer.composePatchSetPreview(CTX, previewOf());
+    expect(reply.text).toContain('packages/core/src/application/foo.ts');
+    expect(reply.text).toContain('+new');
+  });
+
+  it('labels a delete operation', () => {
+    const reply = composer.composePatchSetPreview(
+      CTX,
+      previewOf({ operations: [{ path: 'old.ts', kind: 'delete', unified: '@@ -1 +0 @@\n-gone' }] }),
+    );
+    expect(reply.text).toContain('old.ts');
+    expect(reply.text).toContain('삭제');
+  });
+
+  it('never uses forbidden mutation wording', () => {
+    const reply = composer.composePatchSetPreview(CTX, previewOf());
+    for (const word of [...FORBIDDEN_MUTATION_WORDS, '적용 완료']) {
+      expect(reply.text).not.toContain(word);
+    }
+  });
+
+  it('diff text with triple backticks does not break the fence', () => {
+    const reply = composer.composePatchSetPreview(
+      CTX,
+      previewOf({ operations: [{ path: 'foo.ts', kind: 'update', unified: 'a\n```\nb\n```\nc' }] }),
+    );
+    expect(reply.text).toContain('````');
+  });
+
+  it('many large operations stay within MAX_MESSAGE_CHARS and keep the safety wording', () => {
+    const big = Array.from({ length: 60 }, (_, i) => `+line ${i}`).join('\n');
+    const reply = composer.composePatchSetPreview(
+      CTX,
+      previewOf({
+        operations: Array.from({ length: 5 }, (_, i) => ({ path: `file-${i}.ts`, kind: 'update' as const, unified: big })),
+      }),
+    );
+    expect(reply.text.length).toBeLessThanOrEqual(1900);
+    expect(reply.text).toContain('패치 미리보기');
+    expect(reply.text).toContain('파일은 수정되지 않았어요');
+    expect(reply.text).toContain('생략했어요');
+  });
+});
+
+describe('ResponseComposer.composePatch* failure/idempotent replies (ADR-0041)', () => {
+  it('composePatchUnavailable states there is no approved change to patch, no mutation implied', () => {
+    const reply = composer.composePatchUnavailable(CTX);
+    expect(reply.text).toContain('승인된 코드 변경이 없어요');
+    for (const word of FORBIDDEN_MUTATION_WORDS) expect(reply.text).not.toContain(word);
+  });
+
+  it('composePatchGenerationFailed states files were not modified and does not leak internals', () => {
+    const reply = composer.composePatchGenerationFailed(CTX);
+    expect(reply.text).toContain('패치를 만들지 못했어요');
+    expect(reply.text).toContain('파일은 수정되지 않았어요');
+  });
+
+  it('composePatchAlreadyGenerated does not imply the patch was applied', () => {
+    const reply = composer.composePatchAlreadyGenerated(CTX);
+    expect(reply.text).toContain('이미 패치 미리보기를 만들어 뒀어요');
+    expect(reply.text).toContain('파일은 수정되지 않았어요');
+    for (const word of [...FORBIDDEN_MUTATION_WORDS, '적용 완료']) expect(reply.text).not.toContain(word);
+  });
+
+  it('the three patch replies are all distinct from one another', () => {
+    const a = composer.composePatchUnavailable(CTX).text;
+    const b = composer.composePatchGenerationFailed(CTX).text;
+    const c = composer.composePatchAlreadyGenerated(CTX).text;
+    expect(new Set([a, b, c]).size).toBe(3);
   });
 });
