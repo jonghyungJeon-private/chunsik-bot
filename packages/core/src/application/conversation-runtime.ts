@@ -1660,12 +1660,14 @@ export class ConversationRuntime {
     return this.responded(session, reply);
   }
 
-  /** Structured, no-content failure log for a commit-approval error (Sprint 2x) — never logs diff/content. */
+  /** Structured, no-content failure log for a commit-approval error (Sprint 2x) — never logs diff/content.
+   *  Defensive optional access: this is called from the incomplete-pending-context guard, where a required
+   *  field (e.g. `executionPlanRef`) may be missing, so logging must never throw (CA impl review). */
   private logCommitApprovalFailed(session: Session, anchor: ApplyPreviewAnchor, reason: string): void {
     this.deps.logger.warn('commit approval failed', {
       reason,
       sessionId: session.id,
-      executionPlanId: anchor.executionPlanRef.id,
+      executionPlanId: anchor.executionPlanRef?.id,
       commitApprovalId: anchor.commitApprovalId,
     }); // deliberately NO diff text / file content
   }

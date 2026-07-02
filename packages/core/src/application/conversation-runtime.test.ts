@@ -2644,17 +2644,21 @@ describe('Explicit Git Commit Approval — runtime (Sprint 2x, ADR-0045)', () =>
   });
 
   // ── decision integrity (CA 40–53) ───────────────────────────────────────────────────────────
-  it('COMMIT_APPROVAL_PENDING with incomplete context → safe failure, no decide (CA 41–44)', async () => {
+  it('COMMIT_APPROVAL_PENDING with incomplete context → safe failure, no decide, logger never throws (CA 41–44)', async () => {
     const bad: Array<[string, Partial<ApplyPreviewAnchor>]> = [
       ['missing commitApprovalId', { commitApprovalId: undefined }],
       ['missing proposedCommitMessage', { proposedCommitMessage: undefined }],
       ['missing commitCandidateFiles', { commitCandidateFiles: [] }],
       ['missing workspaceChangeRef', { workspaceChangeRef: undefined }],
+      // CA impl review: a missing executionPlanRef must be a safe failure — the failure log must NOT throw.
+      ['missing executionPlanRef', { executionPlanRef: undefined }],
     ];
     for (const [label, patch] of bad) {
       const { deps, calls } = makeDeps({ applyAnchor: pendingCommitAnchor(patch) });
-      await new ConversationRuntime(deps).handle(messageOf('승인'));
+      const result = await new ConversationRuntime(deps).handle(messageOf('승인')); // must not throw
       expect(calls.decide, label).toBe(0);
+      expect(result.status, label).toBe('FAILED');
+      expect(result.reply.text, label).toBe(composer.composeCommitUnavailable(CTX).text);
     }
   });
 
