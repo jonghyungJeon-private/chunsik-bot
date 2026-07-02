@@ -13,6 +13,7 @@ import {
 import type {
   Actor,
   ApplyInput,
+  ApprovalRef,
   ApprovalRequest,
   CodeGeneration,
   CodeProposal,
@@ -20,6 +21,7 @@ import type {
   ConversationContext,
   ExecutionPlanRef,
   GenerateCodeInput,
+  GitCommitResult,
   GitDiff,
   GitStatus,
   InboundMessage,
@@ -135,6 +137,18 @@ const gitDiffOf = (o: Partial<GitDiff> = {}): GitDiff => ({
   files: ['a.ts'],
   unified: 'diff --git a/a.ts b/a.ts\n@@ -1 +1 @@\n-x\n+y\n',
   truncated: false,
+  ...o,
+});
+
+/** A valid GitCommitResult (Sprint 2y) — SHA-shaped hash + files/message echoing the commit input, so the
+ *  runtime's result-integrity gate passes by default. Override any field to force a mismatch. */
+const gitCommitResultOf = (
+  input: { files: string[]; message: string },
+  o: Partial<GitCommitResult> = {},
+): GitCommitResult => ({
+  commitHash: '0123456789abcdef0123456789abcdef01234567',
+  committedFiles: input.files,
+  message: input.message,
   ...o,
 });
 
@@ -311,8 +325,10 @@ interface Calls {
   lastCommandRunInput?: RunCommandInput;
   gitStatus: number;
   gitDiff: number;
+  gitCommit: number;
   lastGitStatusRoot?: string;
   lastGitDiffRoot?: string;
+  lastGitCommitInput?: { rootPath: string; files: string[]; message: string; approvalRef: ApprovalRef };
   commandExecGet: number;
   loggerWarn: number;
 }
@@ -371,6 +387,9 @@ interface Opts {
   gitStatus?: GitStatus | 'throw';
   /** `git.diff` result (Sprint 2w) — defaults to `gitDiffOf()`; pass 'throw' to simulate a read error. */
   gitDiff?: GitDiff | 'throw';
+  /** `git.commitFiles` result (Sprint 2y) — defaults to a valid `gitCommitResultOf` echoing the input; pass
+   *  'throw' to simulate a commit failure, or a literal GitCommitResult to force an integrity mismatch. */
+  gitCommit?: GitCommitResult | 'throw';
   /** When true, `commandExecutions.get` throws (Sprint 2w — validation-lookup failure must not fail preview). */
   commandExecGetThrows?: boolean;
 }
@@ -405,6 +424,7 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
     commandRun: 0,
     gitStatus: 0,
     gitDiff: 0,
+    gitCommit: 0,
     commandExecGet: 0,
     loggerWarn: 0,
   };
@@ -623,6 +643,12 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
         calls.lastGitDiffRoot = rootPath;
         if (opts.gitDiff === 'throw') throw new Error('git diff boom');
         return opts.gitDiff ?? gitDiffOf();
+      },
+      async commitFiles(input) {
+        calls.gitCommit++;
+        calls.lastGitCommitInput = input;
+        if (opts.gitCommit === 'throw') throw new Error('git commit boom');
+        return opts.gitCommit ?? gitCommitResultOf(input);
       },
     },
     logger: { ...silentLogger, warn: () => { calls.loggerWarn++; } },
@@ -2479,8 +2505,8 @@ describe('Post-Validation Git Status Preview — runtime (Sprint 2w, ADR-0044)',
     expect(calls.run).toBe(0);
     expect(calls.resume).toBe(0);
     expect(calls.applyAnchorSet).toBe(0); // no re-anchor on preview (CA #9)
-    // the git dep exposes only read-only status/diff — no mutating method (structural)
-    expect(Object.keys(deps.git).sort()).toEqual(['diff', 'status']);
+    // the read-only git-preview path never invokes the git mutation added in Sprint 2y
+    expect(calls.gitCommit).toBe(0);
   });
 });
 
@@ -2728,8 +2754,316 @@ describe('Explicit Git Commit Approval — runtime (Sprint 2x, ADR-0045)', () =>
     expect(calls.commandRun).toBe(0);
     expect(calls.run).toBe(0);
     expect(calls.resume).toBe(0);
-    // git dep exposes only read-only status/diff (no mutation method); no GitProvider add/commit/push
-    expect(Object.keys(deps.git).sort()).toEqual(['diff', 'status']);
+    // the commit-APPROVAL path (Sprint 2x) never invokes the git mutation added in Sprint 2y
+    expect(calls.gitCommit).toBe(0);
+  });
+});
+
+// ── Sprint 2y — Approved Git Commit Execution (COMMIT_APPROVED → git commit, ADR-0046) ─────────────
+
+describe('Approved Git Commit Execution — runtime (Sprint 2y, ADR-0046)', () => {
+  const COMMIT_MSG = 'chore: update ' + TARGET_FILE;
+  const HASH = '0123456789abcdef0123456789abcdef01234567';
+  /** A COMMIT_APPROVED anchor with complete, valid execution context. */
+  const approvedCommitAnchor = (o: Partial<ApplyPreviewAnchor> = {}): ApplyPreviewAnchor =>
+    approvedAnchorOf({
+      status: 'COMMIT_APPROVED',
+      workspaceChangeRef: { id: 'wc-1', status: WorkspaceChangeStatus.APPLIED },
+      postApplyValidationRef: { id: 'cmd-test', status: CommandExecutionStatus.SUCCEEDED },
+      commitApprovalId: 'apply-appr-1',
+      proposedCommitMessage: COMMIT_MSG,
+      commitCandidateFiles: [TARGET_FILE],
+      ...o,
+    });
+  /** A GIT_COMMITTED anchor (a commit already executed). */
+  const committedAnchor = (o: Partial<ApplyPreviewAnchor> = {}): ApplyPreviewAnchor =>
+    approvedCommitAnchor({
+      status: 'GIT_COMMITTED',
+      commitHash: HASH,
+      committedFiles: [TARGET_FILE],
+      proposedCommitMessage: undefined,
+      commitCandidateFiles: undefined,
+      ...o,
+    });
+  const inScope = { staged: [TARGET_FILE], unstaged: [] as string[], untracked: [] as string[] };
+  /** Default happy-path deps for a COMMIT_APPROVED execution. */
+  const execDeps = (o: Partial<Opts> = {}): ReturnType<typeof makeDeps> =>
+    makeDeps({
+      applyAnchor: approvedCommitAnchor(),
+      approvalsGetResult: approvedApprovalOf(),
+      gitStatus: gitStatusOf(inScope),
+      ...o,
+    });
+  const composer = new ResponseComposer();
+  const EXEC_PHRASES = ['승인된 커밋 실행해줘', '커밋 실행해줘', '이제 실제 커밋해줘', 'execute commit'];
+
+  // ── execute + intent (CA 1–9) ───────────────────────────────────────────────────────────────
+  it('COMMIT_APPROVED + each execution phrase → git.commitFiles once, GIT_COMMITTED (CA 1–4)', async () => {
+    for (const text of EXEC_PHRASES) {
+      const { deps, calls } = execDeps();
+      const result = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.gitCommit, text).toBe(1);
+      expect(calls.lastApplyAnchor?.status, text).toBe('GIT_COMMITTED');
+      expect(result.status, text).toBe('RESPONDED');
+      expect(result.reply.text, text).toBe(composer.composeCommitExecuted(CTX, { commitHash: HASH, files: [TARGET_FILE] }).text);
+    }
+  });
+
+  it('ambiguous words at COMMIT_APPROVED do not execute (CA 5)', async () => {
+    for (const text of ['좋아', '오케이', '확인', '진행해', '다음 단계']) {
+      const { deps, calls } = execDeps();
+      await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.gitCommit, text).toBe(0);
+    }
+  });
+
+  it('no COMMIT_APPROVED/GIT_COMMITTED anchor + execution phrase → unavailable, no commit (CA 6)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: null });
+    const result = await new ConversationRuntime(deps).handle(messageOf('승인된 커밋 실행해줘'));
+    expect(calls.gitCommit).toBe(0);
+    expect(calls.gitStatus).toBe(0);
+    expect(result.reply.text).toBe(composer.composeCommitExecutionUnavailable(CTX).text);
+  });
+
+  it('WORKSPACE_APPLIED + execution phrase → unavailable, no commit (CA 7)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: approvedAnchorOf({ status: 'WORKSPACE_APPLIED', workspaceChangeRef: { id: 'wc-1', status: WorkspaceChangeStatus.APPLIED } }) });
+    const result = await new ConversationRuntime(deps).handle(messageOf('승인된 커밋 실행해줘'));
+    expect(calls.gitCommit).toBe(0);
+    expect(result.reply.text).toBe(composer.composeCommitExecutionUnavailable(CTX).text);
+  });
+
+  it('COMMIT_APPROVAL_PENDING + execution phrase → stays the decision flow, no commit (CA 8)', async () => {
+    const pending = approvedCommitAnchor({ status: 'COMMIT_APPROVAL_PENDING' });
+    const { deps, calls } = makeDeps({ applyAnchor: pending, approvalsGetResult: { ...pendingApprovalOf(), id: 'apply-appr-1' } });
+    const result = await new ConversationRuntime(deps).handle(messageOf('커밋 실행해줘'));
+    expect(calls.gitCommit).toBe(0);
+    // "커밋 실행해줘" is ambiguous as a decision → the pending-approval flow re-prompts, no decide
+    expect(calls.decide).toBe(0);
+    expect(result.status).toBe('AWAITING_APPROVAL');
+  });
+
+  it('COMMIT_APPROVAL_PENDING + "승인" → COMMIT_APPROVED only, never commitFiles (CA 9)', async () => {
+    const pending = approvedCommitAnchor({ status: 'COMMIT_APPROVAL_PENDING' });
+    const { deps, calls } = makeDeps({ applyAnchor: pending, approvalsGetResult: { ...pendingApprovalOf(), id: 'apply-appr-1' } });
+    await new ConversationRuntime(deps).handle(messageOf('승인'));
+    expect(calls.lastApplyAnchor?.status).toBe('COMMIT_APPROVED');
+    expect(calls.gitCommit).toBe(0);
+  });
+
+  // ── push / mutation rejection (CA 10–13) ────────────────────────────────────────────────────
+  it('COMMIT_APPROVED + push/"commit and push"/add/reset/stash/checkout → reject, no commit/push (CA 10–12)', async () => {
+    for (const text of ['push 해줘', 'commit and push', 'git add 해줘', 'git reset 해줘', 'stash 해줘', 'checkout 해줘']) {
+      const { deps, calls } = execDeps();
+      const result = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.gitCommit, text).toBe(0);
+      expect(result.reply.text, text).toBe(composer.composeCommitPushUnsupported(CTX).text);
+    }
+  });
+
+  it('GIT_COMMITTED + push → reject, no push (CA 13)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: committedAnchor() });
+    const result = await new ConversationRuntime(deps).handle(messageOf('push 해줘'));
+    expect(calls.gitCommit).toBe(0);
+    expect(result.reply.text).toBe(composer.composeCommitPushUnsupported(CTX).text);
+  });
+
+  // ── context / approval guards (CA 14–20) ────────────────────────────────────────────────────
+  it('incomplete approved context → safe failure, no commit, logger never throws (CA 14–17)', async () => {
+    const bad: Array<[string, Partial<ApplyPreviewAnchor>]> = [
+      ['missing commitApprovalId', { commitApprovalId: undefined }],
+      ['missing proposedCommitMessage', { proposedCommitMessage: undefined }],
+      ['missing commitCandidateFiles', { commitCandidateFiles: [] }],
+      ['missing workspaceChangeRef', { workspaceChangeRef: undefined }],
+      ['missing executionPlanRef', { executionPlanRef: undefined }],
+    ];
+    for (const [label, patch] of bad) {
+      const { deps, calls } = execDeps({ applyAnchor: approvedCommitAnchor(patch) });
+      const result = await new ConversationRuntime(deps).handle(messageOf('승인된 커밋 실행해줘')); // must not throw
+      expect(calls.gitCommit, label).toBe(0);
+      expect(result.status, label).toBe('FAILED');
+      expect(result.reply.text, label).toBe(composer.composeCommitExecutionUnavailable(CTX).text);
+    }
+  });
+
+  it('approval get null / not-APPROVED / plan-mismatch → safe failure, no commit (CA 18–20)', async () => {
+    const cases: Array<[string, ApprovalRequest | null]> = [
+      ['missing', null],
+      ['not APPROVED', { ...pendingApprovalOf(), id: 'apply-appr-1' }],
+      ['plan mismatch', { ...approvedApprovalOf(), executionPlanRef: { id: 'other-plan', goal: 'g' } }],
+    ];
+    for (const [label, approval] of cases) {
+      const { deps, calls } = execDeps({ approvalsGetResult: approval });
+      const result = await new ConversationRuntime(deps).handle(messageOf('승인된 커밋 실행해줘'));
+      expect(calls.gitCommit, label).toBe(0);
+      expect(result.reply.text, label).toBe(composer.composeCommitExecutionUnavailable(CTX).text);
+    }
+  });
+
+  // ── scope re-validation (CA 21–29) ──────────────────────────────────────────────────────────
+  it('git.status throws → composeCommitStatusUnavailable, no commit, no fallback (CA 21)', async () => {
+    const { deps, calls } = execDeps({ gitStatus: 'throw' });
+    const result = await new ConversationRuntime(deps).handle(messageOf('승인된 커밋 실행해줘'));
+    expect(calls.gitCommit).toBe(0);
+    expect(calls.commandRun).toBe(0);
+    expect(result.reply.text).toBe(composer.composeCommitStatusUnavailable(CTX).text);
+  });
+
+  it('unsafe candidate / candidate outside targetFiles → unavailable, no commit (CA 22–23)', async () => {
+    const unsafe = execDeps({ applyAnchor: approvedCommitAnchor({ commitCandidateFiles: ['../escape.ts'] }) });
+    const r1 = await new ConversationRuntime(unsafe.deps).handle(messageOf('승인된 커밋 실행해줘'));
+    expect(unsafe.calls.gitCommit).toBe(0);
+    expect(r1.reply.text).toBe(composer.composeCommitExecutionUnavailable(CTX).text);
+
+    const outside = execDeps({ applyAnchor: approvedCommitAnchor({ commitCandidateFiles: ['other/x.ts'], targetFiles: [TARGET_FILE] }) });
+    const r2 = await new ConversationRuntime(outside.deps).handle(messageOf('승인된 커밋 실행해줘'));
+    expect(outside.calls.gitCommit).toBe(0);
+    expect(r2.reply.text).toBe(composer.composeCommitExecutionUnavailable(CTX).text);
+  });
+
+  it('candidate no longer changed / changed file outside targetFiles / extra in-scope / staged outside candidates → unavailable, no commit (CA 24–27)', async () => {
+    const scopeCases: Array<[string, GitStatus]> = [
+      ['candidate no longer changed', gitStatusOf({ staged: [], unstaged: [], untracked: [] })],
+      ['changed file outside targetFiles', gitStatusOf({ staged: [TARGET_FILE], unstaged: ['other/x.ts'], untracked: [] })],
+      ['extra in-scope changed (not a candidate)', gitStatusOf({ staged: [TARGET_FILE, 'packages/core/src/application/bar.ts'], unstaged: [], untracked: [] })],
+      ['staged file outside candidate set', gitStatusOf({ staged: [TARGET_FILE, 'unrelated/staged.ts'], unstaged: [], untracked: [] })],
+    ];
+    for (const [label, status] of scopeCases) {
+      // second case: 'other/x.ts' must be in scope only if targetFiles includes it — it does not, so outOfScope.
+      const anchor = label === 'extra in-scope changed (not a candidate)'
+        ? approvedCommitAnchor({ targetFiles: [TARGET_FILE, 'packages/core/src/application/bar.ts'] })
+        : approvedCommitAnchor();
+      const { deps, calls } = execDeps({ applyAnchor: anchor, gitStatus: status });
+      const result = await new ConversationRuntime(deps).handle(messageOf('승인된 커밋 실행해줘'));
+      expect(calls.gitCommit, label).toBe(0);
+      expect(result.reply.text, label).toBe(composer.composeCommitExecutionUnavailable(CTX).text);
+    }
+  });
+
+  it('untracked approved candidate → composeCommitExecutionUntrackedUnsupported, no commit, no git add (CA 28)', async () => {
+    const { deps, calls } = execDeps({ gitStatus: gitStatusOf({ staged: [], unstaged: [], untracked: [TARGET_FILE] }) });
+    const result = await new ConversationRuntime(deps).handle(messageOf('승인된 커밋 실행해줘'));
+    expect(calls.gitCommit).toBe(0);
+    expect(result.reply.text).toBe(composer.composeCommitExecutionUntrackedUnsupported(CTX).text);
+    expect(result.reply.text).not.toBe(composer.composeCommitExecutionUnavailable(CTX).text);
+  });
+
+  it('candidate in BOTH staged and unstaged → still eligible → commits (CA 29)', async () => {
+    const { deps, calls } = execDeps({ gitStatus: gitStatusOf({ staged: [TARGET_FILE], unstaged: [TARGET_FILE], untracked: [] }) });
+    const result = await new ConversationRuntime(deps).handle(messageOf('승인된 커밋 실행해줘'));
+    expect(calls.gitCommit).toBe(1);
+    expect(calls.lastGitCommitInput?.files).toEqual([TARGET_FILE]); // de-duped
+    expect(result.status).toBe('RESPONDED');
+  });
+
+  // ── message (CA 30–32) ──────────────────────────────────────────────────────────────────────
+  it('approved message invalid now → unavailable, no commit (CA 30)', async () => {
+    const { deps, calls } = execDeps({ applyAnchor: approvedCommitAnchor({ proposedCommitMessage: 'bad\nmultiline' }) });
+    const result = await new ConversationRuntime(deps).handle(messageOf('승인된 커밋 실행해줘'));
+    expect(calls.gitCommit).toBe(0);
+    expect(result.reply.text).toBe(composer.composeCommitExecutionUnavailable(CTX).text);
+  });
+
+  it('execution never accepts a new message; commitFiles message === approved message (CA 31–32)', async () => {
+    const { deps, calls } = execDeps();
+    await new ConversationRuntime(deps).handle(messageOf('승인된 커밋 실행해줘 메시지는 "feat: sneaky override"'));
+    expect(calls.gitCommit).toBe(1);
+    expect(calls.lastGitCommitInput?.message).toBe(COMMIT_MSG);
+    expect(calls.lastGitCommitInput?.message).not.toContain('sneaky');
+  });
+
+  // ── commitFiles input (CA 33–38) ────────────────────────────────────────────────────────────
+  it('valid context calls git.commitFiles once with exact files/message/ApprovalRef, never git.diff (CA 33–38)', async () => {
+    const { deps, calls } = execDeps();
+    await new ConversationRuntime(deps).handle(messageOf('승인된 커밋 실행해줘'));
+    expect(calls.gitCommit).toBe(1);
+    expect(calls.lastGitCommitInput?.files).toEqual([TARGET_FILE]);
+    expect(calls.lastGitCommitInput?.message).toBe(COMMIT_MSG);
+    expect(calls.lastGitCommitInput?.rootPath).toBe(WORKSPACE.rootPath);
+    // the derived plan-scoped ApprovalRef (not the raw ApprovalRequest)
+    expect(calls.lastGitCommitInput?.approvalRef).toEqual({ id: 'apply-appr-1', status: ApprovalStatus.APPROVED, executionPlanRef: { id: 'plan-1', goal: 'g' } });
+    expect(calls.lastGitCommitInput).not.toHaveProperty('reason'); // no ApprovalRequest fields leaked
+    expect(calls.lastGitCommitInput).not.toHaveProperty('requestedBy');
+    expect(calls.gitDiff).toBe(0);
+  });
+
+  // ── result integrity / success / repeat (CA 51–62) ──────────────────────────────────────────
+  it('result-integrity failure (bad hash / wrong files / wrong message) → failed, NO GIT_COMMITTED (CA 51–54)', async () => {
+    const badResults: Array<[string, GitCommitResult]> = [
+      ['bad hash', gitCommitResultOf({ files: [TARGET_FILE], message: COMMIT_MSG }, { commitHash: 'nothex!!' })],
+      ['wrong files', gitCommitResultOf({ files: [TARGET_FILE], message: COMMIT_MSG }, { committedFiles: ['other/x.ts'] })],
+      ['extra file', gitCommitResultOf({ files: [TARGET_FILE], message: COMMIT_MSG }, { committedFiles: [TARGET_FILE, 'extra.ts'] })],
+      ['wrong message', gitCommitResultOf({ files: [TARGET_FILE], message: COMMIT_MSG }, { message: 'different' })],
+    ];
+    for (const [label, result] of badResults) {
+      const { deps, calls } = execDeps({ gitCommit: result });
+      const turn = await new ConversationRuntime(deps).handle(messageOf('승인된 커밋 실행해줘'));
+      expect(calls.gitCommit, label).toBe(1);
+      expect(calls.lastApplyAnchor?.status, label).not.toBe('GIT_COMMITTED');
+      expect(turn.status, label).toBe('FAILED');
+      expect(turn.reply.text, label).toBe(composer.composeCommitExecutionFailed(CTX).text);
+    }
+  });
+
+  it('success re-anchors GIT_COMMITTED, stores hash/files, preserves handoff refs + commitApprovalId, clears message/candidates (CA 55–59)', async () => {
+    const { deps, calls } = execDeps();
+    await new ConversationRuntime(deps).handle(messageOf('승인된 커밋 실행해줘'));
+    const a = calls.lastApplyAnchor;
+    expect(a?.status).toBe('GIT_COMMITTED');
+    expect(a?.commitHash).toBe(HASH);
+    expect(a?.committedFiles).toEqual([TARGET_FILE]);
+    expect(a?.workspaceRef).toEqual(WORKSPACE);
+    expect(a?.workspaceChangeRef).toEqual({ id: 'wc-1', status: WorkspaceChangeStatus.APPLIED });
+    expect(a?.targetFiles).toEqual([TARGET_FILE]);
+    expect(a?.executionPlanRef).toEqual({ id: 'plan-1', goal: 'g' });
+    expect(a?.commitApprovalId).toBe('apply-appr-1'); // preserved (CA #9)
+    expect(a?.postApplyValidationRef).toEqual({ id: 'cmd-test', status: CommandExecutionStatus.SUCCEEDED });
+    expect(a?.proposedCommitMessage).toBeUndefined();
+    expect(a?.commitCandidateFiles).toBeUndefined();
+  });
+
+  it('reply includes the commit hash and states git push not performed (CA 60–61)', async () => {
+    const { deps } = execDeps();
+    const result = await new ConversationRuntime(deps).handle(messageOf('승인된 커밋 실행해줘'));
+    expect(result.reply.text).toContain(HASH.slice(0, 7));
+    expect(result.reply.text).toContain('push');
+    expect(result.reply.text).toContain('하지 않았어요');
+  });
+
+  it('repeat execution after success (GIT_COMMITTED) → already-committed, no new commit (CA 62)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: committedAnchor() });
+    const result = await new ConversationRuntime(deps).handle(messageOf('승인된 커밋 실행해줘'));
+    expect(calls.gitCommit).toBe(0);
+    expect(result.reply.text).toBe(composer.composeCommitAlreadyCommitted(CTX, HASH).text);
+    expect(result.reply.text).toContain(HASH.slice(0, 7));
+  });
+
+  // ── failure wording (CA 63–67) ──────────────────────────────────────────────────────────────
+  it('git.commitFiles throws → composeCommitExecutionFailed (not committed / no push / no rollback / never clean-index) (CA 63–67)', async () => {
+    const { deps, calls } = execDeps({ gitCommit: 'throw' });
+    const result = await new ConversationRuntime(deps).handle(messageOf('승인된 커밋 실행해줘'));
+    expect(calls.gitCommit).toBe(1);
+    expect(calls.lastApplyAnchor?.status).not.toBe('GIT_COMMITTED');
+    expect(result.status).toBe('FAILED');
+    expect(result.reply.text).toBe(composer.composeCommitExecutionFailed(CTX).text);
+    expect(result.reply.text).toContain('push는 하지 않았어요');
+    expect(result.reply.text).toContain('rollback은 수행하지 않았어요');
+    expect(result.reply.text).not.toContain('변경 없음');
+    expect(result.reply.text).not.toContain('원상복구');
+    expect(result.reply.text).not.toContain('되돌렸');
+  });
+
+  // ── no side effects (CA 68–74) ──────────────────────────────────────────────────────────────
+  it('the execution path performs no command/WorkspaceWrite/Patch/CodeGen/Orchestrator call (CA 68–74)', async () => {
+    const { deps, calls } = execDeps();
+    await new ConversationRuntime(deps).handle(messageOf('승인된 커밋 실행해줘'));
+    expect(calls.commandRun).toBe(0);
+    expect(calls.workspaceApply).toBe(0);
+    expect(calls.patchGenerate).toBe(0);
+    expect(calls.patchGet).toBe(0);
+    expect(calls.codeGenerationGenerate).toBe(0);
+    expect(calls.run).toBe(0);
+    expect(calls.resume).toBe(0);
+    expect(calls.gitDiff).toBe(0); // only status + commitFiles touch git
   });
 });
 

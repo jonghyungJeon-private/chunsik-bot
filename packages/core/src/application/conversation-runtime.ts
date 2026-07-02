@@ -20,6 +20,7 @@ import type {
   Actor,
   ApplyInput,
   ApprovalDecision,
+  ApprovalRef,
   ApprovalRequest,
   Artifact,
   CodeGeneration,
@@ -32,6 +33,7 @@ import type {
   ConversationContext,
   ExecutionPlanRef,
   GenerateCodeInput,
+  GitCommitResult,
   GitDiff,
   GitStatus,
   Id,
@@ -66,6 +68,7 @@ import type {
 } from './response-composer';
 import type { IntentResolutionContext } from './intent-resolver';
 import { extractTargetPathCandidates, normalizeRelativePath } from './target-scope';
+import { MAX_COMMIT_MESSAGE_CHARS, isValidCommitMessage } from './commit-message';
 import type {
   CancelToken,
   ExecutionOutcome,
@@ -185,10 +188,15 @@ export type ApplyPreviewAnchorStatus =
    */
   | 'COMMIT_APPROVAL_PENDING'
   /**
-   * The git-commit approval was granted (Sprint 2x, ADR-0045) — context preserved for a future Sprint 2y
-   * executor. NOT committed yet — this sprint executes nothing; NOT `COMMITTED`/`GIT_COMMITTED`.
+   * The git-commit approval was granted (Sprint 2x, ADR-0045) — context preserved for the Sprint 2y
+   * executor. NOT committed yet — approval only.
    */
-  | 'COMMIT_APPROVED';
+  | 'COMMIT_APPROVED'
+  /**
+   * An approved git commit was executed (Sprint 2y, ADR-0046) — carries `commitHash` + `committedFiles`.
+   * The first state that means committed. NOT pushed, NOT deployed — `git push` was not run.
+   */
+  | 'GIT_COMMITTED';
 
 /**
  * Anchored fact set for "a diff preview was shown; the user may explicitly ask to apply it" (Sprint 2s,
@@ -236,6 +244,11 @@ export interface ApplyPreviewAnchor {
   proposedCommitMessage?: string;
   /** In-scope candidate file paths for the commit (changed ∩ targetFiles) preserved for Sprint 2y (2x). */
   commitCandidateFiles?: string[];
+  /** Set once `status` becomes `GIT_COMMITTED` (Sprint 2y, ADR-0046) — the executed commit's sha, preserved
+   *  for a future push sprint. Committed only; NOT pushed/deployed. */
+  commitHash?: string;
+  /** The exact files included in the executed commit (Sprint 2y) — the approved candidate set. */
+  committedFiles?: string[];
 }
 
 /**
@@ -362,6 +375,10 @@ export interface ConversationRuntimeDeps {
   readonly git: {
     status(rootPath: string): Promise<GitStatus>;
     diff(rootPath: string): Promise<GitDiff>;
+    /** Reused for approved exact-file git commit (Sprint 2y, ADR-0046) — the same already-registered
+     *  GitManager. The ONLY git mutation; Ref-gated (APPROVED), commits exactly the approved tracked files,
+     *  never pushes, never runs `git add`. */
+    commitFiles(input: { rootPath: string; files: string[]; message: string; approvalRef: ApprovalRef }): Promise<GitCommitResult>;
   };
   readonly logger: Logger;
 }
@@ -434,11 +451,17 @@ const COMMIT_WORDS =
 const COMMIT_FORBIDDEN_COMPANION =
   /(푸시|\bpush\b|git\s*add|\badd\s*해|리셋|\breset\b|checkout|체크아웃|stash|스태시|\bbranch\b|브랜치|merge|머지|rebase|리베이스|\btag\b|태그)/i;
 
+/** Explicit commit-EXECUTION phrases (Sprint 2y, ADR-0046) — distinct from the 2x commit-approval words. */
+const COMMIT_EXECUTION_WORDS =
+  /(승인된?\s*커밋\s*실행|커밋\s*실행|이제\s*실제\s*커밋|commit\s+approved\s+changes|execute\s+commit|run\s+approved\s+commit)/i;
+/** Non-commit git mutations that must be rejected on the execution path (Sprint 2y) — never a push/commit. */
+const COMMIT_EXECUTION_FORBIDDEN =
+  /(푸시|\bpush\b|리셋|\breset\b|checkout|체크아웃|stash|스태시|\bbranch\b|브랜치|merge|머지|rebase|리베이스|\btag\b|태그|git\s*add)/i;
+
 /** Git-commit display/approval bounds (Sprint 2x, CA #7). */
 const MAX_COMMIT_OUT_OF_SCOPE_SHOWN = 10;
 const MAX_COMMIT_CANDIDATE_FILES = 30;
-/** Max commit message length (Sprint 2x, CA #6/#7). */
-const MAX_COMMIT_MESSAGE_CHARS = 120;
+// Commit-message bounds/validation are shared with GitManager (Sprint 2y) — see ./commit-message.
 
 /**
  * Defensively normalize a git-status path to a safe project-relative path, or `null` when it is absolute,
@@ -666,6 +689,21 @@ export class ConversationRuntime {
   }
 
   /**
+   * Explicit commit-EXECUTION intent (Sprint 2y, ADR-0046) — only consulted inside the COMMIT_APPROVED /
+   * GIT_COMMITTED routing guards. Returns:
+   *  - `'push-unsupported'` → a push/other-mutation phrase (checked first; rejected, no push);
+   *  - `'execute'` → perform the approved commit ("승인된 커밋 실행해줘"/"커밋 실행해줘"/"이제 실제 커밋해줘"/
+   *    "execute commit"/…);
+   *  - `null` → not an execution request (bare 좋아/오케이/확인/진행해/다음 단계 → null).
+   */
+  static interpretCommitExecutionIntent(text: string): 'execute' | 'push-unsupported' | null {
+    const t = text.trim().toLowerCase();
+    if (COMMIT_EXECUTION_FORBIDDEN.test(t)) return 'push-unsupported'; // push/reset/… incl. "commit and push"
+    if (COMMIT_EXECUTION_WORDS.test(t)) return 'execute';
+    return null;
+  }
+
+  /**
    * Resolve the commit message for a commit-approval turn (Sprint 2x, CA #6/#7/#8). If the text carries a
    * user message (a single quoted segment after a `메시지`/`message` keyword) it is accepted only when it is
    * exactly one candidate, single-line, ≤120 chars, control-char-free, and trimmed non-empty — otherwise
@@ -680,8 +718,7 @@ export class ConversationRuntime {
     if (quoted.length > 0) {
       if (quoted.length !== 1) return 'invalid';
       const inner = quoted[0]!.slice(1, -1).trim();
-      const hasControl = [...inner].some((c) => { const code = c.charCodeAt(0); return code < 0x20 || code === 0x7f; }); // rejects newlines/CR/other control chars
-      if (inner.length === 0 || inner.length > MAX_COMMIT_MESSAGE_CHARS || hasControl) return 'invalid';
+      if (!isValidCommitMessage(inner)) return 'invalid';
       return { message: inner };
     }
     const primary = targetFiles[0] ?? 'workspace';
@@ -725,6 +762,29 @@ export class ConversationRuntime {
     // (Sprint 2x, ADR-0045) A pending git-commit approval intercepts EVERY turn, exactly like AWAITING_APPROVAL.
     if (applyAnchor?.status === 'COMMIT_APPROVAL_PENDING') {
       return this.handleCommitApprovalDecisionTurn(message, session, actor, applyAnchor);
+    }
+    // (Sprint 2y, ADR-0046) Approved git commit EXECUTION — GATED to commit-relevant states only (CA #4).
+    // Checked before the 2x commit-intent so "이제 실제 커밋해줘" executes rather than re-printing
+    // already-approved. push-only is NOT intercepted outside commit states (WORKSPACE_APPLIED "push" stays
+    // the 2w mutating reject).
+    if (applyAnchor?.status === 'COMMIT_APPROVED') {
+      const execKind = ConversationRuntime.interpretCommitExecutionIntent(message.text);
+      if (execKind === 'push-unsupported') return this.handleCommitPushUnsupportedTurn(message, session);
+      if (execKind === 'execute') return this.handleCommitExecutionTurn(message, session, applyAnchor);
+    }
+    if (applyAnchor?.status === 'GIT_COMMITTED') {
+      const execKind = ConversationRuntime.interpretCommitExecutionIntent(message.text);
+      if (execKind === 'push-unsupported') return this.handleCommitPushUnsupportedTurn(message, session);
+      if (execKind === 'execute') return this.handleCommitAlreadyCommittedTurn(message, session, applyAnchor);
+    }
+    // An explicit commit-execution phrase with no commit-relevant anchor → a scoped "not available" reply —
+    // ONLY for an explicit 'execute' phrase (never push-only, which is left to existing 2w/2x handling).
+    if (
+      applyAnchor?.status !== 'COMMIT_APPROVED' &&
+      applyAnchor?.status !== 'GIT_COMMITTED' &&
+      ConversationRuntime.interpretCommitExecutionIntent(message.text) === 'execute'
+    ) {
+      return this.handleCommitExecutionUnavailableTurn(message, session);
     }
     // (Sprint 2v/2w/2x) WORKSPACE_APPLIED follow-ups, in order: validation → commit-approval → git preview.
     // Validation is checked FIRST so a mixed/dangerous phrase like "pnpm test; git commit" is caught by the
@@ -1670,6 +1730,183 @@ export class ConversationRuntime {
       executionPlanId: anchor.executionPlanRef?.id,
       commitApprovalId: anchor.commitApprovalId,
     }); // deliberately NO diff text / file content
+  }
+
+  /**
+   * Execute the approved git commit (Sprint 2y, ADR-0046) — the FIRST real git mutation. Reached ONLY at
+   * COMMIT_APPROVED with an explicit commit-EXECUTION phrase (§5.4). Re-verifies the live approval + exact
+   * candidate scope against a FRESH `git.status`, then commits exactly the approved TRACKED files via the
+   * Ref-gated `GitManager.commitFiles`. NO `git add`, NO push, NO rollback, NO CommandExecution/shell, NO
+   * WorkspaceWrite/Patch/CodeGeneration, NO ExecutionOrchestrator. An untracked approved candidate is blocked
+   * with a DISTINCT reply (CA #1/#2/#3). Any scope drift / stale approval / invalid message → safe failure
+   * requiring a NEW approval; no commit. On success → re-anchor GIT_COMMITTED (committed only, NOT pushed).
+   */
+  private async handleCommitExecutionTurn(
+    message: InboundMessage,
+    session: Session,
+    anchor: ApplyPreviewAnchor,
+  ): Promise<TurnResult> {
+    // 1. (Constraint 3) complete approved context, else safe failure (no commit). Logging never throws.
+    if (
+      anchor.status !== 'COMMIT_APPROVED' ||
+      !anchor.commitApprovalId ||
+      !anchor.proposedCommitMessage ||
+      !anchor.commitCandidateFiles?.length ||
+      !anchor.workspaceRef ||
+      !anchor.workspaceChangeRef ||
+      !anchor.executionPlanRef
+    ) {
+      this.logCommitExecutionFailed(session, anchor, 'approved commit context incomplete');
+      return this.failComposed(message, session, this.deps.composer.composeCommitExecutionUnavailable(message.context));
+    }
+    // 2. (Constraint 6) verify the live ApprovalRequest: exists, APPROVED, same plan. Derive the ApprovalRef.
+    const request = await this.deps.approvals.get(anchor.commitApprovalId);
+    if (
+      !request ||
+      request.status !== ApprovalStatus.APPROVED ||
+      request.executionPlanRef.id !== anchor.executionPlanRef.id
+    ) {
+      this.logCommitExecutionFailed(session, anchor, 'commit approval not APPROVED/plan-mismatched/missing');
+      return this.failComposed(message, session, this.deps.composer.composeCommitExecutionUnavailable(message.context));
+    }
+    const gitApprovalRef = approvalRef(request);
+    // 3. (Constraint 5) approved message still a valid bounded single line, else require a new approval.
+    if (!isValidCommitMessage(anchor.proposedCommitMessage)) {
+      return this.failComposed(message, session, this.deps.composer.composeCommitExecutionUnavailable(message.context));
+    }
+    // 4. Re-read git status (Constraint 3). A throw → safe failure, no commit, no fallback.
+    let status: GitStatus;
+    try {
+      status = await this.deps.git.status(anchor.workspaceRef.rootPath);
+    } catch {
+      this.logCommitExecutionFailed(session, anchor, 'git status read failed');
+      return this.failComposed(message, session, this.deps.composer.composeCommitStatusUnavailable(message.context));
+    }
+
+    // 5. (Constraints 2/4, Q4/Q5/Q6, CA #2/#11) EXACT-scope re-validation against the FRESH status; sets are
+    //    normalized + de-duplicated so a candidate appearing in BOTH staged and unstaged is still eligible.
+    //    unavailable() = composeCommitExecutionUnavailable (needs a new approval); untracked() = the DISTINCT
+    //    composeCommitExecutionUntrackedUnsupported. Any block → NO commit.
+    const unavailable = (): Promise<TurnResult> =>
+      this.failComposed(message, session, this.deps.composer.composeCommitExecutionUnavailable(message.context));
+    const candidates = anchor.commitCandidateFiles.map(safeRelativePath);
+    if (candidates.some((c) => c === null)) return unavailable(); // unsafe approved candidate (Q22)
+    const safeCandidates = [...new Set(candidates as string[])];
+    const scope = new Set(anchor.targetFiles.map(normalizeRelativePath));
+    if (safeCandidates.some((c) => !scope.has(c))) return unavailable(); // candidate outside targetFiles (Q23)
+    const norm = (xs: string[]): (string | null)[] => xs.map(safeRelativePath);
+    const stagedN = norm(status.staged);
+    const unstagedN = norm(status.unstaged);
+    const untrackedN = norm(status.untracked);
+    if ([...stagedN, ...unstagedN, ...untrackedN].some((c) => c === null)) return unavailable(); // unsafe changed path
+    const trackedChanged = new Set([...stagedN, ...unstagedN].filter((c): c is string => c !== null)); // staged ∪ unstaged
+    const untrackedSet = new Set(untrackedN.filter((c): c is string => c !== null));
+    const stagedSet = new Set(stagedN.filter((c): c is string => c !== null));
+    const candSet = new Set(safeCandidates);
+    // (CA #1/#2) untracked approved candidate → DISTINCT untracked-unsupported reply (no separate git add here).
+    if (safeCandidates.some((c) => untrackedSet.has(c) && !trackedChanged.has(c))) {
+      this.logCommitExecutionFailed(session, anchor, 'approved candidate is untracked');
+      return this.failComposed(message, session, this.deps.composer.composeCommitExecutionUntrackedUnsupported(message.context));
+    }
+    // every approved candidate still a TRACKED change (Q5); in-scope tracked-changed set EQUALS candidate set
+    // (Q6); no changed file (tracked or untracked) outside targetFiles (Q4); no staged file outside candidates
+    // (Constraint 4).
+    const allChanged = new Set([...trackedChanged, ...untrackedSet]);
+    const inScopeTrackedChanged = [...trackedChanged].filter((c) => scope.has(c));
+    const missing = safeCandidates.filter((c) => !trackedChanged.has(c));
+    const extraInScope = inScopeTrackedChanged.filter((c) => !candSet.has(c));
+    const outOfScope = [...allChanged].filter((c) => !scope.has(c));
+    const stagedOutsideCandidates = [...stagedSet].filter((c) => !candSet.has(c));
+    if (missing.length || extraInScope.length || outOfScope.length || stagedOutsideCandidates.length) {
+      this.logCommitExecutionFailed(session, anchor, 'approved commit scope no longer matches working tree');
+      return unavailable();
+    }
+
+    // 6. Execute the exact-file commit through the Git capability (Ref-gated). A throw → safe failure: NO fake
+    //    success, NO push, NO rollback (Q8/CA #10).
+    let result: GitCommitResult;
+    try {
+      result = await this.deps.git.commitFiles({
+        rootPath: anchor.workspaceRef.rootPath,
+        files: safeCandidates,
+        message: anchor.proposedCommitMessage,
+        approvalRef: gitApprovalRef,
+      });
+    } catch {
+      this.logCommitExecutionFailed(session, anchor, 'git commit failed');
+      return this.failComposed(message, session, this.deps.composer.composeCommitExecutionFailed(message.context));
+    }
+
+    // 7. (CA #8) Result-integrity gate BEFORE trusting the commit: hash non-empty + SHA-shaped; committedFiles
+    //    exactly equal the approved candidates; message equals the approved message. Any mismatch → safe
+    //    failure, NO GIT_COMMITTED, do not claim committed.
+    const sameSet = (a: string[], b: Set<string>): boolean => a.length === b.size && a.every((x) => b.has(x));
+    if (
+      !/^[0-9a-f]{7,40}$/i.test(result.commitHash) ||
+      !sameSet(result.committedFiles.map(normalizeRelativePath), candSet) ||
+      result.message !== anchor.proposedCommitMessage
+    ) {
+      this.logCommitExecutionFailed(session, anchor, 'commit result integrity mismatch');
+      return this.failComposed(message, session, this.deps.composer.composeCommitExecutionFailed(message.context));
+    }
+
+    // 8. Success → re-anchor GIT_COMMITTED with the hash + committed files. (CA #9) PRESERVE commitApprovalId
+    //    (audit/threading) + workspaceRef/workspaceChangeRef/targetFiles/executionPlanRef/postApplyValidationRef
+    //    (a future push sprint needs them); clear proposedCommitMessage + commitCandidateFiles (replaced by
+    //    committedFiles/hash). Reply: hash + files + no push.
+    await this.deps.applyPreviewFlow.anchor(session, {
+      ...anchor,
+      status: 'GIT_COMMITTED',
+      commitHash: result.commitHash,
+      committedFiles: result.committedFiles,
+      proposedCommitMessage: undefined,
+      commitCandidateFiles: undefined, // commitApprovalId PRESERVED (CA #9)
+    });
+    const reply = this.deps.composer.composeCommitExecuted(message.context, {
+      commitHash: result.commitHash,
+      files: result.committedFiles,
+    });
+    await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+    return this.responded(session, reply);
+  }
+
+  /** An execution phrase while already GIT_COMMITTED (Sprint 2y, Q11) — already committed; no new commit, no
+   *  push. Shows the recorded commit hash. */
+  private async handleCommitAlreadyCommittedTurn(
+    message: InboundMessage,
+    session: Session,
+    anchor: ApplyPreviewAnchor,
+  ): Promise<TurnResult> {
+    const reply = this.deps.composer.composeCommitAlreadyCommitted(message.context, anchor.commitHash);
+    await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+    return this.responded(session, reply);
+  }
+
+  /** A push/reset/… companion phrase on a commit-relevant anchor (Sprint 2y) — push is not supported this
+   *  sprint; commit only. No git ran, no mutation. */
+  private async handleCommitPushUnsupportedTurn(message: InboundMessage, session: Session): Promise<TurnResult> {
+    const reply = this.deps.composer.composeCommitPushUnsupported(message.context);
+    await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+    return this.responded(session, reply);
+  }
+
+  /** An explicit commit-execution phrase with no commit-relevant anchor (Sprint 2y) — a new commit approval
+   *  is required first; no commit, no git ran. */
+  private async handleCommitExecutionUnavailableTurn(message: InboundMessage, session: Session): Promise<TurnResult> {
+    const reply = this.deps.composer.composeCommitExecutionUnavailable(message.context);
+    await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+    return this.responded(session, reply);
+  }
+
+  /** Structured, no-content failure log for a commit-EXECUTION error (Sprint 2y) — never logs diff/file
+   *  content or stderr. Optional field access so it never throws on incomplete context (Sprint 2x lesson). */
+  private logCommitExecutionFailed(session: Session, anchor: ApplyPreviewAnchor, reason: string): void {
+    this.deps.logger.warn('commit execution failed', {
+      reason,
+      sessionId: session.id,
+      executionPlanId: anchor.executionPlanRef?.id,
+      commitApprovalId: anchor.commitApprovalId,
+    }); // deliberately NO diff text / file content / stderr
   }
 
   /** (C) Resolve the workspace (if the capability needs it), run the execution, and frame the reply. */

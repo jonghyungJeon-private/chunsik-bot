@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { GitManager } from './git-manager';
 import { WorkspaceNotSafeError } from '../errors';
-import type { GitStatus, RepositoryInfo } from '../domain';
+import { ApprovalStatus } from '../domain';
+import type { ApprovalRef, GitCommitResult, GitStatus, RepositoryInfo } from '../domain';
 import type { GitProvider } from '../ports';
 
 function fakeProvider(over: Partial<GitProvider> = {}): GitProvider {
@@ -19,6 +20,11 @@ function fakeProvider(over: Partial<GitProvider> = {}): GitProvider {
     ...over,
   } as GitProvider;
 }
+
+const planRef = { id: 'plan-1', goal: 'do x' };
+const approvedRef: ApprovalRef = { id: 'appr-1', status: ApprovalStatus.APPROVED, executionPlanRef: planRef };
+const commitInput = (over: Partial<{ rootPath: string; files: string[]; message: string; approvalRef: ApprovalRef }> = {}) =>
+  ({ rootPath: '/repo', files: ['a.ts'], message: 'chore: update a.ts', approvalRef: approvedRef, ...over });
 
 describe('GitManager (CAP-002, read-only)', () => {
   it('delegates isRepository / info / status to the provider', async () => {
@@ -48,5 +54,67 @@ describe('GitManager (CAP-002, read-only)', () => {
     await expect(new GitManager(dirty).requireClean('/tmp/r')).rejects.toBeInstanceOf(
       WorkspaceNotSafeError,
     );
+  });
+});
+
+describe('GitManager.commitFiles (CAP-002, ADR-0046 — Ref-gated first git mutation)', () => {
+  const commitProvider = (result?: GitCommitResult) => {
+    const commitFiles = vi.fn(
+      async (rootPath: string, files: string[], message: string): Promise<GitCommitResult> =>
+        result ?? { commitHash: 'a'.repeat(40), committedFiles: files, message },
+    );
+    return { provider: fakeProvider({ commitFiles }), commitFiles };
+  };
+
+  it('delegates to the provider with cleaned files on a valid APPROVED input', async () => {
+    const { provider, commitFiles } = commitProvider();
+    const res = await new GitManager(provider).commitFiles(commitInput({ files: [' a.ts '] }));
+    expect(commitFiles).toHaveBeenCalledTimes(1);
+    expect(commitFiles).toHaveBeenCalledWith('/repo', ['a.ts'], 'chore: update a.ts'); // trimmed
+    expect(res.committedFiles).toEqual(['a.ts']);
+  });
+
+  it('rejects a non-APPROVED approvalRef (CA 39)', async () => {
+    const { provider, commitFiles } = commitProvider();
+    await expect(
+      new GitManager(provider).commitFiles(
+        commitInput({ approvalRef: { id: 'a', status: ApprovalStatus.PENDING, executionPlanRef: planRef } }),
+      ),
+    ).rejects.toThrow(/APPROVED/);
+    expect(commitFiles).not.toHaveBeenCalled();
+  });
+
+  it('rejects empty files (CA 40)', async () => {
+    const { provider, commitFiles } = commitProvider();
+    await expect(new GitManager(provider).commitFiles(commitInput({ files: [] }))).rejects.toThrow(/at least one file/);
+    expect(commitFiles).not.toHaveBeenCalled();
+  });
+
+  it('rejects duplicate files (CA 41)', async () => {
+    const { provider, commitFiles } = commitProvider();
+    await expect(new GitManager(provider).commitFiles(commitInput({ files: ['a.ts', 'a.ts'] }))).rejects.toThrow(/duplicate/);
+    expect(commitFiles).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unsafe path — absolute / traversal / empty (CA 42)', async () => {
+    const { provider, commitFiles } = commitProvider();
+    for (const files of [['/etc/passwd'], ['../secret'], ['']]) {
+      await expect(new GitManager(provider).commitFiles(commitInput({ files }))).rejects.toThrow(/unsafe file path/);
+    }
+    expect(commitFiles).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid message — empty / multiline / overlong (CA 43)', async () => {
+    const { provider, commitFiles } = commitProvider();
+    for (const message of ['', 'a\nb', 'x'.repeat(121)]) {
+      await expect(new GitManager(provider).commitFiles(commitInput({ message }))).rejects.toThrow(/invalid message/);
+    }
+    expect(commitFiles).not.toHaveBeenCalled();
+  });
+
+  it('rejects an empty rootPath', async () => {
+    const { provider, commitFiles } = commitProvider();
+    await expect(new GitManager(provider).commitFiles(commitInput({ rootPath: '  ' }))).rejects.toThrow(/rootPath/);
+    expect(commitFiles).not.toHaveBeenCalled();
   });
 });

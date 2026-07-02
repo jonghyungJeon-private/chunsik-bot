@@ -1017,4 +1017,80 @@ export class ResponseComposer {
       text: '커밋 승인만 준비할 수 있어요. push/reset/add 같은 다른 git 작업은 아직 지원하지 않아요. git 명령은 실행하지 않았어요.',
     };
   }
+
+  /**
+   * Approved commit EXECUTED (Sprint 2y, ADR-0046) — the first real git mutation. States the short hash +
+   * bounded committed files and, per the no-overclaim rule, that `git push` was NOT run (committed only,
+   * never pushed/deployed).
+   */
+  composeCommitExecuted(
+    context: ConversationContext,
+    input: { commitHash: string; files: string[] },
+  ): OutboundMessage {
+    const shortHash = input.commitHash.slice(0, 7);
+    const shown = input.files.slice(0, MAX_GIT_CHANGED_FILES);
+    const omitted = input.files.length - shown.length;
+    const files = shown.length ? `${shown.join(', ')}${omitted > 0 ? ` 외 ${omitted}개` : ''}` : '(없음)';
+    const text = clampToMessageBudget(
+      [`커밋했어요: ${shortHash}`, `대상 파일: ${files}`, 'git push는 하지 않았어요.'].join('\n'),
+    );
+    return { context, text };
+  }
+
+  /**
+   * Commit EXECUTION failed (Sprint 2y, ADR-0046, CA #10) — MUST state not committed + no push + rollback NOT
+   * performed + re-check git state. MUST NOT claim 변경 없음 / 원상복구 완료 / index unchanged / 안전하게
+   * 되돌렸어요. No raw stderr (the adapter masks it).
+   */
+  composeCommitExecutionFailed(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '커밋을 완료하지 못했어요. git push는 하지 않았어요. rollback은 수행하지 않았어요. Git 상태는 다시 확인해 주세요.',
+    };
+  }
+
+  /**
+   * Commit EXECUTION not available (Sprint 2y, ADR-0046) — wrong state / stale-or-mismatched approval / scope
+   * changed since approval. A NEW commit approval is required; nothing was committed, no git mutation ran.
+   */
+  composeCommitExecutionUnavailable(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '지금은 승인된 커밋을 실행할 수 없어요. 승인 이후 상태가 달라졌거나 승인이 유효하지 않아요. 다시 커밋 승인을 받아 주세요. git commit/push는 하지 않았어요.',
+    };
+  }
+
+  /**
+   * An approved candidate is an untracked (new) file (Sprint 2y, ADR-0046, CA #3) — DISTINCT from
+   * unavailable. This sprint performs NO separate `git add`, so a new-file commit needs a separate step.
+   * Nothing committed, no push.
+   */
+  composeCommitExecutionUntrackedUnsupported(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text:
+        '승인된 후보 파일 중 새 파일(untracked)이 있어 이번 단계에서는 커밋하지 않았어요.\n' +
+        'git add를 별도로 수행하지 않기 때문에, 새 파일 커밋은 별도 단계가 필요해요. git push는 하지 않았어요.',
+    };
+  }
+
+  /**
+   * Execution requested again after a successful commit (Sprint 2y, ADR-0046, Q11) — GIT_COMMITTED. Already
+   * committed (shows the recorded hash); no new commit, no push.
+   */
+  composeCommitAlreadyCommitted(context: ConversationContext, commitHash?: string): OutboundMessage {
+    const shown = commitHash ? commitHash.slice(0, 7) : '(hash 미상)';
+    return { context, text: `이미 커밋했어요: ${shown}. 새로 커밋하지 않았어요. git push는 하지 않았어요.` };
+  }
+
+  /**
+   * A push/reset/… phrase on a commit-relevant anchor (Sprint 2y, ADR-0046) — push is not supported this
+   * sprint; commit only. No git ran, no mutation.
+   */
+  composeCommitPushUnsupported(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: 'push는 아직 지원하지 않아요. 커밋만 가능해요. push는 하지 않았어요.',
+    };
+  }
 }

@@ -39,6 +39,20 @@ export interface GitDiff {
 }
 
 /**
+ * Result of an approved exact-file git commit (CAP-002, ADR-0046 — the first Git mutation). Returned by
+ * `GitProvider.commitFiles`/`GitManager.commitFiles`. NOT persisted as an aggregate; the runtime stores the
+ * hash + files on the apply anchor. `GIT_COMMITTED` means committed locally — never pushed/deployed.
+ */
+export interface GitCommitResult {
+  /** The new commit's full sha (as read back by the adapter). */
+  commitHash: string;
+  /** The exact files included in the commit (the approved candidate set). */
+  committedFiles: string[];
+  /** The commit message used (the approved message). */
+  message: string;
+}
+
+/**
  * Minimal, read-only repository metadata (CAP-002). Intentionally **excludes
  * remote URLs** — HTTPS remotes can embed credentials; exposing them needs a
  * future masking policy + ADR (ADR-0023).

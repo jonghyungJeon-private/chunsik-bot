@@ -251,6 +251,74 @@ describe('LocalGitProvider.diff — read-only diff extension (CAP-002, ADR-0044)
   });
 });
 
+describe('LocalGitProvider.commitFiles — the first git mutation (CAP-002, ADR-0046)', () => {
+  /** A runner that returns code 0 for everything and a fixed sha for `rev-parse HEAD`. */
+  const commitRunner = (headSha = 'a'.repeat(40)): { runner: GitRunner; calls: string[][] } => {
+    const calls: string[][] = [];
+    const runner: GitRunner = (args) => {
+      calls.push(args);
+      if (args.includes('rev-parse')) return { code: 0, stdout: headSha + '\n', stderr: '', timedOut: false, failed: false };
+      return { code: 0, stdout: '', stderr: '', timedOut: false, failed: false };
+    };
+    return { runner, calls };
+  };
+
+  it('commits EXACTLY the given tracked file, leaving other changes uncommitted; returns the HEAD sha (CA 44)', async () => {
+    const dir = makeRepo();
+    writeFileSync(join(dir, 'other.txt'), 'z');
+    git(dir, 'add', 'other.txt');
+    git(dir, 'commit', '-q', '-m', 'add other');
+    writeFileSync(join(dir, 'README.md'), '# changed\n'); // tracked modification — the candidate
+    writeFileSync(join(dir, 'other.txt'), 'zz'); // a DIFFERENT tracked modification — must NOT be committed
+    const res = await provider.commitFiles(dir, ['README.md'], 'chore: update readme');
+    expect(res.commitHash).toMatch(/^[0-9a-f]{40}$/);
+    expect(res.committedFiles).toEqual(['README.md']);
+    expect(res.message).toBe('chore: update readme');
+    const changed = git(dir, 'show', '--name-only', '--pretty=format:', 'HEAD').trim().split('\n').filter(Boolean);
+    expect(changed).toEqual(['README.md']); // the new commit touched only README.md
+    expect(git(dir, 'status', '--porcelain=v1', '--', 'other.txt')).toContain('other.txt'); // other.txt still pending
+  });
+
+  it('runs argv `commit --only -m <msg> -- <files>` then `rev-parse HEAD`; msg is one argv element; `--` precedes paths; NO git add; NO push/reset/checkout/stash/branch/tag/merge/rebase (CA 45–49, 75–82)', async () => {
+    const { runner, calls } = commitRunner();
+    await new LocalGitProvider(runner).commitFiles('/repo', ['a.ts', 'b.ts'], 'fix: thing with spaces');
+    expect(calls[0]).toEqual(['--no-pager', 'commit', '--only', '-m', 'fix: thing with spaces', '--', 'a.ts', 'b.ts']);
+    expect(calls[1]).toEqual(['--no-pager', 'rev-parse', 'HEAD']);
+    expect(calls[0]?.filter((a) => a === 'fix: thing with spaces')).toHaveLength(1); // message is a single argv element
+    const dd = calls[0]?.indexOf('--') ?? -1;
+    expect(dd).toBeGreaterThan(-1);
+    expect(calls[0]?.slice(dd + 1)).toEqual(['a.ts', 'b.ts']); // pathspecs after `--`
+    for (const c of calls) {
+      for (const forbidden of ['add', 'push', 'reset', 'checkout', 'stash', 'branch', 'merge', 'rebase', 'tag', 'pull', 'fetch']) {
+        expect(c).not.toContain(forbidden);
+      }
+    }
+  });
+
+  it('rejects an unsafe path (absolute / traversal / empty) BEFORE any git command runs (CA 50)', async () => {
+    for (const files of [['/etc/passwd'], ['../secret'], ['a/../../x'], ['']]) {
+      const { runner, calls } = commitRunner();
+      await expect(new LocalGitProvider(runner).commitFiles('/repo', files, 'msg')).rejects.toThrow();
+      expect(calls.length, files.join()).toBe(0); // no git ran
+    }
+  });
+
+  it('de-duplicates repeated pathspecs (CA #7)', async () => {
+    const { runner, calls } = commitRunner();
+    await new LocalGitProvider(runner).commitFiles('/repo', ['a.ts', 'a.ts'], 'msg');
+    const dd = calls[0]?.indexOf('--') ?? -1;
+    expect(calls[0]?.slice(dd + 1)).toEqual(['a.ts']);
+  });
+
+  it('surfaces a sanitized failure when the commit fails — no fake success', async () => {
+    const failing: GitRunner = (args) =>
+      args.includes('commit')
+        ? { code: 1, stdout: '', stderr: 'nothing to commit', timedOut: false, failed: false }
+        : { code: 0, stdout: 'sha', stderr: '', timedOut: false, failed: false };
+    await expect(new LocalGitProvider(failing).commitFiles('/repo', ['a.ts'], 'msg')).rejects.toThrow(/exit 1/);
+  });
+});
+
 describe('parsePorcelain', () => {
   it('parses branch, staged, unstaged, untracked', () => {
     const out = parsePorcelain(['## main...origin/main [ahead 1]', 'M  a.ts', ' M b.ts', '?? c.ts'].join('\n'));
