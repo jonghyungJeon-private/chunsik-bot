@@ -295,6 +295,8 @@ function assembleBoundedBody(header: string, footerLines: string[], blocks: stri
 const MAX_GIT_CHANGED_FILES = 30;
 const MAX_GIT_DIFF_FILES = 5;
 const MAX_GIT_DIFF_CHARS = 3000;
+/** Out-of-scope changed-file display cap for the commit-approval flow (Sprint 2x, ADR-0045, CA #7). */
+const MAX_COMMIT_OUT_OF_SCOPE_SHOWN = 10;
 
 /** The fixed read-only disclaimer lines every successful git preview must carry (Sprint 2w, CA #10). */
 const GIT_READONLY_DISCLAIMER = [
@@ -897,6 +899,122 @@ export class ResponseComposer {
         'Git 상태를 읽지 못했어요. 잠시 후 다시 시도해 주세요.\n' +
         '읽기 전용 Git 확인 중 문제가 발생했지만, git add/commit/push는 하지 않았어요.\n' +
         '파일 수정은 하지 않았고, CommandExecution을 통한 명령 실행도 하지 않았어요.',
+    };
+  }
+
+  /**
+   * Git-commit approval REQUESTED (Explicit Git Commit Approval, ADR-0045). AWAITING_APPROVAL prompt: bounded
+   * candidate files (≤30) + commit message + validation record + 승인/거절. CA #4/#5: MUST state approving
+   * does NOT run git add/commit/push in this step and that actual commit is a later step. Says nothing is
+   * committed.
+   */
+  composeCommitApprovalRequested(
+    context: ConversationContext,
+    input: { candidateFiles: string[]; commitMessage: string; validation: ValidationContext },
+  ): OutboundMessage {
+    const shown = input.candidateFiles.slice(0, MAX_GIT_CHANGED_FILES);
+    const omitted = input.candidateFiles.length - shown.length;
+    const files = `${shown.join(', ')}${omitted > 0 ? ` 외 ${omitted}개` : ''}`;
+    const text = clampToMessageBudget(
+      [
+        '커밋 승인을 요청했어요.',
+        `대상 파일: ${files}`,
+        `커밋 메시지: ${input.commitMessage}`,
+        renderValidationContext(input.validation),
+        '승인해도 이번 단계에서는 실제 git add/commit/push는 수행하지 않아요.',
+        '실제 커밋 실행은 다음 단계에서 진행돼요. 진행하려면 "승인", 원치 않으면 "거절"이라고 알려 주세요.',
+      ].join('\n'),
+    );
+    return { context, text };
+  }
+
+  /** Commit approval RECORDED after "승인" (ADR-0045, CA #10) — records permission only; never says committed. */
+  composeCommitApprovalRecorded(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '커밋 승인은 기록했어요.\n아직 실제 git add/commit/push는 수행하지 않았어요. (실제 커밋은 다음 단계에서 진행돼요)',
+    };
+  }
+
+  /** Commit approval DENIED (ADR-0045, CA #11) — commit-specific; the applied files remain. */
+  composeCommitApprovalDenied(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '커밋 승인을 거절했어요.\n이미 적용된 파일 변경은 그대로 있어요. 실제 git commit은 수행하지 않았어요.',
+    };
+  }
+
+  /** Commit approval CANCELLED (ADR-0045, CA #11) — commit-specific; the applied files remain. */
+  composeCommitApprovalCancelled(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '커밋 승인을 취소했어요.\n이미 적용된 파일 변경은 그대로 있어요. 실제 git commit은 수행하지 않았어요.',
+    };
+  }
+
+  /** Nothing to commit — Git reports a clean tree (ADR-0045). No approval was created. */
+  composeCommitNothingToCommit(context: ConversationContext): OutboundMessage {
+    return { context, text: '현재 Git 기준 커밋할 변경이 없어요. 커밋 승인 요청은 만들지 않았어요.' };
+  }
+
+  /**
+   * Changed files outside the applied scope (or unsafe paths) exist (ADR-0045, CA #6/#7/#14) — no approval.
+   * Bounded (≤10 shown).
+   */
+  composeCommitOutOfScopeChanges(context: ConversationContext, outOfScope: string[]): OutboundMessage {
+    const shown = outOfScope.slice(0, MAX_COMMIT_OUT_OF_SCOPE_SHOWN);
+    const omitted = outOfScope.length - shown.length;
+    const list = shown.length ? `${shown.join(', ')}${omitted > 0 ? ` 외 ${omitted}개` : ''}` : '(없음)';
+    return {
+      context,
+      text:
+        `적용 대상 밖의(또는 안전하지 않은) 변경이 있어서 커밋 승인을 만들지 않았어요: ${list}\n` +
+        '적용한 파일만 커밋할 수 있도록 먼저 정리가 필요해요. git 명령은 실행하지 않았어요.',
+    };
+  }
+
+  /** User-provided commit message failed validation (ADR-0045, CA #8) — ask again; no approval. */
+  composeCommitMessageInvalid(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '커밋 메시지는 한 줄로, 120자 이하, 하나만 알려 주세요. (예: 메시지는 "fix: …") 커밋 승인 요청은 만들지 않았어요.',
+    };
+  }
+
+  /** Commit not available — wrong state / incomplete pending context (ADR-0045, CA #12). Not a git-read failure. */
+  composeCommitUnavailable(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '지금은 커밋 승인을 준비할 수 없어요. 먼저 코드 변경을 적용(WORKSPACE_APPLIED)한 뒤에 커밋을 요청해 주세요. git 명령은 실행하지 않았어요.',
+    };
+  }
+
+  /**
+   * Git STATUS read failure on the commit path (ADR-0045, CA #9/#12) — a read WAS attempted, so it must NOT
+   * say "git 명령은 실행하지 않았어요". No approval, no CommandExecution/shell fallback.
+   */
+  composeCommitStatusUnavailable(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text:
+        '커밋 준비를 위해 읽기 전용 Git 상태를 확인하는 중 문제가 발생했어요.\n' +
+        '커밋 승인 요청은 만들지 않았어요. git add/commit/push는 하지 않았고, CommandExecution/shell fallback도 쓰지 않았어요.',
+    };
+  }
+
+  /** Commit already approved (COMMIT_APPROVED, ADR-0045, CA #10) — not committed; execution is a later step. */
+  composeCommitAlreadyApproved(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '이미 커밋 승인을 받아 뒀어요.\n아직 실제 git add/commit/push는 수행하지 않았어요. (실제 커밋은 다음 단계에서 진행돼요)',
+    };
+  }
+
+  /** Commit bundled with push/reset/add/… (ADR-0045) — commit-approval planning only; no git ran. */
+  composeCommitUnsupportedCompanion(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '커밋 승인만 준비할 수 있어요. push/reset/add 같은 다른 git 작업은 아직 지원하지 않아요. git 명령은 실행하지 않았어요.',
     };
   }
 }

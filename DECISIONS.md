@@ -2657,3 +2657,92 @@ this sprint reads against), ADR-0043 (Post-Apply Validation — the `postApplyVa
 context via the existing `commandExecutions.get`), ADR-0034 (Test Result Detail UX — message-budget/fence
 helpers reused), ADR-0031 (Execution Orchestrator — deliberately not extended or called). Supersedes nothing.
 Plan: `docs/plans/sprint-2w-post-validation-git-status-preview-plan.md`.
+
+## ADR-0045 — Explicit Git Commit Approval (WORKSPACE_APPLIED → commit approval halt, NO git mutation)
+
+- **Status:** ✅ Accepted (v2, Phase 2, Sprint 2x — Product Construction), Chief Architect Review:
+  APPROVED WITH CHANGES (14 required changes applied) → PROCEED.
+- **Date:** 2026-07-02
+- **Scope:** After Sprint 2u leaves a `WORKSPACE_APPLIED` anchor (real file mutation) — optionally validated
+  (2v) and previewed read-only (2w) — an explicit commit request **plans** a git commit: read-only
+  `git.status` → in-scope candidate files → deterministic commit message → **HIGH `ApprovalRequest`** → halt
+  at a commit-approval-pending state. **This sprint performs NO git mutation** — no `git add`/`commit`/`push`,
+  not even after the user approves (execution is a future Sprint 2y). It only creates the approval gate.
+
+### Most important rule
+> **A git commit is a repository mutation, so Sprint 2x stops before it.** The runtime reads only
+> `git.status` (never `git.diff`), creates a HIGH `ApprovalRequest`, and halts; nothing git-mutating runs —
+> not on request, not on approval. `COMMIT_APPROVED` means the commit was **approved, not performed**; there
+> is no `COMMITTED`/`GIT_COMMITTED` state and no overclaim (safe-to-commit / ready-to-push / deployed / committed).
+
+### Decision
+- **Reuses `ApprovalManager.requestForRisk`/`decide`/`get` (CAP-004)** and the Sprint 2s approval-#2 runtime
+  pattern (`interpretDecision`/`decisionOf`/`APPROVE|DENY|CANCEL_WORDS`/`composeApprovalNotice`). `requestForRisk`
+  creates a PENDING HIGH `ApprovalRequest` (never auto-approves). **`GitManager.status` (read-only, 2w `git`
+  dep) is the only git call; `git.diff` is never called (CA #1).** No new capability/port/aggregate/dep.
+- **`ConversationRuntime` composes it directly.** New anchor statuses `COMMIT_APPROVAL_PENDING` (a real HIGH
+  approval pending — intercepts every turn) and `COMMIT_APPROVED` (approved; context preserved for Sprint 2y),
+  plus fields `commitApprovalId`/`proposedCommitMessage`/`commitCandidateFiles`. **No `COMMITTED`/`GIT_COMMITTED`.**
+- **Plan-less anchor ↔ `StatelessApprovalFlow`.** The apply/commit anchor Task carries no `planId`, so
+  `findPending` (which needs `task.planId`) never returns the commit approval — it is handled solely via the
+  `COMMIT_APPROVAL_PENDING` interception. `StatelessApplyPreviewFlow` maps that status to `WAITING_APPROVAL`
+  (observability); the task stays plan-less.
+- **Trigger (CA #3).** `interpretCommitIntent`: commit words → `'commit'`; a commit bundled with push/add/
+  reset/… companion → `'commit-with-forbidden'` (rejected, priority over commit); push/add/reset-**only** (no
+  commit word) → null (Sprint 2w mutating-reject handles it, unchanged); "커밋 전에 변경사항 요약" (no action
+  verb) → 2w status. Bare 좋아/오케이/확인/다음 단계/진행해/이대로 해 → null.
+- **Candidate files + defensive safety (CA #6/#14).** candidates = changed (`staged ∪ unstaged ∪ untracked`)
+  ∩ `targetFiles`, each path through `safeRelativePath` (absolute/`..`/empty/non-normalizable → unsafe →
+  out-of-scope). Clean tree → no approval; any out-of-scope/unsafe path OR empty in-scope set → bounded
+  warning, no approval. Lists bounded (out-of-scope ≤10, candidates ≤30).
+- **Commit message (CA #6/#7/#8).** Deterministic template (`chore: update <targetFiles>`), ≤120 chars, no
+  AI; a user-provided message is accepted only if exactly one quoted segment, single-line, ≤120,
+  control-char-free, trimmed (backticks/punctuation allowed within bounds) — else `composeCommitMessageInvalid`,
+  no approval. No diff interpolation.
+- **Approval reason (CA #4/#11).** operation "git commit approval planning" · workspaceRef id · bounded
+  candidate files · commit message · validation context · risk HIGH · "no git add/commit/push has been
+  performed" · "records permission only; actual commit deferred to a later step". **No raw diff / file content.**
+- **Strict decision guards (CA #2/#3).** Before deciding: the pending context must be complete (status
+  `COMMIT_APPROVAL_PENDING` + `commitApprovalId` + `proposedCommitMessage` + non-empty `commitCandidateFiles`
+  + `workspaceRef` + `workspaceChangeRef` + `executionPlanRef`), and `approvals.get(commitApprovalId)` must
+  exist, be PENDING, and match `anchor.executionPlanRef.id`. Any failure → safe failure, no `decide`, no git,
+  no re-anchor. Ambiguous decision → re-prompt, preserving pending context (no decide/new approval).
+- **After decision (CA #9/#10/#11/#12).** Approve → `decide` APPROVED, re-anchor `COMMIT_APPROVED`,
+  `composeCommitApprovalRecorded` ("승인 기록; 아직 실제 커밋 안 함" — never "커밋 완료"/committed). Deny/cancel
+  → `decide` REJECTED, **revert to `WORKSPACE_APPLIED` clearing only the commit fields** (preserving
+  `workspaceRef`/`workspaceChangeRef`/`postApplyValidationRef`/`targetFiles`), with **commit-specific**
+  replies ("이미 적용된 파일 변경은 그대로 있어요") — never the generic `composeExecutionResult`.
+- **Read failure wording (CA #9/#12).** A `git.status` throw → `composeCommitStatusUnavailable` (a read was
+  attempted; never "git 명령은 실행하지 않았어요"), no approval, no CommandExecution/shell fallback. Wrong
+  state / incomplete pending context → the distinct `composeCommitUnavailable`.
+- **Validation context (CA #10/Q10).** Displayed via the read-only `commandExecutions.get` (2w helper);
+  a lookup failure never blocks the approval; validation is not required.
+- **No Core/Orchestrator contract change; no `app.module.ts` change** (no new dep/provider). No `GitProvider`
+  mutation method. No CommandExecution/shell git, no WorkspaceWrite/Patch/CodeGeneration/Orchestrator.
+
+### Not implemented (out of scope)
+`git add`/`commit`/`push`/`reset`/`checkout`/`stash`/`branch`/`tag`/`merge`/`rebase` · **actual commit
+execution even after approval** (Sprint 2y) · automatic commit · AI commit messages · `GitProvider`
+add/commit/push · `git.diff` on this path · CommandExecution-based git · runtime shell-out · WorkspaceWrite ·
+Patch · CodeGeneration · ExecutionOrchestrator change · PR creation · deployment · a `COMMITTED`/`GIT_COMMITTED`
+state · persisting raw diff · overclaim (safe-to-commit/ready-to-push/deploy/committed).
+
+### Consequences
+- + The user can, for the first time, request a git commit of the bot-applied change and get a bounded,
+  read-only summary + a deterministic commit message + a HIGH approval gate — behind an explicit request,
+  with zero git mutation.
+- + Reusing the proven approval-halt pattern (2s) and the plan-less anchor keeps the design small and keeps
+  `findPending` from hijacking the commit approval.
+- − `ApplyPreviewAnchor` gains two statuses + three commit fields — a justified extension for the Sprint 2y
+  executor, not scope creep; nothing is persisted beyond refs/message/candidate paths (no raw diff).
+- − Approval is recorded but the commit is deliberately not performed; git mutation (add/commit/push) remains
+  a separate, individually-reviewed future sprint.
+
+### Relations
+ADR-0025 (CAP-004 Approval — `ApprovalManager.requestForRisk`/`decide`/`get`, reused), ADR-0040 (Sprint 2s
+explicit apply approval — the approval-#2 halt pattern + plan-less anchor reused), ADR-0044 (Post-Validation
+Git Status Preview — read-only `git.status` reused; `git.diff` deliberately not used here), ADR-0043
+(Post-Apply Validation — `postApplyValidationRef` shown as display-only context via `commandExecutions.get`),
+ADR-0023 (CAP-002 Git — read-only; **no mutation method added**), ADR-0031 (Execution Orchestrator —
+deliberately not extended or called). Supersedes nothing. Plan:
+`docs/plans/sprint-2x-explicit-git-commit-approval-plan.md`.

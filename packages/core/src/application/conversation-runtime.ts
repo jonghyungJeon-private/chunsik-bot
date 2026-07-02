@@ -178,7 +178,17 @@ export type ApplyPreviewAnchorStatus =
   | 'AWAITING_APPROVAL'
   | 'APPROVED'
   | 'PATCH_READY'
-  | 'WORKSPACE_APPLIED';
+  | 'WORKSPACE_APPLIED'
+  /**
+   * A HIGH-risk git-commit ApprovalRequest is pending decision (Sprint 2x, ADR-0045). Intercepts every turn
+   * like AWAITING_APPROVAL. NOT committed — no git add/commit/push has run.
+   */
+  | 'COMMIT_APPROVAL_PENDING'
+  /**
+   * The git-commit approval was granted (Sprint 2x, ADR-0045) — context preserved for a future Sprint 2y
+   * executor. NOT committed yet — this sprint executes nothing; NOT `COMMITTED`/`GIT_COMMITTED`.
+   */
+  | 'COMMIT_APPROVED';
 
 /**
  * Anchored fact set for "a diff preview was shown; the user may explicitly ask to apply it" (Sprint 2s,
@@ -218,6 +228,14 @@ export interface ApplyPreviewAnchor {
    *  TIMED_OUT. `status` stays `WORKSPACE_APPLIED` — a validation pass is point-in-time, NOT a durable
    *  "validated" state (no `WORKSPACE_VALIDATED`); git/commit/push/tests-forever are NOT implied. */
   postApplyValidationRef?: CommandExecutionRef;
+  /** The pending/decided git-commit ApprovalRequest id (Sprint 2x, ADR-0045) — DISTINCT from `approvalId`
+   *  (the apply approval). Set at COMMIT_APPROVAL_PENDING; preserved at COMMIT_APPROVED; cleared on
+   *  deny/cancel. */
+  commitApprovalId?: Id;
+  /** The bounded deterministic (or validated user-provided) commit message proposed for approval (2x). */
+  proposedCommitMessage?: string;
+  /** In-scope candidate file paths for the commit (changed ∩ targetFiles) preserved for Sprint 2y (2x). */
+  commitCandidateFiles?: string[];
 }
 
 /**
@@ -407,6 +425,69 @@ const GIT_DIFF_WORDS = /(\bdiff\b|디프)/i;
 /** Read-only status/changed-files phrases (Sprint 2w) — incl. the CA-approved safe Korean "커밋 전에 …". */
 const GIT_STATUS_WORDS = /(git\s*상태|깃\s*상태|git\s*status|\bstatus\b\s*보여|변경\s*파일|변경\s*사항|변경사항|바뀐\s*파일|커밋\s*전)/i;
 
+/** Explicit git-commit request phrases (Sprint 2x, ADR-0045) — qualified; a bare "좋아"/"오케이"/"확인"/
+ *  "다음 단계"/"진행해"/"이대로 해" never matches, and bare "커밋 전" (2w status) is excluded (no action verb). */
+const COMMIT_WORDS =
+  /(커밋\s*(해|하자|할래|준비|승인)|커밋\s*메시지|git\s*commit|commit\s+this|prepare\s+commit|create\s+commit\s+approval)/i;
+/** Non-commit git mutations that must NOT ride along with a commit request (Sprint 2x) — a commit bundled
+ *  with any of these is rejected (commit-approval planning only). */
+const COMMIT_FORBIDDEN_COMPANION =
+  /(푸시|\bpush\b|git\s*add|\badd\s*해|리셋|\breset\b|checkout|체크아웃|stash|스태시|\bbranch\b|브랜치|merge|머지|rebase|리베이스|\btag\b|태그)/i;
+
+/** Git-commit display/approval bounds (Sprint 2x, CA #7). */
+const MAX_COMMIT_OUT_OF_SCOPE_SHOWN = 10;
+const MAX_COMMIT_CANDIDATE_FILES = 30;
+/** Max commit message length (Sprint 2x, CA #6/#7). */
+const MAX_COMMIT_MESSAGE_CHARS = 120;
+
+/**
+ * Defensively normalize a git-status path to a safe project-relative path, or `null` when it is absolute,
+ * contains a `..` traversal, is empty, or is otherwise not safely representable (Sprint 2x, CA #6). A `null`
+ * path is never trusted — the caller surfaces it as out-of-scope and refuses to create a commit approval.
+ */
+function safeRelativePath(raw: string): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return null;
+  if (/^([a-zA-Z]:[\\/]|[\\/])/.test(trimmed)) return null; // absolute (POSIX `/…` or Windows `C:\…`)
+  const normalized = normalizeRelativePath(trimmed);
+  if (normalized.length === 0) return null;
+  if (normalized === '..' || normalized.startsWith('../') || normalized.split('/').includes('..')) return null;
+  return normalized;
+}
+
+/**
+ * Compose the HIGH commit-approval `reason` string (Sprint 2x, ADR-0045, CA #4/#11). Names the operation,
+ * workspace, bounded candidate files, commit message, validation context, and that this records permission
+ * only — actual git add/commit/push is NOT executed in Sprint 2x. NO raw diff / file content.
+ */
+function buildCommitApprovalReason(
+  workspaceRef: WorkspaceRef,
+  candidateFiles: string[],
+  commitMessage: string,
+  validation: { command: string; status: string } | 'unavailable' | 'none',
+): string {
+  const shown = candidateFiles.slice(0, MAX_COMMIT_CANDIDATE_FILES);
+  const omitted = candidateFiles.length - shown.length;
+  const files = `${shown.join(', ')}${omitted > 0 ? ` (외 ${omitted}개 생략)` : ''}`;
+  const validationText =
+    validation === 'none'
+      ? 'no post-apply validation on record'
+      : validation === 'unavailable'
+        ? 'validation record could not be resolved'
+        : `latest validation: ${validation.command} ${validation.status}`;
+  return [
+    'operation: git commit approval planning',
+    `workspaceRef: ${workspaceRef.id}`,
+    `candidate files: ${files}`,
+    `proposed commit message: ${commitMessage}`,
+    validationText,
+    'risk: HIGH',
+    'no git add/commit/push has been performed',
+    'this approval records permission only; actual git add/commit/push is NOT executed in Sprint 2x — future execution requires a separate step',
+  ].join('\n');
+}
+
 /** Bound on how many extracted target-path candidates trigger a workspace.list call per turn
  *  (Sprint 2o, ADR-0036) — a chat message must never drive an unbounded number of workspace scans. */
 const MAX_TARGET_CANDIDATES = 5;
@@ -566,6 +647,49 @@ export class ConversationRuntime {
   }
 
   /**
+   * Explicit git-commit intent (Sprint 2x, ADR-0045). Returns:
+   *  - `'commit'` → a pure commit request → commit-approval planning;
+   *  - `'commit-with-forbidden'` → a commit request bundled with push/add/reset/… (rejected — approval only);
+   *  - `null` → not a commit request. A push/add/reset-**only** phrase returns null so the Sprint 2w
+   *    git-preview mutating-reject still handles it unchanged; "커밋 전에 변경사항 요약" (no action verb after
+   *    커밋) stays a 2w status phrase. A bare 좋아/오케이/확인/다음 단계/진행해/이대로 해 → null.
+   */
+  static interpretCommitIntent(text: string): 'commit' | 'commit-with-forbidden' | null {
+    const t = text.trim().toLowerCase();
+    // Liberal commit-token detection is used ONLY for the forbidden-combo guard, so a bundled request like
+    // "commit and push" / "커밋하고 push" is rejected as unsupported (never routed to a plain commit or the
+    // 2w mutating reply). The plain-commit trigger stays conservative via COMMIT_WORDS.
+    const hasCommitToken = /(커밋|\bcommit\b)/i.test(t);
+    if (hasCommitToken && COMMIT_FORBIDDEN_COMPANION.test(t)) return 'commit-with-forbidden';
+    if (!COMMIT_WORDS.test(t)) return null; // "커밋 전"/push-only/etc. → not a commit request
+    return 'commit';
+  }
+
+  /**
+   * Resolve the commit message for a commit-approval turn (Sprint 2x, CA #6/#7/#8). If the text carries a
+   * user message (a single quoted segment after a `메시지`/`message` keyword) it is accepted only when it is
+   * exactly one candidate, single-line, ≤120 chars, control-char-free, and trimmed non-empty — otherwise
+   * `'invalid'`. With no user message, a deterministic template from `targetFiles` is used (no AI). Never
+   * interpolates diff/file content.
+   */
+  static parseCommitMessage(text: string, targetFiles: string[]): { message: string } | 'invalid' {
+    // A user message is offered ONLY via a quoted segment (e.g. 메시지는 "fix: …"). No quote → deterministic
+    // template (so "커밋 메시지 만들어줘" means "make one for me", not an empty user message). More than one
+    // quoted segment → invalid (CA #8, no ambiguous multi-message extraction).
+    const quoted = text.match(/["'`]([^"'`]*)["'`]/g) ?? [];
+    if (quoted.length > 0) {
+      if (quoted.length !== 1) return 'invalid';
+      const inner = quoted[0]!.slice(1, -1).trim();
+      const hasControl = [...inner].some((c) => { const code = c.charCodeAt(0); return code < 0x20 || code === 0x7f; }); // rejects newlines/CR/other control chars
+      if (inner.length === 0 || inner.length > MAX_COMMIT_MESSAGE_CHARS || hasControl) return 'invalid';
+      return { message: inner };
+    }
+    const primary = targetFiles[0] ?? 'workspace';
+    const suffix = targetFiles.length > 1 ? ` 외 ${targetFiles.length - 1}개` : '';
+    return { message: `chore: update ${primary}${suffix}`.slice(0, MAX_COMMIT_MESSAGE_CHARS) };
+  }
+
+  /**
    * Handle one inbound message → one transient `TurnResult` (with an `OutboundMessage`). Never sends
    * to the platform (delivery is the facade's job) and never persists runtime state.
    */
@@ -598,22 +722,41 @@ export class ConversationRuntime {
     if (applyAnchor?.status === 'AWAITING_APPROVAL') {
       return this.handleApplyApprovalTurn(message, session, actor, applyAnchor);
     }
-    // (Sprint 2v, ADR-0043) Explicit post-apply validation → run pnpm test / pnpm typecheck via
-    // CommandExecution against the workspace the file was applied to. ONLY on a WORKSPACE_APPLIED anchor;
-    // with no such anchor the message falls through to the existing Sprint 2l general test flow (CA #7).
-    // Validation phrases don't overlap FINAL_APPLY/PATCH/APPLY word-sets, so those branches are untouched.
+    // (Sprint 2x, ADR-0045) A pending git-commit approval intercepts EVERY turn, exactly like AWAITING_APPROVAL.
+    if (applyAnchor?.status === 'COMMIT_APPROVAL_PENDING') {
+      return this.handleCommitApprovalDecisionTurn(message, session, actor, applyAnchor);
+    }
+    // (Sprint 2v/2w/2x) WORKSPACE_APPLIED follow-ups, in order: validation → commit-approval → git preview.
+    // Validation is checked FIRST so a mixed/dangerous phrase like "pnpm test; git commit" is caught by the
+    // 2v deny-fragment path, not treated as a commit. A plain commit phrase ("커밋해줘") carries no validation
+    // token, so it falls through to the commit check unaffected.
     if (applyAnchor?.status === 'WORKSPACE_APPLIED') {
       const validationKind = ConversationRuntime.interpretPostApplyValidationIntent(message.text);
       if (validationKind) {
         return this.handlePostApplyValidationTurn(message, session, applyAnchor, validationKind);
       }
+      // (Sprint 2x) explicit commit request → commit-approval PLANNING (halt, no git mutation). A
+      // push/add/reset-only phrase → null → falls to the 2w git-preview mutating reject (unchanged).
+      const commitKind = ConversationRuntime.interpretCommitIntent(message.text);
+      if (commitKind) {
+        return commitKind === 'commit'
+          ? this.handleCommitApprovalTurn(message, session, actor, applyAnchor)
+          : this.handleCommitUnsupportedCompanionTurn(message, session);
+      }
       // (Sprint 2w, ADR-0044) Explicit read-only git preview → GitManager.status/diff against the applied
-      // workspace. Validation and git-preview phrases are disjoint, so order vs the check above is
-      // immaterial. With no WORKSPACE_APPLIED anchor this is never consulted (no general git handling).
+      // workspace. With no WORKSPACE_APPLIED anchor this is never consulted (no general git handling).
       const gitKind = ConversationRuntime.interpretGitPreviewIntent(message.text);
       if (gitKind) {
         return this.handleGitPreviewTurn(message, session, applyAnchor, gitKind);
       }
+    }
+    // (Sprint 2x, ADR-0045) A commit request outside WORKSPACE_APPLIED: at COMMIT_APPROVED say already-approved
+    // (not committed); otherwise a scoped "no applied change to commit" reply (never broad general handling).
+    if (ConversationRuntime.interpretCommitIntent(message.text)) {
+      if (applyAnchor?.status === 'COMMIT_APPROVED') {
+        return this.handleCommitAlreadyApprovedTurn(message, session);
+      }
+      return this.handleCommitUnavailableTurn(message, session);
     }
     // (Sprint 2u, ADR-0042) Explicit final workspace-apply → the first real file mutation. Checked before
     // patch- and apply-intent (FINAL_APPLY_WORDS is non-overlapping with PATCH_WORDS and precedes
@@ -1345,6 +1488,188 @@ export class ConversationRuntime {
       sessionId: session.id,
       executionPlanId: anchor.executionPlanRef.id,
     }); // deliberately NO diff text / file content / stderr
+  }
+
+  /**
+   * An explicit git-commit request at WORKSPACE_APPLIED (Sprint 2x, ADR-0045) — PLAN a commit and halt at a
+   * HIGH approval. Runs ONLY read-only `git.status` (never `git.diff`); creates a HIGH `ApprovalRequest`;
+   * re-anchors `COMMIT_APPROVAL_PENDING`. Performs NO git mutation, CommandExecution, WorkspaceWrite, Patch,
+   * CodeGeneration, or ExecutionOrchestrator call. Actual commit execution is a future Sprint 2y.
+   */
+  private async handleCommitApprovalTurn(
+    message: InboundMessage,
+    session: Session,
+    actor: Actor,
+    anchor: ApplyPreviewAnchor,
+  ): Promise<TurnResult> {
+    if (!anchor.workspaceRef || !anchor.executionPlanRef || !anchor.targetFiles.length) {
+      return this.failComposed(message, session, this.deps.composer.composeCommitUnavailable(message.context));
+    }
+
+    // 1. Commit message: user-provided (validated) else deterministic template. Invalid user msg → ask again.
+    const parsed = ConversationRuntime.parseCommitMessage(message.text, anchor.targetFiles);
+    if (parsed === 'invalid') {
+      return this.respondComposed(message, session, this.deps.composer.composeCommitMessageInvalid(message.context));
+    }
+    const commitMessage = parsed.message;
+
+    // 2. Read-only git status ONLY (CA #1/#12). A throw → composeCommitStatusUnavailable (a read WAS
+    //    attempted — precise wording), NO approval, NO fallback. NEVER git.diff.
+    let status: GitStatus;
+    try {
+      status = await this.deps.git.status(anchor.workspaceRef.rootPath);
+    } catch {
+      this.logCommitApprovalFailed(session, anchor, 'git status read failed');
+      return this.failComposed(message, session, this.deps.composer.composeCommitStatusUnavailable(message.context));
+    }
+
+    // 3. Candidate files = changed ∩ targetFiles with defensive path safety (CA #6/#14). Clean → nothing to
+    //    commit. Any out-of-scope/unsafe path OR empty in-scope set → bounded warning, NO approval.
+    const rawChanged = [...status.staged, ...status.unstaged, ...status.untracked];
+    if (rawChanged.length === 0) {
+      return this.respondComposed(message, session, this.deps.composer.composeCommitNothingToCommit(message.context));
+    }
+    const scope = new Set(anchor.targetFiles.map(normalizeRelativePath));
+    const inScope: string[] = [];
+    const outOfScope: string[] = [];
+    for (const raw of rawChanged) {
+      const safe = safeRelativePath(raw); // null = absolute / `..` / empty / non-normalizable
+      if (safe !== null && scope.has(safe)) inScope.push(safe);
+      else outOfScope.push(safe ?? raw); // unsafe paths surfaced as out-of-scope, never trusted/committed
+    }
+    const candidateFiles = [...new Set(inScope)];
+    if (outOfScope.length > 0 || candidateFiles.length === 0) {
+      return this.respondComposed(message, session, this.deps.composer.composeCommitOutOfScopeChanges(message.context, outOfScope));
+    }
+
+    // 4. Read-only validation context (reused 2w helper) — display only, never blocks (CA #10/Q10).
+    const validation = await this.loadValidationContext(anchor);
+
+    // 5. Create the HIGH commit ApprovalRequest (CA Constraint 2, #4/#11/Q11). Reason names op/workspace/
+    //    bounded candidate files/message/validation + "approval only, actual commit deferred". NO raw diff.
+    const approval = await this.deps.approvals.requestForRisk({
+      executionPlanRef: anchor.executionPlanRef,
+      riskLevel: RiskLevel.HIGH,
+      reason: buildCommitApprovalReason(anchor.workspaceRef, candidateFiles, commitMessage, validation),
+      requestedBy: actor.id,
+    });
+
+    // 6. Halt at COMMIT_APPROVAL_PENDING, preserving commit context for the decision turn / Sprint 2y.
+    await this.deps.applyPreviewFlow.anchor(session, {
+      ...anchor,
+      status: 'COMMIT_APPROVAL_PENDING',
+      commitApprovalId: approval.id,
+      proposedCommitMessage: commitMessage,
+      commitCandidateFiles: candidateFiles,
+    });
+    const reply = this.deps.composer.composeCommitApprovalRequested(message.context, { candidateFiles, commitMessage, validation });
+    await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+    return { status: 'AWAITING_APPROVAL', reply, sessionId: session.id };
+  }
+
+  /**
+   * Decide the pending commit approval (Sprint 2x, ADR-0045) — mirrors handleApplyApprovalTurn, with strict
+   * guards (CA #2/#3). Approve → record only, re-anchor `COMMIT_APPROVED` (NO git commit — Sprint 2y).
+   * Deny/cancel → record REJECTED and REVERT to `WORKSPACE_APPLIED` (clear only commit fields), with a
+   * commit-specific reply (CA #9/#11). Never runs git.
+   */
+  private async handleCommitApprovalDecisionTurn(
+    message: InboundMessage,
+    session: Session,
+    actor: Actor,
+    anchor: ApplyPreviewAnchor,
+  ): Promise<TurnResult> {
+    // (CA #2) strict pending-context integrity guard — a pending commit approval is valid only with COMPLETE
+    //  resume context for Sprint 2y. Any missing field → safe failure, NO decide / git / re-anchor.
+    if (
+      anchor.status !== 'COMMIT_APPROVAL_PENDING' ||
+      !anchor.commitApprovalId ||
+      !anchor.proposedCommitMessage ||
+      !anchor.commitCandidateFiles?.length ||
+      !anchor.workspaceRef ||
+      !anchor.workspaceChangeRef ||
+      !anchor.executionPlanRef
+    ) {
+      this.logCommitApprovalFailed(session, anchor, 'pending commit approval context incomplete');
+      return this.failComposed(message, session, this.deps.composer.composeCommitUnavailable(message.context));
+    }
+    const decision = ConversationRuntime.interpretDecision(message.text);
+    if (decision === 'ambiguous') {
+      // (CA #13) preserve pending context: re-prompt only; no decide, no new approval, no re-anchor.
+      const fresh = await this.deps.approvals.get(anchor.commitApprovalId);
+      const reply = fresh
+        ? this.deps.composer.composeApprovalNotice(message.context, fresh)
+        : this.deps.composer.composeCommitUnavailable(message.context);
+      await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+      return { status: 'AWAITING_APPROVAL', reply, sessionId: session.id };
+    }
+    // (CA #3) verify the referenced ApprovalRequest before deciding: exists, PENDING, same plan.
+    const request = await this.deps.approvals.get(anchor.commitApprovalId);
+    if (
+      !request ||
+      request.status !== ApprovalStatus.PENDING ||
+      request.executionPlanRef.id !== anchor.executionPlanRef.id
+    ) {
+      this.logCommitApprovalFailed(session, anchor, 'commit approval request missing/mismatched');
+      return this.failComposed(message, session, this.deps.composer.composeCommitUnavailable(message.context));
+    }
+    const approved = decision === 'approve';
+    await this.deps.approvals.decide(anchor.commitApprovalId, this.decisionOf(anchor.commitApprovalId, actor.id, approved));
+    if (!approved) {
+      // (CA #9/#11) deny/cancel: the applied workspace state MUST survive → revert to WORKSPACE_APPLIED,
+      //  clearing ONLY the commit fields; use a COMMIT-SPECIFIC reply (never generic composeExecutionResult).
+      await this.deps.applyPreviewFlow.anchor(session, {
+        ...anchor,
+        status: 'WORKSPACE_APPLIED',
+        commitApprovalId: undefined,
+        proposedCommitMessage: undefined,
+        commitCandidateFiles: undefined,
+      });
+      const reply =
+        decision === 'deny'
+          ? this.deps.composer.composeCommitApprovalDenied(message.context)
+          : this.deps.composer.composeCommitApprovalCancelled(message.context);
+      await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+      return { status: decision === 'deny' ? 'DENIED' : 'CANCELLED', reply, sessionId: session.id };
+    }
+    // approve — Sprint 2x records only; actual git commit is a future sprint. Preserve full context.
+    await this.deps.applyPreviewFlow.anchor(session, { ...anchor, status: 'COMMIT_APPROVED' });
+    const reply = this.deps.composer.composeCommitApprovalRecorded(message.context);
+    await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+    return { status: 'RESPONDED', reply, sessionId: session.id };
+  }
+
+  /** A commit request while the anchor is COMMIT_APPROVED (Sprint 2x) — already approved; not committed. */
+  private async handleCommitAlreadyApprovedTurn(message: InboundMessage, session: Session): Promise<TurnResult> {
+    const reply = this.deps.composer.composeCommitAlreadyApproved(message.context);
+    await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+    return this.responded(session, reply);
+  }
+
+  /** A commit request with no WORKSPACE_APPLIED/COMMIT_APPROVED anchor (Sprint 2x) — no commit flow. */
+  private async handleCommitUnavailableTurn(message: InboundMessage, session: Session): Promise<TurnResult> {
+    const reply = this.deps.composer.composeCommitUnavailable(message.context);
+    await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+    return this.responded(session, reply);
+  }
+
+  /** A commit request bundled with push/reset/add/… (Sprint 2x) — commit-approval only; no git ran. */
+  private async handleCommitUnsupportedCompanionTurn(message: InboundMessage, session: Session): Promise<TurnResult> {
+    const reply = this.deps.composer.composeCommitUnsupportedCompanion(message.context);
+    await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+    return this.responded(session, reply);
+  }
+
+  /** Structured, no-content failure log for a commit-approval error (Sprint 2x) — never logs diff/content.
+   *  Defensive optional access: this is called from the incomplete-pending-context guard, where a required
+   *  field (e.g. `executionPlanRef`) may be missing, so logging must never throw (CA impl review). */
+  private logCommitApprovalFailed(session: Session, anchor: ApplyPreviewAnchor, reason: string): void {
+    this.deps.logger.warn('commit approval failed', {
+      reason,
+      sessionId: session.id,
+      executionPlanId: anchor.executionPlanRef?.id,
+      commitApprovalId: anchor.commitApprovalId,
+    }); // deliberately NO diff text / file content
   }
 
   /** (C) Resolve the workspace (if the capability needs it), run the execution, and frame the reply. */
