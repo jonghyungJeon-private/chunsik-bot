@@ -2,9 +2,19 @@ import type {
   ApprovalRequest,
   Artifact,
   ConversationContext,
+  GitDiff,
+  GitStatus,
   OutboundMessage,
 } from '../domain';
 import type { AiExecutionResult } from '../ports';
+
+/**
+ * Read-only display context for the last post-apply validation run (Sprint 2w, ADR-0044). `'none'` = no
+ * validation was ever recorded; `'unavailable'` = a ref exists but could not be resolved (its lookup must
+ * NOT fail the git preview); otherwise the resolved command + terminal status. Never asserts current
+ * validity.
+ */
+export type ValidationContext = { command: string; status: string } | 'unavailable' | 'none';
 
 /**
  * The terminal/halt status of an execution turn (Conversation Runtime, ADR-0032). Kept as a
@@ -279,6 +289,68 @@ function assembleBoundedBody(header: string, footerLines: string[], blocks: stri
  * Note: it deliberately never includes which provider was selected — the user
  * should not normally see that.
  */
+
+/** Git-preview display bounds (Sprint 2w, ADR-0044). Layered above the message clamp; every truncation is
+ *  labeled. `MAX_GIT_DIFF_CHARS` is the display cut, distinct from the adapter's larger hard safety cap. */
+const MAX_GIT_CHANGED_FILES = 30;
+const MAX_GIT_DIFF_FILES = 5;
+const MAX_GIT_DIFF_CHARS = 3000;
+
+/** The fixed read-only disclaimer lines every successful git preview must carry (Sprint 2w, CA #10). */
+const GIT_READONLY_DISCLAIMER = [
+  '읽기 전용 Git 미리보기예요.',
+  'git add/commit/push는 하지 않았어요.',
+  '파일 수정은 하지 않았어요.',
+  '명령 실행도 하지 않았어요.',
+];
+
+/** Render the last-validation context line(s) for a git preview (Sprint 2w, CA Q8) — record-only, never
+ *  asserts current validity. */
+function renderValidationContext(v: ValidationContext): string {
+  if (v === 'none') return '검증 기록 없음';
+  if (v === 'unavailable') return '최근 검증 기록을 불러올 수 없어요.';
+  return `최근 검증 기록: ${v.command} ${v.status}\n이번에 다시 실행하진 않았어요.`;
+}
+
+/** Bounded, labeled changed-files block from a GitStatus (Sprint 2w). */
+function renderChangedFiles(status: GitStatus): string {
+  const label = (kind: string, paths: string[]): string[] =>
+    paths.length ? [`${kind} (${paths.length}):`, ...paths.map((p) => `  ${p}`)] : [];
+  const all = [
+    ...label('staged', status.staged),
+    ...label('unstaged', status.unstaged),
+    ...label('untracked', status.untracked),
+  ];
+  if (all.length === 0) return '현재 Git 기준 변경 파일이 없어요.';
+  const shown = all.slice(0, MAX_GIT_CHANGED_FILES);
+  const dropped = all.length - shown.length;
+  const lines = [`브랜치: ${status.branch || '(unknown)'}`, ...shown];
+  if (dropped > 0) lines.push(`… 외 ${dropped}개 항목은 생략했어요.`);
+  return lines.join('\n');
+}
+
+/** Bounded, labeled unified-diff block (Sprint 2w). Splits by file header, keeps ≤5 files and ≤`maxChars`
+ *  (the caller sizes `maxChars` so the mandatory frame — disclaimers etc. — always survives the final message
+ *  clamp; never exceeds MAX_GIT_DIFF_CHARS). Labels any truncation (incl. the adapter's hard cap). Binary
+ *  files already appear as git's marker line inside `unified` — never binary content. */
+function renderDiffBlock(diff: GitDiff, maxChars: number): string {
+  if (diff.unified.trim().length === 0) return '추적 중인 파일에 표시할 변경 내용이 없어요.';
+  // Split into per-file sections on the `diff --git` header (keep the delimiter).
+  const sections = diff.unified.split(/(?=^diff --git )/m).filter((s) => s.trim().length > 0);
+  const shownFiles = sections.slice(0, MAX_GIT_DIFF_FILES);
+  let body = shownFiles.join('');
+  let truncated = diff.truncated || sections.length > shownFiles.length;
+  const cap = Math.min(MAX_GIT_DIFF_CHARS, Math.max(0, maxChars));
+  if (body.length > cap) {
+    body = body.slice(0, cap);
+    truncated = true;
+  }
+  const fence = fenceFor(body);
+  const lines = [`${fence}diff`, body, fence];
+  if (truncated) lines.push('diff가 길어서 일부만 보여드렸어요.');
+  return lines.join('\n');
+}
+
 export class ResponseComposer {
   compose(
     context: ConversationContext,
@@ -749,6 +821,82 @@ export class ResponseComposer {
     return {
       context,
       text: '검증 명령을 실행할 수 없었어요. 잠시 후 다시 시도해 주세요. git 명령은 실행하지 않았어요. 커밋/푸시는 하지 않았어요.',
+    };
+  }
+
+  /**
+   * Read-only git status preview (Post-Validation Git Status Preview, ADR-0044). Branch + bounded changed
+   * files (≤30, labeled); clean → "현재 Git 기준 변경 파일이 없어요." (never infers tests passed / deploy).
+   * Always carries the fixed read-only disclaimers (CA #10) and the record-only validation context (CA Q8).
+   * Forbidden: 커밋 준비 완료 / push 가능 / 배포 가능 / 검증 완료 / committed / pushed / deployed.
+   */
+  composeGitStatusPreview(context: ConversationContext, input: { status: GitStatus; validation: ValidationContext }): OutboundMessage {
+    const text = clampToMessageBudget(
+      [
+        renderChangedFiles(input.status),
+        renderValidationContext(input.validation),
+        ...GIT_READONLY_DISCLAIMER,
+      ].join('\n'),
+    );
+    return { context, text };
+  }
+
+  /**
+   * Read-only git diff preview (ADR-0044). Takes BOTH status and diff: the unified diff shows TRACKED
+   * staged/unstaged changes only (≤5 files / ≤3000 chars, truncation labeled; binary → marker only), and
+   * untracked paths are surfaced from `status` — the reply says so explicitly (CA #2). Fixed read-only
+   * disclaimers + record-only validation context.
+   */
+  composeGitDiffPreview(context: ConversationContext, input: { status: GitStatus; diff: GitDiff; validation: ValidationContext }): OutboundMessage {
+    const untracked = input.status.untracked;
+    const untrackedLine = untracked.length
+      ? `untracked 파일 (${untracked.length}): ${untracked.slice(0, MAX_GIT_CHANGED_FILES).join(', ')}${untracked.length > MAX_GIT_CHANGED_FILES ? ' 외 …' : ''}`
+      : 'untracked 파일은 없어요.';
+    // The mandatory "frame" (branch + notes + validation + read-only disclaimers) must always survive; size
+    // the diff block so the whole message fits MAX_MESSAGE_CHARS and the final clamp never eats the frame.
+    const DIFF_SLOT = ' DIFF ';
+    const frameLines = [
+      `브랜치: ${input.status.branch || '(unknown)'}`,
+      DIFF_SLOT,
+      'diff는 추적 중인 파일 변경만 포함해요. untracked 파일은 상태 목록에만 표시돼요.',
+      untrackedLine,
+      renderValidationContext(input.validation),
+      ...GIT_READONLY_DISCLAIMER,
+    ];
+    const frameLen = frameLines.join('\n').length - DIFF_SLOT.length;
+    const diffBudget = MAX_MESSAGE_CHARS - frameLen - 60; // 60: fences + truncation label margin
+    const diffBlock = renderDiffBlock(input.diff, diffBudget);
+    const text = clampToMessageBudget(frameLines.map((l) => (l === DIFF_SLOT ? diffBlock : l)).join('\n'));
+    return { context, text };
+  }
+
+  /**
+   * A git MUTATION phrase (커밋/푸시/add/reset/…, or any English `commit`) arrived on the post-apply path
+   * (ADR-0044, CA Q4) — read-only reminder; no git ran. States only status/diff preview is available and
+   * that git changes are a separate future step. Never implies a commit/push happened.
+   */
+  composeGitMutationNotSupported(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text:
+        'git 변경 작업(add/commit/push/reset/stash 등)은 아직 지원하지 않아요.\n' +
+        '지금은 읽기 전용 미리보기(git 상태 / diff)만 할 수 있어요. git 명령은 실행하지 않았어요.',
+    };
+  }
+
+  /**
+   * Git read failed / not a repository (ADR-0044, CA Q10; CA Implementation Review — blocking fix). This is
+   * the READ-FAILURE path: a read-only git subcommand (via GitProvider) WAS attempted, so it must NOT claim
+   * "git 명령은 실행하지 않았어요". It states what was NOT done: no git add/commit/push, no file mutation, no
+   * CommandExecution/shell fallback. Not a status/diff verdict.
+   */
+  composeGitPreviewUnavailable(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text:
+        'Git 상태를 읽지 못했어요. 잠시 후 다시 시도해 주세요.\n' +
+        '읽기 전용 Git 확인 중 문제가 발생했지만, git add/commit/push는 하지 않았어요.\n' +
+        '파일 수정은 하지 않았고, CommandExecution을 통한 명령 실행도 하지 않았어요.',
     };
   }
 }

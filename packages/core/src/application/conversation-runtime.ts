@@ -32,6 +32,8 @@ import type {
   ConversationContext,
   ExecutionPlanRef,
   GenerateCodeInput,
+  GitDiff,
+  GitStatus,
   Id,
   InboundMessage,
   Intent,
@@ -336,6 +338,13 @@ export interface ConversationRuntimeDeps {
    *  WorkspaceWriteManager ExecutionOrchestrator already depends on. The ONLY thing that mutates files;
    *  Ref-gated, never queries ApprovalManager, never calls git/command execution. */
   readonly workspaceWrite: { apply(input: ApplyInput): Promise<WorkspaceChange> };
+  /** Reused for the read-only post-apply git preview (Sprint 2w, ADR-0044) — the already-registered
+   *  GitManager (CAP-002). READ-ONLY: `status` is unchanged; `diff` is a new read-only extension. The
+   *  runtime never shells out to git and never calls a mutating git operation on this path. */
+  readonly git: {
+    status(rootPath: string): Promise<GitStatus>;
+    diff(rootPath: string): Promise<GitDiff>;
+  };
   readonly logger: Logger;
 }
 
@@ -386,6 +395,17 @@ const FINAL_APPLY_WORDS = [
  *  operators `;` `&&` `||` `|` `>`. */
 const VALIDATION_DENY_FRAGMENT =
   /(\brm\s+-rf?\b|\bgit\b|\bcurl\b|\bcat\b|\bgrep\b|\b(?:npm|pnpm)\s+install\b|\bpnpm\s+build\b|\bnode\s+--?e(?:val)?\b|;|&&|\|\||\||>)/i;
+
+/** Mutating git phrases (Sprint 2w, ADR-0044, CA Required Change #5/#6) — must NEVER route to a read-only
+ *  preview; checked FIRST (precedence over diff/status). Korean "커밋" counts as a command only with an
+ *  action verb, so "커밋 전에 변경사항 요약해줘" is a STATUS phrase; English `commit` stays conservative (any
+ *  `commit` token → mutating). */
+const GIT_MUTATING_WORDS =
+  /(커밋\s*(해|하자|할|하기|하고|하는)|\bcommit\b|푸시|\bpush\b|git\s*add|\badd\s*해|리셋|\breset\b|checkout|체크아웃|stash|스태시|\bbranch\b|브랜치\s*(만들|생성)|merge|머지|rebase|리베이스|\btag\b|태그)/i;
+/** Read-only diff-preview phrases (Sprint 2w). */
+const GIT_DIFF_WORDS = /(\bdiff\b|디프)/i;
+/** Read-only status/changed-files phrases (Sprint 2w) — incl. the CA-approved safe Korean "커밋 전에 …". */
+const GIT_STATUS_WORDS = /(git\s*상태|깃\s*상태|git\s*status|\bstatus\b\s*보여|변경\s*파일|변경\s*사항|변경사항|바뀐\s*파일|커밋\s*전)/i;
 
 /** Bound on how many extracted target-path candidates trigger a workspace.list call per turn
  *  (Sprint 2o, ADR-0036) — a chat message must never drive an unbounded number of workspace scans. */
@@ -528,6 +548,24 @@ export class ConversationRuntime {
   }
 
   /**
+   * Explicit read-only git-preview intent (Sprint 2w, ADR-0044). Returns:
+   *  - `'mutating'` → a git MUTATION phrase (커밋/푸시/add/reset/…, or any English `commit`) → reject, no git
+   *    call. Checked FIRST — precedence over diff/status (CA Required Change #6);
+   *  - `'diff'` → a read-only diff preview;
+   *  - `'status'` → a read-only status/changed-files preview;
+   *  - `null` → not a git-preview intent → fall through (no broad general git handling, CA Q3).
+   * Only consulted inside the WORKSPACE_APPLIED routing guard. Korean "커밋 전에 변경사항 요약" is status;
+   * English `commit` is conservative (→ mutating) until a future sprint adds clearer NL handling (CA #5).
+   */
+  static interpretGitPreviewIntent(text: string): 'status' | 'diff' | 'mutating' | null {
+    const t = text.trim().toLowerCase();
+    if (GIT_MUTATING_WORDS.test(t)) return 'mutating';
+    if (GIT_DIFF_WORDS.test(t)) return 'diff';
+    if (GIT_STATUS_WORDS.test(t)) return 'status';
+    return null;
+  }
+
+  /**
    * Handle one inbound message → one transient `TurnResult` (with an `OutboundMessage`). Never sends
    * to the platform (delivery is the facade's job) and never persists runtime state.
    */
@@ -568,6 +606,13 @@ export class ConversationRuntime {
       const validationKind = ConversationRuntime.interpretPostApplyValidationIntent(message.text);
       if (validationKind) {
         return this.handlePostApplyValidationTurn(message, session, applyAnchor, validationKind);
+      }
+      // (Sprint 2w, ADR-0044) Explicit read-only git preview → GitManager.status/diff against the applied
+      // workspace. Validation and git-preview phrases are disjoint, so order vs the check above is
+      // immaterial. With no WORKSPACE_APPLIED anchor this is never consulted (no general git handling).
+      const gitKind = ConversationRuntime.interpretGitPreviewIntent(message.text);
+      if (gitKind) {
+        return this.handleGitPreviewTurn(message, session, applyAnchor, gitKind);
       }
     }
     // (Sprint 2u, ADR-0042) Explicit final workspace-apply → the first real file mutation. Checked before
@@ -1224,6 +1269,82 @@ export class ConversationRuntime {
       executionPlanId: anchor.executionPlanRef.id,
       workspaceChangeId: anchor.workspaceChangeRef?.id,
     }); // deliberately NO stdout/stderr / file content
+  }
+
+  /**
+   * An explicit read-only git-preview command arrived while the anchor is WORKSPACE_APPLIED (Sprint 2w,
+   * ADR-0044). Runs ONLY read-only Git methods (`git.status`, and for a diff preview `git.status` then
+   * `git.diff`) against the applied workspace (`anchor.workspaceRef.rootPath`). Never shells out, never calls
+   * a mutating git operation, WorkspaceWrite, CommandExecution, Patch, CodeGeneration, or the
+   * ExecutionOrchestrator; never re-anchors. A git-MUTATION phrase is rejected (read-only reminder). A git
+   * read throw → safe failure, with no CommandExecution/shell/re-resolve fallback.
+   */
+  private async handleGitPreviewTurn(
+    message: InboundMessage,
+    session: Session,
+    anchor: ApplyPreviewAnchor,
+    kind: 'status' | 'diff' | 'mutating',
+  ): Promise<TurnResult> {
+    // 1. (CA Q4/#6) A git MUTATION phrase → read-only "not supported" reply. NORMAL turn (RESPONDED),
+    //    no git call, anchor unchanged.
+    if (kind === 'mutating') {
+      return this.respondComposed(message, session, this.deps.composer.composeGitMutationNotSupported(message.context));
+    }
+
+    // 2. Anchor guard: WORKSPACE_APPLIED must carry the workspaceRef we read against (defensive).
+    if (!anchor.workspaceRef) {
+      return this.failComposed(message, session, this.deps.composer.composeGitPreviewUnavailable(message.context));
+    }
+    const rootPath = anchor.workspaceRef.rootPath;
+
+    // 3. Read-only validation context (CA Q8/#8) — a missing/failed lookup NEVER fails the git preview.
+    const validation = await this.loadValidationContext(anchor);
+
+    // 4. Read-only Git call (CA Constraint 1/2, Q10/#2/#7). A throw → safe failure; NO CommandExecution/
+    //    shell fallback, NO workspace re-resolution. A diff preview reads status FIRST (branch/clean +
+    //    UNTRACKED paths, which `git diff HEAD` omits); if status throws, git.diff is NOT called (CA #7).
+    try {
+      if (kind === 'diff') {
+        const status = await this.deps.git.status(rootPath);
+        const diff = await this.deps.git.diff(rootPath);
+        return this.respondComposed(message, session, this.deps.composer.composeGitDiffPreview(message.context, { status, diff, validation }));
+      }
+      const status = await this.deps.git.status(rootPath);
+      return this.respondComposed(message, session, this.deps.composer.composeGitStatusPreview(message.context, { status, validation }));
+    } catch {
+      this.logGitPreviewFailed(session, anchor, `git ${kind} read failed`);
+      return this.failComposed(message, session, this.deps.composer.composeGitPreviewUnavailable(message.context));
+    }
+  }
+
+  /**
+   * Read-only: resolve the last post-apply validation's command + status for git-preview display context
+   * (Sprint 2w, CA Q8). Uses the existing read-only `commandExecutions.get`; never runs a command. `null`
+   * ref → 'none'; a record that is gone or a THROW → 'unavailable' — a validation-lookup failure must NOT
+   * fail the git preview (CA Required Change #8).
+   */
+  private async loadValidationContext(
+    anchor: ApplyPreviewAnchor,
+  ): Promise<{ command: string; status: string } | 'unavailable' | 'none'> {
+    const ref = anchor.postApplyValidationRef;
+    if (!ref) return 'none';
+    try {
+      const exec = await this.deps.commandExecutions.get(ref.id);
+      if (!exec) return 'unavailable';
+      return { command: [exec.command, ...exec.args].join(' '), status: exec.status };
+    } catch {
+      return 'unavailable';
+    }
+  }
+
+  /** Structured, no-content failure log for a git preview read error (Sprint 2w) — never logs diff/file
+   *  content or stderr. */
+  private logGitPreviewFailed(session: Session, anchor: ApplyPreviewAnchor, reason: string): void {
+    this.deps.logger.warn('git preview failed', {
+      reason,
+      sessionId: session.id,
+      executionPlanId: anchor.executionPlanRef.id,
+    }); // deliberately NO diff text / file content / stderr
   }
 
   /** (C) Resolve the workspace (if the capability needs it), run the execution, and frame the reply. */

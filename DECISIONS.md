@@ -2560,3 +2560,100 @@ general flow preserved when no `WORKSPACE_APPLIED` anchor exists), ADR-0042 (Pat
 `postApplyValidationRef`), ADR-0025/0026 (Approval/Patch Refs — validation is MEDIUM, no approval; Patch
 untouched), ADR-0031 (Execution Orchestrator — deliberately not extended or called on this path). Supersedes
 nothing. Plan: `docs/plans/sprint-2v-post-apply-validation-command-plan.md`.
+
+## ADR-0044 — Post-Validation Git Status Preview (WORKSPACE_APPLIED → read-only Git status/diff preview)
+
+- **Status:** ✅ Accepted (v2, Phase 2, Sprint 2w — Product Construction), Chief Architect Review:
+  APPROVED WITH CHANGES (10 required changes applied) → PROCEED.
+- **Date:** 2026-07-02
+- **Scope:** After Sprint 2u leaves a `WORKSPACE_APPLIED` anchor (real file mutation) and Sprint 2v optionally
+  records a `postApplyValidationRef`, a later turn with an **explicit git-preview command** returns a
+  **bounded, read-only** summary of the current working tree through the **Git** capability (CAP-002),
+  against `anchor.workspaceRef`. Still **no git mutation, no CommandExecution, no WorkspaceWrite, no file
+  mutation, no `ExecutionOrchestrator` change.**
+
+### Most important rule
+> **Sprint 2w is read-only. The Git capability is the only thing that touches git; the runtime never shells
+> out; only `status` and a new read-only `diff` run — never add/commit/push/reset/checkout/stash/branch/tag/
+> merge/rebase.** A git-MUTATION phrase is rejected with a read-only reminder. Nothing is persisted (no
+> `GIT_PREVIEWED` state, no ref, no re-anchor). Output is bounded and truncation-labeled; the product never
+> claims committed/pushed/deployed/safe-to-commit/verified/clean beyond what Git reports.
+
+### Decision
+- **Reuses `GitManager.status`/`GitProvider.status`/`GitStatus` (CAP-002, ADR-0023) unchanged** for the
+  status/changed-files preview. Read-only; takes a plain `rootPath`; adapter runs read-only subcommands via
+  argument-array `spawnSync`, timeout, masked stderr.
+- **Adds the minimal read-only `diff` extension (CA #1, approved):** `GitDiff` domain type +
+  `GitProvider.diff` + `GitManager.diff` + `LocalGitProvider.diff`. Read-only, **argument-array only**:
+  `git --no-pager diff --no-ext-diff --no-color [--name-only] HEAD` (files from `--name-only`, unified from
+  the plain form); unborn-HEAD fallback drops `HEAD`. Never a mutating subcommand, never a shell string,
+  never user args/pathspec. Hard adapter cap (`MAX_DIFF_CHARS = 20 000`) sets `truncated`. No aggregate/Ref/
+  storage; ADR-0023's mutation boundary is unchanged (extended read-only).
+- **`ConversationRuntime` composes it directly** (like every capability since Sprint 2q): on an explicit
+  git-preview command with a `WORKSPACE_APPLIED` anchor, it calls `git.status`/`git.diff` against
+  `anchor.workspaceRef.rootPath`. **No `ExecutionOrchestrator` call, no new `ExecutionStage`.**
+- **Preview is explicit; never automatic.** Neither apply success (2u) nor validation success (2v) runs git.
+  Only a later turn with an explicit git-preview phrase does.
+- **Trigger (CA #5/#6).** `interpretGitPreviewIntent`: **mutating git phrases checked FIRST** (precedence
+  over diff/status) → reject; `diff`/`디프` → diff; `git 상태`/`깃 상태`/`변경 파일`/`변경사항`/`바뀐 파일`/
+  `커밋 전` → status; else null. Korean "커밋 전에 변경사항 요약" is status (커밋 without an action verb);
+  **English `commit` stays conservative** (any `commit` token → mutating). "좋아"/"오케이"/"확인"/"다음 단계
+  진행"/"검증됐네" → null.
+- **Gated on `WORKSPACE_APPLIED` (CA Q3).** With no such anchor, neither git detector is consulted and **no
+  broad general git handling** is created; the message falls through unchanged.
+- **Diff preview reads BOTH status and diff (CA #2).** `git diff HEAD` excludes untracked file *contents*, so
+  a diff preview also reads `status` (branch/clean + untracked paths) and states "diff는 추적 중인 파일
+  변경만 포함해요. untracked 파일은 상태 목록에만 표시돼요." Binary files show git's marker line only, never
+  binary content (CA #3).
+- **Layered, labeled bounds (CA #4).** changed files ≤ 30; diff files displayed ≤ 5; diff display ≤ 3000
+  chars before the final `MAX_MESSAGE_CHARS` (1900) clamp; adapter hard cap upstream. Any truncation at any
+  layer is user-facing-labeled.
+- **Validation context is display-only and never fails the preview (CA Q8/#8).** If `postApplyValidationRef`
+  resolves via the existing read-only `commandExecutions.get`, show "최근 검증 기록: {command} {status}
+  (이번에 다시 실행하진 않았어요)"; a null/throwing lookup → "최근 검증 기록을 불러올 수 없어요." and the
+  preview still proceeds; no ref → "검증 기록 없음". No validation is ever re-run; no CommandExecution.
+- **No persistence / no re-anchor (CA #9).** No `GIT_PREVIEWED`, no `postApplyGitPreviewRef`, no
+  `GitStatusRef`/`GitDiffRef`, no storage; the apply anchor is never re-anchored on this path.
+- **Git read failure → safe failure, no fallback (CA #7/Q10).** A `git.status`/`git.diff` throw →
+  `composeGitPreviewUnavailable`; **no CommandExecution, no shell, no workspace re-resolution**. On a diff
+  preview, `git.status` is read first; if it throws, `git.diff` is not called. **(CA Implementation Review)**
+  Because a read-only git subcommand *was* attempted on this path, the failure copy must **not** claim "git
+  명령은 실행하지 않았어요"; it states no git add/commit/push, no file mutation, and no CommandExecution/shell
+  fallback.
+- **Read-only-vs-mutation wording (CA #10).** Every successful preview states "읽기 전용 Git 미리보기 / git
+  add·commit·push 안 함 / 파일 수정 안 함 / 명령 실행 안 함." Forbidden: 커밋 준비 완료 / push 가능 / 배포
+  가능 / 안전함 / 검증 완료 / committed / pushed / deployed / safe to commit / verified forever. "현재 Git
+  기준 변경 파일이 없어요." only when Git reports clean; never infers tests passed.
+- **No Core/Orchestrator contract change beyond the read-only `GitProvider` method; no new aggregate/
+  repository/migration/capability/anchor state.** CommandExecution/WorkspaceWrite/Patch untouched and
+  uncalled on this path.
+
+### Not implemented (out of scope)
+`git add`/`commit`/`push`/`reset`/`checkout`/`stash`/`branch`/`tag`/`merge`/`rebase` (any git mutation) ·
+branch/PR creation · deployment · CommandExecution (or a shell git through it) · runtime shelling out to git
+· WorkspaceWrite/file mutation · automatic git preview after apply or validation · AI deciding whether to
+commit · commit-message generation · multi-command git workflow · broad general git handling outside the
+`WORKSPACE_APPLIED` path · `ExecutionOrchestrator` change/new stage · a `GIT_PREVIEWED` state / git-preview
+persistence / re-anchor · remote-URL exposure · clean-tree/deploy/commit overclaim.
+
+### Consequences
+- + After applying (and optionally validating) a change, the user can inspect the working tree ("무슨 파일이
+  바뀌었지 / diff 보여줘") through the built, read-only Git capability — behind an explicit-command gate,
+  against the exact workspace the file was modified in.
+- + The diff extension is genuinely read-only (argv-only `git diff`, `--no-ext-diff`), following the existing
+  adapter pattern; the ADR-0023 mutation boundary is unchanged.
+- + Reading both status+diff makes untracked files honest (never silently omitted, never dumped as binary),
+  and layered bounds keep the chat message safe.
+- − Git capability gains a read-only `diff` method (+ `GitDiff` type) — a justified read-only extension, not
+  a mutation surface.
+- − A validation pass shown in context is record-only and point-in-time; the product deliberately does not
+  claim durable validity, a clean tree, or deploy-readiness. Git mutation (add/commit/push) remains a
+  separate future sprint.
+
+### Relations
+ADR-0023 (CAP-002 Git — `GitManager`/`GitProvider`/`GitStatus`/`LocalGitProvider`, reused read-only; extended
+with a read-only `diff`), ADR-0042 (WorkspaceWrite Apply — the `WORKSPACE_APPLIED` anchor + `workspaceRef`
+this sprint reads against), ADR-0043 (Post-Apply Validation — the `postApplyValidationRef` shown as read-only
+context via the existing `commandExecutions.get`), ADR-0034 (Test Result Detail UX — message-budget/fence
+helpers reused), ADR-0031 (Execution Orchestrator — deliberately not extended or called). Supersedes nothing.
+Plan: `docs/plans/sprint-2w-post-validation-git-status-preview-plan.md`.

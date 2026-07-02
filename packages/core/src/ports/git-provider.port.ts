@@ -1,4 +1,4 @@
-import type { GitStatus, RepositoryInfo } from '../domain';
+import type { GitDiff, GitStatus, RepositoryInfo } from '../domain';
 
 /**
  * PORT: read-only git **repository** inspection (CAP-002, ADR-0023).
@@ -25,4 +25,12 @@ export interface GitProvider {
 
   /** Working-tree status (clean/branch + staged/unstaged/untracked summaries). */
   status(rootPath: string): Promise<GitStatus>;
+
+  /**
+   * Read-only unified diff of TRACKED staged/unstaged changes vs HEAD (ADR-0044). Still read-only — runs
+   * only `git diff` (never a mutating subcommand), argument-array spawn (never a shell string), with the
+   * same timeout discipline. Untracked file contents are excluded (surfaced via {@link status}); binary
+   * files appear as a marker only. Size-bounded by the implementation.
+   */
+  diff(rootPath: string): Promise<GitDiff>;
 }

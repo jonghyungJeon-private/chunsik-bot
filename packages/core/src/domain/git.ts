@@ -23,6 +23,22 @@ export interface GitStatus {
 }
 
 /**
+ * Read-only working-tree diff view (CAP-002, ADR-0044 — read-only extension). Surfaces the unified diff of
+ * **tracked** staged/unstaged changes vs HEAD. NOT persisted, no Ref, no storage. Untracked file *contents*
+ * are NOT included (`git diff HEAD` excludes them) — untracked paths are surfaced via {@link GitStatus};
+ * binary files appear as a marker line only, never binary content. The producing adapter applies a hard
+ * size cap and sets `truncated`.
+ */
+export interface GitDiff {
+  /** Changed tracked file paths (derived from a bounded-safe `--name-only` read, not parsed from raw diff). */
+  files: string[];
+  /** Unified diff of tracked staged/unstaged changes; binary files show a marker only; adapter-size-bounded. */
+  unified: string;
+  /** True when the adapter dropped diff content to fit its hard cap. */
+  truncated: boolean;
+}
+
+/**
  * Minimal, read-only repository metadata (CAP-002). Intentionally **excludes
  * remote URLs** — HTTPS remotes can embed credentials; exposing them needs a
  * future masking policy + ADR (ADR-0023).
