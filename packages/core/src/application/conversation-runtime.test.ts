@@ -20,6 +20,8 @@ import type {
   ConversationContext,
   ExecutionPlanRef,
   GenerateCodeInput,
+  GitDiff,
+  GitStatus,
   InboundMessage,
   Intent,
   PatchGenerationInput,
@@ -118,6 +120,22 @@ const commandExecOf = (
   ...(exitCode !== undefined ? { exitCode } : {}),
   createdAt: TS,
   updatedAt: TS,
+});
+
+const gitStatusOf = (o: Partial<GitStatus> = {}): GitStatus => ({
+  clean: false,
+  branch: 'main',
+  staged: ['a.ts'],
+  unstaged: ['b.ts'],
+  untracked: ['c.ts'],
+  ...o,
+});
+
+const gitDiffOf = (o: Partial<GitDiff> = {}): GitDiff => ({
+  files: ['a.ts'],
+  unified: 'diff --git a/a.ts b/a.ts\n@@ -1 +1 @@\n-x\n+y\n',
+  truncated: false,
+  ...o,
 });
 
 const codeIntent = intentOf(Capability.CODE_IMPLEMENTATION, IntentType.IMPLEMENT_CODE, true);
@@ -291,6 +309,11 @@ interface Calls {
   lastWorkspaceApplyInput?: ApplyInput;
   commandRun: number;
   lastCommandRunInput?: RunCommandInput;
+  gitStatus: number;
+  gitDiff: number;
+  lastGitStatusRoot?: string;
+  lastGitDiffRoot?: string;
+  commandExecGet: number;
   loggerWarn: number;
 }
 
@@ -344,6 +367,12 @@ interface Opts {
    *  (via `commandExecOf`); pass 'throw' to simulate a runner throw, or a literal CommandExecution to force
    *  a FAILED / TIMED_OUT result. */
   commandRun?: CommandExecution | 'throw';
+  /** `git.status` result (Sprint 2w) — defaults to `gitStatusOf()`; pass 'throw' to simulate a read error. */
+  gitStatus?: GitStatus | 'throw';
+  /** `git.diff` result (Sprint 2w) — defaults to `gitDiffOf()`; pass 'throw' to simulate a read error. */
+  gitDiff?: GitDiff | 'throw';
+  /** When true, `commandExecutions.get` throws (Sprint 2w — validation-lookup failure must not fail preview). */
+  commandExecGetThrows?: boolean;
 }
 
 function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Calls } {
@@ -374,6 +403,9 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
     codeProposalsGet: 0,
     workspaceApply: 0,
     commandRun: 0,
+    gitStatus: 0,
+    gitDiff: 0,
+    commandExecGet: 0,
     loggerWarn: 0,
   };
   const composer = new ResponseComposer();
@@ -479,7 +511,11 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
       },
     },
     commandExecutions: {
-      async get() { return opts.commandExec === undefined ? commandExecOf(CommandExecutionStatus.SUCCEEDED) : opts.commandExec; },
+      async get() {
+        calls.commandExecGet++;
+        if (opts.commandExecGetThrows) throw new Error('command execution lookup boom');
+        return opts.commandExec === undefined ? commandExecOf(CommandExecutionStatus.SUCCEEDED) : opts.commandExec;
+      },
     },
     contextBuilder: { async build() { throw new Error('build not expected'); } },
     promptComposer: { compose() { throw new Error('compose not expected'); } },
@@ -573,6 +609,20 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
         // command so a second validation yields a distinct CommandExecutionRef (latest-only test).
         const base = commandExecOf(CommandExecutionStatus.SUCCEEDED, input.args, 0, { stdout: 'ok\n' });
         return opts.commandRun ?? { ...base, id: input.args.includes('typecheck') ? 'cmd-typecheck' : 'cmd-test' };
+      },
+    },
+    git: {
+      async status(rootPath) {
+        calls.gitStatus++;
+        calls.lastGitStatusRoot = rootPath;
+        if (opts.gitStatus === 'throw') throw new Error('git status boom');
+        return opts.gitStatus ?? gitStatusOf();
+      },
+      async diff(rootPath) {
+        calls.gitDiff++;
+        calls.lastGitDiffRoot = rootPath;
+        if (opts.gitDiff === 'throw') throw new Error('git diff boom');
+        return opts.gitDiff ?? gitDiffOf();
       },
     },
     logger: { ...silentLogger, warn: () => { calls.loggerWarn++; } },
@@ -1927,9 +1977,10 @@ describe('PatchRef → WorkspaceWrite Apply — runtime (Sprint 2u, ADR-0042)', 
     expect(calls.codeGenerationGenerate).toBe(0); // no AI regeneration (CA 45)
     expect(calls.run).toBe(0); // no ExecutionOrchestrator (CA 44)
     expect(calls.resume).toBe(0);
-    // `command` is a dep since Sprint 2v (post-apply validation), but the apply path must never run it.
+    // `command` (Sprint 2v) and `git` (Sprint 2w) are deps, but the apply path must never call them.
     expect(calls.commandRun).toBe(0); // no CommandExecution on the apply path (CA 42)
-    expect(Object.keys(deps)).not.toContain('git'); // no git dep (CA 43)
+    expect(calls.gitStatus).toBe(0); // no git read on the apply path (CA 43)
+    expect(calls.gitDiff).toBe(0);
   });
 
   it('the patch dependency exposes only generate/get — PatchManager gains no apply method (CA 41)', () => {
@@ -2219,7 +2270,9 @@ describe('Post-Apply Validation Command — runtime (Sprint 2v, ADR-0043)', () =
     expect(calls.codeGenerationGenerate).toBe(0); // no CodeGeneration (CA 42)
     expect(calls.run).toBe(0); // no ExecutionOrchestrator (CA 44)
     expect(calls.resume).toBe(0);
-    expect(Object.keys(deps)).not.toContain('git'); // no git dep (CA 43)
+    // `git` is a dep since Sprint 2w, but the validation path must never call it.
+    expect(calls.gitStatus).toBe(0); // no git read on the validation path (CA 43)
+    expect(calls.gitDiff).toBe(0);
     // no new anchor status (CA 38): the re-anchor keeps WORKSPACE_APPLIED, never WORKSPACE_VALIDATED
     expect(calls.lastApplyAnchor?.status).toBe('WORKSPACE_APPLIED');
   });
@@ -2233,6 +2286,196 @@ describe('Post-Apply Validation Command — runtime (Sprint 2v, ADR-0043)', () =
       expect(calls.applyAnchorSet, text).toBe(0);
       expect(calls.commandRun, text).toBe(0);
     }
+  });
+});
+
+// ── Sprint 2w — Post-Validation Git Status Preview (WORKSPACE_APPLIED → read-only Git, ADR-0044) ──
+
+describe('Post-Validation Git Status Preview — runtime (Sprint 2w, ADR-0044)', () => {
+  /** A WORKSPACE_APPLIED anchor for the read-only git-preview path. */
+  const gitAnchor = (o: Partial<ApplyPreviewAnchor> = {}): ApplyPreviewAnchor =>
+    approvedAnchorOf({
+      status: 'WORKSPACE_APPLIED',
+      workspaceChangeRef: { id: 'wc-1', status: WorkspaceChangeStatus.APPLIED },
+      ...o,
+    });
+  const gitAnchorWithValidation = (o: Partial<ApplyPreviewAnchor> = {}): ApplyPreviewAnchor =>
+    gitAnchor({ postApplyValidationRef: { id: 'cmd-1', status: CommandExecutionStatus.SUCCEEDED }, ...o });
+
+  const composer = new ResponseComposer();
+  const mutationText = composer.composeGitMutationNotSupported(CTX).text;
+  const unavailableText = composer.composeGitPreviewUnavailable(CTX).text;
+
+  // ── status/diff calls (CA 1–6) ──────────────────────────────────────────────────────────────
+  it('status phrases call git.status only (CA 1–4)', async () => {
+    for (const text of ['git 상태 보여줘', '깃 상태 보여줘', '변경 파일 보여줘', '커밋 전에 변경사항 요약해줘']) {
+      const { deps, calls } = makeDeps({ applyAnchor: gitAnchor() });
+      await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.gitStatus, text).toBe(1);
+      expect(calls.gitDiff, text).toBe(0);
+    }
+  });
+
+  it('diff phrases call BOTH git.status and git.diff (CA 5–6)', async () => {
+    for (const text of ['diff 보여줘', 'git diff 보여줘']) {
+      const { deps, calls } = makeDeps({ applyAnchor: gitAnchor() });
+      await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.gitStatus, text).toBe(1);
+      expect(calls.gitDiff, text).toBe(1);
+    }
+  });
+
+  // ── negative / not-automatic (CA 7–10) ──────────────────────────────────────────────────────
+  it('"좋아"/"오케이"/"확인"/"다음 단계 진행" do not call git (CA 7–8)', async () => {
+    for (const text of ['좋아', '오케이', '확인', '다음 단계 진행']) {
+      const { deps, calls } = makeDeps({ applyAnchor: gitAnchor() });
+      await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.gitStatus, text).toBe(0);
+      expect(calls.gitDiff, text).toBe(0);
+    }
+  });
+
+  it('apply success (Sprint 2u) runs no git preview automatically (CA 9)', async () => {
+    const { deps, calls } = makeDeps({
+      applyAnchor: approvedAnchorOf({ status: 'PATCH_READY', patchRef: { id: 'patch-1', status: PatchStatus.GENERATED } }),
+    });
+    await new ConversationRuntime(deps).handle(messageOf('패치 적용해줘'));
+    expect(calls.workspaceApply).toBe(1);
+    expect(calls.gitStatus).toBe(0);
+    expect(calls.gitDiff).toBe(0);
+  });
+
+  it('post-apply validation success (Sprint 2v) runs no git preview automatically (CA 10)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: gitAnchor() });
+    await new ConversationRuntime(deps).handle(messageOf('테스트 돌려줘'));
+    expect(calls.commandRun).toBe(1);
+    expect(calls.gitStatus).toBe(0);
+    expect(calls.gitDiff).toBe(0);
+  });
+
+  // ── mutating rejection (CA 11–16) ───────────────────────────────────────────────────────────
+  it('mutating git phrases reject with no git read (CA 11–16)', async () => {
+    for (const text of ['커밋해줘', 'git add 해줘', 'push 해줘', 'git reset 해줘', 'diff 보고 커밋해줘', '커밋해줘 변경사항 보여줘', 'commit this']) {
+      const { deps, calls } = makeDeps({ applyAnchor: gitAnchor() });
+      const result = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.gitStatus, text).toBe(0);
+      expect(calls.gitDiff, text).toBe(0);
+      expect(result.reply.text, text).toBe(mutationText);
+    }
+  });
+
+  // ── workspace / gating (CA 17–19) ───────────────────────────────────────────────────────────
+  it('no WORKSPACE_APPLIED anchor → no post-apply git preview (CA 17)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: null });
+    await new ConversationRuntime(deps).handle(messageOf('git 상태 보여줘'));
+    expect(calls.gitStatus).toBe(0);
+    expect(calls.gitDiff).toBe(0);
+  });
+
+  it('git read uses anchor.workspaceRef.rootPath and does not re-resolve the workspace (CA 18–19)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: gitAnchor() });
+    await new ConversationRuntime(deps).handle(messageOf('diff 보여줘'));
+    expect(calls.lastGitStatusRoot).toBe(WORKSPACE.rootPath);
+    expect(calls.lastGitDiffRoot).toBe(WORKSPACE.rootPath);
+    expect(calls.workspaceOpen).toBe(0);
+  });
+
+  // ── bounds (CA 20–23) ───────────────────────────────────────────────────────────────────────
+  it('changed files over 30 are truncated and labeled; diff truncation labeled; within budget (CA 20–23)', async () => {
+    const many = Array.from({ length: 40 }, (_, i) => `f${i}.ts`);
+    const s = await new ConversationRuntime(makeDeps({ applyAnchor: gitAnchor(), gitStatus: gitStatusOf({ staged: many, unstaged: [], untracked: [] }) }).deps).handle(messageOf('git 상태 보여줘'));
+    expect(s.reply.text).toContain('생략했어요');
+    expect(s.reply.text.length).toBeLessThanOrEqual(1900);
+
+    const d = await new ConversationRuntime(makeDeps({ applyAnchor: gitAnchor(), gitDiff: gitDiffOf({ truncated: true }) }).deps).handle(messageOf('diff 보여줘'));
+    expect(d.reply.text).toContain('일부만 보여드렸어요');
+    expect(d.reply.text.length).toBeLessThanOrEqual(1900);
+  });
+
+  // ── validation context (CA 24–27) ───────────────────────────────────────────────────────────
+  it('validation context: resolved shows command+status (CA 24)', async () => {
+    const { deps } = makeDeps({ applyAnchor: gitAnchorWithValidation(), commandExec: commandExecOf(CommandExecutionStatus.SUCCEEDED, ['test'], 0) });
+    const result = await new ConversationRuntime(deps).handle(messageOf('git 상태 보여줘'));
+    expect(result.reply.text).toContain('pnpm test SUCCEEDED');
+  });
+
+  it('validation context: absent → "검증 기록 없음" (CA 25)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: gitAnchor() });
+    const result = await new ConversationRuntime(deps).handle(messageOf('git 상태 보여줘'));
+    expect(result.reply.text).toContain('검증 기록 없음');
+    expect(calls.commandExecGet).toBe(0); // no ref → not looked up
+  });
+
+  it('validation lookup null/throw → preview still succeeds, validation shown unavailable (CA 26–27)', async () => {
+    const nullCase = makeDeps({ applyAnchor: gitAnchorWithValidation(), commandExec: null });
+    const r1 = await new ConversationRuntime(nullCase.deps).handle(messageOf('git 상태 보여줘'));
+    expect(nullCase.calls.gitStatus).toBe(1); // preview proceeded
+    expect(r1.status).toBe('RESPONDED');
+    expect(r1.reply.text).toContain('불러올 수 없어요');
+
+    const throwCase = makeDeps({ applyAnchor: gitAnchorWithValidation(), commandExecGetThrows: true });
+    const r2 = await new ConversationRuntime(throwCase.deps).handle(messageOf('git 상태 보여줘'));
+    expect(throwCase.calls.gitStatus).toBe(1); // preview proceeded despite lookup throw
+    expect(r2.status).toBe('RESPONDED');
+    expect(r2.reply.text).toContain('불러올 수 없어요');
+  });
+
+  // ── disclaimers (CA 28–32) ──────────────────────────────────────────────────────────────────
+  it('every successful preview carries the read-only disclaimers and no overclaim (CA 28–32)', async () => {
+    for (const text of ['git 상태 보여줘', 'diff 보여줘']) {
+      const { deps } = makeDeps({ applyAnchor: gitAnchor() });
+      const result = await new ConversationRuntime(deps).handle(messageOf(text));
+      for (const d of ['읽기 전용 Git 미리보기', 'git add/commit/push는 하지 않았어요', '파일 수정은 하지 않았어요', '명령 실행도 하지 않았어요']) {
+        expect(result.reply.text, `${text}:${d}`).toContain(d);
+      }
+      for (const f of ['배포 가능', 'committed', 'pushed', 'deployed', '검증 완료', 'safe to commit']) {
+        expect(result.reply.text, `${text}:${f}`).not.toContain(f);
+      }
+    }
+  });
+
+  // ── read failure (CA 33–37) ─────────────────────────────────────────────────────────────────
+  it('git.status throws on a status preview → safe failure, no fallback (CA 33, 36–37)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: gitAnchor(), gitStatus: 'throw' });
+    const result = await new ConversationRuntime(deps).handle(messageOf('git 상태 보여줘'));
+    expect(result.status).toBe('FAILED');
+    expect(result.reply.text).toBe(unavailableText);
+    expect(calls.loggerWarn).toBe(1);
+    expect(calls.commandRun).toBe(0);
+    expect(calls.workspaceApply).toBe(0);
+  });
+
+  it('diff preview: git.status throws first → git.diff NOT called (CA 34)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: gitAnchor(), gitStatus: 'throw' });
+    const result = await new ConversationRuntime(deps).handle(messageOf('diff 보여줘'));
+    expect(calls.gitStatus).toBe(1);
+    expect(calls.gitDiff).toBe(0); // status failed before diff
+    expect(result.reply.text).toBe(unavailableText);
+  });
+
+  it('diff preview: git.diff throws after status ok → safe failure (CA 35)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: gitAnchor(), gitDiff: 'throw' });
+    const result = await new ConversationRuntime(deps).handle(messageOf('diff 보여줘'));
+    expect(calls.gitStatus).toBe(1);
+    expect(calls.gitDiff).toBe(1);
+    expect(result.status).toBe('FAILED');
+    expect(result.reply.text).toBe(unavailableText);
+  });
+
+  // ── no side effects / no re-anchor (CA 38–47) ───────────────────────────────────────────────
+  it('the git-preview path performs no CommandExecution/WorkspaceWrite/Patch/CodeGen/Orchestrator call and no re-anchor (CA 38–47)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: gitAnchor() });
+    await new ConversationRuntime(deps).handle(messageOf('diff 보여줘'));
+    expect(calls.commandRun).toBe(0);
+    expect(calls.workspaceApply).toBe(0);
+    expect(calls.patchGenerate).toBe(0);
+    expect(calls.patchGet).toBe(0);
+    expect(calls.codeGenerationGenerate).toBe(0);
+    expect(calls.run).toBe(0);
+    expect(calls.resume).toBe(0);
+    expect(calls.applyAnchorSet).toBe(0); // no re-anchor on preview (CA #9)
+    // the git dep exposes only read-only status/diff — no mutating method (structural)
+    expect(Object.keys(deps.git).sort()).toEqual(['diff', 'status']);
   });
 });
 

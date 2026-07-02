@@ -340,6 +340,7 @@ const application: Provider[] = [
       codeGeneration: CodeGenerationManager,
       patch: PatchManager,
       workspaceWrite: WorkspaceWriteManager,
+      git: GitManager,
     ) => {
       // ADR-0032: production ApprovalFlow — stateless, derived from existing aggregates
       // (Session.activeTaskId → Task.planId → approvals.findByExecutionPlan → PENDING); anchors the
@@ -404,6 +405,9 @@ const application: Provider[] = [
         // ADR-0042: reuses the same, already-registered WorkspaceWriteManager provider (the sole file
         // mutator) ExecutionOrchestrator already depends on — no new provider.
         workspaceWrite,
+        // ADR-0044: reuses the already-registered GitManager (CAP-002) for the read-only post-apply git
+        // preview — status + the new read-only diff extension only; no new provider, no git mutation.
+        git,
         logger: coreLogger,
       });
     },
@@ -431,6 +435,7 @@ const application: Provider[] = [
       CodeGenerationManager,
       PatchManager,
       WorkspaceWriteManager,
+      GitManager,
     ],
   },
   // Thin platform-entry facade (ADR-0032): delegates to ConversationRuntime, then delivers.

@@ -166,6 +166,91 @@ describe('LocalGitProvider — read-only git inspection (CAP-002, ADR-0023)', ()
   });
 });
 
+describe('LocalGitProvider.diff — read-only diff extension (CAP-002, ADR-0044)', () => {
+  const okRun = (stdout: string): GitRunResult => ({ code: 0, stdout, stderr: '', timedOut: false, failed: false });
+
+  it('unified shows a tracked modification; files lists the path; not truncated', async () => {
+    const dir = makeRepo();
+    writeFileSync(join(dir, 'README.md'), '# changed content here\n');
+    const diff = await provider.diff(dir);
+    expect(diff.files).toContain('README.md');
+    expect(diff.unified).toContain('README.md');
+    expect(diff.unified).toContain('changed content here');
+    expect(diff.truncated).toBe(false);
+  });
+
+  it('untracked file is NOT in the unified diff (tracked changes only); status surfaces it', async () => {
+    const dir = makeRepo();
+    writeFileSync(join(dir, 'brand-new.txt'), 'UNTRACKED_SECRET_CONTENT\n'); // untracked
+    const diff = await provider.diff(dir);
+    expect(diff.unified).not.toContain('UNTRACKED_SECRET_CONTENT');
+    expect(diff.files).not.toContain('brand-new.txt');
+    const status = await provider.status(dir);
+    expect(status.untracked).toContain('brand-new.txt');
+  });
+
+  it('binary file change shows git’s marker only, never binary content', async () => {
+    const dir = makeRepo();
+    writeFileSync(join(dir, 'blob.bin'), Buffer.from([0, 1, 2, 3, 0, 255, 254, 5]));
+    git(dir, 'add', 'blob.bin');
+    git(dir, 'commit', '-q', '-m', 'add binary');
+    writeFileSync(join(dir, 'blob.bin'), Buffer.from([255, 254, 253, 0, 9, 8, 7]));
+    const diff = await provider.diff(dir);
+    expect(diff.unified).toMatch(/Binary files/);
+    expect(diff.files).toContain('blob.bin');
+  });
+
+  it('oversized unified output is hard-capped and flagged truncated', async () => {
+    const huge = 'x'.repeat(25_000);
+    const runner: GitRunner = (args) => {
+      if (args.includes('--verify')) return okRun(''); // HEAD exists
+      if (args.includes('--name-only')) return okRun('big.ts\n');
+      return okRun(huge);
+    };
+    const diff = await new LocalGitProvider(runner).diff(makeRepo());
+    expect(diff.truncated).toBe(true);
+    expect(diff.unified.length).toBeLessThanOrEqual(20_000);
+    expect(diff.files).toEqual(['big.ts']);
+  });
+
+  it('uses argument-array read-only flags with HEAD; never a mutating subcommand', async () => {
+    const calls: string[][] = [];
+    const runner: GitRunner = (args) => {
+      calls.push(args);
+      return okRun(''); // rev-parse --verify HEAD → code 0 (HEAD exists)
+    };
+    await new LocalGitProvider(runner).diff(makeRepo());
+    expect(calls).toContainEqual(['--no-pager', 'diff', '--no-ext-diff', '--no-color', '--name-only', 'HEAD']);
+    expect(calls).toContainEqual(['--no-pager', 'diff', '--no-ext-diff', '--no-color', 'HEAD']);
+    for (const c of calls) {
+      for (const forbidden of ['add', 'commit', 'push', 'reset', 'checkout', 'stash', 'branch', 'merge', 'rebase', 'tag']) {
+        expect(c).not.toContain(forbidden);
+      }
+    }
+  });
+
+  it('unborn repository (no HEAD) drops the HEAD arg', async () => {
+    const calls: string[][] = [];
+    const runner: GitRunner = (args) => {
+      calls.push(args);
+      if (args.includes('--verify')) return { code: 1, stdout: '', stderr: '', timedOut: false, failed: false }; // no HEAD
+      return okRun('');
+    };
+    await new LocalGitProvider(runner).diff(tempDir());
+    expect(calls).toContainEqual(['--no-pager', 'diff', '--no-ext-diff', '--no-color', '--name-only']);
+    expect(calls).toContainEqual(['--no-pager', 'diff', '--no-ext-diff', '--no-color']);
+  });
+
+  it('surfaces a sanitized error when the diff command fails', async () => {
+    const failed = new LocalGitProvider((args) =>
+      args.includes('--verify')
+        ? okRun('')
+        : { code: 128, stdout: '', stderr: 'fatal: bad revision', timedOut: false, failed: false },
+    );
+    await expect(failed.diff(makeRepo())).rejects.toThrow(/exit 128/);
+  });
+});
+
 describe('parsePorcelain', () => {
   it('parses branch, staged, unstaged, untracked', () => {
     const out = parsePorcelain(['## main...origin/main [ahead 1]', 'M  a.ts', ' M b.ts', '?? c.ts'].join('\n'));

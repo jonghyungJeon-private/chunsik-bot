@@ -1,5 +1,5 @@
 import { WorkspaceNotSafeError } from '../errors';
-import type { GitStatus, RepositoryInfo } from '../domain';
+import type { GitDiff, GitStatus, RepositoryInfo } from '../domain';
 import type { GitProvider } from '../ports';
 
 /**
@@ -24,6 +24,14 @@ export class GitManager {
   /** Working-tree status (clean/branch + staged/unstaged/untracked). */
   async status(rootPath: string): Promise<GitStatus> {
     return this.provider.status(rootPath);
+  }
+
+  /**
+   * Read-only unified diff of tracked staged/unstaged changes vs HEAD (ADR-0044). Read-only — delegates to
+   * the provider's read-only `git diff`; never mutates. Untracked contents are excluded (see `status`).
+   */
+  async diff(rootPath: string): Promise<GitDiff> {
+    return this.provider.diff(rootPath);
   }
 
   /** Convenience: whether the working tree is clean. */

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { ConversationContext } from '../domain';
+import type { ConversationContext, GitDiff, GitStatus } from '../domain';
 import { ResponseComposer } from './response-composer';
 import type { CodeChangePreview, CodeDiffPreview, PatchSetPreview, TestResultDetail } from './response-composer';
 
@@ -742,5 +742,105 @@ describe('ResponseComposer.composePostApplyValidation* replies (ADR-0043)', () =
       composer.composePostApplyValidationUnavailable(CTX).text,
     ]);
     expect(set.size).toBe(6);
+  });
+});
+
+// ── Sprint 2w — Post-Validation Git Status Preview replies (ADR-0044) ─────────────────────────────
+
+describe('ResponseComposer.composeGit* preview replies (ADR-0044)', () => {
+  const statusOf = (o: Partial<GitStatus> = {}): GitStatus => ({
+    clean: false,
+    branch: 'main',
+    staged: ['a.ts'],
+    unstaged: ['b.ts'],
+    untracked: ['c.ts'],
+    ...o,
+  });
+  const diffOf = (o: Partial<GitDiff> = {}): GitDiff => ({
+    files: ['a.ts'],
+    unified: 'diff --git a/a.ts b/a.ts\n@@ -1 +1 @@\n-x\n+y\n',
+    truncated: false,
+    ...o,
+  });
+  const DISCLAIMERS = ['읽기 전용 Git 미리보기', 'git add/commit/push는 하지 않았어요', '파일 수정은 하지 않았어요', '명령 실행도 하지 않았어요'];
+  const FORBIDDEN = ['커밋 준비 완료', 'push 가능', '배포 가능', '검증 완료', '완전히 검증', 'committed', 'pushed', 'deployed', 'safe to commit', 'ready to deploy'];
+
+  it('status preview: branch + changed files + read-only disclaimers + validation context', () => {
+    const reply = composer.composeGitStatusPreview(CTX, { status: statusOf(), validation: { command: 'pnpm test', status: 'SUCCEEDED' } });
+    expect(reply.text).toContain('main');
+    expect(reply.text).toContain('a.ts');
+    expect(reply.text).toContain('b.ts');
+    expect(reply.text).toContain('c.ts');
+    expect(reply.text).toContain('최근 검증 기록: pnpm test SUCCEEDED');
+    for (const d of DISCLAIMERS) expect(reply.text, d).toContain(d);
+    for (const f of FORBIDDEN) expect(reply.text, f).not.toContain(f);
+  });
+
+  it('status preview: clean tree says no changed files, never infers tests passed / deploy', () => {
+    const reply = composer.composeGitStatusPreview(CTX, { status: statusOf({ clean: true, staged: [], unstaged: [], untracked: [] }), validation: 'none' });
+    expect(reply.text).toContain('현재 Git 기준 변경 파일이 없어요');
+    expect(reply.text).toContain('검증 기록 없음');
+    expect(reply.text).not.toContain('테스트 통과');
+    for (const f of FORBIDDEN) expect(reply.text, f).not.toContain(f);
+  });
+
+  it('status preview: changed files over 30 are truncated and labeled', () => {
+    const many = Array.from({ length: 40 }, (_, i) => `f${i}.ts`);
+    const reply = composer.composeGitStatusPreview(CTX, { status: statusOf({ staged: many, unstaged: [], untracked: [] }), validation: 'none' });
+    expect(reply.text).toContain('생략했어요');
+  });
+
+  it('diff preview: shows diff + untracked note + untracked from status + disclaimers', () => {
+    const reply = composer.composeGitDiffPreview(CTX, { status: statusOf(), diff: diffOf(), validation: 'none' });
+    expect(reply.text).toContain('diff --git');
+    expect(reply.text).toContain('diff는 추적 중인 파일 변경만 포함해요');
+    expect(reply.text).toContain('untracked 파일은 상태 목록에만 표시돼요');
+    expect(reply.text).toContain('c.ts'); // untracked surfaced from status
+    for (const d of DISCLAIMERS) expect(reply.text, d).toContain(d);
+    for (const f of FORBIDDEN) expect(reply.text, f).not.toContain(f);
+  });
+
+  it('diff preview: truncated diff is labeled', () => {
+    const reply = composer.composeGitDiffPreview(CTX, { status: statusOf(), diff: diffOf({ truncated: true }), validation: 'none' });
+    expect(reply.text).toContain('일부만 보여드렸어요');
+  });
+
+  it('diff preview: diff over the display char budget is truncated and labeled', () => {
+    const big = 'diff --git a/x b/x\n' + 'y'.repeat(5000);
+    const reply = composer.composeGitDiffPreview(CTX, { status: statusOf(), diff: diffOf({ unified: big }), validation: 'none' });
+    expect(reply.text).toContain('일부만 보여드렸어요');
+  });
+
+  it('validation context: resolved / none / unavailable are distinct', () => {
+    const resolved = composer.composeGitStatusPreview(CTX, { status: statusOf(), validation: { command: 'pnpm typecheck', status: 'FAILED' } }).text;
+    const none = composer.composeGitStatusPreview(CTX, { status: statusOf(), validation: 'none' }).text;
+    const unavailable = composer.composeGitStatusPreview(CTX, { status: statusOf(), validation: 'unavailable' }).text;
+    expect(resolved).toContain('pnpm typecheck FAILED');
+    expect(none).toContain('검증 기록 없음');
+    expect(unavailable).toContain('최근 검증 기록을 불러올 수 없어요');
+    expect(new Set([resolved, none, unavailable]).size).toBe(3);
+  });
+
+  it('mutation-not-supported: read-only reminder, no committed/pushed claim, distinct', () => {
+    const reply = composer.composeGitMutationNotSupported(CTX);
+    expect(reply.text).toContain('지원하지 않아요');
+    expect(reply.text).toContain('git 명령은 실행하지 않았어요');
+    for (const f of FORBIDDEN) expect(reply.text, f).not.toContain(f);
+  });
+
+  it('preview-unavailable: safe failure, distinct', () => {
+    const reply = composer.composeGitPreviewUnavailable(CTX);
+    expect(reply.text).toContain('읽지 못했어요');
+    expect(reply.text).toContain('git 명령은 실행하지 않았어요');
+  });
+
+  it('the four git-preview replies are all distinct', () => {
+    const set = new Set([
+      composer.composeGitStatusPreview(CTX, { status: statusOf(), validation: 'none' }).text,
+      composer.composeGitDiffPreview(CTX, { status: statusOf(), diff: diffOf(), validation: 'none' }).text,
+      composer.composeGitMutationNotSupported(CTX).text,
+      composer.composeGitPreviewUnavailable(CTX).text,
+    ]);
+    expect(set.size).toBe(4);
   });
 });

@@ -1,9 +1,13 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
-import type { GitProvider, GitStatus, RepositoryInfo } from '@chunsik/core';
+import type { GitDiff, GitProvider, GitStatus, RepositoryInfo } from '@chunsik/core';
 
 /** Per-call git timeout (ms). */
 const GIT_TIMEOUT_MS = 5000;
+
+/** Hard safety cap on the raw unified diff the adapter returns to core (ADR-0044) — a backstop above the
+ *  ResponseComposer's display bounds so an enormous diff never reaches the Application layer. */
+const MAX_DIFF_CHARS = 20_000;
 
 /** Result of one read-only git invocation. */
 export interface GitRunResult {
@@ -147,5 +151,34 @@ export class LocalGitProvider implements GitProvider {
     const res = this.exec(rootPath, ['status', '--porcelain=v1', '-b']);
     if (res.code !== 0) throw this.failure('status', res);
     return parsePorcelain(res.stdout);
+  }
+
+  /**
+   * Read-only unified diff of TRACKED staged/unstaged changes vs HEAD (ADR-0044). READ-ONLY: runs only
+   * `git diff` variants — never a mutating subcommand — via argument-array spawn (no shell, no user args,
+   * no pathspec), `--no-ext-diff`/`--no-color`/`--no-pager`. For an unborn repository (no HEAD) it drops the
+   * `HEAD` arg. `files` come from a bounded-safe `--name-only` read; `unified` is hard-capped at
+   * MAX_DIFF_CHARS (a backstop above the composer's display bounds). Binary files appear as git's own marker
+   * line ("Binary files … differ"), never binary content — no special dumping.
+   */
+  async diff(rootPath: string): Promise<GitDiff> {
+    const base = ['--no-pager', 'diff', '--no-ext-diff', '--no-color'];
+    // Unborn repository (no commits yet) has no HEAD → diff against the empty tree by dropping `HEAD`.
+    const hasHead = this.exec(rootPath, ['rev-parse', '--verify', '--quiet', 'HEAD']).code === 0;
+    const rev = hasHead ? ['HEAD'] : [];
+
+    const nameRes = this.exec(rootPath, [...base, '--name-only', ...rev]);
+    if (nameRes.code !== 0) throw this.failure('diff', nameRes);
+    const files = nameRes.stdout
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+
+    const unifiedRes = this.exec(rootPath, [...base, ...rev]);
+    if (unifiedRes.code !== 0) throw this.failure('diff', unifiedRes);
+    const raw = unifiedRes.stdout;
+    const truncated = raw.length > MAX_DIFF_CHARS;
+    const unified = truncated ? raw.slice(0, MAX_DIFF_CHARS) : raw;
+    return { files, unified, truncated };
   }
 }
