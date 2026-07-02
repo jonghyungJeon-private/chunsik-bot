@@ -849,3 +849,88 @@ describe('ResponseComposer.composeGit* preview replies (ADR-0044)', () => {
     expect(set.size).toBe(4);
   });
 });
+
+// ── Sprint 2x — Explicit Git Commit Approval replies (ADR-0045) ───────────────────────────────────
+
+describe('ResponseComposer.composeCommit* replies (ADR-0045)', () => {
+  const FORBIDDEN = ['커밋 완료', 'committed', 'commit created', '변경사항이 커밋됐어요', 'pushed', 'ready to deploy', 'safe to commit', '배포 가능'];
+
+  it('approval-requested says approval-only, no actual commit this step (CA 66)', () => {
+    const reply = composer.composeCommitApprovalRequested(CTX, { candidateFiles: ['a.ts', 'b.ts'], commitMessage: 'chore: update a.ts', validation: 'none' });
+    expect(reply.text).toContain('커밋 승인을 요청했어요');
+    expect(reply.text).toContain('a.ts');
+    expect(reply.text).toContain('chore: update a.ts');
+    expect(reply.text).toContain('실제 git add/commit/push는 수행하지 않아요');
+    expect(reply.text).toContain('다음 단계');
+    for (const f of FORBIDDEN) expect(reply.text, f).not.toContain(f);
+  });
+
+  it('approval-requested bounds the candidate file list to 30 with "외 N개"', () => {
+    const many = Array.from({ length: 40 }, (_, i) => `f${i}.ts`);
+    const reply = composer.composeCommitApprovalRequested(CTX, { candidateFiles: many, commitMessage: 'm', validation: 'none' });
+    expect(reply.text).toContain('외 10개');
+  });
+
+  it('approval-recorded says recorded but no commit performed (CA 67)', () => {
+    const reply = composer.composeCommitApprovalRecorded(CTX);
+    expect(reply.text).toContain('커밋 승인은 기록했어요');
+    expect(reply.text).toContain('아직 실제 git add/commit/push는 수행하지 않았어요');
+    for (const f of FORBIDDEN) expect(reply.text, f).not.toContain(f);
+  });
+
+  it('deny/cancel are commit-specific and say applied files remain (CA 68)', () => {
+    for (const reply of [composer.composeCommitApprovalDenied(CTX), composer.composeCommitApprovalCancelled(CTX)]) {
+      expect(reply.text).toContain('이미 적용된 파일 변경은 그대로 있어요');
+      expect(reply.text).toContain('실제 git commit은 수행하지 않았어요');
+    }
+    // distinct from each other
+    expect(composer.composeCommitApprovalDenied(CTX).text).not.toBe(composer.composeCommitApprovalCancelled(CTX).text);
+  });
+
+  it('wrong-state unavailable and git-status-read-failure are distinct; read-failure precise (CA 69)', () => {
+    const wrongState = composer.composeCommitUnavailable(CTX);
+    const readFail = composer.composeCommitStatusUnavailable(CTX);
+    expect(wrongState.text).not.toBe(readFail.text);
+    // wrong-state must not imply a git read was attempted
+    expect(wrongState.text).not.toContain('Git 상태를 확인하는 중');
+    // read-failure must NOT claim no git command ran (a read WAS attempted), but must state no mutation
+    expect(readFail.text).not.toContain('git 명령은 실행하지 않았어요');
+    expect(readFail.text).toContain('git add/commit/push는 하지 않았');
+    expect(readFail.text).toContain('CommandExecution');
+  });
+
+  it('nothing-to-commit / out-of-scope / message-invalid / already-approved / unsupported-companion never overclaim (CA 70)', () => {
+    const replies = [
+      composer.composeCommitNothingToCommit(CTX),
+      composer.composeCommitOutOfScopeChanges(CTX, ['x.ts']),
+      composer.composeCommitMessageInvalid(CTX),
+      composer.composeCommitAlreadyApproved(CTX),
+      composer.composeCommitUnsupportedCompanion(CTX),
+    ];
+    for (const reply of replies) for (const f of FORBIDDEN) expect(reply.text, f).not.toContain(f);
+    expect(composer.composeCommitAlreadyApproved(CTX).text).toContain('아직 실제 git add/commit/push는 수행하지 않았어요');
+  });
+
+  it('out-of-scope list is bounded to 10 with "외 N개"', () => {
+    const many = Array.from({ length: 25 }, (_, i) => `o${i}.ts`);
+    const reply = composer.composeCommitOutOfScopeChanges(CTX, many);
+    expect(reply.text).toContain('외 15개');
+  });
+
+  it('the eleven commit replies are all distinct', () => {
+    const set = new Set([
+      composer.composeCommitApprovalRequested(CTX, { candidateFiles: ['a.ts'], commitMessage: 'm', validation: 'none' }).text,
+      composer.composeCommitApprovalRecorded(CTX).text,
+      composer.composeCommitApprovalDenied(CTX).text,
+      composer.composeCommitApprovalCancelled(CTX).text,
+      composer.composeCommitNothingToCommit(CTX).text,
+      composer.composeCommitOutOfScopeChanges(CTX, ['x.ts']).text,
+      composer.composeCommitMessageInvalid(CTX).text,
+      composer.composeCommitUnavailable(CTX).text,
+      composer.composeCommitStatusUnavailable(CTX).text,
+      composer.composeCommitAlreadyApproved(CTX).text,
+      composer.composeCommitUnsupportedCompanion(CTX).text,
+    ]);
+    expect(set.size).toBe(11);
+  });
+});

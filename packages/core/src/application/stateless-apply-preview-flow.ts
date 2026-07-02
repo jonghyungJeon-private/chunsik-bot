@@ -57,8 +57,14 @@ export class StatelessApplyPreviewFlow implements ApplyPreviewFlow {
       title: 'code-change apply approval',
       description: anchor.instruction,
       // An inert conversation anchor, never advanced through the real work pipeline (mirrors
-      // ScopeClarificationFlow's Task) — WAITING_APPROVAL only while a real ApprovalRequest is PENDING.
-      status: anchor.status === 'AWAITING_APPROVAL' ? TaskStatus.WAITING_APPROVAL : TaskStatus.PENDING,
+      // ScopeClarificationFlow's Task) — WAITING_APPROVAL only while a real ApprovalRequest is PENDING:
+      // AWAITING_APPROVAL (apply, 2s) and COMMIT_APPROVAL_PENDING (commit, 2x). The task stays plan-less,
+      // so StatelessApprovalFlow's plan-scoped findPending never returns these approvals (they are handled
+      // via the anchor-status interception in ConversationRuntime).
+      status:
+        anchor.status === 'AWAITING_APPROVAL' || anchor.status === 'COMMIT_APPROVAL_PENDING'
+          ? TaskStatus.WAITING_APPROVAL
+          : TaskStatus.PENDING,
       intent: {
         type: IntentType.IMPLEMENT_CODE,
         capability: Capability.CODE_IMPLEMENTATION,
