@@ -1,13 +1,16 @@
 import { describeAiFailure } from './ai-failure';
 import {
+  ApprovalStatus,
   Capability,
   CodeGenerationStatus,
   CommandExecutionStatus,
   IntentType,
   RiskLevel,
   TaskStatus,
+  approvalRef,
   codeGenerationRef,
   codeProposalRef,
+  patchRef,
 } from '../domain';
 import type {
   Actor,
@@ -28,6 +31,9 @@ import type {
   Intent,
   IsoTimestamp,
   OutboundMessage,
+  PatchGenerationInput,
+  PatchRef,
+  PatchSet,
   Project,
   PromptSpec,
   ProposedChange,
@@ -44,6 +50,7 @@ import type {
   CodeChangePreview,
   CodeDiffPreview,
   ExecutionReplyStatus,
+  PatchSetPreview,
   TestResultDetail,
 } from './response-composer';
 import type { IntentResolutionContext } from './intent-resolver';
@@ -142,9 +149,15 @@ export interface ScopeClarificationFlow {
   clear(session: Session): Promise<void>;
 }
 
-/** The three states one apply-preview anchor moves through (Sprint 2s, ADR-0040). Never regresses;
- *  deny/cancel clears the anchor entirely instead of introducing a fourth "rejected" state. */
-export type ApplyPreviewAnchorStatus = 'ELIGIBLE' | 'AWAITING_APPROVAL' | 'APPROVED';
+/**
+ * The states one apply-preview anchor moves through (Sprint 2s, ADR-0040; Sprint 2t, ADR-0041). Never
+ * regresses; deny/cancel clears the anchor entirely instead of introducing a "rejected" state.
+ *
+ * `PATCH_READY` (Sprint 2t) means: a PatchSet **representation** has been generated and stored (a
+ * `patchRef` is available). It does NOT mean the patch was applied — no workspace file was modified, no
+ * command was executed, no git operation happened.
+ */
+export type ApplyPreviewAnchorStatus = 'ELIGIBLE' | 'AWAITING_APPROVAL' | 'APPROVED' | 'PATCH_READY';
 
 /**
  * Anchored fact set for "a diff preview was shown; the user may explicitly ask to apply it" (Sprint 2s,
@@ -170,6 +183,10 @@ export interface ApplyPreviewAnchor {
   approvalId?: Id;
   /** Set once `status` becomes `APPROVED`. */
   approvedAt?: IsoTimestamp;
+  /** Set once `status` becomes `PATCH_READY` (Sprint 2t, ADR-0041) — the generated PatchSet's ref,
+   *  preserved for Sprint 2u. Its presence makes a repeated patch command idempotent. A PatchSet
+   *  representation existing does NOT mean it was applied — no file/command/git mutation occurred. */
+  patchRef?: PatchRef;
 }
 
 /**
@@ -269,6 +286,12 @@ export interface ConversationRuntimeDeps {
     generate(input: GenerateCodeInput): Promise<CodeGeneration>;
     getProposal(generation: CodeGeneration): Promise<CodeProposal | null>;
   };
+  /** Reused for PatchSet generation (Sprint 2t, ADR-0041) — the same already-registered PatchManager
+   *  ExecutionOrchestrator already depends on. Representation-only (CAP-005); never applies. */
+  readonly patch: { generate(input: PatchGenerationInput): Promise<PatchSet> };
+  /** Read-only load of the approved CodeProposal by ref (Sprint 2t) — backed by storage.codeProposals,
+   *  already in the runtime factory's scope. Not a new port. */
+  readonly codeProposals: { get(id: Id): Promise<CodeProposal | null> };
   readonly logger: Logger;
 }
 
@@ -281,6 +304,22 @@ const CANCEL_WORDS = ['취소', '중단', '그만'];
  *  modification. "이대로 진행" (multi-word) is deliberately distinct from APPROVE_WORDS' bare "진행" —
  *  the two word-sets are non-overlapping by construction, not by coincidence. */
 const APPLY_WORDS = ['적용', '반영', '이대로 진행'];
+
+/** Explicit patch phrases (Sprint 2t, ADR-0041) — distinct from APPROVE_WORDS and APPLY_WORDS. CA Round 1
+ *  Required Change #2: the ambiguous standalone "계속 진행" is deliberately excluded — a bare "continue"
+ *  intent must never be auto-read as PatchSet generation. Every entry is an explicit patch-generation
+ *  phrase; "다음 단계 진행" is the full multi-word form (never bare "다음 단계"); "좋아"/"오케이"/"확인"
+ *  never match. Combined with routing (generation only on an APPROVED anchor), this enforces:
+ *  explicit patch phrase + APPROVED anchor ⇒ generation; a bare "계속 진행" ⇒ never generation. */
+const PATCH_WORDS = [
+  '패치 만들어',
+  '패치 생성',
+  '패치로 만들어',
+  'patch 만들어',
+  'generate patch',
+  'patchset 만들어',
+  '다음 단계 진행',
+];
 
 /** Bound on how many extracted target-path candidates trigger a workspace.list call per turn
  *  (Sprint 2o, ADR-0036) — a chat message must never drive an unbounded number of workspace scans. */
@@ -374,6 +413,13 @@ export class ConversationRuntime {
     return APPLY_WORDS.some((w) => t.includes(w));
   }
 
+  /** Explicit patch-generation intent only (Sprint 2t, ADR-0041) — the ambiguous standalone "계속 진행"
+   *  is excluded; combined with routing, generation only fires on an APPROVED anchor. */
+  static interpretPatchIntent(text: string): boolean {
+    const t = text.trim().toLowerCase();
+    return PATCH_WORDS.some((w) => t.includes(w));
+  }
+
   /**
    * Handle one inbound message → one transient `TurnResult` (with an `OutboundMessage`). Never sends
    * to the platform (delivery is the facade's job) and never persists runtime state.
@@ -407,19 +453,33 @@ export class ConversationRuntime {
     if (applyAnchor?.status === 'AWAITING_APPROVAL') {
       return this.handleApplyApprovalTurn(message, session, actor, applyAnchor);
     }
+    // (Sprint 2t, ADR-0041) Explicit patch command → PatchSet representation. Checked before apply-intent;
+    // PATCH_WORDS and APPLY_WORDS are non-overlapping, and patch is the later product step. Generation
+    // only ever fires on an APPROVED anchor.
+    if (ConversationRuntime.interpretPatchIntent(message.text)) {
+      if (applyAnchor?.status === 'APPROVED') {
+        return this.handlePatchGenerationTurn(message, session, applyAnchor);
+      }
+      if (applyAnchor?.status === 'PATCH_READY') {
+        return this.handlePatchAlreadyGeneratedTurn(message, session); // don't regenerate
+      }
+      // patch command with no APPROVED/PATCH_READY anchor (none / ELIGIBLE) — never falls through to a
+      // new code-change request, mirroring the apply-unavailable handling.
+      return this.handlePatchUnavailableTurn(message, session);
+    }
     if (ConversationRuntime.interpretApplyIntent(message.text)) {
       if (applyAnchor?.status === 'ELIGIBLE') {
         return this.handleApplyIntentTurn(message, session, actor, applyAnchor); // creates approval #2
       }
-      if (applyAnchor?.status === 'APPROVED') {
+      if (applyAnchor?.status === 'APPROVED' || applyAnchor?.status === 'PATCH_READY') {
         return this.handleApplyAlreadyApprovedTurn(message, session); // don't re-ask, don't re-approve
       }
       // No anchor at all (or a stale one, already auto-cleared by findAnchor). An explicit apply phrase
       // must NEVER be reinterpreted as a new, unscoped code-change request (CA review).
       return this.handleApplyPreviewUnavailableTurn(message, session);
     }
-    // Anything else: fall through untouched — an ELIGIBLE/APPROVED anchor is an optional follow-up
-    // opportunity, never a hard gate ordinary conversation must route around.
+    // Anything else: fall through untouched — an ELIGIBLE/APPROVED/PATCH_READY anchor is an optional
+    // follow-up opportunity, never a hard gate ordinary conversation must route around.
 
     const intent = await this.deps.classifier.classify(message);
     this.deps.logger.info('intent classified', {
@@ -716,6 +776,110 @@ export class ConversationRuntime {
     const reply = this.deps.composer.composeApplyApprovalRecorded(message.context);
     await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
     return { status: 'RESPONDED', reply, sessionId: session.id };
+  }
+
+  /**
+   * An explicit patch command arrived while the apply anchor is APPROVED (Sprint 2t, ADR-0041) — recover
+   * the approved context, re-validate against the latest workspace content, and generate a PatchSet
+   * REPRESENTATION via the existing Patch capability (CAP-005). Never applies: no WorkspaceWrite, no
+   * CommandExecution, no git/file mutation. The Application layer derives the ApprovalRef and injects it;
+   * PatchManager never queries ApprovalManager. On success the anchor becomes PATCH_READY (patchRef
+   * preserved for Sprint 2u); a PatchSet existing does NOT mean it was applied.
+   */
+  private async handlePatchGenerationTurn(
+    message: InboundMessage,
+    session: Session,
+    anchor: ApplyPreviewAnchor,
+  ): Promise<TurnResult> {
+    // 1. Approved-context guards.
+    if (!anchor.approvalId || !anchor.workspaceRef || !anchor.targetFiles.length || !anchor.codeProposalRef) {
+      return this.failComposed(message, session, this.deps.composer.composePatchUnavailable(message.context));
+    }
+    const approval = await this.deps.approvals.get(anchor.approvalId);
+    if (!approval || approval.status !== ApprovalStatus.APPROVED) {
+      return this.failComposed(message, session, this.deps.composer.composePatchUnavailable(message.context));
+    }
+
+    // 2. Source of truth = the CodeProposal aggregate, never rendered diff text / chat memory.
+    const proposal = await this.deps.codeProposals.get(anchor.codeProposalRef.id);
+    if (!proposal) {
+      return this.failComposed(message, session, this.deps.composer.composePatchUnavailable(message.context));
+    }
+
+    // 3. Re-filter against validated targetFiles — targetFiles stays authoritative.
+    const { inScope } = filterInScopeChanges(proposal.proposal, anchor.targetFiles);
+    if (inScope.length === 0) {
+      return this.failComposed(message, session, this.deps.composer.composePatchUnavailable(message.context));
+    }
+
+    // 4. Re-run WorkspaceManager.diff against CURRENT content — staleness/add/binary/empty check.
+    let diff: WorkspaceDiff;
+    try {
+      diff = await this.deps.workspace.diff(anchor.workspaceRef, inScope);
+    } catch {
+      this.logPatchGenerationFailed(session, anchor, 'workspace diff failed');
+      return this.failComposed(message, session, this.deps.composer.composePatchGenerationFailed(message.context));
+    }
+    // No PatchSet for empty / changeKind:add / binary / oversized(empty unified) results.
+    const unrenderable =
+      diff.files.length === 0 ||
+      diff.files.some((f) => f.changeKind === 'add' || f.binary || !f.unified.trim());
+    if (unrenderable) {
+      this.logPatchGenerationFailed(session, anchor, 'unrenderable diff (empty/add/binary/oversized)');
+      return this.failComposed(message, session, this.deps.composer.composePatchGenerationFailed(message.context));
+    }
+
+    // 5. Application derives the ApprovalRef; PatchManager receives it and re-validates.
+    let patchSet: PatchSet;
+    try {
+      patchSet = await this.deps.patch.generate({
+        executionPlanRef: anchor.executionPlanRef,
+        approvalRef: approvalRef(approval),
+        changes: inScope,
+        diff,
+      });
+    } catch {
+      this.logPatchGenerationFailed(session, anchor, 'patch generation failed');
+      return this.failComposed(message, session, this.deps.composer.composePatchGenerationFailed(message.context));
+    }
+
+    // 6. Preserve PatchRef on the anchor for Sprint 2u — re-anchor PATCH_READY, never clear.
+    await this.deps.applyPreviewFlow.anchor(session, { ...anchor, status: 'PATCH_READY', patchRef: patchRef(patchSet) });
+
+    // 7. ResponseComposer renders the preview from PatchSet facts.
+    const reply = this.deps.composer.composePatchSetPreview(message.context, {
+      operations: patchSet.operations.map((op) => ({ path: op.path, kind: op.operation, unified: op.diff })),
+    });
+    await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+    return this.responded(session, reply);
+  }
+
+  /** A patch command arrived while the anchor is already PATCH_READY (Sprint 2t) — never regenerates. */
+  private async handlePatchAlreadyGeneratedTurn(message: InboundMessage, session: Session): Promise<TurnResult> {
+    const reply = this.deps.composer.composePatchAlreadyGenerated(message.context);
+    await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+    return this.responded(session, reply);
+  }
+
+  /** A patch command arrived with no APPROVED/PATCH_READY apply context (Sprint 2t) — never a new
+   *  code-change request, never reaches the classifier or the Orchestrator. */
+  private async handlePatchUnavailableTurn(message: InboundMessage, session: Session): Promise<TurnResult> {
+    const reply = this.deps.composer.composePatchUnavailable(message.context);
+    await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+    return this.responded(session, reply);
+  }
+
+  /** Structured, no-content failure log for PatchSet generation (Sprint 2t, ADR-0041 — CA Round 1) — so
+   *  operators can trace failures without the user seeing internals and without leaking diff/file text. */
+  private logPatchGenerationFailed(session: Session, anchor: ApplyPreviewAnchor, reason: string): void {
+    this.deps.logger.warn('PatchSet generation failed', {
+      reason,
+      sessionId: session.id,
+      executionPlanId: anchor.executionPlanRef.id,
+      approvalId: anchor.approvalId,
+      codeProposalId: anchor.codeProposalRef.id,
+      targetFiles: anchor.targetFiles.join(', '),
+    }); // deliberately NO diff text / file content
   }
 
   /** (C) Resolve the workspace (if the capability needs it), run the execution, and frame the reply. */

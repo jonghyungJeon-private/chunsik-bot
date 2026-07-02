@@ -338,6 +338,7 @@ const application: Provider[] = [
       approvals: ApprovalManager,
       commandExecutions: CommandExecutionManager,
       codeGeneration: CodeGenerationManager,
+      patch: PatchManager,
     ) => {
       // ADR-0032: production ApprovalFlow — stateless, derived from existing aggregates
       // (Session.activeTaskId → Task.planId → approvals.findByExecutionPlan → PENDING); anchors the
@@ -392,6 +393,10 @@ const application: Provider[] = [
         // ADR-0038: reuses the same, already-registered CodeGenerationManager provider
         // ExecutionOrchestrator already depends on — no new provider.
         codeGeneration,
+        // ADR-0041: reuses the same, already-registered PatchManager provider (representation-only) and
+        // storage.codeProposals — no new provider.
+        patch,
+        codeProposals: { get: (id) => storage.codeProposals.get(id) },
         logger: coreLogger,
       });
     },
@@ -417,6 +422,7 @@ const application: Provider[] = [
       ApprovalManager,
       CommandExecutionManager,
       CodeGenerationManager,
+      PatchManager,
     ],
   },
   // Thin platform-entry facade (ADR-0032): delegates to ConversationRuntime, then delivers.

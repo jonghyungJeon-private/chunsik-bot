@@ -61,6 +61,16 @@ export interface CodeDiffPreview {
   outOfScopeWarnings: string[];
 }
 
+/**
+ * Display DTO for a generated PatchSet (Approved Apply Context → PatchSet Preview, ADR-0041).
+ * Application-layer, not domain — each entry is a `PatchOperation` reshaped for display. `unified` came
+ * from `WorkspaceManager.diff`, never AI-authored text. A PatchSet existing means a REPRESENTATION was
+ * generated; it does NOT mean it was applied (no file/command/git mutation).
+ */
+export interface PatchSetPreview {
+  operations: Array<{ path: string; kind: 'add' | 'update' | 'delete'; unified: string }>;
+}
+
 /** Per-stream tail kept in a reply excerpt (lines), before the char cap applies. */
 const MAX_SUMMARY_LINES = 20;
 /** Char cap on the rendered excerpt, leaving headroom under Discord's 2000-char message limit. */
@@ -89,6 +99,12 @@ const DIFF_BUDGET_MARGIN_CHARS = 20;
 const DIFF_PREVIEW_HEADER =
   '코드 변경 제안을 diff로 보여드려요. 아직 실제로 적용되지 않았어요. 파일은 수정되지 않았어요.';
 const DIFF_PREVIEW_FOOTER = '이 제안을 실제로 적용하는 기능은 아직 지원하지 않아요.';
+
+/** PatchSet preview (Sprint 2t, ADR-0041). CA Round 1 Required Change #3: "패치 미리보기" framing —
+ *  never a bare "패치를 만들었어요" a non-developer could read as "applied." */
+const PATCH_PREVIEW_HEADER =
+  '패치 미리보기를 만들었어요. 아직 실제 파일에는 적용하지 않았어요. 파일은 수정되지 않았어요.';
+const PATCH_PREVIEW_FOOTER = '실제 파일 적용은 아직 지원하지 않아요.';
 
 /** Which stream a rendered excerpt came from, and which non-empty stream was left out. */
 interface OutputSummary {
@@ -212,6 +228,47 @@ function renderDiffChange(c: CodeDiffPreview['changes'][number]): string {
   const label = c.kind === 'delete' ? `${c.path} (삭제 제안)` : c.path;
   const note = truncated ? '\n(diff가 길어서 일부만 보여드렸어요.)' : '';
   return `- ${label}\n${fence}diff\n${text}\n${fence}${note}`;
+}
+
+/** Render one PatchSet operation's block (Sprint 2t, ADR-0041). Operations only ever carry a real
+ *  unified diff here — binary/empty/add are rejected before PatchSet generation — so this reuses the
+ *  same bounded, backtick-safe rendering as {@link renderDiffChange}. */
+function renderPatchOperation(op: PatchSetPreview['operations'][number]): string {
+  const { text, truncated } = clampDiffText(op.unified);
+  const fence = fenceFor(text);
+  const label = op.kind === 'delete' ? `${op.path} (삭제)` : op.path;
+  const note = truncated ? '\n(diff가 길어서 일부만 보여드렸어요.)' : '';
+  return `- ${label}\n${fence}diff\n${text}\n${fence}${note}`;
+}
+
+/**
+ * Budget-aware, backtick-safe block assembly shared by the diff and PatchSet previews (Sprint 2r/2t).
+ * The header + footer are reserved budget FIRST; pre-rendered blocks are then added until the remaining
+ * budget is used up, and any that don't fit are DROPPED (never truncated mid-block) with a bounded
+ * "N개 생략" notice — so the mandatory safety wording always survives. The trailing clampToMessageBudget
+ * is a defensive backstop, not the primary guarantee.
+ */
+function assembleBoundedBody(header: string, footerLines: string[], blocks: string[]): string {
+  const footer = footerLines.join('\n');
+  const reserved = header.length + footer.length + MAX_OMITTED_NOTICE_CHARS + DIFF_BUDGET_MARGIN_CHARS;
+  const bodyBudget = Math.max(0, MAX_MESSAGE_CHARS - reserved);
+
+  const kept: string[] = [];
+  let used = 0;
+  let omitted = 0;
+  for (const block of blocks) {
+    if (used + block.length > bodyBudget) {
+      omitted++;
+      continue;
+    }
+    used += block.length;
+    kept.push(block);
+  }
+
+  const lines = [header, ...kept];
+  if (omitted > 0) lines.push(`(길이 제한으로 파일 ${omitted}개의 diff는 생략했어요.)`);
+  lines.push(...footerLines);
+  return clampToMessageBudget(lines.join('\n'));
 }
 
 /**
@@ -460,28 +517,8 @@ export class ResponseComposer {
   composeCodeDiffPreview(context: ConversationContext, preview: CodeDiffPreview): OutboundMessage {
     const warning = renderOutOfScopeWarning(preview.outOfScopeWarnings);
     const footerLines = [...(warning ? [warning] : []), DIFF_PREVIEW_FOOTER];
-    const footer = footerLines.join('\n');
-    const reserved =
-      DIFF_PREVIEW_HEADER.length + footer.length + MAX_OMITTED_NOTICE_CHARS + DIFF_BUDGET_MARGIN_CHARS;
-    const bodyBudget = Math.max(0, MAX_MESSAGE_CHARS - reserved);
-
-    const blocks: string[] = [];
-    let used = 0;
-    let omitted = 0;
-    for (const c of preview.changes) {
-      const block = renderDiffChange(c);
-      if (used + block.length > bodyBudget) {
-        omitted++;
-        continue;
-      }
-      used += block.length;
-      blocks.push(block);
-    }
-
-    const lines = [DIFF_PREVIEW_HEADER, ...blocks];
-    if (omitted > 0) lines.push(`(길이 제한으로 파일 ${omitted}개의 diff는 생략했어요.)`);
-    lines.push(...footerLines);
-    return { context, text: clampToMessageBudget(lines.join('\n')) };
+    const blocks = preview.changes.map(renderDiffChange);
+    return { context, text: assembleBoundedBody(DIFF_PREVIEW_HEADER, footerLines, blocks) };
   }
 
   /**
@@ -521,6 +558,50 @@ export class ResponseComposer {
     return {
       context,
       text: '적용 승인만 기록했어요.\n아직 실제 파일 적용은 수행하지 않았어요.\n파일은 수정되지 않았어요.',
+    };
+  }
+
+  /**
+   * A generated PatchSet preview (Approved Apply Context → PatchSet Preview, ADR-0041). CA Round 1
+   * Required Change #3: "패치 미리보기" framing — a PatchSet REPRESENTATION exists, nothing was applied.
+   * Reuses the Sprint 2r budget-aware, backtick-safe block assembly. Must repeat, not merely mention
+   * once, that files were not modified; never "적용했어요"/"반영했어요"/"수정했어요"/"변경 완료"/"적용 완료".
+   */
+  composePatchSetPreview(context: ConversationContext, preview: PatchSetPreview): OutboundMessage {
+    const blocks = preview.operations.map(renderPatchOperation);
+    return { context, text: assembleBoundedBody(PATCH_PREVIEW_HEADER, [PATCH_PREVIEW_FOOTER], blocks) };
+  }
+
+  /**
+   * No approved apply context to build a patch from (ADR-0041, CA Q3) — no anchor / not APPROVED /
+   * missing approval / missing proposal / all-out-of-scope. Never implies anything was generated or applied.
+   */
+  composePatchUnavailable(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '패치를 만들 수 있는 승인된 코드 변경이 없어요. 먼저 코드 변경을 요청하고 미리보기·적용 승인을 완료해 주세요.',
+    };
+  }
+
+  /**
+   * Approved, but the latest diff/generation could not be built cleanly (ADR-0041, CA Q7) — stale/add/
+   * binary/empty/throw. Safe user-facing message; the failure reason is logged separately (never here).
+   */
+  composePatchGenerationFailed(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '승인된 변경으로 패치를 만들지 못했어요. 파일 내용이 바뀌었거나 표시할 수 없는 변경일 수 있어요. 파일은 수정되지 않았어요.',
+    };
+  }
+
+  /**
+   * A PatchSet was already generated (anchor PATCH_READY) and the user asked again (ADR-0041) — no
+   * regeneration. Must not read as if the patch was applied.
+   */
+  composePatchAlreadyGenerated(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '이미 패치 미리보기를 만들어 뒀어요.\n아직 실제 파일 적용은 하지 않았어요.\n파일은 수정되지 않았어요.',
     };
   }
 }
