@@ -665,3 +665,82 @@ describe('ResponseComposer.composeWorkspace* apply replies (ADR-0042)', () => {
     expect(set.size).toBe(4);
   });
 });
+
+// ── Sprint 2v — Post-Apply Validation Command replies (ADR-0043) ─────────────────────────────────
+
+describe('ResponseComposer.composePostApplyValidation* replies (ADR-0043)', () => {
+  const detailOf = (o: Partial<TestResultDetail> = {}): TestResultDetail => ({
+    kind: 'test',
+    command: 'pnpm',
+    args: ['test'],
+    exitCode: 0,
+    durationMs: 1234,
+    stdout: '',
+    stderr: '',
+    ...o,
+  });
+  // After a real apply the working tree is NOT clean — these must never appear in any validation reply.
+  const FORBIDDEN = ['git 변경 없음', 'clean tree', '완전히 검증', '배포 가능', 'committed', 'pushed', 'deployed', '영구적으로 안전'];
+
+  it('passed: this-run pass + command + bounded output + git-not-run + commit/push-not-performed (CA 5, 21, 24)', () => {
+    const reply = composer.composePostApplyValidationPassed(CTX, detailOf({ stdout: 'all green\n' }));
+    expect(reply.text).toContain('이번 실행 기준으로');
+    expect(reply.text).toContain('pnpm test');
+    expect(reply.text).toContain('all green');
+    expect(reply.text).toContain('git 명령은 실행하지 않았어요');
+    expect(reply.text).toContain('커밋/푸시는 하지 않았어요');
+    for (const w of FORBIDDEN) expect(reply.text, w).not.toContain(w);
+  });
+
+  it('failed: project-result framing + git-not-run + commit/push-not-performed + no-rollback (CA 25)', () => {
+    const reply = composer.composePostApplyValidationFailed(CTX, detailOf({ exitCode: 1, stdout: 'FAIL x\n' }));
+    expect(reply.text).toContain('실패');
+    expect(reply.text).toContain('FAIL x');
+    expect(reply.text).toContain('git 명령은 실행하지 않았어요');
+    expect(reply.text).toContain('커밋/푸시는 하지 않았어요');
+    expect(reply.text).toContain('되돌리기'); // rollback not performed
+    for (const w of FORBIDDEN) expect(reply.text, w).not.toContain(w);
+  });
+
+  it('timeout: distinct from failure, no exit-code verdict, git-not-run + commit/push-not-performed (CA 23, 26)', () => {
+    const timeout = composer.composePostApplyValidationTimedOut(CTX, detailOf({ exitCode: undefined }));
+    const failed = composer.composePostApplyValidationFailed(CTX, detailOf({ exitCode: 1 }));
+    expect(timeout.text).not.toBe(failed.text);
+    expect(timeout.text).toContain('제한 시간');
+    expect(timeout.text).not.toContain('종료 코드'); // no exit-code verdict on a timeout
+    expect(timeout.text).toContain('git 명령은 실행하지 않았어요');
+    expect(timeout.text).toContain('커밋/푸시는 하지 않았어요');
+    for (const w of FORBIDDEN) expect(timeout.text, w).not.toContain(w);
+  });
+
+  it('clarify asks for exactly one and runs nothing (CA #1/#3)', () => {
+    const reply = composer.composePostApplyValidationClarify(CTX);
+    expect(reply.text).toContain('테스트');
+    expect(reply.text).toContain('타입체크');
+  });
+
+  it('unsupported states only pnpm test/typecheck are allowed, distinct from clarify (CA #2)', () => {
+    const unsupported = composer.composePostApplyValidationUnsupported(CTX);
+    expect(unsupported.text).toContain('pnpm test');
+    expect(unsupported.text).toContain('pnpm typecheck');
+    expect(unsupported.text).not.toBe(composer.composePostApplyValidationClarify(CTX).text);
+  });
+
+  it('typecheck label is used when kind is typecheck', () => {
+    const reply = composer.composePostApplyValidationPassed(CTX, detailOf({ kind: 'typecheck', args: ['typecheck'] }));
+    expect(reply.text).toContain('타입체크');
+    expect(reply.text).toContain('pnpm typecheck');
+  });
+
+  it('the six post-apply validation replies are all distinct', () => {
+    const set = new Set([
+      composer.composePostApplyValidationPassed(CTX, detailOf()).text,
+      composer.composePostApplyValidationFailed(CTX, detailOf({ exitCode: 1 })).text,
+      composer.composePostApplyValidationTimedOut(CTX, detailOf({ exitCode: undefined })).text,
+      composer.composePostApplyValidationClarify(CTX).text,
+      composer.composePostApplyValidationUnsupported(CTX).text,
+      composer.composePostApplyValidationUnavailable(CTX).text,
+    ]);
+    expect(set.size).toBe(6);
+  });
+});

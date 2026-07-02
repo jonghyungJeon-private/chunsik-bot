@@ -26,6 +26,7 @@ import type {
   PatchSet,
   ProposedChange,
   Project,
+  RunCommandInput,
   Session,
   Task,
   WorkspaceChange,
@@ -34,6 +35,7 @@ import type {
 } from '../domain';
 import type { Logger } from '../ports';
 import { ResponseComposer } from './response-composer';
+import type { TestResultDetail } from './response-composer';
 import { IntentClassifier } from './intent-classifier';
 import type { CapabilityRouter } from './capability-router';
 import { IntentResolver } from './intent-resolver';
@@ -257,6 +259,7 @@ interface Calls {
   sessionWrites: Session[];
   lastRunRequest?: ExecutionRequest;
   workspaceList: number;
+  workspaceOpen: number;
   classify: number;
   scopeAnchor: number;
   scopeClear: number;
@@ -286,6 +289,8 @@ interface Calls {
   codeProposalsGet: number;
   workspaceApply: number;
   lastWorkspaceApplyInput?: ApplyInput;
+  commandRun: number;
+  lastCommandRunInput?: RunCommandInput;
   loggerWarn: number;
 }
 
@@ -335,6 +340,10 @@ interface Opts {
    *  input (`workspaceChangeOf`); pass 'throw' to simulate a write error, or a literal WorkspaceChange to
    *  force a specific (e.g. FAILED / mismatched) result. */
   workspaceApply?: WorkspaceChange | 'throw';
+  /** `command.run` result (Sprint 2v) — defaults to a SUCCEEDED CommandExecution echoing the input args
+   *  (via `commandExecOf`); pass 'throw' to simulate a runner throw, or a literal CommandExecution to force
+   *  a FAILED / TIMED_OUT result. */
+  commandRun?: CommandExecution | 'throw';
 }
 
 function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Calls } {
@@ -346,6 +355,7 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
     sessionTouch: 0,
     sessionWrites: [],
     workspaceList: 0,
+    workspaceOpen: 0,
     classify: 0,
     scopeAnchor: 0,
     scopeClear: 0,
@@ -363,6 +373,7 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
     patchGet: 0,
     codeProposalsGet: 0,
     workspaceApply: 0,
+    commandRun: 0,
     loggerWarn: 0,
   };
   const composer = new ResponseComposer();
@@ -452,6 +463,7 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
     workspace: {
       async prepare() { return undefined; },
       async open() {
+        calls.workspaceOpen++;
         if (opts.workspaceOpenThrows) throw new Error('open failed');
         return WORKSPACE;
       },
@@ -550,6 +562,17 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
         calls.lastWorkspaceApplyInput = input;
         if (opts.workspaceApply === 'throw') throw new Error('workspace write boom');
         return opts.workspaceApply ?? workspaceChangeOf(input);
+      },
+    },
+    command: {
+      async run(input) {
+        calls.commandRun++;
+        calls.lastCommandRunInput = input;
+        if (opts.commandRun === 'throw') throw new Error('command boom');
+        // default: a SUCCEEDED run echoing the requested args (so kind derives correctly); the id varies by
+        // command so a second validation yields a distinct CommandExecutionRef (latest-only test).
+        const base = commandExecOf(CommandExecutionStatus.SUCCEEDED, input.args, 0, { stdout: 'ok\n' });
+        return opts.commandRun ?? { ...base, id: input.args.includes('typecheck') ? 'cmd-typecheck' : 'cmd-test' };
       },
     },
     logger: { ...silentLogger, warn: () => { calls.loggerWarn++; } },
@@ -1690,12 +1713,13 @@ describe('Approved Apply Context → PatchSet Preview — runtime (Sprint 2t, AD
   it('the full sequence performs no WorkspaceWrite/CommandExecution/Orchestrator call', async () => {
     const { deps, calls } = approvedDeps();
     await new ConversationRuntime(deps).handle(messageOf('패치 만들어줘'));
-    // Patch generation is representation-only: WorkspaceWrite is a dep since Sprint 2u but must never be
-    // called on the patch path, and the Orchestrator is never invoked either.
+    // Patch generation is representation-only: WorkspaceWrite (Sprint 2u) and CommandExecution (Sprint 2v,
+    // via the `command` dep) are deps but must never be called on the patch path, and the Orchestrator is
+    // never invoked either.
     expect(calls.run).toBe(0);
     expect(calls.resume).toBe(0);
     expect(calls.workspaceApply).toBe(0);
-    expect(Object.keys(deps)).not.toContain('command');
+    expect(calls.commandRun).toBe(0);
   });
 
   it('"좋아"/"오케이"/"확인" and ordinary chat with an APPROVED anchor do not trigger patch generation', async () => {
@@ -1903,7 +1927,8 @@ describe('PatchRef → WorkspaceWrite Apply — runtime (Sprint 2u, ADR-0042)', 
     expect(calls.codeGenerationGenerate).toBe(0); // no AI regeneration (CA 45)
     expect(calls.run).toBe(0); // no ExecutionOrchestrator (CA 44)
     expect(calls.resume).toBe(0);
-    expect(Object.keys(deps)).not.toContain('command'); // no CommandExecution dep (CA 42)
+    // `command` is a dep since Sprint 2v (post-apply validation), but the apply path must never run it.
+    expect(calls.commandRun).toBe(0); // no CommandExecution on the apply path (CA 42)
     expect(Object.keys(deps)).not.toContain('git'); // no git dep (CA 43)
   });
 
@@ -1928,6 +1953,285 @@ describe('PatchRef → WorkspaceWrite Apply — runtime (Sprint 2u, ADR-0042)', 
       expect(calls.workspaceApply, text).toBe(0);
       expect(calls.patchGenerate, text).toBe(0);
       expect(result.reply.text, text).toBe(alreadyAppliedText);
+    }
+  });
+});
+
+// ── Sprint 2v — Post-Apply Validation Command (WORKSPACE_APPLIED → CommandExecution, ADR-0043) ────
+
+describe('Post-Apply Validation Command — runtime (Sprint 2v, ADR-0043)', () => {
+  /** A WORKSPACE_APPLIED apply anchor carrying the refs the post-apply validation path needs. */
+  const validatedAnchor = (o: Partial<ApplyPreviewAnchor> = {}): ApplyPreviewAnchor =>
+    approvedAnchorOf({
+      status: 'WORKSPACE_APPLIED',
+      patchRef: { id: 'patch-1', status: PatchStatus.GENERATED },
+      workspaceChangeRef: { id: 'wc-1', status: WorkspaceChangeStatus.APPLIED },
+      ...o,
+    });
+
+  const composer = new ResponseComposer();
+  const clarifyText = composer.composePostApplyValidationClarify(CTX).text;
+  const unsupportedText = composer.composePostApplyValidationUnsupported(CTX).text;
+  const unavailableText = composer.composePostApplyValidationUnavailable(CTX).text;
+
+  // ── Run + selection (CA 1–4) ────────────────────────────────────────────────────────────────
+  it('WORKSPACE_APPLIED + "테스트 돌려줘"/"pnpm test 실행해줘" runs pnpm test once (CA 1–2)', async () => {
+    for (const text of ['테스트 돌려줘', 'pnpm test 실행해줘']) {
+      const { deps, calls } = makeDeps({ applyAnchor: validatedAnchor() });
+      await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.commandRun, text).toBe(1);
+      expect(calls.lastCommandRunInput?.command, text).toBe('pnpm');
+      expect(calls.lastCommandRunInput?.args, text).toEqual(['test']);
+    }
+  });
+
+  it('WORKSPACE_APPLIED + "typecheck 해줘"/"타입체크 해줘" runs pnpm typecheck once (CA 3–4)', async () => {
+    for (const text of ['typecheck 해줘', '타입체크 해줘']) {
+      const { deps, calls } = makeDeps({ applyAnchor: validatedAnchor() });
+      await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.commandRun, text).toBe(1);
+      expect(calls.lastCommandRunInput?.args, text).toEqual(['typecheck']);
+    }
+  });
+
+  // ── Clarify / negative / not-automatic (CA 5–10) ─────────────────────────────────────────────
+  it('"검증해줘" clarifies, no command.run, RESPONDED, no re-anchor (CA 5)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: validatedAnchor() });
+    const result = await new ConversationRuntime(deps).handle(messageOf('검증해줘'));
+    expect(calls.commandRun).toBe(0);
+    expect(calls.applyAnchorSet).toBe(0);
+    expect(result.status).toBe('RESPONDED');
+    expect(result.reply.text).toBe(clarifyText);
+  });
+
+  it('both test AND typecheck requested → clarify, no command.run (CA 6–7)', async () => {
+    for (const text of ['테스트랑 타입체크 해줘', 'pnpm test랑 pnpm typecheck 실행해줘']) {
+      const { deps, calls } = makeDeps({ applyAnchor: validatedAnchor() });
+      const result = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.commandRun, text).toBe(0);
+      expect(result.reply.text, text).toBe(clarifyText);
+    }
+  });
+
+  it('"좋아"/"오케이"/"확인"/"다음 단계 진행" do not run CommandExecution (CA 8–9)', async () => {
+    for (const text of ['좋아', '오케이', '확인', '다음 단계 진행']) {
+      const { deps, calls } = makeDeps({ applyAnchor: validatedAnchor() });
+      await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.commandRun, text).toBe(0);
+    }
+  });
+
+  it('creating a WORKSPACE_APPLIED anchor is NOT automatic validation — apply success runs no command (CA 10)', async () => {
+    // A Sprint 2u apply-success turn (PATCH_READY + "패치 적용해줘") performs zero command.run.
+    const { deps, calls } = makeDeps({
+      applyAnchor: approvedAnchorOf({ status: 'PATCH_READY', patchRef: { id: 'patch-1', status: PatchStatus.GENERATED } }),
+    });
+    await new ConversationRuntime(deps).handle(messageOf('패치 적용해줘'));
+    expect(calls.workspaceApply).toBe(1); // the apply happened
+    expect(calls.commandRun).toBe(0); // but NO validation ran automatically
+  });
+
+  // ── Workspace source / Sprint 2l regression (CA 11–15) ──────────────────────────────────────
+  it('command runs against anchor.workspaceRef + workspaceChangeRef + executionPlanRef (CA 11–12)', async () => {
+    const anchor = validatedAnchor();
+    const { deps, calls } = makeDeps({ applyAnchor: anchor });
+    await new ConversationRuntime(deps).handle(messageOf('테스트 돌려줘'));
+    expect(calls.lastCommandRunInput?.workspaceRef).toEqual(anchor.workspaceRef);
+    expect(calls.lastCommandRunInput?.workspaceChangeRef).toEqual(anchor.workspaceChangeRef);
+    expect(calls.lastCommandRunInput?.executionPlanRef).toEqual(anchor.executionPlanRef);
+    expect(calls.lastCommandRunInput?.approvalRef).toBeUndefined(); // MEDIUM risk → no approval
+  });
+
+  it('with a WORKSPACE_APPLIED anchor the workspace is NOT re-resolved (workspace.open not called) (CA 13)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: validatedAnchor() });
+    await new ConversationRuntime(deps).handle(messageOf('테스트 돌려줘'));
+    expect(calls.workspaceOpen).toBe(0);
+  });
+
+  it('NO WORKSPACE_APPLIED anchor → existing Sprint 2l general test/typecheck flow, not the direct path (CA 14–15)', async () => {
+    const cases: Array<[string, Intent]> = [
+      ['테스트 돌려줘', intentOf(Capability.TEST_EXECUTION, IntentType.RUN_TESTS, true, { kind: 'test' })],
+      ['typecheck 해줘', intentOf(Capability.TEST_EXECUTION, IntentType.RUN_TESTS, true, { kind: 'typecheck' })],
+    ];
+    for (const [text, intent] of cases) {
+      const { deps, calls } = makeDeps({ applyAnchor: null, intent, runOutcome: outcomeOf(ExecutionOutcomeStatus.COMPLETED, 'cmd-1') });
+      await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.commandRun, text).toBe(0); // runtime does not call command.run directly (new path skipped)
+      expect(calls.classify, text).toBe(1); // it goes through the classifier (Sprint 2l path)
+      expect(calls.run, text).toBe(1); // and the existing ExecutionOrchestrator TEST_EXECUTION stage
+    }
+  });
+
+  // ── Command surface / denylist (CA 16–20) ───────────────────────────────────────────────────
+  it('only pnpm test / pnpm typecheck ever reach command.run (CA 16)', async () => {
+    for (const [text, args] of [['테스트 돌려줘', ['test']], ['타입체크 해줘', ['typecheck']]] as const) {
+      const { deps, calls } = makeDeps({ applyAnchor: validatedAnchor() });
+      await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.lastCommandRunInput?.command).toBe('pnpm');
+      expect(calls.lastCommandRunInput?.args).toEqual(args);
+    }
+  });
+
+  it('a validation phrase carrying a dangerous/arbitrary command fragment → unsupported, no command.run (CA 17–19)', async () => {
+    for (const text of [
+      '테스트 돌려줘 rm -rf /',
+      '테스트 돌려줘 && git status',
+      'pnpm test; git commit',
+      'typecheck 해줘 node -e "process.exit(1)"',
+    ]) {
+      const { deps, calls } = makeDeps({ applyAnchor: validatedAnchor() });
+      const result = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.commandRun, text).toBe(0);
+      expect(calls.applyAnchorSet, text).toBe(0);
+      expect(result.status, text).toBe('RESPONDED');
+      expect(result.reply.text, text).toBe(unsupportedText);
+    }
+  });
+
+  it('a pure git request (no validation token) is NOT routed through the validation flow (CA 20)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: validatedAnchor() });
+    await new ConversationRuntime(deps).handle(messageOf('git commit 해줘'));
+    expect(calls.commandRun).toBe(0); // interpret… → null → falls through, not 'unsupported'
+  });
+
+  // ── Rendering (CA 21–27) ────────────────────────────────────────────────────────────────────
+  it('SUCCEEDED → composePostApplyValidationPassed with command + bounded output (CA 21, 24)', async () => {
+    const { deps } = makeDeps({
+      applyAnchor: validatedAnchor(),
+      commandRun: commandExecOf(CommandExecutionStatus.SUCCEEDED, ['test'], 0, { stdout: 'all good\n' }),
+    });
+    const result = await new ConversationRuntime(deps).handle(messageOf('테스트 돌려줘'));
+    expect(result.status).toBe('RESPONDED');
+    expect(result.reply.text).toContain('pnpm test');
+    expect(result.reply.text).toContain('이번 실행 기준으로');
+    expect(result.reply.text).toContain('all good');
+    expect(result.reply.text).toContain('git 명령은 실행하지 않았어요');
+    expect(result.reply.text).toContain('커밋/푸시는 하지 않았어요');
+  });
+
+  it('FAILED → composePostApplyValidationFailed, framed as the project result (CA 22, 25)', async () => {
+    const { deps } = makeDeps({
+      applyAnchor: validatedAnchor(),
+      commandRun: commandExecOf(CommandExecutionStatus.FAILED, ['test'], 1, { stdout: 'FAIL x.test.ts\n' }),
+    });
+    const result = await new ConversationRuntime(deps).handle(messageOf('테스트 돌려줘'));
+    expect(result.reply.text).toContain('pnpm test');
+    expect(result.reply.text).toContain('FAIL x.test.ts');
+    expect(result.reply.text).toContain('git 명령은 실행하지 않았어요');
+    expect(result.reply.text).toContain('커밋/푸시는 하지 않았어요');
+  });
+
+  it('TIMED_OUT reply is distinct from FAILED and includes commit/push wording (CA 23, 26)', async () => {
+    const { deps } = makeDeps({
+      applyAnchor: validatedAnchor(),
+      commandRun: commandExecOf(CommandExecutionStatus.TIMED_OUT, ['test']),
+    });
+    const result = await new ConversationRuntime(deps).handle(messageOf('테스트 돌려줘'));
+    const failedText = composer.composePostApplyValidationFailed(CTX, { kind: 'test', command: 'pnpm', args: ['test'], durationMs: 1, stdout: '', stderr: '' }).text;
+    expect(result.reply.text).not.toBe(failedText);
+    expect(result.reply.text).toContain('제한 시간');
+    expect(result.reply.text).toContain('git 명령은 실행하지 않았어요');
+    expect(result.reply.text).toContain('커밋/푸시는 하지 않았어요');
+  });
+
+  it('no terminal validation reply overstates (deployed / verified / clean tree / 완전히 검증) (CA 27)', async () => {
+    const details: TestResultDetail = { kind: 'test', command: 'pnpm', args: ['test'], exitCode: 0, durationMs: 1, stdout: '', stderr: '' };
+    const replies = [
+      composer.composePostApplyValidationPassed(CTX, details).text,
+      composer.composePostApplyValidationFailed(CTX, details).text,
+      composer.composePostApplyValidationTimedOut(CTX, details).text,
+    ];
+    for (const text of replies) {
+      for (const forbidden of ['완전히 검증', '배포', 'clean tree', 'git 변경 없음', 'committed', 'pushed', 'deployed']) {
+        expect(text, forbidden).not.toContain(forbidden);
+      }
+    }
+  });
+
+  // ── No rollback / anchor kept (CA 28–30) ────────────────────────────────────────────────────
+  it('FAILED → no rollback (no WorkspaceWrite/git), keeps WORKSPACE_APPLIED (CA 28–29)', async () => {
+    const anchor = validatedAnchor();
+    const { deps, calls } = makeDeps({
+      applyAnchor: anchor,
+      commandRun: commandExecOf(CommandExecutionStatus.FAILED, ['test'], 1),
+    });
+    await new ConversationRuntime(deps).handle(messageOf('테스트 돌려줘'));
+    expect(calls.workspaceApply).toBe(0);
+    expect(calls.lastApplyAnchor?.status).toBe('WORKSPACE_APPLIED'); // re-anchored, still applied
+  });
+
+  it('TIMED_OUT keeps WORKSPACE_APPLIED (CA 30)', async () => {
+    const { deps, calls } = makeDeps({
+      applyAnchor: validatedAnchor(),
+      commandRun: commandExecOf(CommandExecutionStatus.TIMED_OUT, ['test']),
+    });
+    await new ConversationRuntime(deps).handle(messageOf('테스트 돌려줘'));
+    expect(calls.lastApplyAnchor?.status).toBe('WORKSPACE_APPLIED');
+  });
+
+  // ── Throw → no ref / no re-anchor (CA 31–32) ────────────────────────────────────────────────
+  it('command.run throws → no postApplyValidationRef, no re-anchor, failure logged (CA 31–32)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: validatedAnchor(), commandRun: 'throw' });
+    const result = await new ConversationRuntime(deps).handle(messageOf('테스트 돌려줘'));
+    expect(calls.commandRun).toBe(1); // it was attempted, then threw
+    expect(calls.applyAnchorSet).toBe(0); // NOT re-anchored (CA #4)
+    expect(calls.loggerWarn).toBe(1);
+    expect(result.reply.text).toBe(unavailableText);
+  });
+
+  // ── Ref preservation / latest-only (CA 33–36) ───────────────────────────────────────────────
+  it('SUCCEEDED/FAILED/TIMED_OUT each preserve postApplyValidationRef on the anchor (CA 33–35)', async () => {
+    const cases: Array<[string, CommandExecutionStatus]> = [
+      ['SUCCEEDED', CommandExecutionStatus.SUCCEEDED],
+      ['FAILED', CommandExecutionStatus.FAILED],
+      ['TIMED_OUT', CommandExecutionStatus.TIMED_OUT],
+    ];
+    for (const [label, status] of cases) {
+      const { deps, calls } = makeDeps({
+        applyAnchor: validatedAnchor(),
+        commandRun: commandExecOf(status, ['test'], status === CommandExecutionStatus.FAILED ? 1 : 0),
+      });
+      await new ConversationRuntime(deps).handle(messageOf('테스트 돌려줘'));
+      expect(calls.applyAnchorSet, label).toBe(1);
+      expect(calls.lastApplyAnchor?.postApplyValidationRef, label).toEqual({ id: 'cmd-1', status });
+      expect(calls.lastApplyAnchor?.status, label).toBe('WORKSPACE_APPLIED');
+    }
+  });
+
+  it('a second validation replaces postApplyValidationRef with the latest ref (CA 36)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: validatedAnchor() }); // stateful anchor fake
+    const runtime = new ConversationRuntime(deps);
+    await runtime.handle(messageOf('테스트 돌려줘'));
+    expect(calls.lastApplyAnchor?.postApplyValidationRef?.id).toBe('cmd-test');
+    await runtime.handle(messageOf('타입체크 해줘'));
+    expect(calls.lastApplyAnchor?.postApplyValidationRef?.id).toBe('cmd-typecheck'); // replaced, not appended
+    expect(calls.commandRun).toBe(2);
+  });
+
+  // ── No new state / no side effects (CA 37–45) ───────────────────────────────────────────────
+  it('the validation path performs no WorkspaceWrite/Patch/CodeGen/git/Orchestrator call (CA 37–45)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: validatedAnchor() });
+    await new ConversationRuntime(deps).handle(messageOf('테스트 돌려줘'));
+    expect(calls.commandRun).toBe(1); // the ONE allow-listed command
+    expect(calls.workspaceApply).toBe(0); // no WorkspaceWrite (CA 39)
+    expect(calls.patchGenerate).toBe(0); // no PatchManager.generate (CA 40)
+    expect(calls.patchGet).toBe(0); // no PatchManager.get (CA 41)
+    expect(calls.codeGenerationGenerate).toBe(0); // no CodeGeneration (CA 42)
+    expect(calls.run).toBe(0); // no ExecutionOrchestrator (CA 44)
+    expect(calls.resume).toBe(0);
+    expect(Object.keys(deps)).not.toContain('git'); // no git dep (CA 43)
+    // no new anchor status (CA 38): the re-anchor keeps WORKSPACE_APPLIED, never WORKSPACE_VALIDATED
+    expect(calls.lastApplyAnchor?.status).toBe('WORKSPACE_APPLIED');
+  });
+
+  it('clarify and unsupported are RESPONDED, record memory, never re-anchor or set a ref (CA #3)', async () => {
+    for (const text of ['검증해줘', '테스트 돌려줘 && git status']) {
+      const { deps, calls } = makeDeps({ applyAnchor: validatedAnchor() });
+      const result = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(result.status, text).toBe('RESPONDED');
+      expect(calls.recordAssistant, text).toBe(1);
+      expect(calls.applyAnchorSet, text).toBe(0);
+      expect(calls.commandRun, text).toBe(0);
     }
   });
 });

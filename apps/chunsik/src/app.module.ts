@@ -378,6 +378,9 @@ const application: Provider[] = [
         tasks,
         workspace,
         commandExecutions,
+        // ADR-0043: reuses the same, already-injected CommandExecutionManager (the sole command runner) as
+        // the post-apply validation runner — no new provider/import/inject; runs only pnpm test/typecheck.
+        command: commandExecutions,
         contextBuilder,
         promptComposer,
         promptRenderer,
