@@ -12,6 +12,7 @@ import {
   approvalRef,
   codeGenerationRef,
   codeProposalRef,
+  commandExecutionRef,
   patchRef,
   workspaceChangeRef,
 } from '../domain';
@@ -26,6 +27,7 @@ import type {
   CodeProposal,
   CodeProposalRef,
   CommandExecution,
+  CommandExecutionRef,
   ContextBundle,
   ConversationContext,
   ExecutionPlanRef,
@@ -41,6 +43,7 @@ import type {
   Project,
   PromptSpec,
   ProposedChange,
+  RunCommandInput,
   Session,
   Task,
   TaskRun,
@@ -207,6 +210,12 @@ export interface ApplyPreviewAnchor {
    *  the file mutation, preserved for a future git/test sprint. Files mutated; git commands / tests NOT
    *  run; the working tree is NOT clean. */
   workspaceChangeRef?: WorkspaceChangeRef;
+  /** The LATEST post-apply validation run on this WORKSPACE_APPLIED anchor (Sprint 2v, ADR-0043) — the
+   *  CommandExecutionRef of a `pnpm test`/`pnpm typecheck` run. Replaced on each new run (latest only; no
+   *  history — CommandExecution storage owns history). Its embedded `status` records SUCCEEDED/FAILED/
+   *  TIMED_OUT. `status` stays `WORKSPACE_APPLIED` — a validation pass is point-in-time, NOT a durable
+   *  "validated" state (no `WORKSPACE_VALIDATED`); git/commit/push/tests-forever are NOT implied. */
+  postApplyValidationRef?: CommandExecutionRef;
 }
 
 /**
@@ -267,6 +276,12 @@ export interface ConversationRuntimeDeps {
     diff(ref: WorkspaceRef, changes: ProposedChange[]): Promise<WorkspaceDiff>;
   };
   readonly commandExecutions: { get(id: Id): Promise<CommandExecution | null> };
+  /** Reused for post-apply validation (Sprint 2v, ADR-0043) — the SAME already-registered
+   *  CommandExecutionManager ExecutionOrchestrator depends on and the runtime already reads via
+   *  `commandExecutions`. The ONLY thing that runs a command; allow-list/dangerous-arg/risk/Ref-gated. On
+   *  this path it only ever runs `pnpm test`/`pnpm typecheck` (derived from the validation intent, never
+   *  user text); it never spawns a shell, calls git, or mutates a file. */
+  readonly command: { run(input: RunCommandInput): Promise<CommandExecution> };
   readonly contextBuilder: { build(task: Task, excludeMemoryIds: Id[]): Promise<ContextBundle> };
   readonly promptComposer: { compose(task: Task, bundle: ContextBundle, readout?: ProjectReadout): PromptSpec };
   readonly promptRenderer: {
@@ -363,6 +378,14 @@ const FINAL_APPLY_WORDS = [
   'apply patch',
   'apply to workspace',
 ];
+
+/** A small deterministic denylist of obvious command intent outside the validation allow-list (Sprint 2v,
+ *  ADR-0043, CA Required Change #2). NOT a shell parser — just enough to refuse a validation phrase that
+ *  also carries a destructive/unrelated command fragment or a shell operator, so it never reaches a run.
+ *  Matches: `rm -rf`, git, curl, cat, grep, npm/pnpm install, pnpm build, node -e/--eval, and the shell
+ *  operators `;` `&&` `||` `|` `>`. */
+const VALIDATION_DENY_FRAGMENT =
+  /(\brm\s+-rf?\b|\bgit\b|\bcurl\b|\bcat\b|\bgrep\b|\b(?:npm|pnpm)\s+install\b|\bpnpm\s+build\b|\bnode\s+--?e(?:val)?\b|;|&&|\|\||\||>)/i;
 
 /** Bound on how many extracted target-path candidates trigger a workspace.list call per turn
  *  (Sprint 2o, ADR-0036) — a chat message must never drive an unbounded number of workspace scans. */
@@ -472,6 +495,39 @@ export class ConversationRuntime {
   }
 
   /**
+   * Explicit post-apply validation intent only (Sprint 2v, ADR-0043) — qualified validation tokens only; a
+   * bare "좋아"/"오케이"/"확인"/"다음 단계 진행"/"계속 진행" (or any message with no validation token) never
+   * matches. The command is DERIVED from the matched kind, never from user text. Returns:
+   *  - `'test'` / `'typecheck'` → run exactly that one allow-listed command;
+   *  - `'ambiguous'` → clarify: bare "검증", OR BOTH test and typecheck requested (CA Round 1 #1 — never a
+   *    silent pick);
+   *  - `'unsupported'` → a validation phrase carrying a dangerous/arbitrary command fragment (CA Round 1 #2
+   *    — refuse, never a run);
+   *  - `null` → not a validation intent at all → fall through (Sprint 2l path / normal routing).
+   * Only consulted inside the WORKSPACE_APPLIED routing guard, so Sprint 2l semantics are untouched.
+   */
+  static interpretPostApplyValidationIntent(
+    text: string,
+  ): 'test' | 'typecheck' | 'ambiguous' | 'unsupported' | null {
+    const t = text.trim().toLowerCase();
+    const mentionsTypecheck = /(typecheck|타입\s*체크|type\s*check)/i.test(t);
+    const mentionsTest = /(테스트|\btest\b)/i.test(t);
+    const actionVerb = /(돌려|실행|run|해줘|해\s*줘)/i.test(t);
+    const wantsTest = (mentionsTest && actionVerb) || /\bpnpm\s+test\b/i.test(t);
+    const wantsValidate = /(검증|validate)/i.test(t);
+    // Gate first: with no validation token this is NOT our branch — a pure "git status 해줘" falls through
+    // untouched (CA Round 1 #7), never a validation "unsupported" reply.
+    if (!mentionsTypecheck && !wantsTest && !wantsValidate) return null;
+    // (CA Round 1 #2) validation phrase + an out-of-allow-list command fragment → unsupported, never a run.
+    if (VALIDATION_DENY_FRAGMENT.test(t)) return 'unsupported';
+    // (CA Round 1 #1) BOTH test and typecheck requested → clarify; NEVER silently pick one.
+    if (mentionsTypecheck && wantsTest) return 'ambiguous';
+    if (mentionsTypecheck) return 'typecheck';
+    if (wantsTest) return 'test';
+    return 'ambiguous'; // "검증" alone
+  }
+
+  /**
    * Handle one inbound message → one transient `TurnResult` (with an `OutboundMessage`). Never sends
    * to the platform (delivery is the facade's job) and never persists runtime state.
    */
@@ -503,6 +559,16 @@ export class ConversationRuntime {
     // approval does, regardless of whether the message is an apply phrase.
     if (applyAnchor?.status === 'AWAITING_APPROVAL') {
       return this.handleApplyApprovalTurn(message, session, actor, applyAnchor);
+    }
+    // (Sprint 2v, ADR-0043) Explicit post-apply validation → run pnpm test / pnpm typecheck via
+    // CommandExecution against the workspace the file was applied to. ONLY on a WORKSPACE_APPLIED anchor;
+    // with no such anchor the message falls through to the existing Sprint 2l general test flow (CA #7).
+    // Validation phrases don't overlap FINAL_APPLY/PATCH/APPLY word-sets, so those branches are untouched.
+    if (applyAnchor?.status === 'WORKSPACE_APPLIED') {
+      const validationKind = ConversationRuntime.interpretPostApplyValidationIntent(message.text);
+      if (validationKind) {
+        return this.handlePostApplyValidationTurn(message, session, applyAnchor, validationKind);
+      }
     }
     // (Sprint 2u, ADR-0042) Explicit final workspace-apply → the first real file mutation. Checked before
     // patch- and apply-intent (FINAL_APPLY_WORDS is non-overlapping with PATCH_WORDS and precedes
@@ -1067,6 +1133,97 @@ export class ConversationRuntime {
       patchId: anchor.patchRef?.id,
       targetFiles: anchor.targetFiles.join(', '),
     }); // deliberately NO diff text / file content
+  }
+
+  /**
+   * An explicit post-apply validation command arrived while the anchor is WORKSPACE_APPLIED (Sprint 2v,
+   * ADR-0043) — run exactly one allow-listed validation command (`pnpm test`/`pnpm typecheck`) through
+   * CommandExecution, against the workspace the file was applied to (`anchor.workspaceRef`), tied to the
+   * applied change (`anchor.workspaceChangeRef`). Never spawns a shell, calls git, mutates a file, or
+   * touches the ExecutionOrchestrator. `kind` came from `interpretPostApplyValidationIntent`:
+   *  - `'unsupported'` → a validation phrase carried an out-of-allow-list command fragment (CA #2);
+   *  - `'ambiguous'`   → bare "검증" or BOTH test+typecheck requested (CA #1);
+   * both are NORMAL responses (RESPONDED), run nothing, never re-anchor, never set a ref (CA #3).
+   */
+  private async handlePostApplyValidationTurn(
+    message: InboundMessage,
+    session: Session,
+    anchor: ApplyPreviewAnchor,
+    kind: 'test' | 'typecheck' | 'ambiguous' | 'unsupported',
+  ): Promise<TurnResult> {
+    // 1. (CA #2/#3) Dangerous/arbitrary command fragment → a distinct "unsupported" reply. NORMAL turn.
+    if (kind === 'unsupported') {
+      return this.respondComposed(message, session, this.deps.composer.composePostApplyValidationUnsupported(message.context));
+    }
+
+    // 2. (CA #1/#3) Ambiguous — bare "검증" OR both test+typecheck → ask for exactly one. NORMAL turn.
+    if (kind === 'ambiguous') {
+      return this.respondComposed(message, session, this.deps.composer.composePostApplyValidationClarify(message.context));
+    }
+
+    // 3. Anchor guard: WORKSPACE_APPLIED must carry the refs we need (defensive; set at apply time).
+    if (!anchor.workspaceRef || !anchor.executionPlanRef) {
+      return this.failComposed(message, session, this.deps.composer.composePostApplyValidationUnavailable(message.context));
+    }
+
+    // 4. Derive exactly one allow-listed command — NEVER from user text (CA Constraint 3 / #2).
+    const args = kind === 'typecheck' ? ['typecheck'] : ['test'];
+
+    // 5. Run via CommandExecution — the ONLY command runner. cwd = the applied workspace (CA Q6); tied to
+    //    the applied change via workspaceChangeRef (CA Q8). `pnpm test`/`pnpm typecheck` are MEDIUM risk →
+    //    no approvalRef needed. (CA #4) A throw BEFORE a CommandExecution exists → no re-anchor, no ref.
+    let execution: CommandExecution;
+    try {
+      execution = await this.deps.command.run({
+        executionPlanRef: anchor.executionPlanRef,
+        workspaceRef: anchor.workspaceRef,
+        ...(anchor.workspaceChangeRef ? { workspaceChangeRef: anchor.workspaceChangeRef } : {}),
+        command: 'pnpm',
+        args,
+      });
+    } catch {
+      this.logPostApplyValidationFailed(session, anchor, 'command execution threw');
+      return this.failComposed(message, session, this.deps.composer.composePostApplyValidationUnavailable(message.context));
+    }
+
+    // 6. (CA #4/#6) A CommandExecution now exists (SUCCEEDED/FAILED/TIMED_OUT). Preserve its ref on the
+    //    anchor — LATEST ONLY (replaces any prior; no history on the anchor). `status` stays
+    //    WORKSPACE_APPLIED — no WORKSPACE_VALIDATED.
+    await this.deps.applyPreviewFlow.anchor(session, {
+      ...anchor,
+      postApplyValidationRef: commandExecutionRef(execution),
+    });
+
+    // 7. Render (CA Q9/Q10/Q11) — reuses the Sprint 2m/2n bounded-output helpers via toTestResultDetail.
+    const detail = ConversationRuntime.toTestResultDetail(execution);
+    if (
+      execution.status === CommandExecutionStatus.SUCCEEDED ||
+      execution.status === CommandExecutionStatus.FAILED
+    ) {
+      const passed = execution.status === CommandExecutionStatus.SUCCEEDED;
+      const reply = passed
+        ? this.deps.composer.composePostApplyValidationPassed(message.context, detail)
+        : this.deps.composer.composePostApplyValidationFailed(message.context, detail);
+      // pass and fail are both the project's result (not a bot error) — recorded as a normal turn.
+      return this.respondComposed(message, session, reply);
+    }
+    if (execution.status === CommandExecutionStatus.TIMED_OUT) {
+      const reply = this.deps.composer.composePostApplyValidationTimedOut(message.context, detail);
+      return this.failComposed(message, session, reply);
+    }
+    // Non-terminal / unexpected (defensive) — CommandExecution normally returns a terminal status.
+    return this.failComposed(message, session, this.deps.composer.composePostApplyValidationUnavailable(message.context));
+  }
+
+  /** Structured, no-content failure log for a post-apply validation error (Sprint 2v) — mirrors the Sprint
+   *  2t/2u pattern; never logs stdout/stderr or file content. */
+  private logPostApplyValidationFailed(session: Session, anchor: ApplyPreviewAnchor, reason: string): void {
+    this.deps.logger.warn('post-apply validation failed', {
+      reason,
+      sessionId: session.id,
+      executionPlanId: anchor.executionPlanRef.id,
+      workspaceChangeId: anchor.workspaceChangeRef?.id,
+    }); // deliberately NO stdout/stderr / file content
   }
 
   /** (C) Resolve the workspace (if the capability needs it), run the execution, and frame the reply. */

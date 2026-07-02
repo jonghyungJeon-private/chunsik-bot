@@ -2460,3 +2460,103 @@ as the sole file mutator), ADR-0041 (Approved Apply Context → PatchSet Preview
 Scope Collection — `normalizeRelativePath`/`targetFiles` authority, reused for the op-path scope check),
 ADR-0031 (Execution Orchestrator — deliberately not extended). Supersedes nothing.
 Plan: `docs/plans/sprint-2u-patchref-to-workspacewrite-apply-plan.md`.
+
+## ADR-0043 — Post-Apply Validation Command (WORKSPACE_APPLIED → explicit validation via CommandExecution)
+
+- **Status:** ✅ Accepted (v2, Phase 2, Sprint 2v — Product Construction), Chief Architect Review:
+  APPROVED WITH CHANGES (7 required changes applied) → PROCEED.
+- **Date:** 2026-07-02
+- **Scope:** After Sprint 2u leaves a `WORKSPACE_APPLIED` apply anchor (a real file mutation happened;
+  git/tests were NOT run), a later turn with an **explicit validation command** runs **exactly one**
+  pre-approved validation command (`pnpm test` or `pnpm typecheck`) through the existing **CommandExecution**
+  capability (CAP-007), against the workspace the file was applied to, and shows the result. Still **no git,
+  no commit/push, no additional file mutation, no rollback, no `ExecutionOrchestrator` change.**
+
+### Most important rule
+> **CommandExecution is the only thing that runs a command, and Sprint 2v runs exactly one derived,
+> allow-listed validation command (`pnpm test`/`pnpm typecheck`) per turn, only on an explicit request, only
+> on a `WORKSPACE_APPLIED` anchor, against `anchor.workspaceRef`.** The command + args are DERIVED from the
+> detected validation intent — never copied from user text. `WORKSPACE_APPLIED` stays `WORKSPACE_APPLIED`; a
+> passing validation is **point-in-time only** (no `WORKSPACE_VALIDATED` state).
+
+### Decision
+- **Reuses `CommandExecutionManager`/`CommandExecution`/`CommandExecutionRef` (CAP-007, ADR-0028) unchanged**
+  — the sole command runner: allow-list (`{'pnpm','npm','node'}`) + dangerous-arg + risk + Ref-only approval
+  gates before the `CommandRunner` port (argv array, no shell, cwd = workspace root, timeout). `pnpm test`/
+  `pnpm typecheck` are MEDIUM risk (`RiskPolicy.assessCommand`) → **no approval** required. Reuses the Sprint
+  2m/2n bounded-output rendering helpers.
+- **`ConversationRuntime` composes it directly** (like every capability since Sprint 2q): on an explicit
+  post-apply validation command with a `WORKSPACE_APPLIED` anchor, it calls `command.run({executionPlanRef:
+  anchor.executionPlanRef, workspaceRef: anchor.workspaceRef, workspaceChangeRef: anchor.workspaceChangeRef,
+  command:'pnpm', args:['test'|'typecheck']})`. **No `ExecutionOrchestrator` call, no new `ExecutionStage`.**
+  Direct call (not the orchestrator) is required so the run reuses `anchor.executionPlanRef` and can carry
+  `workspaceChangeRef` (the orchestrator's `COMMAND_EXECUTION` stage mints its own plan and omits
+  `workspaceChangeRef`).
+- **Validation is explicit; never automatic.** A `WORKSPACE_APPLIED` anchor being created (Sprint 2u apply
+  success) runs zero commands. Validation only fires on a later turn with an explicit validation phrase.
+- **Trigger (CA Round 1 #1/#2).** `interpretPostApplyValidationIntent`: `typecheck`/`타입체크`/`type check` →
+  `pnpm typecheck`; (`테스트`|`test`)+action-verb or `pnpm test` → `pnpm test`; **both requested → clarify
+  (never a silent pick)**; bare `검증`/`validate` → clarify; **a validation phrase carrying a dangerous/
+  arbitrary command fragment → unsupported/reject (no run)** via a small deterministic denylist
+  (`rm -rf`/git/curl/cat/grep/npm|pnpm install/pnpm build/node -e/`;`/`&&`/`||`/`|`/`>`); a message with no
+  validation token → falls through. "좋아"/"오케이"/"확인"/"다음 단계 진행"/"계속 진행" never trigger. Command
+  + args are DERIVED, never user text. **One command per turn.**
+- **Post-apply flow is gated on `WORKSPACE_APPLIED` (CA Round 1 #7).** With no such anchor, the existing
+  Sprint 2l general Live Test Execution flow (classifier → `IntentResolver` → orchestrator `TEST_EXECUTION`)
+  is unchanged; the detector is consulted only inside the `WORKSPACE_APPLIED` routing guard.
+- **Clarify/unsupported are NORMAL responses (CA Round 1 #3)** — `RESPONDED`, record the assistant reply,
+  never `failComposed`; nothing runs, the anchor is not re-anchored, no ref is set.
+- **`postApplyValidationRef` preserved only when a `CommandExecution` exists (CA Round 1 #4/#6).** On a
+  terminal run (SUCCEEDED/FAILED/TIMED_OUT) the anchor is re-anchored with
+  `postApplyValidationRef = commandExecutionRef(execution)` — **latest only** (replaces any prior; no history
+  on the anchor — CommandExecution storage owns history). A throw before an aggregate exists → no re-anchor,
+  no ref. `status` stays `WORKSPACE_APPLIED`. **No `WORKSPACE_VALIDATED`** — a pass can go stale; VALIDATED
+  would overstate durability.
+- **Failure/timeout do not rollback (CA Q10/Q11).** No WorkspaceWrite, no git; failure shows the project's
+  result (not a bot error); timeout is distinct from a failure verdict (no exit code); the anchor is kept.
+- **Precise wording on all terminal outcomes (CA Round 1 #5).** Passed/failed/timeout all state git commands
+  were NOT run **and** commit/push were NOT performed; success is "이번 실행 기준으로 통과했어요"; failure adds
+  that no rollback happened; timeout adds that validation did not complete. Forbidden across all replies:
+  git 변경 없음 / clean tree / committed / pushed / deployed / 완전히 검증됐어요 / 배포 가능해요 / 영구적으로
+  안전.
+- **Validation may create tool/runtime artifacts, but the product makes no clean-tree claim (CA Constraint
+  5).** `pnpm test`/`pnpm typecheck` may write tool caches / build info inside the workspace as a property of
+  the existing CommandExecution environment; this is NOT source mutation — **WorkspaceWrite remains the only
+  source mutator** — and the product never runs git, inspects the tree, or claims it is clean.
+- **No Core/Orchestrator contract change; no new aggregate/repository/migration/capability/port/anchor
+  status.** `CommandExecutionManager` is already a registered provider (reused, unchanged); `PatchManager`
+  gains no behavior and is not called on this path.
+
+### Not implemented (out of scope)
+`git status`/`git diff`/`git add`/`git commit`/`git push` (or any git call) · deployment · `pnpm install`/
+`npm install` · `pnpm build` · `rm`/`cat`/`grep`/`curl`/arbitrary shell · `node arbitrary.js` · any
+user-supplied shell text · command composition/chaining · automatic validation after apply · AI deciding
+which validation to run · running both test and typecheck in one turn · re-running CodeGeneration ·
+regenerating PatchSet · `WorkspaceWrite`/any further file mutation · rollback · `ExecutionOrchestrator` stage
+change or new stage · `Core` contract change · `CommandExecutionManager` behavior change · a
+`WORKSPACE_VALIDATED` anchor state · claiming committed/pushed/tested-forever/verified/deployed/clean tree.
+
+### Consequences
+- + After applying a change, the user can, for the first time, run a bounded validation command (`pnpm
+  test`/`pnpm typecheck`) against the exact workspace the file was modified in — reusing the built, gated
+  CommandExecution capability with zero changes to it, behind an explicit-command gate.
+- + One-command-per-turn + derived-args + a denylist keep the riskiest capability narrow: no arbitrary
+  shell, no both-at-once ambiguity, no destructive fragment slipping through.
+- + The run is tied to the applied change (`workspaceChangeRef`) and preserved as `postApplyValidationRef`,
+  keeping the Execution Ledger chain (Plan → Approval → PatchSet → WorkspaceChange → CommandExecution)
+  verifiable, without inventing a new aggregate or a durable "validated" state.
+- − `ApplyPreviewAnchor` gains one optional field (`postApplyValidationRef?`) — a justified extension
+  (validation-result handoff), latest-only, not a history store.
+- − A validation pass is point-in-time; the product deliberately does not claim durable verification, a
+  clean tree, or deploy-readiness. Git/commit and any test-automation-after-apply remain separate future
+  sprints.
+
+### Relations
+ADR-0028 (CAP-007 Command Execution — `CommandExecutionManager`/`CommandExecution`/`CommandExecutionRef`,
+reused as the sole command runner, unchanged), ADR-0033/0034 (Live Test Execution + Test Result Detail UX —
+`TestResultDetail`, `composeTestResult`/`composeTestTimedOut`, bounded-output helpers reused; the Sprint 2l
+general flow preserved when no `WORKSPACE_APPLIED` anchor exists), ADR-0042 (PatchRef → WorkspaceWrite Apply
+— the `WORKSPACE_APPLIED` anchor + `workspaceRef`/`workspaceChangeRef` this sprint consumes and extends with
+`postApplyValidationRef`), ADR-0025/0026 (Approval/Patch Refs — validation is MEDIUM, no approval; Patch
+untouched), ADR-0031 (Execution Orchestrator — deliberately not extended or called on this path). Supersedes
+nothing. Plan: `docs/plans/sprint-2v-post-apply-validation-command-plan.md`.

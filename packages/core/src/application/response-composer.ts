@@ -655,4 +655,100 @@ export class ResponseComposer {
       text: '이미 파일을 수정했어요. git 명령이나 테스트는 실행하지 않았어요.',
     };
   }
+
+  /**
+   * Post-apply validation PASSED (Post-Apply Validation Command, ADR-0043). Reuses the Sprint 2m/2n
+   * bounded-output helpers. CA Required Change #5: states git commands were NOT run AND commit/push were
+   * NOT performed. "This-run" phrasing only — a pass is point-in-time. Never
+   * committed/pushed/deployed/완전히 검증/배포 가능/clean tree/git 변경 없음.
+   */
+  composePostApplyValidationPassed(context: ConversationContext, detail: TestResultDetail): OutboundMessage {
+    const label = detail.kind === 'typecheck' ? '타입체크' : '테스트';
+    const summary = summarizeOutput(detail.stdout, detail.stderr);
+    const text = clampToMessageBudget(
+      [
+        `이번 실행 기준으로 ${label}가 통과했어요. ✅`,
+        `명령: ${formatCommand(detail)}`,
+        `종료 코드: ${detail.exitCode ?? '-'}`,
+        `실행 시간: ${formatDuration(detail.durationMs)}`,
+        renderExcerptBlock(summary),
+        'git 명령은 실행하지 않았어요. 커밋/푸시는 하지 않았어요.',
+      ].join('\n'),
+    );
+    return { context, text };
+  }
+
+  /**
+   * Post-apply validation FAILED (ADR-0043) — the project's result, not a bot/system error. CA Required
+   * Change #5: git commands were NOT run AND commit/push were NOT performed; and rollback was NOT
+   * performed (the applied file is left as-is). Never git 변경 없음/committed/pushed/deployed/clean tree.
+   */
+  composePostApplyValidationFailed(context: ConversationContext, detail: TestResultDetail): OutboundMessage {
+    const label = detail.kind === 'typecheck' ? '타입체크' : '테스트';
+    const summary = summarizeOutput(detail.stdout, detail.stderr);
+    const text = clampToMessageBudget(
+      [
+        `${label}에서 실패가 있었어요. ❌ (적용한 파일은 그대로 두었어요)`,
+        `명령: ${formatCommand(detail)}`,
+        `종료 코드: ${detail.exitCode ?? '-'}`,
+        `실행 시간: ${formatDuration(detail.durationMs)}`,
+        renderExcerptBlock(summary),
+        'git 명령은 실행하지 않았어요. 커밋/푸시는 하지 않았어요.',
+        '되돌리기(rollback)도 하지 않았어요.',
+      ].join('\n'),
+    );
+    return { context, text };
+  }
+
+  /**
+   * Post-apply validation TIMED_OUT (ADR-0043) — distinct from a failure verdict (CA Q11): the process was
+   * killed, not evaluated, so no exit code is shown. CA Required Change #5: git commands were NOT run AND
+   * commit/push were NOT performed. States validation did not complete; the applied file is left as-is.
+   */
+  composePostApplyValidationTimedOut(context: ConversationContext, detail: TestResultDetail): OutboundMessage {
+    const label = detail.kind === 'typecheck' ? '타입체크' : '테스트';
+    const text = clampToMessageBudget(
+      [
+        `${label}가 제한 시간 안에 끝나지 않아 중단됐어요. (검증이 끝까지 완료되지 않았어요)`,
+        `명령: ${formatCommand(detail)}`,
+        `실행 시간: ${formatDuration(detail.durationMs)}`,
+        'git 명령은 실행하지 않았어요. 커밋/푸시는 하지 않았어요.',
+        '적용한 파일은 그대로 있어요.',
+      ].join('\n'),
+    );
+    return { context, text };
+  }
+
+  /**
+   * Ambiguous validation — bare "검증", OR both test and typecheck requested (ADR-0043, CA Round 1 #1). Ask
+   * for exactly one. A NORMAL response (RESPONDED), never a failure (CA Round 1 #3); no command runs.
+   */
+  composePostApplyValidationClarify(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '한 번에 하나만 검증할 수 있어요. "테스트" 또는 "타입체크" 중에 무엇을 실행할지 알려 주세요. (pnpm test / pnpm typecheck)',
+    };
+  }
+
+  /**
+   * A validation phrase carried a command outside the allow-list (ADR-0043, CA Round 1 #2) — distinct from
+   * the ambiguous "검증" clarify. A NORMAL response (RESPONDED); no command runs.
+   */
+  composePostApplyValidationUnsupported(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '검증 명령은 pnpm test 또는 pnpm typecheck만 실행할 수 있어요. 다른 명령은 실행하지 않았어요.',
+    };
+  }
+
+  /**
+   * Validation could not run at all (unexpected throw / non-terminal status, ADR-0043) — not a validation
+   * verdict. States git commands were NOT run and commit/push were NOT performed.
+   */
+  composePostApplyValidationUnavailable(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '검증 명령을 실행할 수 없었어요. 잠시 후 다시 시도해 주세요. git 명령은 실행하지 않았어요. 커밋/푸시는 하지 않았어요.',
+    };
+  }
 }
