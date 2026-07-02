@@ -1010,3 +1010,90 @@ describe('ResponseComposer.composeCommitExecution* replies (Sprint 2y, ADR-0046)
     expect(set.size).toBe(6);
   });
 });
+
+describe('ResponseComposer.composePush* replies (Sprint 2z, ADR-0047)', () => {
+  const HASH = '0123456789abcdef0123456789abcdef01234567';
+  const OVERCLAIM = ['pushed', 'deployed', 'ready to push', 'push-safe', 'ready to deploy', 'safe to deploy', '푸시 완료', '푸시했', '배포 완료', '배포했'];
+  const reqInput = { commitHash: HASH, remote: 'origin', branch: 'main', upstream: 'origin/main', ahead: 2 };
+
+  it('composePushApprovalRequested says approval-only + no push + point-in-time, with hash/remote/branch/ahead (CA 83)', () => {
+    const reply = composer.composePushApprovalRequested(CTX, reqInput);
+    expect(reply.text).toContain('push 승인을 요청했어요');
+    expect(reply.text).toContain(HASH.slice(0, 7));
+    expect(reply.text).toContain('origin/main');
+    expect(reply.text).toContain('2개 앞섬');
+    expect(reply.text).toContain('실제 git push를 하지 않아요');
+    expect(reply.text).toContain('실제 push 실행 전에는 다시 확인');
+    for (const f of OVERCLAIM) expect(reply.text, f).not.toContain(f);
+  });
+
+  it('composePushApprovalRequested bounds a long branch (CA 6/48)', () => {
+    const longBranch = 'feature/' + 'x'.repeat(200);
+    const reply = composer.composePushApprovalRequested(CTX, { ...reqInput, branch: longBranch });
+    // the displayed branch is capped at 80 chars — the full 200-char string never appears verbatim
+    expect(reply.text).not.toContain(longBranch);
+  });
+
+  it('composePushApprovalRecorded / denied / cancelled say no push; deny/cancel say commit remains local (CA 84–85)', () => {
+    expect(composer.composePushApprovalRecorded(CTX).text).toContain('아직 실제 git push는 하지 않았어요');
+    for (const reply of [composer.composePushApprovalDenied(CTX), composer.composePushApprovalCancelled(CTX)]) {
+      expect(reply.text).toContain('커밋은 로컬에 그대로 있어요');
+      expect(reply.text).toContain('git push는 하지 않았어요');
+    }
+  });
+
+  it('composePushApprovalUnavailable / status-unavailable / no-upstream / dirty-tree never imply pushed (CA 86/88–90)', () => {
+    const unavailable = composer.composePushApprovalUnavailable(CTX);
+    expect(unavailable.text).toContain('git push는 하지 않았어요');
+    const status = composer.composePushStatusUnavailable(CTX);
+    expect(status.text).not.toContain('git 명령은 실행하지 않았어요'); // a read WAS attempted
+    expect(status.text).toContain('CommandExecution');
+    expect(status.text).toContain('push 승인 요청은 만들지 않았어요');
+    expect(composer.composePushNoUpstream(CTX).text).toContain('업스트림을 새로 만들지 않아요');
+    expect(composer.composePushDirtyWorkingTree(CTX).text).toContain('먼저 커밋하거나');
+  });
+
+  it('composePushAlreadyApproved says approved but not pushed (CA 87)', () => {
+    const reply = composer.composePushAlreadyApproved(CTX);
+    expect(reply.text).toContain('이미 push 승인을 받아 뒀어요');
+    expect(reply.text).toContain('아직 실제 git push는 하지 않았어요');
+  });
+
+  it('no push reply overclaims pushed/deployed/ready-to-push/push-safe (CA 91)', () => {
+    const replies = [
+      composer.composePushApprovalRequested(CTX, reqInput),
+      composer.composePushApprovalRecorded(CTX),
+      composer.composePushApprovalDenied(CTX),
+      composer.composePushApprovalCancelled(CTX),
+      composer.composePushApprovalUnavailable(CTX),
+      composer.composePushStatusUnavailable(CTX),
+      composer.composePushHeadMovedUnavailable(CTX),
+      composer.composePushDirtyWorkingTree(CTX),
+      composer.composePushNoUpstream(CTX),
+      composer.composePushNothingToPush(CTX),
+      composer.composePushDiverged(CTX),
+      composer.composePushAlreadyApproved(CTX),
+      composer.composePushUnsupportedCompanion(CTX),
+    ];
+    for (const reply of replies) for (const f of OVERCLAIM) expect(reply.text, f).not.toContain(f);
+  });
+
+  it('the thirteen push replies are all distinct', () => {
+    const set = new Set([
+      composer.composePushApprovalRequested(CTX, reqInput).text,
+      composer.composePushApprovalRecorded(CTX).text,
+      composer.composePushApprovalDenied(CTX).text,
+      composer.composePushApprovalCancelled(CTX).text,
+      composer.composePushApprovalUnavailable(CTX).text,
+      composer.composePushStatusUnavailable(CTX).text,
+      composer.composePushHeadMovedUnavailable(CTX).text,
+      composer.composePushDirtyWorkingTree(CTX).text,
+      composer.composePushNoUpstream(CTX).text,
+      composer.composePushNothingToPush(CTX).text,
+      composer.composePushDiverged(CTX).text,
+      composer.composePushAlreadyApproved(CTX).text,
+      composer.composePushUnsupportedCompanion(CTX).text,
+    ]);
+    expect(set.size).toBe(13);
+  });
+});

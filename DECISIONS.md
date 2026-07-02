@@ -2846,3 +2846,100 @@ reused), ADR-0044 (Post-Validation Git Status Preview — read-only `git.status`
 ADR-0023 (CAP-002 Git — **extended from read-only with its first mutating method**, argv-only, no push),
 ADR-0031 (Execution Orchestrator — deliberately not extended or called). Supersedes nothing. Plan:
 `docs/plans/sprint-2y-approved-git-commit-execution-plan.md`.
+
+## ADR-0047 — Explicit Git Push Approval (GIT_COMMITTED → push approval halt, NO remote mutation)
+
+- **Status:** ✅ Accepted (v2, Phase 2, Sprint 2z — Product Construction), Chief Architect Review:
+  APPROVED WITH CHANGES (14 required changes applied) → proceed.
+- **Date:** 2026-07-03
+- **Scope:** After Sprint 2y leaves a `GIT_COMMITTED` anchor (a local commit exists, nothing pushed), an
+  explicit git-**push** request ("푸시해줘"/"원격에 올려줘"/"git push 해줘"/"push this commit") **plans** a
+  push: re-verifies the committed context, performs the read-only Git inspection needed to prepare a push,
+  creates a **CRITICAL `ApprovalRequest`**, and halts at `PUSH_APPROVAL_PENDING` → approve → `PUSH_APPROVED`.
+  **This sprint performs NO remote mutation** — no `git push`, not even after approval (execution is a future
+  Sprint 3a+). It only creates the approval gate.
+
+### Most important rule
+> **`git push` mutates a remote, shared repository, so Sprint 2z stops before it.** The runtime reads only
+> `git.info` + `git.status` (read-only, **no network fetch**, no CommandExecution/shell), creates a CRITICAL
+> `ApprovalRequest`, and halts. Nothing push-mutating runs — not on request, not on approval. `PUSH_APPROVED`
+> means the push was **approved, not performed**, and is a **point-in-time snapshot** (future push execution
+> must re-read HEAD/upstream/ahead/behind before mutating). There is **no `GIT_PUSHED`/`PUSHED` state** and no
+> overclaim (pushed / ready-to-push / push-safe / deployed / PR-created).
+
+### Decision
+- **Push is a remote repository mutation; Sprint 2z creates the approval gate only.** Reuses
+  `ApprovalManager.requestForRisk`/`decide`/`get` + `approvalRef()` (CAP-004) and the 2x/2y approval-halt
+  pattern (plan-less anchor + status interception, `interpretDecision`/`decisionOf`/`composeApprovalNotice`).
+  `requestForRisk` creates a PENDING **CRITICAL** request (never auto-approves; `RiskPolicy.requiresApproval`
+  is true for CRITICAL). **Risk is CRITICAL** — remote shared-state mutation, a larger blast radius than a
+  local commit (HIGH in 2x).
+- **`GIT_COMMITTED` required; explicit push phrase required; NO global/no-anchor push handling (CA #1).**
+  Push handling is anchored to `GIT_COMMITTED` (plan a push) / `PUSH_APPROVAL_PENDING` (intercept → decision)
+  / `PUSH_APPROVED` (already approved) only. `WORKSPACE_APPLIED` (2w mutating reject), `COMMIT_APPROVED` (2y
+  `composeCommitPushUnsupported`), `COMMIT_APPROVAL_PENDING` (2x decision), and **no anchor** (existing
+  classification/fallback) are all UNCHANGED. No automatic push after a local commit or after approval.
+- **New anchor statuses `PUSH_APPROVAL_PENDING` / `PUSH_APPROVED`.** No `GIT_PUSHED`/`PUSHED`. Push context is
+  **distinct** from commit context (CA #3): `pushApprovalId`/`pushCommitHash`/`pushRemote`/`pushBranch`/
+  `pushUpstreamRef` — **preserved at `PUSH_APPROVED` (CA #8)**; cleared only on deny/cancel (revert to
+  `GIT_COMMITTED`); commit context preserved throughout.
+- **Trigger detection (CA #2).** `interpretPushIntent`: a forbidden-companion is classified **only when a
+  push word is present** — a bare "배포"/"branch"/"tag"/"reset" is NOT push handling. push + force/PR/deploy/
+  tag/branch/reset/checkout/stash/merge/rebase → `composePushUnsupportedCompanion` (no approval); a plain
+  push word → push approval; else null (→ existing fallback).
+- **Read-only inspection (CA #1-Q1).** Reuses `GitManager.info` (branch/headSha/detached) + `GitManager.status`,
+  with a read-only **parser extension**: `git status --porcelain=v1 -b` already fetches the
+  `## <branch>...<remote>/<branch> [ahead N, behind M]` header, so the parser now populates the reserved
+  `GitStatus.ahead`/`behind` **plus a new `GitStatus.upstream?`** — **no new git subcommand, no new spawn, no
+  network fetch**. No `GitProvider`/`GitManager` push method (CA #14). The runtime `git` dep is widened with
+  `info` (type-only). No upstream ⇒ `upstream`/`ahead`/`behind` all `undefined` (distinct from `0`, CA #12).
+- **Pre-approval verification (Constraint 8, CA #5/#10/#11).** Block (no approval) on: incomplete committed
+  context; commitHash not SHA-shaped; `git.info`/`git.status` read failure (`composePushStatusUnavailable`);
+  **detached HEAD or HEAD ≠ committed hash** (`composePushHeadMovedUnavailable`); **dirty working tree**
+  (`composePushDirtyWorkingTree`, CA #10); **no or unparseable upstream** (`composePushNoUpstream`; upstream
+  must parse to `<remote>/<branch>` with non-empty parts, no control chars, bounded, remote whitespace-free —
+  CA #5); branch not ahead (`composePushNothingToPush`); behind > 0 diverged (`composePushDiverged`, no force).
+  Remote/branch are **derived from the upstream, never user-provided** (Constraint 7); split on the FIRST `/`
+  (branch may contain `/`, e.g. `feature/x`). All facts are point-in-time.
+- **Approval reason (CA #4/#6/#7/#13).** operation "git push approval planning" · commit sha · **bounded**
+  remote/branch/upstream · ahead count · risk CRITICAL · "no git push has been performed" · "records
+  permission only; actual git push is NOT executed in Sprint 2z — future execution requires a separate step" ·
+  "point-in-time snapshot; re-read Git state before pushing". **No raw diff/file content; NO validation/test
+  "push-ready" context (CA #13).**
+- **Strict decision guards (CA #3/#9).** Before deciding: complete pending context (`PUSH_APPROVAL_PENDING` +
+  `pushApprovalId` + `pushCommitHash` + `pushRemote` + `pushBranch` + `pushUpstreamRef` + `commitHash` +
+  `workspaceRef` + `executionPlanRef`) and `approvals.get(pushApprovalId)` exists/PENDING/same-plan. Any
+  failure → safe failure, no `decide`/git/re-anchor. **A push/force/deploy phrase while pending is ambiguous
+  → re-prompt** (never routed to unsupported-companion; the pending approval stays primary). Approve →
+  `PUSH_APPROVED` preserving all context; deny/cancel → `GIT_COMMITTED` clearing only push fields. NO git push.
+- **No Core/Orchestrator contract change; no `app.module.ts` change.** No CommandExecution/shell git; runtime
+  never shells out. No `GitProvider`/`GitManager` push method.
+
+### Not implemented (out of scope)
+Actual `git push` execution (Sprint 3a+) · `GitProvider.push`/`GitManager.push`/a push dep method · force
+push (`--force`/`-f`/강제) · PR creation · deployment · automatic push · push from any state other than
+`GIT_COMMITTED` · a global/no-anchor push handler · user-provided/arbitrary remote or branch · upstream
+creation · tags · branch creation · `reset`/`checkout`/`stash`/`merge`/`rebase` · a `GIT_PUSHED`/`PUSHED`
+state · durable push-ready/deploy-ready/clean-tree semantics · `GitCommit` aggregate · CommandExecution git ·
+runtime shell-out · WorkspaceWrite/Patch/CodeGeneration · ExecutionOrchestrator change.
+
+### Consequences
+- + The user can, for the first time, request a git push of the local commit and get a bounded, read-only
+  push-target summary + a CRITICAL approval gate — behind an explicit request, gated by a clean tree, an
+  existing upstream, and an ahead-not-diverged branch, with zero remote mutation.
+- + Reusing the read-only `-b` header data (already fetched) for upstream/ahead/behind keeps the surface
+  minimal (no new git command, no network fetch); the CRITICAL gate matches push's blast radius.
+- − `ApplyPreviewAnchor` gains two statuses + five push fields; `GitStatus` gains `upstream?`; a justified
+  extension for the future push-execution sprint, not scope creep; nothing new is persisted.
+- − Approval is recorded but the push is deliberately not performed and is not durable push-ready; actual
+  `git push` remains a separate, individually-reviewed future sprint that must re-read Git state first.
+
+### Relations
+ADR-0046 (Approved Git Commit Execution — provides the `GIT_COMMITTED` anchor + `commitHash`/`committedFiles`
+this sprint consumes), ADR-0045 (Explicit Git Commit Approval — the approval-halt + plan-less anchor +
+status-interception pattern reused, and the distinct-approval-id discipline), ADR-0044 (Post-Validation Git
+Status Preview — read-only `git.status` reused; the `-b` parser extended for upstream/ahead/behind), ADR-0025
+(CAP-004 Approval — `ApprovalManager`/`approvalRef` reused, risk CRITICAL), ADR-0023 (CAP-002 Git — read-only
+`info`/`status` reused, **no push mutation added**), ADR-0031 (Execution Orchestrator — deliberately not
+extended or called). Supersedes nothing. Plan:
+`docs/plans/sprint-2z-explicit-git-push-approval-plan.md`.

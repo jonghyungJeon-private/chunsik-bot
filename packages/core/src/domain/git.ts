@@ -10,12 +10,16 @@ export interface GitStatus {
   staged: string[];
   unstaged: string[];
   untracked: string[];
-  // Reserved optional fields (ADR-0023). NOT populated in Sprint 2b — declared now
-  // so future capabilities (Approval, Patch, Workspace Write) add no domain ripple.
-  /** Commits ahead of upstream. */
+  // `ahead`/`behind` are NOW populated (Sprint 2z, ADR-0047) from the `git status -b` branch header —
+  // relative to the LOCAL remote-tracking ref (no network fetch). Both are `undefined` when there is no
+  // upstream (distinct from `0` = in sync). The other reserved fields (ADR-0023) stay unpopulated.
+  /** Commits ahead of the upstream tracking ref; `undefined` when there is no upstream. */
   ahead?: number;
-  /** Commits behind upstream. */
+  /** Commits behind the upstream tracking ref; `undefined` when there is no upstream. */
   behind?: number;
+  /** Upstream tracking ref (e.g. "origin/main"), parsed from the `-b` header; `undefined` when the branch
+   *  has no upstream (Sprint 2z, ADR-0047). Read-only; no network fetch. */
+  upstream?: string;
   /** True when HEAD is detached. */
   isDetached?: boolean;
   /** True when the index has unmerged/conflicted paths. */
