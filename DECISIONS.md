@@ -2943,3 +2943,107 @@ Status Preview — read-only `git.status` reused; the `-b` parser extended for u
 `info`/`status` reused, **no push mutation added**), ADR-0031 (Execution Orchestrator — deliberately not
 extended or called). Supersedes nothing. Plan:
 `docs/plans/sprint-2z-explicit-git-push-approval-plan.md`.
+
+## ADR-0048 — Approved Git Push Execution (PUSH_APPROVED → exact approved `git push`, first remote mutation)
+
+- **Status:** ✅ Accepted (v2, Phase 3, Sprint 3a — Product Construction), Chief Architect Review:
+  APPROVED WITH CHANGES (16 required changes applied) → proceed.
+- **Date:** 2026-07-03
+- **Scope:** After Sprint 2z leaves a `PUSH_APPROVED` anchor (a CRITICAL push approval is recorded, nothing
+  pushed), an explicit push-**execution** command ("승인된 push 실행해줘"/"push 실행해줘"/"이제 실제 push
+  해줘"/"execute approved push"/"push approved commit") performs **the exact approved push**: re-verifies the
+  live approval + the persisted approved target, **re-reads Git state**, re-validates HEAD/upstream/ahead/
+  behind/clean-tree against the approved snapshot, then pushes exactly the approved commit to the exact
+  approved upstream and re-anchors `GIT_PUSHED`. This is the product's **FIRST real remote mutation**.
+
+### Most important rule
+> **A push is only ever the exact approved commit to the exact approved upstream, and only after the approved
+> Git snapshot is re-proven against a fresh read.** Any drift → **no push, safe failure**. `GIT_PUSHED` means
+> pushed to the approved upstream — **never PR-created, never deployed, never ready-to-push/push-safe/
+> deploy-ready.** Because a push mutates a remote that may already have changed by result-validation time,
+> the wording never claims "remote unchanged" unless provable and **never rolls back**.
+
+### Decision
+- **Second mutating Git method; first REMOTE mutation (Q1/Q2, CA #1/#4/#15).** `GitPushResult
+  {remote,branch,upstreamRef,commitHash}` (domain) + `GitProvider.pushApprovedCommit(rootPath,remote,branch,
+  commitHash)` + `GitManager.pushApprovedCommit({rootPath,remote,branch,commitHash,approvalRef})`. Mirrors
+  the 2y commit template: the **manager** is Ref-gated (`approvalRef.status === APPROVED`) + defensive
+  validation (safe remote/branch, SHA-shaped commitHash); the **provider** independently validates the
+  target and is argv-only. **`ApprovalRef` → manager, not provider.** **No generic `push` API** (CA #15).
+  **`GitPushResult` is the provider-reported successful target after `git push` exited 0 — NOT an independent
+  remote verification (CA #1);** the runtime uses it only for local result-integrity checking; replies never
+  overclaim (verified-forever / push-safe / deploy-ready).
+- **Exact command (Q3, CA #5).** `git --no-pager push <remote> HEAD:<branch>` — argv only, one refspec
+  element. **Never** bare `git push`/`--all`/`--tags`/`--force`/`-f`/`-u`/`--set-upstream`, no arbitrary
+  refspec, no user-provided remote/branch. `HEAD:<branch>` pushes the current HEAD (runtime-verified ==
+  `commitHash`) to the approved branch on the approved remote.
+- **Conservative git ref validation (Q4, CA #4).** A shared `push-target.ts` (`isSafePushRemote` /
+  `isSafePushBranch`) reused by the runtime pre-mutation guard, the manager backstop, and the adapter's
+  `assertSafePushTarget`. remote: non-empty, bounded, no leading `-`, no `/`/`:`/whitespace/control. branch:
+  may contain single `/`; rejects leading `-`/`/`, whitespace, control, `:` `~` `^` `?` `*` `[` `\`, `..`,
+  `@{`, `//`, trailing `/`, `.lock` suffix. An unsafe branch **never reaches argv** (adapter throws first,
+  CA #5); shell escaping is not a substitute.
+- **`ConversationRuntime` composes it directly.** New anchor status `GIT_PUSHED` + fields
+  `pushedCommitHash`/`pushedRemote`/`pushedBranch`/`pushedUpstreamRef`. **No `GitPush` aggregate** (Q11).
+  Runtime `git` dep widened with `pushApprovedCommit` (type-only).
+- **Trigger + routing (CA #7/#8/#9).** `interpretPushExecutionIntent`: a forbidden-companion is classified
+  only when a push/exec word is present (2z CA #2 lesson); an explicit execution phrase → `'execute'`; a
+  bare push word (no exec word) → null (→ 2z already-approved). Execution handling is **gated to
+  `PUSH_APPROVED` (execute) and `GIT_PUSHED` (already-pushed) only**. `GIT_COMMITTED` + a push-execution
+  phrase stays the **2z push-APPROVAL** flow (both "이제 실제 push 해줘" and "execute approved push" contain
+  a push word → CRITICAL approval, not execute — CA #8); `PUSH_APPROVAL_PENDING` stays the 2z decision flow
+  (ambiguous → re-prompt — CA #9). `GIT_PUSHED` + execution/push phrase → already pushed (CA #7); + PR/deploy
+  phrase → already-pushed + future-sprint (CA #13).
+- **Re-validation before mutation (Constraint 3/4, Q5-Q9, CA #3/#6).** Block (no push) on: incomplete
+  context; **unsafe/malformed persisted target** (CA #3); approval not APPROVED/plan-mismatched/missing;
+  `git.info`/`git.status` read failure; detached HEAD or `HEAD !== pushCommitHash` or `commitHash !==
+  pushCommitHash`; dirty working tree; `upstream` missing/`!== pushUpstreamRef` or parsed remote/branch `!==`
+  the approved; ahead < 1; behind > 0. **The approved target is the upstream ref, not the local branch name;
+  `info.branch` is used only for detached detection + logging — local branch is NOT required to equal
+  `pushBranch` (CA #6).**
+- **Result integrity + remote-mutation safety (Q10, CA #2/#10/#11/#16).** After a successful provider push,
+  a result-integrity gate checks `remote`/`branch`/`upstreamRef`/`commitHash` == the approved; a mismatch →
+  `composePushResultUnverified` ("push may have been attempted; result could not be verified; check the
+  remote; no rollback"), **keep `PUSH_APPROVED`, no `GIT_PUSHED`**. A provider throw →
+  `composePushExecutionFailed` ("push did not complete; check the remote if unsure; no rollback"; never
+  "remote unchanged"), **keep `PUSH_APPROVED`, no `GIT_PUSHED`**. Pre-push failures may state git push was
+  **not attempted**. **Remote rollback is not attempted in Sprint 3a; any remote correction requires a
+  separate CA-gated plan.**
+- **On success (Q12, CA #12/#14).** Re-anchor `GIT_PUSHED`, store the pushed target, **preserve the full
+  audit context** (`pushApprovalId`/`pushCommitHash`/`pushRemote`/`pushBranch`/`pushUpstreamRef`/
+  `commitApprovalId`/`commitHash`/`committedFiles`/`workspaceRef`/`workspaceChangeRef`/`targetFiles`/
+  `executionPlanRef`/`postApplyValidationRef`). Reply: short hash + remote/branch + **no PR/deployment**, no
+  readiness claims.
+- **No Core/Orchestrator contract change; no `app.module.ts` change** (the `git` dep carries the
+  already-registered GitManager). No CommandExecution/shell git; runtime never shells out and never builds
+  low-level push argv (the capability owns it).
+
+### Not implemented (out of scope)
+force push (`--force`/`-f`/강제) · bare `git push`/`--all`/`--tags`/`-u`/`--set-upstream` · arbitrary
+refspec/remote/branch · user-provided remote/branch · upstream/branch creation · tags · PR creation ·
+deployment · automatic push · push from any state other than `PUSH_APPROVED` · a generic `push` API ·
+CommandExecution-based git · runtime shell-out · reset/checkout/stash/merge/rebase · **remote-mutation
+rollback** · a `GitPush` aggregate · ExecutionOrchestrator change · WorkspaceWrite/Patch/CodeGeneration.
+
+### Consequences
+- + The user can, for the first time, execute a git push of the approved local commit — behind an explicit
+  execution command, gated by a still-valid CRITICAL approval and an exact-snapshot re-check against a
+  freshly-read Git state, pushing exactly the approved commit to the exact approved upstream and nothing else.
+- + Mirroring the 2y Ref-gate + provider-argv + result-integrity template, plus conservative ref validation
+  and the "provider result is not independent remote verification" framing, keeps the first remote mutation
+  conservative and honest under partial-failure uncertainty.
+- − `ApplyPreviewAnchor` gains one status + four pushed fields; `GitProvider`/`GitManager` gain one mutating
+  method each; a shared ref validator is added — a justified, individually-reviewed extension. Nothing is
+  persisted beyond the pushed target on the anchor (no aggregate).
+- − Only a push is performed; **PR creation and deployment remain separate, individually-reviewed future
+  sprints**, and remote rollback is deliberately not attempted.
+
+### Relations
+ADR-0047 (Explicit Git Push Approval — provides the `PUSH_APPROVED` anchor + `pushApprovalId`/`pushCommitHash`/
+`pushRemote`/`pushBranch`/`pushUpstreamRef` this sprint consumes), ADR-0046 (Approved Git Commit Execution —
+the Ref-gate + provider-argv + result-integrity template mirrored), ADR-0044/ADR-0047 (read-only `info`/
+`status` + upstream/ahead/behind parser + `parsePushUpstream` reused for the fresh re-validation), ADR-0025
+(CAP-004 Approval — `ApprovalManager.get`/`approvalRef` reused, risk CRITICAL), ADR-0023 (CAP-002 Git —
+**second mutating method, the first remote**, argv-only), ADR-0031 (Execution Orchestrator — deliberately not
+extended or called). Supersedes nothing. Plan:
+`docs/plans/sprint-3a-approved-git-push-execution-plan.md`.

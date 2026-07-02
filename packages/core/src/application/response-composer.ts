@@ -1223,4 +1223,84 @@ export class ResponseComposer {
       text: 'push 승인만 준비할 수 있어요. force push/PR/배포/태그/브랜치/reset 같은 다른 작업은 지원하지 않아요. git push는 하지 않았어요.',
     };
   }
+
+  /**
+   * Approved git push EXECUTED (Sprint 3a, ADR-0048) — the first remote mutation. States the short hash +
+   * bounded remote/branch and, per the no-overclaim rule, that PR creation and deployment were NOT done.
+   * Never says ready-to-push / push-safe / deploy-ready / PR created (CA #1/#14).
+   */
+  composePushExecuted(
+    context: ConversationContext,
+    input: { commitHash: string; remote: string; branch: string },
+  ): OutboundMessage {
+    const shortHash = input.commitHash.slice(0, 7);
+    const remote = input.remote.slice(0, MAX_GIT_REF_DISPLAY);
+    const branch = input.branch.slice(0, MAX_GIT_REF_DISPLAY);
+    const text = clampToMessageBudget(
+      [`원격에 push했어요: ${shortHash} → ${remote}/${branch}`, 'PR 생성과 배포는 하지 않았어요.'].join('\n'),
+    );
+    return { context, text };
+  }
+
+  /**
+   * Push execution not available (Sprint 3a, ADR-0048, CA #2) — a PRE-push failure (wrong state / stale
+   * approval / HEAD·upstream drift / malformed persisted target). Safe to state git push was NOT attempted;
+   * a new push approval is needed.
+   */
+  composePushExecutionUnavailable(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '지금은 승인된 push를 실행할 수 없어요. 승인 이후 상태가 달라졌거나 승인이 유효하지 않아요. 다시 push 승인을 받아 주세요. git push는 시도하지 않았어요.',
+    };
+  }
+
+  /**
+   * The `git push` provider call failed (Sprint 3a, ADR-0048, CA #2/#10) — do NOT claim the remote is
+   * unchanged / definitely not pushed; say the push did not complete and the remote should be checked if
+   * unsure; NO rollback. No raw stderr (adapter masks).
+   */
+  composePushExecutionFailed(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: 'push를 완료하지 못했어요. 원격 상태는 필요하면 직접 확인해 주세요. rollback은 하지 않았어요.',
+    };
+  }
+
+  /**
+   * The `git push` provider reported success but the result did not match the approved target (Sprint 3a,
+   * ADR-0048, CA #2/#10) — the push may have been attempted; the result could not be verified; check the
+   * remote manually; NO rollback; NOT re-anchored to GIT_PUSHED.
+   */
+  composePushResultUnverified(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: 'push는 시도됐지만 결과를 확인할 수 없어요. 원격 상태를 직접 확인해 주세요. rollback은 하지 않았어요.',
+    };
+  }
+
+  /**
+   * A push/execution phrase after a successful push (GIT_PUSHED, Sprint 3a, Q13/CA #7) — already pushed
+   * (shows the pushed hash + target); no new push.
+   */
+  composePushAlreadyPushed(
+    context: ConversationContext,
+    input: { commitHash?: string; remote?: string; branch?: string },
+  ): OutboundMessage {
+    const shown = input.commitHash ? input.commitHash.slice(0, 7) : '(hash 미상)';
+    const target =
+      input.remote && input.branch ? ` → ${input.remote.slice(0, MAX_GIT_REF_DISPLAY)}/${input.branch.slice(0, MAX_GIT_REF_DISPLAY)}` : '';
+    return { context, text: `이미 push했어요: ${shown}${target}. 다시 push하지 않았어요.` };
+  }
+
+  /**
+   * A PR/deploy phrase after a successful push (GIT_PUSHED, Sprint 3a, Q14/CA #13) — the local commit is
+   * already pushed; PR creation and deployment are a future sprint (not done). Wording avoids implying this
+   * turn pushed.
+   */
+  composePushPrDeployUnsupported(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '이미 로컬 커밋은 원격에 push된 상태예요. PR 생성/배포는 아직 지원하지 않아요.',
+    };
+  }
 }

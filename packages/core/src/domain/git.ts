@@ -57,6 +57,25 @@ export interface GitCommitResult {
 }
 
 /**
+ * The provider-reported successful push target after `git push` exited 0 (CAP-002, ADR-0048 — the first
+ * REMOTE mutation). Returned by `GitProvider.pushApprovedCommit`/`GitManager.pushApprovedCommit`. This is
+ * **NOT an independent remote verification** — only the target the provider pushed to once the command
+ * exited 0. NOT persisted as an aggregate; the runtime uses it for local result-integrity checking and
+ * stores the pushed target on the apply anchor. `GIT_PUSHED` means pushed to the approved upstream — never
+ * PR-created/deployed/push-safe-forever.
+ */
+export interface GitPushResult {
+  /** The remote pushed to (the approved remote). */
+  remote: string;
+  /** The branch pushed to (the approved branch; may contain '/'). */
+  branch: string;
+  /** The upstream tracking ref pushed to, e.g. "origin/main" (the approved upstream). */
+  upstreamRef: string;
+  /** The commit sha pushed (the approved pushCommitHash; HEAD at push time). */
+  commitHash: string;
+}
+
+/**
  * Minimal, read-only repository metadata (CAP-002). Intentionally **excludes
  * remote URLs** — HTTPS remotes can embed credentials; exposing them needs a
  * future masking policy + ADR (ADR-0023).

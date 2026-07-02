@@ -16,6 +16,7 @@ export * from './memory-manager';
 export * from './artifact-manager';
 export * from './workspace-manager';
 export * from './git-manager';
+export * from './push-target';
 export * from './deterministic-planner';
 export * from './planning-manager';
 export * from './approval-policy';
