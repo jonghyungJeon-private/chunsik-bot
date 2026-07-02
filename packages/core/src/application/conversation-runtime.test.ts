@@ -8,9 +8,11 @@ import {
   PatchStatus,
   RiskLevel,
   SessionStatus,
+  WorkspaceChangeStatus,
 } from '../domain';
 import type {
   Actor,
+  ApplyInput,
   ApprovalRequest,
   CodeGeneration,
   CodeProposal,
@@ -26,6 +28,7 @@ import type {
   Project,
   Session,
   Task,
+  WorkspaceChange,
   WorkspaceDiff,
   WorkspaceRef,
 } from '../domain';
@@ -193,6 +196,50 @@ const patchSetOf = (input: PatchGenerationInput): PatchSet => ({
   createdAt: TS,
 });
 
+/**
+ * A GENERATED, single-`update`-op PatchSet (Sprint 2u) whose id/approvalRef/executionPlanRef/op-path all
+ * align with the default PATCH_READY apply anchor (`approvedAnchorOf({ status: 'PATCH_READY', patchRef })`),
+ * so `patch.get` returns a PatchSet that passes the runtime's pre-write integrity gate. Override any field
+ * to force an invalid shape (wrong id, non-GENERATED, unapproved, extra/other op, add/delete/binary, …).
+ */
+const patchSetGeneratedOf = (o: Partial<PatchSet> = {}): PatchSet => ({
+  id: 'patch-1',
+  executionPlanRef: { id: 'plan-1', goal: 'g' },
+  approvalRef: { id: 'apply-appr-1', status: ApprovalStatus.APPROVED, executionPlanRef: { id: 'plan-1', goal: 'g' } },
+  operations: [{ path: TARGET_FILE, operation: 'update', diff: '--- a\n+++ b\n@@ -1 +1 @@\n-x\n+y\n' }],
+  status: PatchStatus.GENERATED,
+  createdAt: TS,
+  ...o,
+});
+
+/** The ApplyInput the default valid path hands to `workspaceWrite.apply` (Sprint 2u). */
+const applyInputOf = (): ApplyInput => {
+  const patchSet = patchSetGeneratedOf();
+  return { patchSet, approvalRef: patchSet.approvalRef, workspaceRef: WORKSPACE };
+};
+
+/**
+ * An APPLIED WorkspaceChange (Sprint 2u) derived from an ApplyInput — every ref and the single result
+ * match the patchSet/workspaceRef so it passes the runtime's post-write result-integrity gate. Override to
+ * force a FAILED/PARTIALLY_APPLIED/mismatched change.
+ */
+const workspaceChangeOf = (input: ApplyInput = applyInputOf(), o: Partial<WorkspaceChange> = {}): WorkspaceChange => {
+  const op = input.patchSet.operations[0];
+  return {
+    id: 'wc-1',
+    patchRef: { id: input.patchSet.id, status: input.patchSet.status },
+    patchHash: 'hash-1',
+    executionPlanRef: input.patchSet.executionPlanRef,
+    approvalRef: input.approvalRef,
+    workspaceRef: input.workspaceRef,
+    status: WorkspaceChangeStatus.APPLIED,
+    results: [{ path: op?.path ?? TARGET_FILE, operation: op?.operation ?? 'update', status: 'applied', message: 'ok', durationMs: 1 }],
+    createdAt: TS,
+    updatedAt: TS,
+    ...o,
+  };
+};
+
 /** An APPROVED ApprovalRequest matching the apply anchor's approvalId (Sprint 2t). */
 const approvedApprovalOf = (): ApprovalRequest => ({
   ...pendingApprovalOf(),
@@ -235,7 +282,10 @@ interface Calls {
   };
   patchGenerate: number;
   lastPatchInput?: PatchGenerationInput;
+  patchGet: number;
   codeProposalsGet: number;
+  workspaceApply: number;
+  lastWorkspaceApplyInput?: ApplyInput;
   loggerWarn: number;
 }
 
@@ -277,6 +327,14 @@ interface Opts {
   /** `codeProposals.get` result (Sprint 2t) — defaults to the in-scope proposal for TARGET_FILE; pass
    *  null to simulate a missing CodeProposal. */
   codeProposalGet?: CodeProposal | null;
+  /** `patch.get` result (Sprint 2u) — defaults to a single-`update`-op GENERATED PatchSet for the
+   *  requested id (`patchSetGeneratedOf`); pass null to simulate a missing PatchSet, or a literal
+   *  PatchSet to force a specific (invalid) shape. */
+  patchGetResult?: PatchSet | null;
+  /** `workspaceWrite.apply` result (Sprint 2u) — defaults to an APPLIED WorkspaceChange derived from the
+   *  input (`workspaceChangeOf`); pass 'throw' to simulate a write error, or a literal WorkspaceChange to
+   *  force a specific (e.g. FAILED / mismatched) result. */
+  workspaceApply?: WorkspaceChange | 'throw';
 }
 
 function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Calls } {
@@ -302,7 +360,9 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
     approvalsGet: 0,
     requestForRisk: 0,
     patchGenerate: 0,
+    patchGet: 0,
     codeProposalsGet: 0,
+    workspaceApply: 0,
     loggerWarn: 0,
   };
   const composer = new ResponseComposer();
@@ -473,11 +533,23 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
         if (opts.patchGenerate === 'throw') throw new Error('patch boom');
         return opts.patchGenerate ?? patchSetOf(input);
       },
+      async get(id) {
+        calls.patchGet++;
+        return opts.patchGetResult === undefined ? patchSetGeneratedOf({ id }) : opts.patchGetResult;
+      },
     },
     codeProposals: {
       async get() {
         calls.codeProposalsGet++;
         return opts.codeProposalGet === undefined ? codeProposalOf() : opts.codeProposalGet;
+      },
+    },
+    workspaceWrite: {
+      async apply(input) {
+        calls.workspaceApply++;
+        calls.lastWorkspaceApplyInput = input;
+        if (opts.workspaceApply === 'throw') throw new Error('workspace write boom');
+        return opts.workspaceApply ?? workspaceChangeOf(input);
       },
     },
     logger: { ...silentLogger, warn: () => { calls.loggerWarn++; } },
@@ -1618,10 +1690,11 @@ describe('Approved Apply Context → PatchSet Preview — runtime (Sprint 2t, AD
   it('the full sequence performs no WorkspaceWrite/CommandExecution/Orchestrator call', async () => {
     const { deps, calls } = approvedDeps();
     await new ConversationRuntime(deps).handle(messageOf('패치 만들어줘'));
-    // No such deps exist on this path; assert the Orchestrator was never invoked either.
+    // Patch generation is representation-only: WorkspaceWrite is a dep since Sprint 2u but must never be
+    // called on the patch path, and the Orchestrator is never invoked either.
     expect(calls.run).toBe(0);
     expect(calls.resume).toBe(0);
-    expect(Object.keys(deps)).not.toContain('workspaceWrite');
+    expect(calls.workspaceApply).toBe(0);
     expect(Object.keys(deps)).not.toContain('command');
   });
 
@@ -1630,6 +1703,231 @@ describe('Approved Apply Context → PatchSet Preview — runtime (Sprint 2t, AD
       const { deps, calls } = approvedDeps();
       await new ConversationRuntime(deps).handle(messageOf(text));
       expect(calls.patchGenerate).toBe(0);
+    }
+  });
+});
+
+// ── Sprint 2u — PatchRef → WorkspaceWrite Apply (first real file mutation, ADR-0042) ─────────────
+
+describe('PatchRef → WorkspaceWrite Apply — runtime (Sprint 2u, ADR-0042)', () => {
+  const FINAL_APPLY_PHRASES = ['패치 적용해줘', '파일에 적용해줘', '최종 적용해줘'];
+
+  /** A PATCH_READY apply anchor carrying the patchRef the default `patch.get` resolves (Sprint 2u). */
+  const patchReadyAnchor = (o: Partial<ApplyPreviewAnchor> = {}): ApplyPreviewAnchor =>
+    approvedAnchorOf({ status: 'PATCH_READY', patchRef: { id: 'patch-1', status: PatchStatus.GENERATED }, ...o });
+  const appliedAnchor = (o: Partial<ApplyPreviewAnchor> = {}): ApplyPreviewAnchor =>
+    patchReadyAnchor({ status: 'WORKSPACE_APPLIED', workspaceChangeRef: { id: 'wc-1', status: WorkspaceChangeStatus.APPLIED }, ...o });
+
+  const composer = new ResponseComposer();
+  const appliedText = composer.composeWorkspaceApplied(CTX, [TARGET_FILE]).text;
+  const failedText = composer.composeWorkspaceApplyFailed(CTX).text;
+  const unavailableText = composer.composeWorkspaceApplyUnavailable(CTX).text;
+  const alreadyAppliedText = composer.composeWorkspaceAlreadyApplied(CTX).text;
+
+  // ── Success path & anchor preservation (CA 1–4) ────────────────────────────────────────────
+  it('each explicit final-apply phrase + PATCH_READY + a valid single-`update` PatchSet calls workspaceWrite.apply exactly once (CA 1)', async () => {
+    for (const phrase of FINAL_APPLY_PHRASES) {
+      const { deps, calls } = makeDeps({ applyAnchor: patchReadyAnchor() });
+      const result = await new ConversationRuntime(deps).handle(messageOf(phrase));
+      expect(calls.workspaceApply, phrase).toBe(1);
+      expect(result.reply.text, phrase).toBe(appliedText);
+    }
+  });
+
+  it('success re-anchors WORKSPACE_APPLIED (CA 2), preserving the workspaceChangeRef (CA 3) and every prior ref (CA 4)', async () => {
+    const anchor = patchReadyAnchor();
+    const { deps, calls } = makeDeps({ applyAnchor: anchor });
+    await new ConversationRuntime(deps).handle(messageOf('패치 적용해줘'));
+    expect(calls.applyAnchorSet).toBe(1);
+    expect(calls.lastApplyAnchor?.status).toBe('WORKSPACE_APPLIED');
+    expect(calls.lastApplyAnchor?.workspaceChangeRef).toEqual({ id: 'wc-1', status: WorkspaceChangeStatus.APPLIED });
+    // every prior ref carried forward unchanged
+    expect(calls.lastApplyAnchor?.patchRef).toEqual(anchor.patchRef);
+    expect(calls.lastApplyAnchor?.executionPlanRef).toEqual(anchor.executionPlanRef);
+    expect(calls.lastApplyAnchor?.workspaceRef).toEqual(anchor.workspaceRef);
+    expect(calls.lastApplyAnchor?.approvalId).toBe(anchor.approvalId);
+    expect(calls.lastApplyAnchor?.codeProposalRef).toEqual(anchor.codeProposalRef);
+    expect(calls.lastApplyAnchor?.codeGenerationRef).toEqual(anchor.codeGenerationRef);
+    expect(calls.lastApplyAnchor?.targetFiles).toEqual(anchor.targetFiles);
+  });
+
+  // ── No-write on bad anchor state (CA 10–14) ─────────────────────────────────────────────────
+  it('final-apply with no anchor → composeWorkspaceApplyUnavailable, no write, no PatchSet load (CA 10)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: null });
+    const result = await new ConversationRuntime(deps).handle(messageOf('패치 적용해줘'));
+    expect(calls.workspaceApply).toBe(0);
+    expect(calls.patchGet).toBe(0);
+    expect(result.reply.text).toBe(unavailableText);
+  });
+
+  it('final-apply with an ELIGIBLE or APPROVED anchor → unavailable, no write (CA 11, 13)', async () => {
+    for (const anchor of [applyAnchorOf(), approvedAnchorOf()]) {
+      const { deps, calls } = makeDeps({ applyAnchor: anchor });
+      const result = await new ConversationRuntime(deps).handle(messageOf('패치 적용해줘'));
+      expect(calls.workspaceApply, anchor.status).toBe(0);
+      expect(calls.patchGet, anchor.status).toBe(0);
+      expect(result.reply.text, anchor.status).toBe(unavailableText);
+    }
+  });
+
+  it('final-apply while AWAITING_APPROVAL is intercepted by the Sprint 2s approval turn — no write (CA 12)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: approvedAnchorOf({ status: 'AWAITING_APPROVAL' }) });
+    await new ConversationRuntime(deps).handle(messageOf('패치 적용해줘'));
+    expect(calls.workspaceApply).toBe(0);
+    expect(calls.patchGet).toBe(0);
+  });
+
+  it('final-apply while PATCH_READY without a patchRef → unavailable, no write, no PatchSet load (CA 14)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: approvedAnchorOf({ status: 'PATCH_READY' }) }); // no patchRef
+    const result = await new ConversationRuntime(deps).handle(messageOf('패치 적용해줘'));
+    expect(calls.workspaceApply).toBe(0);
+    expect(calls.patchGet).toBe(0);
+    expect(result.reply.text).toBe(unavailableText);
+  });
+
+  // ── No-write on invalid / unsupported PatchSet (CA 15–26) ──────────────────────────────────
+  it('a missing PatchSet (patch.get → null) → composeWorkspaceApplyFailed, no write, failure logged (CA 15)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: patchReadyAnchor(), patchGetResult: null });
+    const result = await new ConversationRuntime(deps).handle(messageOf('패치 적용해줘'));
+    expect(calls.patchGet).toBe(1);
+    expect(calls.workspaceApply).toBe(0);
+    expect(calls.loggerWarn).toBe(1);
+    expect(result.reply.text).toBe(failedText);
+  });
+
+  it('an invalid / unsupported PatchSet never reaches WorkspaceWrite → composeWorkspaceApplyFailed, logged (CA 16–26)', async () => {
+    const cases: Array<[string, PatchSet]> = [
+      ['id !== anchor.patchRef.id (CA 16)', patchSetGeneratedOf({ id: 'other-patch' })],
+      ['status !== GENERATED (CA 17)', patchSetGeneratedOf({ status: 'STALE' as unknown as PatchStatus })],
+      ['approvalRef not APPROVED (CA 18)', patchSetGeneratedOf({ approvalRef: { id: 'apply-appr-1', status: ApprovalStatus.PENDING, executionPlanRef: { id: 'plan-1', goal: 'g' } } })],
+      ['approvalRef.id !== anchor.approvalId (CA 19)', patchSetGeneratedOf({ approvalRef: { id: 'other-appr', status: ApprovalStatus.APPROVED, executionPlanRef: { id: 'plan-1', goal: 'g' } } })],
+      ['executionPlanRef mismatch (CA 20)', patchSetGeneratedOf({ executionPlanRef: { id: 'other-plan', goal: 'g' } })],
+      ['empty operations (CA 21)', patchSetGeneratedOf({ operations: [] })],
+      ['more than one operation (CA 22)', patchSetGeneratedOf({ operations: [
+        { path: TARGET_FILE, operation: 'update', diff: 'd1' },
+        { path: TARGET_FILE, operation: 'update', diff: 'd2' },
+      ] })],
+      ['op path outside targetFiles (CA 23)', patchSetGeneratedOf({ operations: [{ path: 'packages/core/src/other.ts', operation: 'update', diff: 'd' }] })],
+      ['op is add (CA 24)', patchSetGeneratedOf({ operations: [{ path: TARGET_FILE, operation: 'add', diff: 'd' }] })],
+      ['op is delete (CA 25)', patchSetGeneratedOf({ operations: [{ path: TARGET_FILE, operation: 'delete', diff: 'd' }] })],
+      ['op is binary (CA 26)', patchSetGeneratedOf({ operations: [{ path: TARGET_FILE, operation: 'update', diff: 'd', metadata: { binary: true } }] })],
+    ];
+    for (const [label, patchSet] of cases) {
+      const { deps, calls } = makeDeps({ applyAnchor: patchReadyAnchor(), patchGetResult: patchSet });
+      const result = await new ConversationRuntime(deps).handle(messageOf('패치 적용해줘'));
+      expect(calls.workspaceApply, label).toBe(0);
+      expect(calls.loggerWarn, label).toBe(1);
+      expect(result.reply.text, label).toBe(failedText);
+    }
+  });
+
+  // ── Result-integrity / stale write (CA 27–31) ──────────────────────────────────────────────
+  it('a non-clean WorkspaceChange never advances to WORKSPACE_APPLIED → composeWorkspaceApplyFailed (CA 27–30)', async () => {
+    const cases: Array<[string, WorkspaceChange]> = [
+      ['status FAILED — stale update, file unchanged (CA 27)', workspaceChangeOf(applyInputOf(), {
+        status: WorkspaceChangeStatus.FAILED,
+        results: [{ path: TARGET_FILE, operation: 'update', status: 'failed', message: 'unified diff did not apply cleanly', durationMs: 1 }],
+      })],
+      ['status PARTIALLY_APPLIED (CA 28)', workspaceChangeOf(applyInputOf(), { status: WorkspaceChangeStatus.PARTIALLY_APPLIED })],
+      ['APPLIED but results[0].path mismatch (CA 29)', workspaceChangeOf(applyInputOf(), {
+        results: [{ path: 'packages/core/src/other.ts', operation: 'update', status: 'applied', message: 'ok', durationMs: 1 }],
+      })],
+      ['APPLIED but patchRef.id mismatch (CA 30)', workspaceChangeOf(applyInputOf(), { patchRef: { id: 'other-patch', status: PatchStatus.GENERATED } })],
+      ['APPLIED but a failed result', workspaceChangeOf(applyInputOf(), {
+        results: [{ path: TARGET_FILE, operation: 'update', status: 'failed', message: 'x', durationMs: 1 }],
+      })],
+      ['APPLIED but empty results', workspaceChangeOf(applyInputOf(), { results: [] })],
+    ];
+    for (const [label, change] of cases) {
+      const { deps, calls } = makeDeps({ applyAnchor: patchReadyAnchor(), workspaceApply: change });
+      const result = await new ConversationRuntime(deps).handle(messageOf('패치 적용해줘'));
+      expect(calls.workspaceApply, label).toBe(1); // the write WAS attempted
+      expect(calls.applyAnchorSet, label).toBe(0); // but it never advanced to WORKSPACE_APPLIED
+      expect(calls.loggerWarn, label).toBe(1);
+      expect(result.reply.text, label).toBe(failedText);
+    }
+  });
+
+  it('workspaceWrite.apply throwing → composeWorkspaceApplyFailed, failure logged, no advance (CA 31)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: patchReadyAnchor(), workspaceApply: 'throw' });
+    const result = await new ConversationRuntime(deps).handle(messageOf('패치 적용해줘'));
+    expect(calls.workspaceApply).toBe(1);
+    expect(calls.applyAnchorSet).toBe(0);
+    expect(calls.loggerWarn).toBe(1);
+    expect(result.reply.text).toBe(failedText);
+  });
+
+  // ── Trigger discipline (CA 32–37) ───────────────────────────────────────────────────────────
+  it('a bare "적용"/"좋아"/"오케이"/"확인"/"다음 단계 진행" with PATCH_READY never triggers a file write (CA 32–34)', async () => {
+    for (const text of ['적용', '적용해줘', '좋아', '오케이', '확인', '다음 단계 진행']) {
+      const { deps, calls } = makeDeps({ applyAnchor: patchReadyAnchor() });
+      await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.workspaceApply, text).toBe(0);
+    }
+  });
+
+  it('"패치 적용해줘" routes to the WorkspaceWrite path, not Sprint 2s handleApplyAlreadyApprovedTurn (CA 35)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: patchReadyAnchor() });
+    const result = await new ConversationRuntime(deps).handle(messageOf('패치 적용해줘'));
+    expect(calls.workspaceApply).toBe(1);
+    expect(result.reply.text).toBe(appliedText);
+    expect(result.reply.text).not.toBe(composer.composeApplyApprovalRecorded(CTX).text);
+  });
+
+  it('a final-apply phrase with no valid apply context calls neither the classifier nor the Orchestrator (CA 36–37)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: null });
+    await new ConversationRuntime(deps).handle(messageOf('패치 적용해줘'));
+    expect(calls.classify).toBe(0);
+    expect(calls.run).toBe(0);
+    expect(calls.resume).toBe(0);
+  });
+
+  // ── Input shape & no hidden side effects across the full apply sequence (CA 38–45) ──────────
+  it('workspaceWrite.apply receives exactly {patchSet, approvalRef, workspaceRef} — never a CodeProposal (CA 38–39)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: patchReadyAnchor() });
+    await new ConversationRuntime(deps).handle(messageOf('패치 적용해줘'));
+    const input = calls.lastWorkspaceApplyInput!;
+    expect(Object.keys(input).sort()).toEqual(['approvalRef', 'patchSet', 'workspaceRef']);
+    expect(input.patchSet.id).toBe('patch-1');
+    // the ApprovalRef handed to WorkspaceWrite is the PatchSet's own embedded approval (§5.3)
+    expect(input.approvalRef).toEqual(input.patchSet.approvalRef);
+    expect(input.approvalRef.id).toBe('apply-appr-1');
+    expect(input.workspaceRef.id).toBe(WORKSPACE.id);
+  });
+
+  it('the apply sequence performs no patch.generate / codeGeneration.generate / Orchestrator / command / git call (CA 40, 42–45)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: patchReadyAnchor() });
+    await new ConversationRuntime(deps).handle(messageOf('패치 적용해줘'));
+    expect(calls.workspaceApply).toBe(1); // the ONE mutation on this path
+    expect(calls.patchGenerate).toBe(0); // representation-only; not regenerated (CA 40)
+    expect(calls.codeGenerationGenerate).toBe(0); // no AI regeneration (CA 45)
+    expect(calls.run).toBe(0); // no ExecutionOrchestrator (CA 44)
+    expect(calls.resume).toBe(0);
+    expect(Object.keys(deps)).not.toContain('command'); // no CommandExecution dep (CA 42)
+    expect(Object.keys(deps)).not.toContain('git'); // no git dep (CA 43)
+  });
+
+  it('the patch dependency exposes only generate/get — PatchManager gains no apply method (CA 41)', () => {
+    const { deps } = makeDeps({ applyAnchor: patchReadyAnchor() });
+    expect(Object.keys(deps.patch).sort()).toEqual(['generate', 'get']);
+  });
+
+  // ── Idempotency & applied-state routing (CA 46–47) ─────────────────────────────────────────
+  it('WORKSPACE_APPLIED + a final-apply command → composeWorkspaceAlreadyApplied, no second write (CA 46)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: appliedAnchor() });
+    const result = await new ConversationRuntime(deps).handle(messageOf('패치 적용해줘'));
+    expect(calls.workspaceApply).toBe(0);
+    expect(calls.applyAnchorSet).toBe(0);
+    expect(result.reply.text).toBe(alreadyAppliedText);
+  });
+
+  it('WORKSPACE_APPLIED + a patch or apply command → composeWorkspaceAlreadyApplied, never hiding the applied state (CA 47)', async () => {
+    for (const text of ['패치 만들어줘', '적용해줘']) {
+      const { deps, calls } = makeDeps({ applyAnchor: appliedAnchor() });
+      const result = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.workspaceApply, text).toBe(0);
+      expect(calls.patchGenerate, text).toBe(0);
+      expect(result.reply.text, text).toBe(alreadyAppliedText);
     }
   });
 });

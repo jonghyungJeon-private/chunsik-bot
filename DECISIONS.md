@@ -2358,3 +2358,105 @@ Collection — `filterInScopeChanges`/`targetFiles` authority, reused), ADR-0029
 `CodeProposal` content source via `storage.codeProposals`), ADR-0031 (Execution Orchestrator — deliberately
 not extended). Supersedes nothing.
 Plan: `docs/plans/sprint-2t-approved-apply-to-patchset-preview-plan.md`.
+
+## ADR-0042 — PatchRef → WorkspaceWrite Apply (first real file mutation, WorkspaceWrite only)
+
+- **Status:** ✅ Accepted (v2, Phase 2, Sprint 2u — Product Construction), Chief Architect Review:
+  APPROVED WITH CHANGES (Round 1).
+- **Date:** 2026-07-02
+- **Scope:** Sprint 2u performs the product's **first real workspace file mutation.** From a `PATCH_READY`
+  apply anchor (Sprint 2t), an explicit final workspace-apply command recovers the `PatchSet` by
+  `patchRef`, verifies its integrity, and applies **exactly one `update` operation** through the existing
+  WorkspaceWrite capability (CAP-006). Still no git mutation, no `CommandExecution`, no test execution, no
+  `ExecutionOrchestrator` change.
+
+### Most important rule
+> **WorkspaceWrite is the only thing that mutates files, and Sprint 2u applies exactly one `update`
+> operation, in-scope, from an integrity-verified PatchSet.** The PatchSet (loaded by `patchRef`) is the
+> applied artifact — never the AI `CodeProposal`, rendered diff, or chat memory. Its embedded `approvalRef`
+> authorizes the write (no `ApprovalManager` on the apply path). `WORKSPACE_APPLIED` means workspace files
+> were mutated — **not** committed, pushed, tested, deployed, or a clean working tree.
+
+### Decision
+- **Reuses `WorkspaceWriteManager`/`WorkspaceChange`/`LocalWorkspaceWriter` (CAP-006, ADR-0027) unchanged**
+  — verified against source (CA Q1). `apply({patchSet, approvalRef, workspaceRef})` is Ref-gated (validates
+  `approvalRef.status === APPROVED` + plan-scope, never queries `ApprovalManager`), delegates each op to the
+  `WorkspaceWriter` port, and persists a `WorkspaceChange`. File writes are **atomic-per-file, best-effort,
+  with no cross-file rollback**.
+- **`ConversationRuntime` composes it directly** (like every capability since Sprint 2q): on an explicit
+  final-apply command with a `PATCH_READY` anchor, it loads the `PatchSet` via `patch.get(anchor.patchRef.id)`,
+  runs the integrity gate, calls `workspaceWrite.apply`, checks the result, and re-anchors. No
+  `ExecutionOrchestrator` call, no new `ExecutionStage`.
+- **`update`-only, single-op this sprint (CA Round 1 #1/Q9).** The pre-write gate rejects unless the
+  PatchSet has exactly one operation whose `operation === 'update'`, non-binary, whose path is within the
+  user-approved `targetFiles`. This rejects multi-op (no partial-apply ambiguity given no cross-file
+  rollback), `add`/new-file, `delete`, and binary. **`delete` is specifically rejected because
+  `LocalWorkspaceWriter`'s delete path does not diff-check against current content** — only `update`/`add`
+  run `applyPatch(current, op.diff)`; add is out anyway, so `update` is the only op with a genuine
+  latest-content check.
+- **Pre-write identity + scope checks (CA Round 1 #2):** `patchSet.id === anchor.patchRef.id`, and the op's
+  path normalizes (`normalizeRelativePath`) to one of `anchor.targetFiles`. Plus `status === GENERATED`,
+  `approvalRef.status === APPROVED`, `approvalRef.id === anchor.approvalId`, `executionPlanRef.id` match.
+- **Latest-content revalidation is WorkspaceWrite's own `applyPatch` (CA Round 1 #4/Q6), for `update`
+  only.** A stale diff no longer applies cleanly → `FileChangeResult.failed`, file left unchanged. No
+  separate Application-layer re-diff (it would need lossy `newContent` reconstruction). A stale update
+  therefore means WorkspaceWrite *is* called, returns a non-clean/`FAILED` result, the file is unchanged,
+  and no `WORKSPACE_APPLIED` is set — it is not a "revalidation failure before WorkspaceWrite."
+- **Post-write result-integrity gate (CA Round 1 #3):** `WORKSPACE_APPLIED` is set only if the returned
+  `WorkspaceChange` is `APPLIED` **and** fully matches the artifact/context — `patchRef.id`/`approvalRef.id`/
+  `executionPlanRef.id`/`workspaceRef.id`, `results.length === 1`, `results[0].status === 'applied'`,
+  `results[0].path === op.path`. Anything else → safe failure, no re-anchor.
+- **New anchor state `WORKSPACE_APPLIED` + `workspaceChangeRef?` (CA Q8/Round 1 #6).** Preserves the
+  `WorkspaceChange` record for a future git/test sprint. It means files were mutated **only** — not
+  committed/pushed/tested/deployed, and not a clean working tree; the enum comment and the reply copy say so.
+- **Explicit final trigger, distinct from all prior word-sets (CA Round 1 #7/Q3).** `FINAL_APPLY_WORDS`
+  (`'최종 적용'`, `'파일에 적용'`, `'패치 적용'`, `'workspace에 적용'`, `'apply patch'`, `'apply to
+  workspace'`) — qualified phrases only. A bare "적용"/"좋아"/"오케이"/"확인"/"다음 단계 진행" never triggers
+  a file write. Checked **before** apply-intent so "패치 적용해줘" (which also contains the apply-word "적용")
+  routes to the file-apply path, not Sprint 2s's apply-intent.
+- **`WORKSPACE_APPLIED` never hides the applied state (CA Round 1 #8).** A final/patch/apply intent at
+  `WORKSPACE_APPLIED` all route to `composeWorkspaceAlreadyApplied` — never `handlePatchAlreadyGeneratedTurn`
+  ("preview generated") or `handleApplyAlreadyApprovedTurn` ("not yet applied"), which would understate the
+  stronger state.
+- **Precise git wording (CA Round 1 #5).** After a write the working tree holds the change, so the copy
+  never says "git 변경 없음"; it says the file was modified, git **commands** were not run, commit/push were
+  not performed, tests were not run, and the working tree may now show the change. Forbidden across all
+  replies: "git 변경 없음"/committed/pushed/deployed/테스트 통과/검증 완료.
+- **Structured, no-content failure log** for operability (mirrors Sprint 2t): sessionId, executionPlanId,
+  approvalId, patchId, targetFiles — never diff/file content.
+- **No Core/Orchestrator contract change; no new aggregate/repository/migration/capability/port.**
+  `WorkspaceWriteManager` is already a registered provider (reused). `PatchManager` gains no apply behavior.
+
+### Not implemented (out of scope)
+`git add`/`commit`/`push` (or any git call) · `CommandExecution` · test execution after apply · shell
+commands · autonomous agent loop · retry loop · AI regeneration · AI target-file guessing · multi-file/
+multi-op apply · directory/module scope · semantic repository search · repository indexing · `add`/
+new-file/`changeKind:add` · `delete` operations · binary operations · applying an unapproved/out-of-scope
+PatchSet · applying without a `PATCH_READY` anchor · `ExecutionOrchestrator` contract change · `Core`
+contract change · `PatchManager` gaining apply behavior · treating apply success as git success.
+
+### Consequences
+- + The product can, for the first time, turn an approved, previewed, patch-represented change into a real
+  edit of one existing file — behind five prior safety gates and one explicit final command — reusing the
+  battle-tested WorkspaceWrite capability with zero changes to it.
+- + Restricting to a single in-scope `update` op makes the first mutation sprint maximally safe: no
+  partial-apply ambiguity, no unchecked delete, no new-file/binary surprises; staleness is caught by
+  WorkspaceWrite's own clean-apply check.
+- + The pre-write (identity/scope) and post-write (result-integrity) gates make the anchor→PatchSet→
+  WorkspaceChange chain verifiable end-to-end before `WORKSPACE_APPLIED` is trusted.
+- − A `WORKSPACE_APPLIED` anchor and a `workspaceChangeRef` field are added to `ApplyPreviewAnchor` — a
+  justified extension (git/test-sprint handoff), not scope creep.
+- − After a successful apply the working tree is dirty but git is untouched — an intentional, clearly-worded
+  state; committing/testing is a separate future sprint.
+- − `add`/`delete`/binary/multi-file apply are deferred; a future sprint must make delete's stale-content
+  check explicit before allowing it.
+
+### Relations
+ADR-0027 (CAP-006 Workspace Write — `WorkspaceWriteManager`/`WorkspaceChange`/`LocalWorkspaceWriter`, reused
+as the sole file mutator), ADR-0041 (Approved Apply Context → PatchSet Preview — the `PATCH_READY` anchor +
+`patchRef` this sprint consumes and extends to `WORKSPACE_APPLIED`), ADR-0026 (CAP-005 Patch — `PatchSet`/
+`PatchManager.get`, representation-only, gains no apply behavior), ADR-0025 (CAP-004 Approval — the embedded
+`approvalRef` authorizes the write; `ApprovalManager` untouched on the apply path), ADR-0036 (Code Change
+Scope Collection — `normalizeRelativePath`/`targetFiles` authority, reused for the op-path scope check),
+ADR-0031 (Execution Orchestrator — deliberately not extended). Supersedes nothing.
+Plan: `docs/plans/sprint-2u-patchref-to-workspacewrite-apply-plan.md`.

@@ -600,3 +600,68 @@ describe('ResponseComposer.composePatch* failure/idempotent replies (ADR-0041)',
     expect(new Set([a, b, c]).size).toBe(3);
   });
 });
+
+// ── Sprint 2u — WorkspaceWrite Apply replies (ADR-0042) ──────────────────────────────────────────
+
+describe('ResponseComposer.composeWorkspace* apply replies (ADR-0042)', () => {
+  const TARGETS = ['packages/core/src/application/foo.ts'];
+  // After a real write the working tree is NOT clean — these must never appear in any apply reply.
+  const FORBIDDEN_APPLY_WORDS = ['git 변경 없음', 'git에는 아무 변경도', '커밋했어요', '푸시했어요', '배포', '테스트 통과', '검증 완료', '적용 완료'];
+
+  it('composeWorkspaceApplied says the file was modified (CA 5)', () => {
+    const reply = composer.composeWorkspaceApplied(CTX, TARGETS);
+    expect(reply.text).toContain('수정했어요');
+    expect(reply.text).toContain(TARGETS[0]!);
+  });
+
+  it('composeWorkspaceApplied says git commands were not run (CA 6) and commit/push were not performed (CA 7)', () => {
+    const reply = composer.composeWorkspaceApplied(CTX, TARGETS);
+    expect(reply.text).toContain('git 명령');
+    expect(reply.text).toContain('커밋');
+    expect(reply.text).toContain('푸시');
+  });
+
+  it('composeWorkspaceApplied says tests were not run (CA 8)', () => {
+    const reply = composer.composeWorkspaceApplied(CTX, TARGETS);
+    expect(reply.text).toContain('테스트');
+    expect(reply.text).toContain('실행하지 않았어요');
+  });
+
+  it('composeWorkspaceApplied never says "git 변경 없음"/"git에는 아무 변경도" nor implies commit/push/deploy/tested (CA 9)', () => {
+    const reply = composer.composeWorkspaceApplied(CTX, TARGETS);
+    for (const word of FORBIDDEN_APPLY_WORDS) expect(reply.text, word).not.toContain(word);
+  });
+
+  it('Unavailable / Failed / AlreadyApplied never imply git/tests ran or a clean tree', () => {
+    for (const reply of [
+      composer.composeWorkspaceApplyUnavailable(CTX),
+      composer.composeWorkspaceApplyFailed(CTX),
+      composer.composeWorkspaceAlreadyApplied(CTX),
+    ]) {
+      for (const word of FORBIDDEN_APPLY_WORDS) expect(reply.text, word).not.toContain(word);
+    }
+  });
+
+  it('composeWorkspaceApplyFailed and composeWorkspaceAlreadyApplied both state git/tests were not run', () => {
+    for (const reply of [composer.composeWorkspaceApplyFailed(CTX), composer.composeWorkspaceAlreadyApplied(CTX)]) {
+      expect(reply.text).toContain('git 명령');
+      expect(reply.text).toContain('테스트');
+    }
+  });
+
+  it('composeWorkspaceApplyUnavailable implies nothing was written', () => {
+    const reply = composer.composeWorkspaceApplyUnavailable(CTX);
+    expect(reply.text).toContain('준비된 패치가 없어요');
+    expect(reply.text).not.toContain('수정했어요');
+  });
+
+  it('the four workspace-apply replies are all distinct', () => {
+    const set = new Set([
+      composer.composeWorkspaceApplied(CTX, TARGETS).text,
+      composer.composeWorkspaceApplyUnavailable(CTX).text,
+      composer.composeWorkspaceApplyFailed(CTX).text,
+      composer.composeWorkspaceAlreadyApplied(CTX).text,
+    ]);
+    expect(set.size).toBe(4);
+  });
+});
