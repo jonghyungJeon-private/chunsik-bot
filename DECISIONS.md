@@ -2616,7 +2616,10 @@ nothing. Plan: `docs/plans/sprint-2v-post-apply-validation-command-plan.md`.
   `GitStatusRef`/`GitDiffRef`, no storage; the apply anchor is never re-anchored on this path.
 - **Git read failure → safe failure, no fallback (CA #7/Q10).** A `git.status`/`git.diff` throw →
   `composeGitPreviewUnavailable`; **no CommandExecution, no shell, no workspace re-resolution**. On a diff
-  preview, `git.status` is read first; if it throws, `git.diff` is not called.
+  preview, `git.status` is read first; if it throws, `git.diff` is not called. **(CA Implementation Review)**
+  Because a read-only git subcommand *was* attempted on this path, the failure copy must **not** claim "git
+  명령은 실행하지 않았어요"; it states no git add/commit/push, no file mutation, and no CommandExecution/shell
+  fallback.
 - **Read-only-vs-mutation wording (CA #10).** Every successful preview states "읽기 전용 Git 미리보기 / git
   add·commit·push 안 함 / 파일 수정 안 함 / 명령 실행 안 함." Forbidden: 커밋 준비 완료 / push 가능 / 배포
   가능 / 안전함 / 검증 완료 / committed / pushed / deployed / safe to commit / verified forever. "현재 Git

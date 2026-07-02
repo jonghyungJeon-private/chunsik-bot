@@ -2440,6 +2440,9 @@ describe('Post-Validation Git Status Preview — runtime (Sprint 2w, ADR-0044)',
     const result = await new ConversationRuntime(deps).handle(messageOf('git 상태 보여줘'));
     expect(result.status).toBe('FAILED');
     expect(result.reply.text).toBe(unavailableText);
+    // CA impl review: a read-only git subcommand WAS attempted, so the failure copy must NOT claim none ran.
+    expect(result.reply.text).not.toContain('git 명령은 실행하지 않았어요');
+    expect(result.reply.text).toContain('git add/commit/push는 하지 않았어요');
     expect(calls.loggerWarn).toBe(1);
     expect(calls.commandRun).toBe(0);
     expect(calls.workspaceApply).toBe(0);

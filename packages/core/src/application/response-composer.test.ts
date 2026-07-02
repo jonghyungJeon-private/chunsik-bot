@@ -828,10 +828,15 @@ describe('ResponseComposer.composeGit* preview replies (ADR-0044)', () => {
     for (const f of FORBIDDEN) expect(reply.text, f).not.toContain(f);
   });
 
-  it('preview-unavailable: safe failure, distinct', () => {
+  it('preview-unavailable: safe failure — read WAS attempted, so it must NOT claim no git command ran (CA impl review)', () => {
     const reply = composer.composeGitPreviewUnavailable(CTX);
     expect(reply.text).toContain('읽지 못했어요');
-    expect(reply.text).toContain('git 명령은 실행하지 않았어요');
+    // a read-only git subcommand WAS attempted on this path — the old inaccurate phrasing must be gone
+    expect(reply.text).not.toContain('git 명령은 실행하지 않았어요');
+    // instead it states what was NOT done
+    expect(reply.text).toContain('git add/commit/push는 하지 않았어요');
+    expect(reply.text).toContain('파일 수정은 하지 않았');
+    expect(reply.text).toContain('CommandExecution을 통한 명령 실행도 하지 않았어요');
   });
 
   it('the four git-preview replies are all distinct', () => {

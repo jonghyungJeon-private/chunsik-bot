@@ -885,13 +885,18 @@ export class ResponseComposer {
   }
 
   /**
-   * Git read failed / not a repository (ADR-0044, CA Q10) — safe failure; no CommandExecution/shell/
-   * re-resolution fallback implied. Not a status/diff verdict.
+   * Git read failed / not a repository (ADR-0044, CA Q10; CA Implementation Review — blocking fix). This is
+   * the READ-FAILURE path: a read-only git subcommand (via GitProvider) WAS attempted, so it must NOT claim
+   * "git 명령은 실행하지 않았어요". It states what was NOT done: no git add/commit/push, no file mutation, no
+   * CommandExecution/shell fallback. Not a status/diff verdict.
    */
   composeGitPreviewUnavailable(context: ConversationContext): OutboundMessage {
     return {
       context,
-      text: 'Git 상태를 읽지 못했어요. 잠시 후 다시 시도해 주세요. git 명령은 실행하지 않았어요. 파일 수정도 하지 않았어요.',
+      text:
+        'Git 상태를 읽지 못했어요. 잠시 후 다시 시도해 주세요.\n' +
+        '읽기 전용 Git 확인 중 문제가 발생했지만, git add/commit/push는 하지 않았어요.\n' +
+        '파일 수정은 하지 않았고, CommandExecution을 통한 명령 실행도 하지 않았어요.',
     };
   }
 }
