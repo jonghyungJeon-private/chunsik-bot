@@ -3139,6 +3139,81 @@ hosting method added), ADR-0031 (Execution Orchestrator — not extended or call
 `GIT_PUSHED` PR-phrase behavior only.** Plan:
 `docs/plans/sprint-3b-explicit-pr-creation-approval-plan.md`.
 
+## ADR-0050 — Repository Hosting Capability (design-only; CAP-010; future PR creation execution boundary)
+
+- **Status:** ✅ Accepted (v2, Phase 3, Sprint 3c — Product Construction, **design-only / plan-only**), Chief
+  Architect review: APPROVED WITH CHANGES (all applied) → CONFIRMED/ACCEPTED as the architecture direction. **No
+  implementation** was produced by Sprint 3c; this ADR records the accepted design a future implementation
+  sprint (3d-B/3d-C) will build against. Backfilled into `DECISIONS.md` in PR #25 (Sprint 3d-A) per CA
+  Implementation Review, since ADR-0051 is a config-only subset of this design.
+- **Date:** 2026-07-03
+- **Scope:** The capability boundary for **actual Pull Request creation execution**. Sprint 3b (ADR-0049)
+  settled that PR creation is a repository-hosting/platform mutation, not a Git operation; this ADR designs the
+  independent capability that will own it. Sprint 3c is design-only — no code, no branch, no PR, no GitHub API.
+
+### Most important rule
+> **Pull Request creation is a repository-hosting/platform mutation, not a local Git operation.** It must never
+> be added to `GitProvider`/`GitManager`/`CommandExecution`/runtime shell/`ExecutionOrchestrator`/
+> `WorkspaceWrite`/`PatchManager`/`CodeGeneration`. A new independent **Repository Hosting** capability owns it —
+> provider-agnostic at the domain/port level, GitHub (github.com only) as the first adapter. **Actual PR
+> creation execution is blocked until a reviewed `RepositoryIdentity` configuration source exists** (delivered
+> by Sprint 3d-A / ADR-0051); execution itself is a further sprint (3d-C).
+
+### Decision (accepted design; not implemented in 3c)
+- **RepositoryHosting is CAP-010.** Owns `RepositoryIdentity`, `RepositoryIdentityConfig`,
+  `PullRequestCreationInput`, `PullRequestResult`, `PullRequestRef`, `RepositoryHostingProvider` (port),
+  `RepositoryHostingManager` (application), `GitHubRepositoryHostingProvider` (adapter,
+  `@chunsik/repository-hosting-github`). Does **not** own local git status/commit/push, workspace file
+  mutation, code generation, deployment, merge, or release.
+- **Provider-independent core (Q2).** core/domain/port carry no GitHub-specific shape; **GitHub is the first
+  adapter only**, **github.com only** for the first implementation (GitHub Enterprise deferred to a later
+  CA-approved sprint). Auth token, host, and URL rules live only inside the adapter package.
+- **Git capability unchanged (Q4)** — no `GitManager.createPullRequest`, no `GitProvider.createPullRequest`.
+  **`ExecutionOrchestrator` unchanged (Q5)** — the future flow stays `ConversationRuntime`-composed.
+- **Repository identity (Q9).** Required from a **reviewed configuration source**; the codebase had **no** safe
+  identity source before Sprint 3d-A (`RepositoryInfo` intentionally excludes remote URLs — ADR-0023). **No
+  remote-URL parsing, no `RepositoryInfo.remoteUrl`, no raw pasted URL, no unbounded per-request owner/repo, no
+  ChatGPT/GitHub connector in runtime product code, no `CommandExecution`/shell.** Actual PR creation is blocked
+  until this identity config exists.
+- **Approval consumed at the Manager (Q7/Q14, mirrors `GitManager`).** `RepositoryHostingManager` owns approval
+  gating, input validation, **call ordering**, and result-integrity validation; the `ApprovalRef` is consumed
+  at the Manager and **never** passed to the provider; the provider receives no `ApprovalRef` and no raw
+  diff/file content, and owns **hosting API calls only**. No second approval when `PR_APPROVED` is live and the
+  exact context (incl. `RepositoryIdentity`) matches, but an explicit PR-execution phrase is still required.
+- **Mandatory future hosting-state checks (Q8).** `repositoryExists`, `branchExists(head)`, `branchExists(base)`,
+  `findOpenPullRequest(head, base)` when the provider supports it, and `head != base`. **Existing-open-PR reuse
+  is preferred (Q12)** — return it, validate its integrity like a new PR, anchor `PR_CREATED` with
+  `pullRequestReused: true`; **no non-idempotent creation by default**. Commit reachability is deferred unless a
+  provider method is added, and must not be overclaimed.
+- **`PullRequestResult` is provider-reported, not independent truth (mirrors `GitPushResult`).** The Manager
+  validates integrity against returned fields but must not overclaim. `PullRequestRef` includes
+  `provider/owner/repo` (a PR number is repository-scoped).
+- **`PR_CREATED` is a future state only (Q11).** Stores repository identity + `pullRequestRef`/number/url/head/
+  base/`pullRequestCommitHash` (required) + `pullRequestReused`. **No merge/deploy/release semantics** —
+  created/opened only. On failure: no fake success, no `PR_CREATED`, keep `PR_APPROVED`, no rollback, and an
+  ambiguous provider response must not claim no PR was created.
+- **Token/auth discipline.** Adapter-local only; never in domain types / `ApprovalRequest.reason` / the anchor /
+  logs; provider errors sanitized. **Failure taxonomy** distinguishes not-configured / approval-invalid /
+  hosting-unavailable / branch-missing / existing-PR-reused / creation-failed / creation-result-unverified.
+
+### Consequences
+- + Establishes the capability boundary and the hard identity prerequisite before any hosting mutation exists,
+  keeping remote-collaboration side effects behind an explicit, reviewed, provider-agnostic surface.
+- + Mirrors the CAP-002 Git Port/Manager/Adapter/Token pattern and the `GitPushResult` provider-reported
+  discipline; adds no capability code in 3c.
+- − This is design-only: no `RepositoryHostingProvider`/`Manager`/adapter, no `PR_CREATED`, no GitHub API, no
+  PR creation exists yet; those are separate CA-gated implementation sprints (3d-B skeleton, 3d-C execution),
+  each blocked until the reviewed `RepositoryIdentity` configuration (Sprint 3d-A / ADR-0051) is accepted.
+
+### Relations
+ADR-0049 (Sprint 3b — provides the `PR_APPROVED` anchor + PR context this design consumes; reaffirms "PR
+creation is not Git capability responsibility"), ADR-0048 (Sprint 3a — `GIT_PUSHED` + the provider-reported
+discipline mirrored by `PullRequestResult`), ADR-0047/ADR-0045 (approval-halt template lineage), ADR-0025
+(CAP-004 Approval — reused unchanged), ADR-0023 (CAP-002 Git — the Port/Manager/Adapter pattern mirrored, and
+the remote-URL-exclusion decision that grounds the identity problem). **Succeeded by ADR-0051** (Sprint 3d-A —
+the config-only subset delivering the reviewed `RepositoryIdentity` source this design requires). Plan:
+`docs/plans/sprint-3c-repository-hosting-capability-plan.md`.
+
 ## ADR-0051 — Repository Identity Configuration (safe reviewed `provider/owner/repo` source; no hosting mutation)
 
 - **Status:** ✅ Accepted (v2, Phase 3, Sprint 3d-A — Product Construction), Chief Architect plan review:
