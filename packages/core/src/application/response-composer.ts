@@ -1501,7 +1501,11 @@ export class ResponseComposer {
    * "safe to merge" / "CI verified" / "deploy ready". Checks summary is provider-reported and may be partial
    * (check-runs only); empty check-runs is NOT rendered as success. No raw logs / review body / file data.
    */
-  composePrStatusPreview(context: ConversationContext, preview: PullRequestStatusPreview): OutboundMessage {
+  composePrStatusPreview(
+    context: ConversationContext,
+    preview: PullRequestStatusPreview,
+    opts: { mergeApproved?: boolean } = {},
+  ): OutboundMessage {
     const head = preview.headBranch.slice(0, MAX_GIT_REF_DISPLAY);
     const base = preview.baseBranch.slice(0, MAX_GIT_REF_DISPLAY);
     const stateKo =
@@ -1525,7 +1529,70 @@ export class ResponseComposer {
       );
     }
     lines.push('머지/배포/릴리즈는 하지 않았어요. 안전하게 머지해도 된다는 뜻은 아니에요.');
+    // (Sprint 3f) when reached from MERGE_APPROVED, remind that the merge approval is still recorded and no
+    // merge happened — the status preview does not consume/clear the approval.
+    if (opts.mergeApproved) lines.push('머지 승인은 기록되어 있지만, 아직 머지는 하지 않았어요.');
     return { context, text: clampToMessageBudget(lines.join('\n')) };
+  }
+
+  // ── Sprint 3f (ADR-0056): explicit PR merge APPROVAL — permission record only, never merged/deployed/released. ──
+
+  /** Merge approval REQUESTED (Sprint 3f). Shows the PR target; says no merge happened; approval records permission only. */
+  composeMergeApprovalRequested(
+    context: ConversationContext,
+    input: { owner: string; repo: string; prNumber: number; prUrl: string; headBranch: string; baseBranch: string; commitHash: string },
+  ): OutboundMessage {
+    const head = input.headBranch.slice(0, MAX_GIT_REF_DISPLAY);
+    const base = input.baseBranch.slice(0, MAX_GIT_REF_DISPLAY);
+    const text = clampToMessageBudget(
+      [
+        'PR 머지 승인을 요청했어요.',
+        `대상: ${input.owner.slice(0, MAX_GIT_REF_DISPLAY)}/${input.repo.slice(0, MAX_GIT_REF_DISPLAY)} #${input.prNumber} (${head} → ${base}, 커밋 ${input.commitHash.slice(0, 7)})`,
+        `- PR: ${input.prUrl.slice(0, MAX_PR_URL_DISPLAY)}`,
+        '아직 머지는 하지 않았어요. 승인하면 이후 별도 단계에서 머지를 실행할 수 있어요. 배포/릴리즈도 하지 않았어요.',
+        '진행하려면 "승인", 원치 않으면 "거절"이라고 알려 주세요.',
+      ].join('\n'),
+    );
+    return { context, text };
+  }
+
+  /** Merge approval RECORDED after "승인" (Sprint 3f) — permission only; never says merged. */
+  composeMergeApprovalRecorded(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: 'PR 머지 승인이 기록됐어요.\n아직 머지는 하지 않았어요. 배포/릴리즈도 하지 않았어요. (실제 머지는 이후 단계에서 진행돼요)',
+    };
+  }
+
+  /** Merge approval DENIED (Sprint 3f) — PR remains; no merge. */
+  composeMergeApprovalDenied(context: ConversationContext): OutboundMessage {
+    return { context, text: 'PR 머지 승인을 거절했어요.\nPR은 그대로 있고 머지는 하지 않았어요.' };
+  }
+
+  /** Merge approval CANCELLED (Sprint 3f) — PR remains; no merge. */
+  composeMergeApprovalCancelled(context: ConversationContext): OutboundMessage {
+    return { context, text: 'PR 머지 승인을 취소했어요.\nPR은 그대로 있고 머지는 하지 않았어요.' };
+  }
+
+  /** Merge approval not available — wrong state / incomplete or stale pending context (Sprint 3f). No merge. */
+  composeMergeApprovalUnavailable(context: ConversationContext): OutboundMessage {
+    return { context, text: '지금은 PR 머지 승인을 준비할 수 없어요. (머지는 하지 않았어요)' };
+  }
+
+  /** A merge phrase while already MERGE_APPROVED (Sprint 3f) — already recorded; actual merge is a future step. */
+  composeMergeAlreadyApproved(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: 'PR 머지 승인은 이미 기록되어 있어요.\n아직 머지는 하지 않았어요. (실제 머지는 이후 단계에서 진행돼요)',
+    };
+  }
+
+  /** A deploy/release/reviewer/label/assignee phrase while MERGE_APPROVED (Sprint 3f) — unsupported future step. */
+  composeMergeApprovedCompanionUnsupported(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '배포/릴리즈/리뷰어/라벨/담당자 변경은 이후 단계예요. 지금은 하지 않았어요. PR 머지 승인만 기록되어 있어요.',
+    };
   }
 
   /** Repository identity / GitHub token not configured for status preview (Sprint 3e) — read-only, no state change. */
