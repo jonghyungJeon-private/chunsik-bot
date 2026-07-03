@@ -4622,6 +4622,18 @@ describe('Explicit PR Creation Approval — runtime (Sprint 3b, ADR-0049)', () =
     expect(s.calls.hostingGetStatus).toBe(1);
   });
 
+  // Merge STATUS/CHECK/INSPECTION phrases must NOT create MERGE_APPROVAL_PENDING even though "해줘" is a
+  // request verb — the "해줘" must not turn an inquiry into an approval (CA 3f impl review, tests 82–85).
+  it('PR_CREATED + merge status/check phrase → no merge approval, no MERGE_APPROVAL_PENDING (CA 82–85)', async () => {
+    for (const text of ['머지 상태 확인해줘', 'merge status 확인해줘', '머지 확인해줘', '머지 체크해줘']) {
+      const { deps, calls } = makeDeps({ applyAnchor: PR_CREATED_ANCHOR() });
+      const r = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.requestForRisk, text).toBe(0);
+      expect(calls.lastApplyAnchor?.status, text).not.toBe('MERGE_APPROVAL_PENDING');
+      expect(r.reply.text, text).not.toContain('아직 머지는 하지 않았어요');
+    }
+  });
+
   it('non-PR_CREATED states + merge phrase → no merge approval (CA 6)', async () => {
     for (const anchor of [prApprovedAnchor(), prReadyAnchor(), null]) {
       const { deps, calls } = makeDeps({ applyAnchor: anchor });

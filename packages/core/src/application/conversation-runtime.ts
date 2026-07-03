@@ -654,8 +654,12 @@ const PR_STATUS_QUERY = /(상태|status|확인|어때|봐줘|봐|알려|통과(�
  *  request; only a merge word + a request/approval/execution verb triggers. "머지해줘" (execution wording) is
  *  treated as a merge-approval REQUEST (Sprint 3f records permission only). */
 const MERGE_WORD = /(머지|병합|\bmerge\b)/i;
-// A merge SAFETY/POSSIBILITY question (not an approval request): possibility/safety word or a trailing "?".
-const MERGE_QUESTION = /(가능|안전|괜찮|되나|되나요|통과|\bmergeable\b|can\s+i|is\s+it|\?)/i;
+// A merge SAFETY/POSSIBILITY/STATUS/INSPECTION question (not an approval request) — a possibility/safety word,
+// a status/check/inspection word, or a trailing "?". Consulted only when a MERGE_WORD is present, so it never
+// affects non-merge phrases. "머지 상태 확인해줘"/"머지 확인해줘"/"머지 체크해줘" are inquiries, NOT approval requests
+// (Sprint 3f impl review — the "해줘" request verb must not turn an inquiry into an approval).
+const MERGE_QUESTION =
+  /(가능|안전|괜찮|되나|되나요|통과|상태|확인|봐줘|봐|알려|체크|\bcheck\b|\bstatus\b|\bmergeable\b|can\s+i|is\s+it|\?)/i;
 // An explicit merge approval/execution REQUEST verb ("머지 승인해줘"/"머지해줘"/"머지해도 되게 승인"/"merge this"/"approve merge").
 const MERGE_REQUEST_VERB = /(승인|approve|approval|요청|받아|해줘|해\s*줘|해도\s*되게|merge\s+this|이\s*pr\s*머지)/i;
 

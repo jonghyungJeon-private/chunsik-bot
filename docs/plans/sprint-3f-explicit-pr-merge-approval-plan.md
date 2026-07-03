@@ -34,8 +34,8 @@ phrase now routes to merge approval; a bare deploy/release phrase still → comp
 
 ## 1. Goal
 
-From a live `PR_CREATED` anchor, an explicit merge-approval / merge phrase records a **CRITICAL merge-creation
-approval** and halts — it does **not** merge:
+From a live `PR_CREATED` anchor, an explicit merge-approval / merge phrase records a **CRITICAL merge approval
+(a merge permission record)** and halts — it does **not** merge:
 
 ```text
 PR_CREATED
@@ -93,7 +93,7 @@ approval ids:
 mergeApprovalId?: Id          // pending/decided merge ApprovalRequest id; set at PENDING; preserved at APPROVED; cleared on deny/cancel
 mergeApprovalRequestedAt?: IsoTimestamp
 mergeApprovedAt?: IsoTimestamp        // set at MERGE_APPROVED
-mergeApprovalDecisionBy?: Id          // optional, the deciding actor
+mergeApprovalDecisionBy?: Id          // required on MERGE_APPROVED (the deciding actor); set together with mergeApprovedAt
 ```
 `MERGE_APPROVAL_PENDING`/`MERGE_APPROVED` **preserve the full `PR_CREATED` causal chain** (workspaceRef/
 workspaceChangeRef/executionPlanRef/…/prApprovalId/prHeadBranch/prBaseBranch/prTitle/prBodyPreview/
@@ -179,7 +179,7 @@ pull request: #<number> <url>
 head: <headBranch>
 base: <baseBranch>
 commit: <short hash>
-status: <created|connected-existing>
+pr source: created | connected-existing
 risk: CRITICAL
 no merge has been performed
 no deployment has been performed
