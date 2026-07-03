@@ -104,6 +104,12 @@ importers:
         specifier: workspace:*
         version: link:../core
 
+  packages/repository-hosting-github:
+    dependencies:
+      '@chunsik/core':
+        specifier: workspace:*
+        version: link:../core
+
   packages/storage-sqlite:
     dependencies:
       '@chunsik/core':

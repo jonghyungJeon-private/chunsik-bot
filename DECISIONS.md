@@ -3363,3 +3363,78 @@ ADR-0050 (Sprint 3c — the RepositoryHosting design this skeleton realizes), AD
 provider-reported `GitPushResult` discipline mirrored by `PullRequestResult`), ADR-0046/ADR-0025 (the
 `GitManager` Ref-gating template the manager mirrors; `ApprovalRef` consumed at the manager, never the
 provider). Plan: `docs/plans/sprint-3d-b-repository-hosting-skeleton-plan.md`.
+
+## ADR-0053 — GitHub RepositoryHosting Adapter (adapter-only; real GitHub REST via fetch; runtime execution deferred to 3d-D)
+
+- **Status:** ✅ Accepted (v2, Phase 3, Sprint 3d-C — Product Construction), Chief Architect plan review:
+  APPROVED WITH CHANGES (all 18 required changes applied) → implemented.
+- **Date:** 2026-07-03
+- **Scope:** `GitHubRepositoryHostingProvider` in a new `@chunsik/repository-hosting-github` package — the real
+  GitHub REST implementation of the CAP-010 `RepositoryHostingProvider` port (ADR-0052), via the Node 22
+  built-in `fetch`. **Adapter-only:** it is **not wired into `app.module.ts`** and **no product-runtime path
+  reaches it**; every unit test injects a fake `fetch` (no live network). Actual runtime PR-creation execution
+  (`PR_CREATED`, execution intent, `ConversationRuntime`/`ResponseComposer`, DI wiring) is **deferred to Sprint
+  3d-D**, so the product flow still stops at `PR_APPROVED`.
+
+### Most important rule
+> **`createPullRequest` now has a REAL GitHub-mutating implementation inside the adapter package** — but in
+> Sprint 3d-C it is **not wired into runtime and is exercised only with a fake `fetch` in tests**, so no product
+> path can create a Pull Request. This is the key difference from 3d-B (where the method was a port shape with
+> no implementation). Actual product PR creation remains **deferred to 3d-D**.
+
+### Decision
+- **Q1 — adapter-only (3d-C1).** Split from runtime execution (3d-D), because bundling the first
+  product-reachable remote mutation with the largest diff (a new package + `ConversationRuntime` state-machine
+  changes + DI wiring) could not be proven narrow/guarded (`conversation-runtime.ts` is 3163 lines; its DI
+  factory ~69 wiring lines). The unwired adapter keeps the mutation surface closed.
+- **Transport (Q3):** Node 22 built-in **`fetch`** + `AbortSignal.timeout`; **no octokit/SDK**; no
+  `gh`/`hub`/`curl`/`CommandExecution`/shell/`git request-pull`.
+- **Auth (Q2):** token is **adapter-local constructor config only** (`GitHubHostingConfig.token`); **3d-C does
+  NOT read `CHUNSIK_GITHUB_TOKEN` in `config.ts`** (no runtime binding → no secret surface before it is needed;
+  3d-D decides the env read). The constructor **rejects a blank/whitespace token** (no fetch). The token is
+  used only as an `Authorization: Bearer` header value and **never** enters core/domain/`RepositoryIdentity`/
+  `ApprovalRequest.reason`/`ApplyPreviewAnchor`/`ResponseComposer`/logs/errors.
+- **Fixed host (github.com only):** API base is fixed to `https://api.github.com` with **no override option**;
+  GitHub Enterprise is deferred. Headers: `Authorization: Bearer <token>`, `Accept:
+  application/vnd.github+json`, `X-GitHub-Api-Version: 2022-11-28`, `User-Agent: chunsik-bot`.
+- **Endpoints (Q4):** `repositoryExists` → `GET /repos/{owner}/{repo}`; `branchExists` → `GET
+  /repos/{owner}/{repo}/branches/{branch}`; `findOpenPullRequest` → `GET /repos/{owner}/{repo}/pulls?state=open&
+  head={owner}:{headBranch}&base={baseBranch}`; `createPullRequest` → `POST /repos/{owner}/{repo}/pulls`. Path
+  segments (incl. slash branches) are `encodeURIComponent`-encoded; the POST body carries **raw** branch
+  strings, minimal keys ONLY `{ title, head, base, body }` (no draft/maintainer_can_modify/issue/labels/
+  assignees/reviewers/milestone).
+- **HTTP status handling (Q11):** exists checks `200 → true`, `404 → false`, `401/403 → sanitized "unavailable
+  (auth)"`, other non-2xx → sanitized error; `findOpenPullRequest` `404 → throw` (not "no PR"); `createPullRequest`
+  **201 only** (`200`/`4xx` → error). **One `fetch` per method — no retry** (mutation retry needs separate
+  review).
+- **Existing-PR reuse (Q5):** same-repository head only (`{owner}:{headBranch}`); forks unsupported (mapping
+  requires `head.repo.owner.login === owner` and `head.repo.name === repo`, else rejected); `0 → null`, `1 →
+  mapped`, **`>1 → deterministic ambiguous safe failure`** (never choose first).
+- **Result mapping (Q6/Q7):** `pullRequestCommitHash` = provider-reported **`head.sha`** (missing/not-SHA-shaped
+  → reject); `pullRequestNumber` = `number` (must be a positive safe integer); `pullRequestUrl` = `html_url`
+  validated by `isSafeGitHubPullRequestUrl` (https/github.com/exact path/exact casing/no creds/no query/no
+  fragment/no percent-encoding); `head.ref`/`base.ref` mapped; everything else ignored (no raw diff/file
+  content/secrets fetched). `PullRequestResult` is **provider-reported, not independent truth**; `reused` is
+  finalized by the Manager (unchanged from ADR-0052).
+- **Sanitized errors (Q13 provider portion):** deterministic bounded messages (operation label + HTTP status)
+  — **never** the token, the `Authorization` header, the raw response body, or the request body.
+- **No wiring / no side effects (Q15/Q16):** no `app.module` import/binding; `REPOSITORY_HOSTING_PROVIDER`
+  stays unbound; `ConversationRuntime`/`ApplyPreviewAnchor`/`ResponseComposer`/`ExecutionOrchestrator`/Git
+  capability unchanged; no `PR_CREATED`; no merge/deploy/release/reviewer/label/assignee/branch-creation/force
+  push.
+
+### Consequences
+- + The product now has a real, tested GitHub REST adapter behind the CAP-010 port, ready for 3d-D to wire — with
+  full auth/host/encoding/status/reuse/mapping/sanitization discipline, validated by fake-`fetch` unit tests
+  (no live network).
+- + No new external dependency (built-in `fetch`); mirrors the `git-local` adapter package shape.
+- − A real GitHub-mutating `createPullRequest` implementation now exists in the repo, but is unreachable in
+  product runtime (unwired) and never invoked live in tests. Actual PR-creation execution + `PR_CREATED` +
+  runtime/composer changes remain **deferred to 3d-D**; the product flow still stops at `PR_APPROVED`.
+
+### Relations
+ADR-0052 (Sprint 3d-B — the `RepositoryHostingProvider` port this adapter implements + `RepositoryHostingManager`
+that will consume it in 3d-D; `isSafeGitHubPullRequestUrl`/`PullRequestResult` reused), ADR-0051 (`RepositoryIdentity`
+consumed), ADR-0050 (RepositoryHosting design), ADR-0048 (provider-reported `GitPushResult` discipline mirrored;
+`git-local` adapter template), ADR-0023 (Git stays local-only). **Runtime execution succeeds in Sprint 3d-D.**
+Plan: `docs/plans/sprint-3d-c-github-pr-creation-execution-plan.md`.
