@@ -286,17 +286,14 @@ describe('Sprint 3d-C absence guards (adapter-only; no octokit / shell / wiring 
       expect(adapterSrc.includes(forbidden)).toBe(false);
     }
   });
-  it('app.module.ts does not import or bind the adapter (tests 44/45)', () => {
-    expect(appModuleSrc.includes('repository-hosting-github')).toBe(false);
-    expect(appModuleSrc.includes('GitHubRepositoryHostingProvider')).toBe(false);
-    expect(appModuleSrc.includes('REPOSITORY_HOSTING_PROVIDER')).toBe(false);
-  });
-  it('ConversationRuntime / ResponseComposer unchanged; no PR_CREATED (tests 46/47/48)', () => {
-    expect(runtimeSrc.includes('GitHubRepositoryHostingProvider')).toBe(false);
+  // (Sprint 3d-D, ADR-0054 supersedes) The adapter is now wired into app.module and the runtime has PR
+  // creation execution + PR_CREATED. The ENDURING invariant kept here: the runtime/composer never IMPORT the
+  // adapter package directly — the runtime reaches it only via RepositoryHostingManager (CA change 7).
+  it('ConversationRuntime / ResponseComposer never import the GitHub adapter package directly', () => {
     expect(runtimeSrc.includes('repository-hosting-github')).toBe(false);
-    expect(runtimeSrc.includes('PR_CREATED')).toBe(false);
+    expect(runtimeSrc.includes('GitHubRepositoryHostingProvider')).toBe(false);
+    expect(composerSrc.includes('repository-hosting-github')).toBe(false);
     expect(composerSrc.includes('GitHubRepositoryHostingProvider')).toBe(false);
-    expect(composerSrc.includes('PR_CREATED')).toBe(false);
   });
   it('Git capability has no PR method (tests 49/50)', () => {
     expect(gitProviderPortSrc.includes('createPullRequest')).toBe(false);

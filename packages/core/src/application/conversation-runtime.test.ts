@@ -32,6 +32,8 @@ import type {
   PatchSet,
   ProposedChange,
   Project,
+  PullRequestResult,
+  RepositoryIdentity,
   RunCommandInput,
   Session,
   Task,
@@ -57,6 +59,7 @@ import type {
   ScopeClarificationFlow,
 } from './conversation-runtime';
 import { StatelessApprovalFlow } from './stateless-approval-flow';
+import { RepositoryHostingBlockedError, RepositoryHostingUnverifiedError } from './repository-hosting-manager';
 
 const TS = '2026-07-01T00:00:00.000Z';
 const CTX: ConversationContext = { platform: 'test', channelId: 'c1', userId: 'u1' };
@@ -364,6 +367,16 @@ interface Calls {
   lastGitPushInput?: { rootPath: string; remote: string; branch: string; commitHash: string; approvalRef: ApprovalRef };
   commandExecGet: number;
   loggerWarn: number;
+  hostingCreatePR: number;
+  lastHostingCreateInput?: {
+    identity: RepositoryIdentity;
+    headBranch: string;
+    baseBranch: string;
+    title: string;
+    body: string;
+    expectedCommitHash: string;
+    approvalRef: ApprovalRef;
+  };
 }
 
 interface Opts {
@@ -431,6 +444,40 @@ interface Opts {
   gitPush?: GitPushResult | 'throw';
   /** When true, `commandExecutions.get` throws (Sprint 2w — validation-lookup failure must not fail preview). */
   commandExecGetThrows?: boolean;
+  /** Repository Hosting identity (Sprint 3d-D) — defaults to a valid github identity so PR approval works; pass
+   *  `null` to simulate "not configured" (no identity). */
+  hostingIdentity?: RepositoryIdentity | null;
+  /** Repository Hosting manager (Sprint 3d-D) — defaults to a fake that records the call and returns a valid
+   *  echoing PullRequestResult; pass `null` to simulate a missing token (no manager), or a custom fake for
+   *  reuse/blocked/unverified paths. */
+  hostingManager?: { createPullRequest(input: HostingCreateInput): Promise<PullRequestResult> } | null;
+}
+
+/** Shape of the input the runtime passes to `RepositoryHostingManager.createPullRequest` (Sprint 3d-D). */
+interface HostingCreateInput {
+  identity: RepositoryIdentity;
+  headBranch: string;
+  baseBranch: string;
+  title: string;
+  body: string;
+  expectedCommitHash: string;
+  approvalRef: ApprovalRef;
+}
+
+/** Default fake PullRequestResult echoing the create input (Sprint 3d-D) — a valid, integrity-consistent PR. */
+function prResultOf(input: HostingCreateInput, over: Partial<PullRequestResult> = {}): PullRequestResult {
+  return {
+    provider: 'github',
+    owner: input.identity.owner,
+    repo: input.identity.repo,
+    pullRequestNumber: 42,
+    pullRequestUrl: `https://github.com/${input.identity.owner}/${input.identity.repo}/pull/42`,
+    pullRequestHeadBranch: input.headBranch,
+    pullRequestBaseBranch: input.baseBranch,
+    pullRequestCommitHash: input.expectedCommitHash,
+    reused: false,
+    ...over,
+  };
 }
 
 function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Calls } {
@@ -468,6 +515,7 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
     gitPush: 0,
     commandExecGet: 0,
     loggerWarn: 0,
+    hostingCreatePR: 0,
   };
   const composer = new ResponseComposer();
   const intentResolver = new IntentResolver();
@@ -703,6 +751,24 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
         if (opts.gitPush === 'throw') throw new Error('git push boom');
         return opts.gitPush ?? gitPushResultOf(input);
       },
+    },
+    // Sprint 3d-D: Repository Hosting. Default = configured (valid identity + a fake manager echoing a valid
+    // PullRequestResult). hostingIdentity:null → not-configured identity; hostingManager:null → missing token.
+    repositoryHosting: {
+      identity:
+        opts.hostingIdentity === null
+          ? undefined
+          : (opts.hostingIdentity ?? { provider: 'github', owner: 'acme', repo: 'widgets' }),
+      manager:
+        opts.hostingManager === null
+          ? undefined
+          : (opts.hostingManager ?? {
+              async createPullRequest(input: HostingCreateInput) {
+                calls.hostingCreatePR++;
+                calls.lastHostingCreateInput = input;
+                return prResultOf(input);
+              },
+            }),
     },
     logger: { ...silentLogger, warn: () => { calls.loggerWarn++; } },
   };
@@ -3806,7 +3872,13 @@ describe('Explicit PR Creation Approval — runtime (Sprint 3b, ADR-0049)', () =
   /** A GIT_PUSHED anchor pushed to "main" (head == base). */
   const pushedToMainAnchor = (): ApplyPreviewAnchor =>
     prReadyAnchor({ pushBranch: BASE, pushUpstreamRef: 'origin/main', pushedBranch: BASE, pushedUpstreamRef: 'origin/main' });
-  /** A PR_APPROVAL_PENDING anchor with complete PR context. */
+  /** The approved target repository identity carried on the PR approval anchor (Sprint 3d-D). Matches makeDeps'
+   *  default resolved identity so execution can proceed. */
+  const PR_IDENTITY: RepositoryIdentity = { provider: 'github', owner: 'acme', repo: 'widgets' };
+  /** A live APPROVED PR ApprovalRequest for `apply-appr-1` / plan-1 (Sprint 3d-D) — what `approvals.get` must
+   *  return for PR-creation execution to proceed. */
+  const approvedPrRequest = (): ApprovalRequest => ({ ...pendingApprovalOf(), id: 'apply-appr-1', status: ApprovalStatus.APPROVED });
+  /** A PR_APPROVAL_PENDING anchor with complete PR context + approved repository identity (Sprint 3d-D). */
   const prPendingAnchor = (o: Partial<ApplyPreviewAnchor> = {}): ApplyPreviewAnchor =>
     prReadyAnchor({
       status: 'PR_APPROVAL_PENDING',
@@ -3816,6 +3888,7 @@ describe('Explicit PR Creation Approval — runtime (Sprint 3b, ADR-0049)', () =
       prBaseBranch: BASE,
       prTitle: 'Apply approved changes',
       prBodyPreview: 'body preview',
+      repositoryIdentity: PR_IDENTITY,
       ...o,
     });
   /** A PR_APPROVED anchor. */
@@ -3857,16 +3930,19 @@ describe('Explicit PR Creation Approval — runtime (Sprint 3b, ADR-0049)', () =
     }
   });
 
-  it('non-GIT_PUSHED states + PR phrase → no PR approval; PR_APPROVED + PR phrase → already approved (CA 15–19)', async () => {
+  it('non-GIT_PUSHED states + PR phrase → no PR approval; PR_APPROVED + PR phrase → EXECUTES creation (Sprint 3d-D supersedes CA 15–19)', async () => {
     for (const anchor of [null, approvedAnchorOf({ status: 'WORKSPACE_APPLIED' }), approvedAnchorOf({ status: 'GIT_COMMITTED', commitHash: HEAD_SHA, committedFiles: [TARGET_FILE] }), approvedAnchorOf({ status: 'PUSH_APPROVED', pushBranch: HEAD, pushUpstreamRef: UPSTREAM, pushCommitHash: HEAD_SHA, commitHash: HEAD_SHA })]) {
       const { deps, calls } = makeDeps({ applyAnchor: anchor });
       await new ConversationRuntime(deps).handle(messageOf('PR 만들어줘'));
       expect(calls.requestForRisk, String(anchor?.status)).toBe(0);
     }
-    const { deps, calls } = makeDeps({ applyAnchor: prApprovedAnchor() });
+    // (Sprint 3d-D, ADR-0054) PR_APPROVED + a PR create phrase now EXECUTES creation (no NEW approval).
+    const { deps, calls } = makeDeps({ applyAnchor: prApprovedAnchor(), approvalsGetResult: approvedPrRequest() });
     const result = await new ConversationRuntime(deps).handle(messageOf('PR 만들어줘'));
     expect(calls.requestForRisk).toBe(0);
-    expect(result.reply.text).toBe(composer.composePrAlreadyApproved(CTX).text);
+    expect(calls.hostingCreatePR).toBe(1);
+    expect(calls.lastApplyAnchor?.status).toBe('PR_CREATED');
+    expect(result.status).toBe('RESPONDED');
   });
 
   // ── unsupported companions (CA 20–27) ────────────────────────────────────────────────────────
@@ -4040,13 +4116,17 @@ describe('Explicit PR Creation Approval — runtime (Sprint 3b, ADR-0049)', () =
     expect(approved.prBodyPreview).toBe('body preview');
     expect(approved.pushedCommitHash).toBe(HEAD_SHA); // pushed context preserved
     expect(approved.committedFiles).toEqual([TARGET_FILE]); // commit/workspace context preserved
-    const already = makeDeps({ applyAnchor: prApprovedAnchor() });
-    const r1 = await new ConversationRuntime(already.deps).handle(messageOf('PR 만들어줘'));
-    expect(already.calls.requestForRisk).toBe(0);
-    expect(r1.reply.text).toBe(composer.composePrAlreadyApproved(CTX).text);
+    // (Sprint 3d-D) PR_APPROVED + PR create phrase now EXECUTES (no new approval); ambiguous "좋아" does nothing.
+    const exec = makeDeps({ applyAnchor: prApprovedAnchor(), approvalsGetResult: approvedPrRequest() });
+    const r1 = await new ConversationRuntime(exec.deps).handle(messageOf('PR 만들어줘'));
+    expect(exec.calls.requestForRisk).toBe(0);
+    expect(exec.calls.hostingCreatePR).toBe(1);
+    expect(exec.calls.lastApplyAnchor?.status).toBe('PR_CREATED');
+    expect(r1.status).toBe('RESPONDED');
     const amb = makeDeps({ applyAnchor: prApprovedAnchor() });
     await new ConversationRuntime(amb.deps).handle(messageOf('좋아'));
     expect(amb.calls.requestForRisk).toBe(0);
+    expect(amb.calls.hostingCreatePR).toBe(0);
   });
 
   it('PR_APPROVED + deploy-only phrase → state-specific: approval recorded, PR not created, deploy not done (CA 80, 108)', async () => {
@@ -4072,10 +4152,11 @@ describe('Explicit PR Creation Approval — runtime (Sprint 3b, ADR-0049)', () =
     expect(calls.codeGenerationGenerate).toBe(0);
     expect(calls.run).toBe(0);
     expect(calls.resume).toBe(0);
-    // no PR/hosting capability exists at all (no GitHubProvider / RepositoryHosting / createPullRequest)
+    // (Sprint 3d-D) the PR-APPROVAL path still performs NO hosting mutation — createPullRequest is NOT called
+    // during approval (that is a separate PR_APPROVED execution phase). Git capability still has no PR method.
+    expect(calls.hostingCreatePR).toBe(0);
     expect(Object.keys(deps.git)).not.toContain('createPullRequest');
     expect(Object.keys(deps.git)).not.toContain('pullRequest');
-    expect(Object.keys(deps).some((k) => /github|hosting|pullrequest/i.test(k))).toBe(false);
   });
 
   // ── composer wording (CA 101–109) ────────────────────────────────────────────────────────────
@@ -4098,6 +4179,241 @@ describe('Explicit PR Creation Approval — runtime (Sprint 3b, ADR-0049)', () =
     for (const t of [requested, recorded, denied, composer.composePrApprovalCancelled(CTX).text, composer.composePrHeadEqualsBaseUnavailable(CTX).text, composer.composePrAlreadyApproved(CTX).text]) {
       expect(t).not.toMatch(/배포했|병합했|merged|deployed|released|production/i);
     }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────────────────────
+  // Sprint 3d-D (ADR-0054): actual PR creation execution (PR_APPROVED → manager → PR_CREATED).
+  // ─────────────────────────────────────────────────────────────────────────────────────────────
+  const prResult = (over: Partial<PullRequestResult> = {}): PullRequestResult => ({
+    provider: 'github',
+    owner: 'acme',
+    repo: 'widgets',
+    pullRequestNumber: 42,
+    pullRequestUrl: 'https://github.com/acme/widgets/pull/42',
+    pullRequestHeadBranch: HEAD,
+    pullRequestBaseBranch: BASE,
+    pullRequestCommitHash: HEAD_SHA,
+    reused: false,
+    ...over,
+  });
+  const APPROVED_REQ = () => approvedPrRequest();
+  const PR_CREATED_ANCHOR = (o: Partial<ApplyPreviewAnchor> = {}): ApplyPreviewAnchor =>
+    prApprovedAnchor({
+      status: 'PR_CREATED',
+      pullRequestRef: { provider: 'github', owner: 'acme', repo: 'widgets', pullRequestNumber: 42, pullRequestUrl: 'https://github.com/acme/widgets/pull/42' },
+      pullRequestNumber: 42,
+      pullRequestUrl: 'https://github.com/acme/widgets/pull/42',
+      pullRequestHeadBranch: HEAD,
+      pullRequestBaseBranch: BASE,
+      pullRequestCommitHash: HEAD_SHA,
+      pullRequestReused: false,
+      ...o,
+    });
+
+  it('PR_APPROVED + explicit create/open phrase → executes; bare noun/승인/진행해/deploy/merge → no execution (CA 1–7)', async () => {
+    for (const text of CREATE_PHRASES) {
+      const { deps, calls } = makeDeps({ applyAnchor: prApprovedAnchor(), approvalsGetResult: APPROVED_REQ() });
+      await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.hostingCreatePR, text).toBe(1);
+      expect(calls.lastApplyAnchor?.status, text).toBe('PR_CREATED');
+    }
+    for (const text of [...BARE_NOUNS, '승인', '진행해', '좋아', '배포해줘', 'PR 만들고 merge']) {
+      const { deps, calls } = makeDeps({ applyAnchor: prApprovedAnchor(), approvalsGetResult: APPROVED_REQ() });
+      await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.hostingCreatePR, text).toBe(0);
+    }
+  });
+
+  it('PR_APPROVAL_PENDING + create phrase does not execute (CA 7); GIT_PUSHED w/o PR_APPROVED does not execute (CA 8)', async () => {
+    const pending = makeDeps({ applyAnchor: prPendingAnchor(), approvalsGetResult: APPROVED_REQ() });
+    await new ConversationRuntime(pending.deps).handle(messageOf('PR 만들어줘'));
+    expect(pending.calls.hostingCreatePR).toBe(0);
+    const pushed = makeDeps({ applyAnchor: prReadyAnchor(), approvalsGetResult: APPROVED_REQ() });
+    await new ConversationRuntime(pushed.deps).handle(messageOf('PR 만들어줘'));
+    expect(pushed.calls.hostingCreatePR).toBe(0); // creates a NEW approval (3b), not execution
+  });
+
+  it('PR_CREATED only after manager success; no PR_CREATED on blocked/unverified failure (CA 9/10/38/39)', async () => {
+    const ok = makeDeps({ applyAnchor: prApprovedAnchor(), approvalsGetResult: APPROVED_REQ() });
+    await new ConversationRuntime(ok.deps).handle(messageOf('PR 만들어줘'));
+    expect(ok.calls.lastApplyAnchor?.status).toBe('PR_CREATED');
+    for (const err of [new RepositoryHostingBlockedError('b'), new RepositoryHostingUnverifiedError('u')]) {
+      const { deps, calls } = makeDeps({
+        applyAnchor: prApprovedAnchor(),
+        approvalsGetResult: APPROVED_REQ(),
+        hostingManager: { async createPullRequest() { throw err; } },
+      });
+      const r = await new ConversationRuntime(deps).handle(messageOf('PR 만들어줘'));
+      expect(calls.lastApplyAnchor?.status, err.name).not.toBe('PR_CREATED');
+      expect(r.status, err.name).toBe('FAILED');
+    }
+  });
+
+  it('verifies approval via ApprovalManager.get; missing/non-APPROVED/plan-mismatch → no manager call (CA 11–16/19/20)', async () => {
+    for (const req of [null, { ...approvedPrRequest(), status: ApprovalStatus.PENDING }, { ...approvedPrRequest(), executionPlanRef: { id: 'other', goal: 'g' } }]) {
+      const { deps, calls } = makeDeps({ applyAnchor: prApprovedAnchor(), approvalsGetResult: req as ApprovalRequest | null });
+      const r = await new ConversationRuntime(deps).handle(messageOf('PR 만들어줘'));
+      expect(calls.approvalsGet).toBeGreaterThan(0);
+      expect(calls.hostingCreatePR).toBe(0);
+      expect(r.reply.text).toBe(composer.composePrCreationUnavailable(CTX).text);
+    }
+  });
+
+  it('pushed/head/base context mismatch → no manager call, fail safe (CA 16/17)', async () => {
+    for (const bad of [{ pushedCommitHash: 'f'.repeat(40) }, { pushedBranch: 'other' }, { prBaseBranch: 'develop' }]) {
+      const { deps, calls } = makeDeps({ applyAnchor: prApprovedAnchor(bad), approvalsGetResult: APPROVED_REQ() });
+      await new ConversationRuntime(deps).handle(messageOf('PR 만들어줘'));
+      expect(calls.hostingCreatePR, JSON.stringify(bad)).toBe(0);
+    }
+  });
+
+  it('resolved identity is passed to manager; missing identity or missing token (manager) → not configured (CA 21/22/27)', async () => {
+    const ok = makeDeps({ applyAnchor: prApprovedAnchor(), approvalsGetResult: APPROVED_REQ() });
+    await new ConversationRuntime(ok.deps).handle(messageOf('PR 만들어줘'));
+    expect(ok.calls.lastHostingCreateInput?.identity).toEqual({ provider: 'github', owner: 'acme', repo: 'widgets' });
+    for (const opt of [{ hostingIdentity: null as null }, { hostingManager: null as null }]) {
+      const { deps, calls } = makeDeps({ applyAnchor: prApprovedAnchor(), approvalsGetResult: APPROVED_REQ(), ...opt });
+      const r = await new ConversationRuntime(deps).handle(messageOf('PR 만들어줘'));
+      expect(calls.hostingCreatePR).toBe(0);
+      expect(r.reply.text).toBe(composer.composePrCreationNotConfigured(CTX).text);
+    }
+  });
+
+  it('resolved identity differing from the approved anchor identity → fail safe, no manager call (CA change 1 / tests 78/80)', async () => {
+    const { deps, calls } = makeDeps({
+      applyAnchor: prApprovedAnchor({ repositoryIdentity: { provider: 'github', owner: 'evil', repo: 'widgets' } }),
+      approvalsGetResult: APPROVED_REQ(),
+    });
+    const r = await new ConversationRuntime(deps).handle(messageOf('PR 만들어줘'));
+    expect(calls.hostingCreatePR).toBe(0);
+    expect(r.reply.text).toBe(composer.composePrCreationUnavailable(CTX).text);
+  });
+
+  it('PR_APPROVED anchor missing repositoryIdentity → fail safe (CA change 1 / test 77)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: prApprovedAnchor({ repositoryIdentity: undefined }), approvalsGetResult: APPROVED_REQ() });
+    await new ConversationRuntime(deps).handle(messageOf('PR 만들어줘'));
+    expect(calls.hostingCreatePR).toBe(0);
+  });
+
+  it('manager receives ApprovalRef + expected pushed commit hash + bounded body; no token anywhere (CA 34/35/29/30)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: prApprovedAnchor(), approvalsGetResult: APPROVED_REQ() });
+    const r = await new ConversationRuntime(deps).handle(messageOf('PR 만들어줘'));
+    const input = calls.lastHostingCreateInput!;
+    expect(input.approvalRef).toEqual({ id: 'apply-appr-1', status: ApprovalStatus.APPROVED, executionPlanRef: { id: 'plan-1', goal: 'g' } });
+    expect(input.expectedCommitHash).toBe(HEAD_SHA);
+    expect(input.body).toContain('변경 파일 수'); // count only, no file paths
+    expect(input.body).not.toContain(TARGET_FILE);
+    // no token in the create input, the created anchor, or the reply
+    expect(JSON.stringify(input)).not.toMatch(/token|ghp_/i);
+    expect(JSON.stringify(calls.lastApplyAnchor)).not.toMatch(/token|ghp_/i);
+    expect(r.reply.text).not.toMatch(/token|ghp_/i);
+  });
+
+  it('new PR success → PR_CREATED reused:false; response has URL + no merge/deploy/release (CA 32/34/35/37/41/42)', async () => {
+    const { deps, calls } = makeDeps({
+      applyAnchor: prApprovedAnchor(),
+      approvalsGetResult: APPROVED_REQ(),
+      hostingManager: { async createPullRequest(i) { return prResult({ pullRequestHeadBranch: i.headBranch, pullRequestBaseBranch: i.baseBranch, pullRequestCommitHash: i.expectedCommitHash }); } },
+    });
+    const r = await new ConversationRuntime(deps).handle(messageOf('PR 만들어줘'));
+    expect(calls.lastApplyAnchor?.status).toBe('PR_CREATED');
+    expect(calls.lastApplyAnchor?.pullRequestReused).toBe(false);
+    expect(r.reply.text).toContain('https://github.com/acme/widgets/pull/42');
+    expect(r.reply.text).toContain('머지/배포/릴리즈는 하지 않았어요');
+    expect(r.reply.text).not.toMatch(/merged|deployed|released/i);
+  });
+
+  it('existing-PR reuse → PR_CREATED reused:true; response says existing connected, not newly created (CA 36/43/44/58/61)', async () => {
+    const { deps, calls } = makeDeps({
+      applyAnchor: prApprovedAnchor(),
+      approvalsGetResult: APPROVED_REQ(),
+      hostingManager: { async createPullRequest(i) { return prResult({ reused: true, pullRequestHeadBranch: i.headBranch, pullRequestBaseBranch: i.baseBranch, pullRequestCommitHash: i.expectedCommitHash }); } },
+    });
+    const r = await new ConversationRuntime(deps).handle(messageOf('PR 만들어줘'));
+    expect(calls.lastApplyAnchor?.status).toBe('PR_CREATED');
+    expect(calls.lastApplyAnchor?.pullRequestReused).toBe(true);
+    expect(r.reply.text).toContain('기존에 열려 있던 PR을 연결했어요');
+    expect(r.reply.text).not.toContain('PR을 만들었어요');
+  });
+
+  it('blocked manager error → "PR not created"; unverified error → does NOT say "not created" (CA change 6 / tests 91–95)', async () => {
+    const blocked = makeDeps({ applyAnchor: prApprovedAnchor(), approvalsGetResult: APPROVED_REQ(), hostingManager: { async createPullRequest() { throw new RepositoryHostingBlockedError('x'); } } });
+    const rb = await new ConversationRuntime(blocked.deps).handle(messageOf('PR 만들어줘'));
+    expect(rb.reply.text).toBe(composer.composePrCreationBlocked(CTX).text);
+    expect(rb.reply.text).toContain('PR은 만들지 않았어요');
+    const unver = makeDeps({ applyAnchor: prApprovedAnchor(), approvalsGetResult: APPROVED_REQ(), hostingManager: { async createPullRequest() { throw new RepositoryHostingUnverifiedError('x'); } } });
+    const ru = await new ConversationRuntime(unver.deps).handle(messageOf('PR 만들어줘'));
+    expect(ru.reply.text).toBe(composer.composePrCreationUnverified(CTX).text);
+    expect(ru.reply.text).not.toContain('PR은 만들지 않았어요');
+    expect(ru.reply.text).toContain('확인하지 못했어요');
+  });
+
+  it('PR_CREATED anchor preserves the full causal chain + PR result; no token/remoteUrl (CA 61–72)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: prApprovedAnchor(), approvalsGetResult: APPROVED_REQ() });
+    await new ConversationRuntime(deps).handle(messageOf('PR 만들어줘'));
+    const a = calls.lastApplyAnchor!;
+    expect(a.repositoryIdentity).toEqual({ provider: 'github', owner: 'acme', repo: 'widgets' });
+    expect(a.pullRequestRef).toEqual({ provider: 'github', owner: 'acme', repo: 'widgets', pullRequestNumber: 42, pullRequestUrl: 'https://github.com/acme/widgets/pull/42' });
+    expect(a.pullRequestCommitHash).toBe(HEAD_SHA);
+    expect(a.pullRequestCommitHash).toBe(a.prPushedCommitHash);
+    expect(a.pullRequestHeadBranch).toBe(a.prHeadBranch);
+    expect(a.pullRequestBaseBranch).toBe(a.prBaseBranch);
+    expect(a.prApprovalId).toBe('apply-appr-1'); // causal chain preserved
+    expect(a.commitHash).toBe(HEAD_SHA);
+    expect(JSON.stringify(a)).not.toMatch(/remoteUrl|token/i);
+  });
+
+  it('execution performs NO extra git/command/workspace side effects — only the manager call (CA 49–60)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: prApprovedAnchor(), approvalsGetResult: APPROVED_REQ() });
+    await new ConversationRuntime(deps).handle(messageOf('PR 만들어줘'));
+    expect(calls.hostingCreatePR).toBe(1);
+    expect(calls.gitPush).toBe(0);
+    expect(calls.gitCommit).toBe(0);
+    expect(calls.gitStatus).toBe(0);
+    expect(calls.gitInfo).toBe(0);
+    expect(calls.commandRun).toBe(0);
+    expect(calls.workspaceApply).toBe(0);
+    expect(calls.run).toBe(0);
+  });
+
+  it('PR_CREATED + create phrase → already created (URL, no new manager call); deploy/merge → future step (CA 8/40/111–114)', async () => {
+    const again = makeDeps({ applyAnchor: PR_CREATED_ANCHOR(), approvalsGetResult: APPROVED_REQ() });
+    const r = await new ConversationRuntime(again.deps).handle(messageOf('PR 만들어줘'));
+    expect(again.calls.hostingCreatePR).toBe(0);
+    expect(r.reply.text).toBe(composer.composePrAlreadyCreated(CTX, { prNumber: 42, prUrl: 'https://github.com/acme/widgets/pull/42' }).text);
+    for (const text of ['배포해줘', 'merge 해줘', 'release 해줘']) {
+      const { deps, calls } = makeDeps({ applyAnchor: PR_CREATED_ANCHOR(), approvalsGetResult: APPROVED_REQ() });
+      const rr = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.hostingCreatePR, text).toBe(0);
+      expect(rr.reply.text, text).toBe(composer.composePrCreatedCompanionUnsupported(CTX).text);
+    }
+  });
+
+  it('GIT_PUSHED + PR approval request fails safe when repository identity is not configured (CA change 9 / tests 106–108)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: prReadyAnchor(), hostingIdentity: null });
+    const r = await new ConversationRuntime(deps).handle(messageOf('PR 만들어줘'));
+    expect(calls.requestForRisk).toBe(0); // no ApprovalRequest
+    expect(calls.lastApplyAnchor?.status).not.toBe('PR_APPROVAL_PENDING');
+    expect(r.reply.text).toBe(composer.composePrCreationNotConfigured(CTX).text);
+  });
+
+  it('PR approval request stores repositoryIdentity in PR_APPROVAL_PENDING; reason has owner/repo, no token (CA 75/109)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: prReadyAnchor(), hostingIdentity: { provider: 'github', owner: 'acme', repo: 'widgets' } });
+    await new ConversationRuntime(deps).handle(messageOf('PR 만들어줘'));
+    expect(calls.lastApplyAnchor?.status).toBe('PR_APPROVAL_PENDING');
+    expect(calls.lastApplyAnchor?.repositoryIdentity).toEqual({ provider: 'github', owner: 'acme', repo: 'widgets' });
+    expect(calls.lastRequestForRiskInput?.reason).toContain('acme/widgets');
+    expect(calls.lastRequestForRiskInput?.reason).not.toMatch(/token|ghp_/i);
+  });
+
+  it('runtime does not parse ApprovalRequest.reason for context (CA change 2 / test 81)', async () => {
+    // Even with a garbage/empty reason, execution proceeds off STRUCTURED anchor + ApprovalRef fields.
+    const { deps, calls } = makeDeps({
+      applyAnchor: prApprovedAnchor(),
+      approvalsGetResult: { ...approvedPrRequest(), reason: 'totally unrelated free text' },
+    });
+    await new ConversationRuntime(deps).handle(messageOf('PR 만들어줘'));
+    expect(calls.hostingCreatePR).toBe(1);
   });
 });
 

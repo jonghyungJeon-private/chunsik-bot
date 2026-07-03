@@ -50,6 +50,8 @@ import {
   ConnectorManager,
   ResponseComposer,
   RiskPolicy,
+  RepositoryIdentityResolver,
+  RepositoryHostingManager,
 } from '@chunsik/core';
 import type {
   AiProvider,
@@ -72,6 +74,7 @@ import { LocalQueueProvider } from '@chunsik/queue-local';
 import { LocalVectorProvider } from '@chunsik/vector-local';
 import { LocalCloneWorkspaceProvider, LocalWorkspaceWriter } from '@chunsik/workspace-local';
 import { LocalGitProvider } from '@chunsik/git-local';
+import { GitHubRepositoryHostingProvider } from '@chunsik/repository-hosting-github';
 import { LocalCommandRunner } from '@chunsik/command-local';
 import { ClaudeCliProvider, CodexCliProvider, OllamaCliProvider } from '@chunsik/ai-cli';
 import { V1_CONNECTORS } from '@chunsik/connectors';
@@ -81,6 +84,23 @@ import { ConsoleLogger } from './console-logger';
 
 const config = loadConfig();
 const coreLogger = new ConsoleLogger('chunsik');
+
+// Sprint 3d-D (ADR-0054): Repository Hosting composition — actual PR creation execution.
+// Resolve the target identity from reviewed config (independent of token). Construct the GitHub adapter +
+// RepositoryHostingManager ONLY when a non-blank token is present; otherwise PR creation is "not configured"
+// and fails safe at runtime (NO adapter constructed — a blank token never reaches the adapter constructor, and
+// unrelated flows are unaffected). The token is ADAPTER-LOCAL: it is passed ONLY to the adapter constructor
+// here and never reaches @chunsik/core / ConversationRuntime / anchors / ApprovalRequest.reason / logs.
+const repositoryIdentityResolution = new RepositoryIdentityResolver().resolve(config.repositoryHosting);
+const repositoryIdentity =
+  repositoryIdentityResolution.status === 'resolved' ? repositoryIdentityResolution.identity : undefined;
+const githubToken = (config.githubToken ?? '').trim();
+const repositoryHostingManager =
+  githubToken.length > 0
+    ? new RepositoryHostingManager(new GitHubRepositoryHostingProvider({ token: githubToken }))
+    : undefined;
+// Passed to ConversationRuntime as `RepositoryHostingManager | undefined` — never the token itself.
+const repositoryHosting = { identity: repositoryIdentity, manager: repositoryHostingManager };
 
 /**
  * Port -> concrete bindings. Swapping an implementation (e.g. Postgres storage,
@@ -408,6 +428,10 @@ const application: Provider[] = [
         // ADR-0044: reuses the already-registered GitManager (CAP-002) for the read-only post-apply git
         // preview — status + the new read-only diff extension only; no new provider, no git mutation.
         git,
+        // ADR-0054: Repository Hosting (CAP-010) for actual PR creation execution — resolved identity +
+        // RepositoryHostingManager (present only when a GitHub token is configured). NO token is passed here.
+        // The runtime calls the manager only, never GitHubRepositoryHostingProvider directly.
+        repositoryHosting,
         logger: coreLogger,
       });
     },
