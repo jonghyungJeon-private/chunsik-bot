@@ -10,7 +10,7 @@ import {
   type GitRunner,
   type GitRunResult,
 } from './index';
-import { GitMainSyncBlockedError } from '@chunsik/core';
+import { BranchCleanupBlockedError, GitMainSyncBlockedError } from '@chunsik/core';
 
 const created: string[] = [];
 afterAll(() => {
@@ -597,5 +597,87 @@ describe('LocalGitProvider — post-merge local main sync (CAP-002, ADR-0058, Sp
     expect(flat.some((c) => c.includes('ls-remote'))).toBe(true);
     expect(flat.some((c) => c.startsWith('--no-pager fetch') || c.includes(' fetch '))).toBe(true);
     expect(flat.some((c) => c.includes('merge --ff-only') || c.includes('update-ref'))).toBe(true);
+  });
+});
+
+describe('LocalGitProvider — post-merge local branch cleanup (CAP-002, ADR-0059, Sprint 3i)', () => {
+  /** A repo with main @ M (merge commit) and a merged feature branch @ F (F ancestor of M). */
+  function makeRepoWithMergedFeature(): { dir: string; main: string; feature: string; F: string } {
+    const dir = makeRepo(); // main @ A
+    git(dir, 'checkout', '-q', '-b', 'feature');
+    writeFileSync(join(dir, 'feat.txt'), 'x\n');
+    git(dir, 'add', 'feat.txt');
+    git(dir, 'commit', '-q', '-m', 'F');
+    const F = git(dir, 'rev-parse', 'refs/heads/feature').trim();
+    git(dir, 'checkout', '-q', 'main');
+    git(dir, 'merge', '--no-ff', '-m', 'merge feature', 'feature');
+    const main = git(dir, 'rev-parse', 'refs/heads/main').trim();
+    return { dir, main, feature: F, F };
+  }
+
+  it('isAncestor: merged feature tip is an ancestor of main; main is not an ancestor of the feature', async () => {
+    const { dir, main, F } = makeRepoWithMergedFeature();
+    expect(await provider.isAncestor(dir, F, main)).toBe(true);
+    expect(await provider.isAncestor(dir, main, F)).toBe(false);
+  });
+
+  it('deleteMergedLocalBranch: CAS-deletes the local feature ref (update-ref -d), leaving main + checkout untouched', async () => {
+    const { dir, main, F } = makeRepoWithMergedFeature(); // currently on main
+    const r = await provider.deleteMergedLocalBranch(dir, 'feature', F);
+    expect(r.deleted).toBe(true);
+    expect(r.alreadyAbsent).toBe(false);
+    expect(r.deletedCommitHash).toBe(F);
+    const gone = spawnSync('git', ['rev-parse', '--verify', '--quiet', 'refs/heads/feature'], { cwd: dir, encoding: 'utf8' });
+    expect(gone.status).not.toBe(0); // feature deleted
+    expect(git(dir, 'rev-parse', 'refs/heads/main').trim()).toBe(main); // main untouched
+  });
+
+  it('does NOT require HEAD==main and does not switch checkout (CA 25/26)', async () => {
+    const { dir, F } = makeRepoWithMergedFeature();
+    git(dir, 'checkout', '-q', '-b', 'other'); // current branch != main, != feature
+    await provider.deleteMergedLocalBranch(dir, 'feature', F);
+    expect(git(dir, 'symbolic-ref', '--short', 'HEAD').trim()).toBe('other'); // checkout unchanged
+    const check = spawnSync('git', ['rev-parse', '--verify', '--quiet', 'refs/heads/feature'], { cwd: dir, encoding: 'utf8' });
+    expect(check.status).not.toBe(0); // feature deleted
+  });
+
+  it('CAS mismatch (expectedBranchCommit != actual tip) → GitMainSync? no — BranchCleanupBlockedError, branch NOT deleted', async () => {
+    const { dir, F } = makeRepoWithMergedFeature();
+    // add another commit to feature so its tip != F
+    git(dir, 'checkout', '-q', 'feature');
+    writeFileSync(join(dir, 'feat2.txt'), 'y\n');
+    git(dir, 'add', 'feat2.txt');
+    git(dir, 'commit', '-q', '-m', 'F2');
+    git(dir, 'checkout', '-q', 'main');
+    await expect(provider.deleteMergedLocalBranch(dir, 'feature', F)).rejects.toBeInstanceOf(BranchCleanupBlockedError);
+    expect(git(dir, 'rev-parse', '--verify', '--quiet', 'refs/heads/feature').trim()).not.toBe(''); // still present
+  });
+
+  it('absent target branch → BranchCleanupBlockedError (pre-delete; manager handles absent as idempotent upstream)', async () => {
+    const { dir, F } = makeRepoWithMergedFeature();
+    await expect(provider.deleteMergedLocalBranch(dir, 'no-such-branch', F)).rejects.toBeInstanceOf(BranchCleanupBlockedError);
+  });
+
+  it('rejects main / unsafe branch defensively (never deletes main)', async () => {
+    const { dir, main } = makeRepoWithMergedFeature();
+    await expect(provider.deleteMergedLocalBranch(dir, 'main', main)).rejects.toBeInstanceOf(BranchCleanupBlockedError);
+    await expect(provider.deleteMergedLocalBranch(dir, 'bad branch', main)).rejects.toBeInstanceOf(BranchCleanupBlockedError);
+    expect(git(dir, 'rev-parse', '--verify', '--quiet', 'refs/heads/main').trim()).toBe(main); // main intact
+  });
+
+  it('argv guard: cleanup uses update-ref -d only — NEVER branch -d/-D/--force/push', async () => {
+    const { dir, F } = makeRepoWithMergedFeature();
+    const seen: string[][] = [];
+    const recording: GitRunner = (args, opts) => {
+      seen.push(args);
+      const r = spawnSync('git', args, { cwd: opts.cwd, timeout: opts.timeoutMs, encoding: 'utf8' });
+      return { code: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '', timedOut: false, failed: !!r.error };
+    };
+    await new LocalGitProvider(recording).deleteMergedLocalBranch(dir, 'feature', F);
+    const flat = seen.map((a) => a.join(' '));
+    for (const bad of ['branch -d', 'branch -D', '--force', ' -f', 'push', 'reset --hard']) {
+      expect(flat.some((c) => c.includes(bad)), bad).toBe(false);
+    }
+    expect(flat.some((c) => c.includes('update-ref -d'))).toBe(true);
   });
 });

@@ -101,6 +101,24 @@ export interface GitMainSyncResult {
 }
 
 /**
+ * Result of a post-merge LOCAL branch cleanup (CAP-002, ADR-0059 — Sprint 3i). Returned by
+ * `GitProvider.deleteMergedLocalBranch`/`GitManager.deleteMergedLocalBranch`. **Safe CAS delete only** — never a
+ * force delete, never a remote deletion. NOT an independent verification; it reports what the LOCAL delete did this
+ * run. `BRANCH_CLEANED` means the completed feature branch's LOCAL ref was deleted (or was already absent) — never
+ * deployed/released/tagged/remote-deleted.
+ */
+export interface GitBranchCleanupResult {
+  /** The local branch targeted (== the anchored PR head branch). */
+  branch: string;
+  /** True when this run deleted a local ref; false when it was already absent. */
+  deleted: boolean;
+  /** True when the local branch did not exist (idempotent no-op). */
+  alreadyAbsent: boolean;
+  /** The commit the deleted branch pointed at (for the response/audit), when a delete happened. */
+  deletedCommitHash?: string;
+}
+
+/**
  * Minimal, read-only repository metadata (CAP-002). Intentionally **excludes
  * remote URLs** — HTTPS remotes can embed credentials; exposing them needs a
  * future masking policy + ADR (ADR-0023).

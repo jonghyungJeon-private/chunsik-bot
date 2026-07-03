@@ -1,8 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
-import { GitManager, GitMainSyncBlockedError, GitMainSyncUnverifiedError } from './git-manager';
+import {
+  BranchCleanupBlockedError,
+  BranchCleanupUnverifiedError,
+  GitManager,
+  GitMainSyncBlockedError,
+  GitMainSyncUnverifiedError,
+} from './git-manager';
 import { WorkspaceNotSafeError } from '../errors';
 import { ApprovalStatus } from '../domain';
-import type { ApprovalRef, GitCommitResult, GitMainSyncResult, GitStatus, RepositoryInfo } from '../domain';
+import type { ApprovalRef, GitBranchCleanupResult, GitCommitResult, GitMainSyncResult, GitStatus, RepositoryInfo } from '../domain';
 import type { GitProvider } from '../ports';
 
 function fakeProvider(over: Partial<GitProvider> = {}): GitProvider {
@@ -239,5 +245,99 @@ describe('GitManager.syncMain (CAP-002, ADR-0058 — post-merge local main fast-
   it('result integrity: syncedCommitHash != expected → Unverified', async () => {
     const bad = syncProvider({ async syncMainFastForward() { return syncResult({ syncedCommitHash: 'feedfeedfeedfeedfeedfeedfeedfeedfeedfeed' }); } });
     await expect(runSync(bad)).rejects.toBeInstanceOf(GitMainSyncUnverifiedError);
+  });
+});
+
+describe('GitManager.deleteMergedLocalBranch (CAP-002, ADR-0059 — post-merge local branch cleanup)', () => {
+  const MAIN = 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2'; // expected local main == syncedMainCommit
+  const TIP = '0000000abcabcabcabcabcabcabcabcabcabc000'; // target branch tip
+  const TARGET = 'feature/login';
+  const delFn = vi.fn(async (): Promise<GitBranchCleanupResult> => ({ branch: TARGET, deleted: true, alreadyAbsent: false, deletedCommitHash: TIP }));
+  function cleanupProvider(over: Partial<GitProvider> = {}): GitProvider {
+    return fakeProvider({
+      async isRepository() {
+        return true;
+      },
+      async status(): Promise<GitStatus> {
+        return { clean: true, branch: 'feature/x', staged: [], unstaged: [], untracked: [] }; // not on target
+      },
+      async info(rootPath: string): Promise<RepositoryInfo> {
+        return { isRepository: true, rootPath, branch: 'feature/x', headSha: 'abc', detached: false };
+      },
+      async getLocalRefCommit(_root: string, branch: string) {
+        return { commitHash: branch === 'main' ? MAIN : TIP };
+      },
+      async isAncestor() {
+        return true; // merged
+      },
+      deleteMergedLocalBranch: delFn,
+      ...over,
+    } as Partial<GitProvider>);
+  }
+  const runCleanup = (p: GitProvider, over: Record<string, unknown> = {}) =>
+    new GitManager(p).deleteMergedLocalBranch({ rootPath: '/repo', branch: TARGET, expectedMainCommit: MAIN, ...over } as Parameters<GitManager['deleteMergedLocalBranch']>[0]);
+
+  it('happy path: preflight passes → single delete with the observed target tip as expectedBranchCommit (CA 23)', async () => {
+    delFn.mockClear();
+    const r = await runCleanup(cleanupProvider());
+    expect(delFn).toHaveBeenCalledTimes(1);
+    expect(delFn).toHaveBeenCalledWith('/repo', TARGET, TIP); // CAS base = observed target tip (CA change 2)
+    expect(r.deleted).toBe(true);
+  });
+
+  it('unsafe input (rootPath / branch / main / expected SHA) → Blocked, no read/delete', async () => {
+    for (const over of [{ rootPath: '  ' }, { branch: 'bad branch' }, { branch: 'main' }, { expectedMainCommit: 'nope' }]) {
+      const del = vi.fn(async () => ({ branch: TARGET, deleted: true, alreadyAbsent: false }));
+      await expect(runCleanup(cleanupProvider({ deleteMergedLocalBranch: del }), over)).rejects.toBeInstanceOf(BranchCleanupBlockedError);
+      expect(del).not.toHaveBeenCalled();
+    }
+  });
+
+  it('target currently checked out → Blocked, no delete (CA 8)', async () => {
+    const del = vi.fn(async () => ({ branch: TARGET, deleted: true, alreadyAbsent: false }));
+    await expect(
+      runCleanup(cleanupProvider({ async info(rootPath: string) { return { isRepository: true, rootPath, branch: TARGET, detached: false }; }, deleteMergedLocalBranch: del })),
+    ).rejects.toBeInstanceOf(BranchCleanupBlockedError);
+    expect(del).not.toHaveBeenCalled();
+  });
+
+  it('local main missing / != expectedMainCommit → Blocked, no delete (CA change 4 / test 24)', async () => {
+    const del = vi.fn(async () => ({ branch: TARGET, deleted: true, alreadyAbsent: false }));
+    const moved = cleanupProvider({ async getLocalRefCommit(_r: string, b: string) { return b === 'main' ? { commitHash: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' } : { commitHash: TIP }; }, deleteMergedLocalBranch: del });
+    await expect(runCleanup(moved)).rejects.toBeInstanceOf(BranchCleanupBlockedError);
+    expect(del).not.toHaveBeenCalled();
+    const gone = cleanupProvider({ async getLocalRefCommit(_r: string, b: string) { return b === 'main' ? null : { commitHash: TIP }; }, deleteMergedLocalBranch: del });
+    await expect(runCleanup(gone)).rejects.toBeInstanceOf(BranchCleanupBlockedError);
+  });
+
+  it('target branch absent → idempotent { deleted:false, alreadyAbsent:true }, no delete call (CA 10)', async () => {
+    const del = vi.fn(async () => ({ branch: TARGET, deleted: true, alreadyAbsent: false }));
+    const absent = cleanupProvider({ async getLocalRefCommit(_r: string, b: string) { return b === 'main' ? { commitHash: MAIN } : null; }, deleteMergedLocalBranch: del });
+    const r = await runCleanup(absent);
+    expect(r.deleted).toBe(false);
+    expect(r.alreadyAbsent).toBe(true);
+    expect(del).not.toHaveBeenCalled();
+  });
+
+  it('target not merged into main → Blocked, no delete (CA 9)', async () => {
+    const del = vi.fn(async () => ({ branch: TARGET, deleted: true, alreadyAbsent: false }));
+    await expect(runCleanup(cleanupProvider({ async isAncestor() { return false; }, deleteMergedLocalBranch: del }))).rejects.toBeInstanceOf(BranchCleanupBlockedError);
+    expect(del).not.toHaveBeenCalled();
+  });
+
+  it('phase-aware: provider Blocked → Blocked; Unverified → Unverified; unknown → Unverified (CA 12/13)', async () => {
+    const blocked = cleanupProvider({ async deleteMergedLocalBranch() { throw new BranchCleanupBlockedError('moved'); } });
+    await expect(runCleanup(blocked)).rejects.toBeInstanceOf(BranchCleanupBlockedError);
+    const unverified = cleanupProvider({ async deleteMergedLocalBranch() { throw new BranchCleanupUnverifiedError('mid'); } });
+    await expect(runCleanup(unverified)).rejects.toBeInstanceOf(BranchCleanupUnverifiedError);
+    const generic = cleanupProvider({ async deleteMergedLocalBranch() { throw new Error('boom'); } });
+    await expect(runCleanup(generic)).rejects.toBeInstanceOf(BranchCleanupUnverifiedError);
+  });
+
+  it('result integrity: branch mismatch / not-deleted → Unverified', async () => {
+    const wrongBranch = cleanupProvider({ async deleteMergedLocalBranch() { return { branch: 'other', deleted: true, alreadyAbsent: false }; } });
+    await expect(runCleanup(wrongBranch)).rejects.toBeInstanceOf(BranchCleanupUnverifiedError);
+    const notDeleted = cleanupProvider({ async deleteMergedLocalBranch() { return { branch: TARGET, deleted: false, alreadyAbsent: false }; } });
+    await expect(runCleanup(notDeleted)).rejects.toBeInstanceOf(BranchCleanupUnverifiedError);
   });
 });

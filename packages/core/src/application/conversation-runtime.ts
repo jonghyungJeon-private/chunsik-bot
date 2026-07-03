@@ -1,6 +1,11 @@
 import { describeAiFailure } from './ai-failure';
 import { RepositoryHostingBlockedError } from './repository-hosting-manager';
-import { GitMainSyncBlockedError, GitMainSyncUnverifiedError } from './git-manager';
+import {
+  BranchCleanupBlockedError,
+  BranchCleanupUnverifiedError,
+  GitMainSyncBlockedError,
+  GitMainSyncUnverifiedError,
+} from './git-manager';
 import {
   ApprovalStatus,
   Capability,
@@ -36,6 +41,7 @@ import type {
   ConversationContext,
   ExecutionPlanRef,
   GenerateCodeInput,
+  GitBranchCleanupResult,
   GitCommitResult,
   GitDiff,
   GitMainSyncResult,
@@ -261,10 +267,17 @@ export type ApplyPreviewAnchorStatus =
   | 'PR_MERGED'
   /**
    * The LOCAL workspace repository's `main` ref was synchronized (fast-forward) to the expected post-merge remote
-   * `main` commit DURING THIS RUN (Sprint 3h, ADR-0058). Terminal for this chain. NOT deployed, NOT released, NOT
-   * production-ready, NOT branch-deleted, NOT remote-branch-cleaned, NOT CI-permanently-verified.
+   * `main` commit DURING THIS RUN (Sprint 3h, ADR-0058). NOT deployed, NOT released, NOT production-ready, NOT
+   * branch-deleted, NOT remote-branch-cleaned, NOT CI-permanently-verified. From Sprint 3i, an explicit local
+   * cleanup command here deletes the already-merged feature branch's LOCAL ref.
    */
-  | 'MAIN_SYNCED';
+  | 'MAIN_SYNCED'
+  /**
+   * The completed feature branch's LOCAL reference was deleted — or was already absent — DURING THIS RUN (Sprint
+   * 3i, ADR-0059). Terminal for this chain. NOT deployed, NOT released, NOT tagged, NOT production-ready, NOT
+   * remote-branch-deleted, NOT all-branches-cleaned, NOT repository-fully-cleaned.
+   */
+  | 'BRANCH_CLEANED';
 
 /**
  * Anchored fact set for "a diff preview was shown; the user may explicitly ask to apply it" (Sprint 2s,
@@ -408,6 +421,19 @@ export interface ApplyPreviewAnchor {
   workingTreeUpdated?: boolean;
   /** The local main commit BEFORE the fast-forward (Sprint 3h, CA change 3) — REQUIRED at MAIN_SYNCED (CAS base). */
   previousMainCommit?: string;
+  /** Which cleanup scope ran (Sprint 3i, ADR-0059) — REQUIRED at BRANCH_CLEANED; ALWAYS 'local' in 3i
+   *  ('remote'/'local-and-remote' reserved for a future gated sprint). */
+  branchCleanupMode?: 'local' | 'remote' | 'local-and-remote';
+  /** The branch targeted for cleanup (Sprint 3i) — REQUIRED at BRANCH_CLEANED; == the anchored PR head branch. */
+  cleanedBranch?: string;
+  /** The RUNTIME record timestamp of the cleanup (Sprint 3i) — REQUIRED at BRANCH_CLEANED (now()). */
+  branchCleanedAt?: IsoTimestamp;
+  /** The actor who triggered cleanup (Sprint 3i) — REQUIRED at BRANCH_CLEANED. */
+  branchCleanedBy?: Id;
+  /** Whether a LOCAL ref was deleted this run (Sprint 3i) — REQUIRED at BRANCH_CLEANED; false when already absent. */
+  cleanedLocalBranch?: boolean;
+  /** Whether a REMOTE branch was deleted (Sprint 3i) — REQUIRED at BRANCH_CLEANED; ALWAYS false in 3i (remote deferred). */
+  cleanedRemoteBranch?: boolean;
 }
 
 /**
@@ -549,6 +575,10 @@ export interface ConversationRuntimeDeps {
      *  Fast-forward-only; NO ApprovalRef (local, non-destructive, gated by PR_MERGED + explicit command +
      *  preflight). The runtime calls this ONLY — never the provider primitives, never shells to git. */
     syncMain(input: { rootPath: string; remote: string; branch: string; expectedRemoteCommit: string }): Promise<GitMainSyncResult>;
+    /** Post-merge LOCAL branch cleanup (Sprint 3i, ADR-0059) — the same already-registered GitManager. Safe CAS
+     *  delete of the anchored merged feature branch; NO ApprovalRef (local, recoverable, gated by MAIN_SYNCED +
+     *  explicit command + preflight). The runtime calls this ONLY — never the provider, never shells to git. */
+    deleteMergedLocalBranch(input: { rootPath: string; branch: string; expectedMainCommit: string }): Promise<GitBranchCleanupResult>;
   };
   /**
    * Repository Hosting (CAP-010, Sprint 3d-D, ADR-0054) — actual PR creation execution. OPTIONAL: absent/empty
@@ -728,6 +758,14 @@ const SYNC_WORD = /(동기화|최신화|받아와|받아\s*줘|\bsync\b|\bpull\b
 const MAIN_WORD = /(\bmain\b|메인|origin\/main)/i;
 /** The origin to sync local main from (github.com origin; fixed like PR_BASE_BRANCH_POLICY). */
 const MAIN_SYNC_REMOTE = 'origin';
+// Post-merge LOCAL branch cleanup (Sprint 3i, ADR-0059) — only consulted at MAIN_SYNCED/BRANCH_CLEANED. A cleanup
+// command needs a cleanup VERB + a BRANCH word. A REMOTE qualifier routes to the "unsupported" reply (remote
+// deletion deferred); bulk/wildcard and a "main"-delete target never trigger.
+const CLEANUP_VERB = /(정리|삭제|지워|없애|\bcleanup\b|clean\s*up|\bdelete\b|\bremove\b|\bprune\b)/i;
+const CLEANUP_BRANCH_WORD = /(브랜치|\bbranch\b)/i;
+const CLEANUP_REMOTE_WORD = /(원격|\bremote\b|\borigin\b|github)/i;
+const CLEANUP_BULK = /(다\s*(삭제|지워|정리)|전부|모두|\ball\b|every|\*|패턴|pattern|wildcard)/i;
+const CLEANUP_MAIN_TARGET = /(^|\s)(main|메인)\s*(브랜치)?\s*(삭제|지워|delete|remove)/i;
 
 /** A PR-ish noun (Sprint 3b, ADR-0049) — only ever consulted at GIT_PUSHED/PR_APPROVAL_PENDING/PR_APPROVED.
  *  A bare 좋아/오케이/확인/진행해/다음 단계 never matches. A noun ALONE is not a PR-creation request (CA #1). */
@@ -1299,6 +1337,31 @@ export class ConversationRuntime {
   }
 
   /**
+   * A REMOTE branch cleanup phrase (Sprint 3i, ADR-0059, CA change 1) — only consulted at MAIN_SYNCED/BRANCH_CLEANED,
+   * checked BEFORE the local classifier so a remote phrase can NEVER fall through to a local delete. A cleanup verb
+   * + a branch word + a remote qualifier (원격/remote/origin/github) → `'remote'` (→ unsupported reply, no mutation).
+   */
+  static interpretRemoteBranchCleanupIntent(text: string): 'remote' | null {
+    const t = text.trim().toLowerCase();
+    if (CLEANUP_VERB.test(t) && CLEANUP_BRANCH_WORD.test(t) && CLEANUP_REMOTE_WORD.test(t)) return 'remote';
+    return null;
+  }
+
+  /**
+   * A LOCAL branch cleanup phrase (Sprint 3i, ADR-0059) — only consulted at MAIN_SYNCED/BRANCH_CLEANED, AFTER the
+   * remote guard. A cleanup verb + a branch word → `'local'`; rejects bulk/wildcard, a "main"-delete target, and any
+   * remote qualifier (handled by interpretRemoteBranchCleanupIntent). The deletion target is ALWAYS the anchored PR
+   * head branch — never a user-named branch. A bare "정리해줘"/"배포해줘" (no branch word) → null.
+   */
+  static interpretBranchCleanupIntent(text: string): 'local' | null {
+    const t = text.trim().toLowerCase();
+    if (CLEANUP_BULK.test(t) || CLEANUP_MAIN_TARGET.test(t)) return null; // bulk/wildcard/"main 삭제" → never
+    if (CLEANUP_REMOTE_WORD.test(t)) return null; // remote → not local (routed by interpretRemoteBranchCleanupIntent)
+    if (CLEANUP_VERB.test(t) && CLEANUP_BRANCH_WORD.test(t)) return 'local';
+    return null;
+  }
+
+  /**
    * Resolve the commit message for a commit-approval turn (Sprint 2x, CA #6/#7/#8). If the text carries a
    * user message (a single quoted segment after a `메시지`/`message` keyword) it is accepted only when it is
    * exactly one candidate, single-line, ≤120 chars, control-char-free, and trimmed non-empty — otherwise
@@ -1498,10 +1561,46 @@ export class ConversationRuntime {
         return this.handleMergeExecutionUnsupportedCompanionTurn(message, session);
       }
     }
-    // (Sprint 3h, ADR-0058) Terminal MAIN_SYNCED: a sync command → already synced (no mutation); a status/check
-    // phrase → read-only preview (keeps MAIN_SYNCED); any merge phrase → already merged; deploy/release/companion →
-    // unsupported future step. NEVER re-syncs/merges/deploys.
+    // (Sprint 3h/3i) Terminal MAIN_SYNCED, in order: a REMOTE cleanup phrase → unsupported (Sprint 3i, CA change 1
+    // — checked FIRST so it never falls through to a local delete); an explicit LOCAL cleanup command → safe local
+    // branch delete (Sprint 3i); a sync command → already synced; a status/check phrase → read-only preview; any
+    // merge phrase → already merged; deploy/release/companion → unsupported future step.
     if (applyAnchor?.status === 'MAIN_SYNCED') {
+      if (ConversationRuntime.interpretRemoteBranchCleanupIntent(message.text) === 'remote') {
+        return this.handleRemoteBranchCleanupUnsupportedTurn(message, session);
+      }
+      if (ConversationRuntime.interpretBranchCleanupIntent(message.text) === 'local') {
+        return this.handleBranchCleanupTurn(message, session, actor, applyAnchor);
+      }
+      if (ConversationRuntime.interpretMainSyncIntent(message.text) === 'sync') {
+        return this.handleMainAlreadySyncedTurn(message, session, applyAnchor);
+      }
+      if (
+        ConversationRuntime.interpretPrStatusIntent(message.text) ||
+        ConversationRuntime.interpretMergeStatusIntent(message.text)
+      ) {
+        return this.handlePrStatusPreviewTurn(message, session, applyAnchor);
+      }
+      if (
+        ConversationRuntime.interpretMergeExecutionIntent(message.text) === 'execute' ||
+        MERGE_WORD.test(message.text)
+      ) {
+        return this.handleMergeAlreadyMergedTurn(message, session, applyAnchor);
+      }
+      if (DEPLOY_ONLY_WORDS.test(message.text) || PR_CREATED_COMPANION_WORDS.test(message.text)) {
+        return this.handleMergeExecutionUnsupportedCompanionTurn(message, session);
+      }
+    }
+    // (Sprint 3i, ADR-0059) Terminal BRANCH_CLEANED: a remote cleanup phrase → unsupported; a local cleanup phrase →
+    // already cleaned (no mutation); a sync command → still synced; a status/check phrase → read-only preview; any
+    // merge phrase → already merged; deploy/release/companion → unsupported. NEVER re-deletes/deploys.
+    if (applyAnchor?.status === 'BRANCH_CLEANED') {
+      if (ConversationRuntime.interpretRemoteBranchCleanupIntent(message.text) === 'remote') {
+        return this.handleRemoteBranchCleanupUnsupportedTurn(message, session);
+      }
+      if (ConversationRuntime.interpretBranchCleanupIntent(message.text) === 'local') {
+        return this.handleBranchAlreadyCleanedTurn(message, session, applyAnchor);
+      }
       if (ConversationRuntime.interpretMainSyncIntent(message.text) === 'sync') {
         return this.handleMainAlreadySyncedTurn(message, session, applyAnchor);
       }
@@ -3407,7 +3506,8 @@ export class ConversationRuntime {
       (anchor.status !== 'PR_CREATED' &&
         anchor.status !== 'MERGE_APPROVED' &&
         anchor.status !== 'PR_MERGED' &&
-        anchor.status !== 'MAIN_SYNCED') ||
+        anchor.status !== 'MAIN_SYNCED' &&
+        anchor.status !== 'BRANCH_CLEANED') ||
       !ref ||
       !anchor.repositoryIdentity ||
       !anchor.pullRequestHeadBranch ||
@@ -3813,6 +3913,97 @@ export class ConversationRuntime {
       workingTreeUpdated: anchor.workingTreeUpdated ?? false,
       alreadyUpToDate: true,
     });
+    return this.respondComposed(message, session, reply);
+  }
+
+  /**
+   * Post-merge LOCAL branch cleanup from MAIN_SYNCED (Sprint 3i, ADR-0059) — a safe CAS delete of the already-merged
+   * feature branch (the ANCHORED PR head branch; never a user-named branch). Re-validates the MAIN_SYNCED evidence +
+   * the anchored identity, resolves the target from the anchor, then calls the Git Manager (which runs the local
+   * preflight and makes at most ONE CAS delete). Calls the manager only (never the provider, never shells). NO
+   * ApprovalRef. Failure is SAFE and PHASE-AWARE: a KNOWN pre-ref-delete BranchCleanupBlockedError may say "not
+   * deleted"; a BranchCleanupUnverifiedError (and any unknown throw) is UNVERIFIED. Keeps MAIN_SYNCED on failure. NO
+   * remote deletion, NO force delete, NO deploy/release/tag.
+   */
+  private async handleBranchCleanupTurn(
+    message: InboundMessage,
+    session: Session,
+    actor: Actor,
+    anchor: ApplyPreviewAnchor,
+  ): Promise<TurnResult> {
+    const identity = this.deps.repositoryHosting?.identity;
+    if (!identity) {
+      return this.respondComposed(message, session, this.deps.composer.composeBranchCleanupUnavailable(message.context));
+    }
+    const target = anchor.pullRequestHeadBranch;
+    // Anchor/target preflight (checks 1–8). Any missing/mismatch/unsafe → Blocked (definitely not deleted).
+    if (
+      anchor.status !== 'MAIN_SYNCED' ||
+      !anchor.syncedMainCommit ||
+      anchor.mainSyncBranch !== PR_BASE_BRANCH_POLICY ||
+      !target ||
+      target !== anchor.pushedBranch ||
+      target === PR_BASE_BRANCH_POLICY ||
+      !isSafePushBranch(target) ||
+      !anchor.workspaceRef?.rootPath ||
+      !anchor.repositoryIdentity ||
+      anchor.repositoryIdentity.provider !== identity.provider ||
+      anchor.repositoryIdentity.owner !== identity.owner ||
+      anchor.repositoryIdentity.repo !== identity.repo
+    ) {
+      this.logPrApprovalFailed(session, anchor, 'branch cleanup context incomplete');
+      return this.failComposed(message, session, this.deps.composer.composeBranchCleanupBlocked(message.context));
+    }
+    let result: GitBranchCleanupResult;
+    try {
+      result = await this.deps.git.deleteMergedLocalBranch({
+        rootPath: anchor.workspaceRef.rootPath,
+        branch: target,
+        expectedMainCommit: anchor.syncedMainCommit,
+      });
+    } catch (err) {
+      // Phase-aware: only a KNOWN pre-ref-delete BlockedError may say "not deleted"; an UnverifiedError AND any
+      // unknown throw are UNVERIFIED. Keep MAIN_SYNCED on every failure path.
+      if (err instanceof BranchCleanupBlockedError) {
+        this.logPrApprovalFailed(session, anchor, 'branch cleanup blocked before delete');
+        return this.failComposed(message, session, this.deps.composer.composeBranchCleanupBlocked(message.context));
+      }
+      void (err instanceof BranchCleanupUnverifiedError);
+      this.logPrApprovalFailed(session, anchor, 'branch cleanup unverified (delete ambiguity)');
+      return this.failComposed(message, session, this.deps.composer.composeBranchCleanupUnverified(message.context));
+    }
+    // Success (deleted OR already-absent) → anchor BRANCH_CLEANED, preserving the full MAIN_SYNCED chain; LOCAL only.
+    await this.deps.applyPreviewFlow.anchor(session, {
+      ...anchor,
+      status: 'BRANCH_CLEANED',
+      branchCleanupMode: 'local',
+      cleanedBranch: result.branch,
+      branchCleanedAt: now(),
+      branchCleanedBy: actor.id,
+      cleanedLocalBranch: result.deleted,
+      cleanedRemoteBranch: false,
+    });
+    const reply = this.deps.composer.composeBranchCleanupSucceeded(message.context, {
+      cleanedBranch: result.branch,
+      cleanedLocalBranch: result.deleted,
+      alreadyAbsent: result.alreadyAbsent,
+    });
+    return this.respondComposed(message, session, reply);
+  }
+
+  /** A local cleanup phrase at BRANCH_CLEANED (Sprint 3i) — already cleaned; no new deletion. */
+  private async handleBranchAlreadyCleanedTurn(message: InboundMessage, session: Session, anchor: ApplyPreviewAnchor): Promise<TurnResult> {
+    const reply = this.deps.composer.composeBranchCleanupSucceeded(message.context, {
+      cleanedBranch: anchor.cleanedBranch ?? anchor.pullRequestHeadBranch ?? '',
+      cleanedLocalBranch: false,
+      alreadyAbsent: true,
+    });
+    return this.respondComposed(message, session, reply);
+  }
+
+  /** A REMOTE branch cleanup phrase (Sprint 3i, CA change 1) — remote deletion is deferred; NO local delete, no mutation. */
+  private async handleRemoteBranchCleanupUnsupportedTurn(message: InboundMessage, session: Session): Promise<TurnResult> {
+    const reply = this.deps.composer.composeRemoteBranchCleanupUnsupported(message.context);
     return this.respondComposed(message, session, reply);
   }
 

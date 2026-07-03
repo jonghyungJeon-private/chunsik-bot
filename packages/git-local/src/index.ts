@@ -1,7 +1,14 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
-import type { GitCommitResult, GitDiff, GitMainSyncResult, GitProvider, GitPushResult, GitStatus, RepositoryInfo } from '@chunsik/core';
-import { GitMainSyncBlockedError, GitMainSyncUnverifiedError, isSafePushBranch, isSafePushRemote } from '@chunsik/core';
+import type { GitBranchCleanupResult, GitCommitResult, GitDiff, GitMainSyncResult, GitProvider, GitPushResult, GitStatus, RepositoryInfo } from '@chunsik/core';
+import {
+  BranchCleanupBlockedError,
+  BranchCleanupUnverifiedError,
+  GitMainSyncBlockedError,
+  GitMainSyncUnverifiedError,
+  isSafePushBranch,
+  isSafePushRemote,
+} from '@chunsik/core';
 
 /** SHA-shape guard for the sync commits. */
 const SYNC_SHA_SHAPED = /^[0-9a-f]{7,40}$/i;
@@ -383,5 +390,49 @@ export class LocalGitProvider implements GitProvider {
       throw new GitMainSyncUnverifiedError('git main sync: local main did not reach the expected commit');
     }
     return { branch, syncMode, workingTreeUpdated, syncedCommitHash: expectedRemoteCommit, previousMainCommit: expectedPreviousCommit, alreadyUpToDate: false };
+  }
+
+  /** READ-ONLY (ADR-0059): is `ancestor` an ancestor of `descendant`? `git merge-base --is-ancestor` (exit 0 = yes,
+   *  1 = no; other = error → throw). No mutation. */
+  async isAncestor(rootPath: string, ancestor: string, descendant: string): Promise<boolean> {
+    if (!SYNC_SHA_SHAPED.test(ancestor) || !SYNC_SHA_SHAPED.test(descendant)) throw new Error('git merge-base rejects an invalid commit');
+    const res = this.exec(rootPath, ['--no-pager', 'merge-base', '--is-ancestor', ancestor, descendant]);
+    if (res.code === 0) return true;
+    if (res.code === 1) return false;
+    throw this.failure('merge-base', res);
+  }
+
+  /**
+   * The FOURTH mutating git operation (CAP-002, ADR-0059) — a CAS delete of a fully-merged LOCAL branch via
+   * `git update-ref -d refs/heads/<branch> <expectedBranchCommit>` (deterministic; NOT `git branch -d`, so it does
+   * not depend on the current HEAD/checkout — CA change 3). Argument-array only. NEVER `-D`/`--force`, NEVER 'main',
+   * NEVER a remote ref, NEVER a wildcard/pattern, NEVER a checkout switch. PHASE-AWARE (CA change 2): a pre-ref-delete
+   * mismatch/absence (the branch moved or is gone vs `expectedBranchCommit`) throws BranchCleanupBlockedError; a
+   * failure AT/AFTER the `update-ref -d` attempt (incl. a read-back that still sees the ref) throws
+   * BranchCleanupUnverifiedError.
+   */
+  async deleteMergedLocalBranch(rootPath: string, branch: string, expectedBranchCommit: string): Promise<GitBranchCleanupResult> {
+    if (!isSafePushBranch(branch)) throw new BranchCleanupBlockedError('git branch cleanup rejects an unsafe branch');
+    if (branch === 'main') throw new BranchCleanupBlockedError('git branch cleanup never deletes main');
+    if (!SYNC_SHA_SHAPED.test(expectedBranchCommit)) throw new BranchCleanupBlockedError('git branch cleanup rejects an invalid commit');
+
+    // ── PRE-ref-delete phase → BranchCleanupBlockedError (nothing deleted). CAS precheck: the branch still points
+    //    at expectedBranchCommit. Absent or moved → Blocked. ──────────────────────────────────────────────────
+    const current = this.exec(rootPath, ['--no-pager', 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]);
+    if (current.code !== 0 || current.stdout.trim() !== expectedBranchCommit) {
+      throw new BranchCleanupBlockedError('git branch cleanup: target branch moved or is absent; not deleted');
+    }
+
+    // ── REF-DELETE phase (+ read-back) → BranchCleanupUnverifiedError on any failure (the ref MAY be gone). CAS
+    //    delete: update-ref -d removes the ref ONLY if it still equals expectedBranchCommit. No `git branch -d`. ─
+    const del = this.exec(rootPath, ['--no-pager', 'update-ref', '-d', `refs/heads/${branch}`, expectedBranchCommit]);
+    if (del.code !== 0) {
+      throw new BranchCleanupUnverifiedError(`git branch cleanup: branch delete could not be verified: ${sanitizeGitStderr(del.stderr)}`);
+    }
+    const readBack = this.exec(rootPath, ['--no-pager', 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]);
+    if (readBack.code === 0) {
+      throw new BranchCleanupUnverifiedError('git branch cleanup: branch still exists after delete');
+    }
+    return { branch, deleted: true, alreadyAbsent: false, deletedCommitHash: expectedBranchCommit };
   }
 }
