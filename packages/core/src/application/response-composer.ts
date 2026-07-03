@@ -1293,14 +1293,108 @@ export class ResponseComposer {
   }
 
   /**
-   * A PR/deploy phrase after a successful push (GIT_PUSHED, Sprint 3a, Q14/CA #13) — the local commit is
-   * already pushed; PR creation and deployment are a future sprint (not done). Wording avoids implying this
-   * turn pushed.
+   * A deploy-only phrase after a successful push (GIT_PUSHED, Sprint 3a → narrowed in Sprint 3b, ADR-0049) —
+   * the local commit is already pushed; deployment is a future sprint (not done). PR creation is now a
+   * supported approval flow, so it is NO LONGER mentioned here (CA #8). Wording avoids implying this turn pushed.
    */
   composePushPrDeployUnsupported(context: ConversationContext): OutboundMessage {
     return {
       context,
-      text: '이미 로컬 커밋은 원격에 push된 상태예요. PR 생성/배포는 아직 지원하지 않아요.',
+      text: '이미 로컬 커밋은 원격에 push된 상태예요. 배포는 아직 지원하지 않아요.',
+    };
+  }
+
+  // ── Sprint 3b (ADR-0049): explicit Pull Request creation APPROVAL — approval-only, never PR-created ──
+
+  /**
+   * PR-creation approval REQUESTED (Sprint 3b, CA #1/#12). Shows the deterministic head→base target + pushed
+   * short hash + bounded title. Says approval only — no PR is created this step; never claims the branch is
+   * verified on a hosting provider or that a PR can definitely be created.
+   */
+  composePrApprovalRequested(
+    context: ConversationContext,
+    input: { pushedCommitHash: string; headBranch: string; baseBranch: string; title: string },
+  ): OutboundMessage {
+    const shortHash = input.pushedCommitHash.slice(0, 7);
+    const head = input.headBranch.slice(0, MAX_GIT_REF_DISPLAY);
+    const base = input.baseBranch.slice(0, MAX_GIT_REF_DISPLAY);
+    const title = input.title.slice(0, MAX_GIT_REF_DISPLAY);
+    const text = clampToMessageBudget(
+      [
+        'PR 생성 승인을 요청했어요.',
+        `대상: ${head} → ${base} (커밋 ${shortHash})`,
+        `제목(안): ${title}`,
+        '승인해도 이번 단계에서는 실제 PR을 만들지 않아요.',
+        '지금 기록된 push 정보를 기준으로 한 승인이에요. 실제 PR 생성은 이후 단계에서 진행돼요.',
+        '진행하려면 "승인", 원치 않으면 "거절"이라고 알려 주세요.',
+      ].join('\n'),
+    );
+    return { context, text };
+  }
+
+  /** PR-creation approval RECORDED after "승인" (Sprint 3b) — records permission only; never says PR created. */
+  composePrApprovalRecorded(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: 'PR 생성 승인은 기록했어요.\n아직 PR은 만들지 않았어요. (실제 PR 생성은 이후 저장소 호스팅 단계에서 진행돼요)',
+    };
+  }
+
+  /** PR-creation approval DENIED (Sprint 3b) — the pushed commit remains; no PR created. */
+  composePrApprovalDenied(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: 'PR 생성 승인을 거절했어요.\n커밋은 원격에 push된 그대로예요. PR은 만들지 않았어요.',
+    };
+  }
+
+  /** PR-creation approval CANCELLED (Sprint 3b) — the pushed commit remains; no PR created. */
+  composePrApprovalCancelled(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: 'PR 생성 승인을 취소했어요.\n커밋은 원격에 push된 그대로예요. PR은 만들지 않았어요.',
+    };
+  }
+
+  /** PR-creation approval not available — wrong state / incomplete or stale pending context (Sprint 3b). No PR. */
+  composePrApprovalUnavailable(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '지금은 PR 생성 승인을 준비할 수 없어요. 먼저 push를 완료(GIT_PUSHED)한 뒤에 요청해 주세요. PR은 만들지 않았어요.',
+    };
+  }
+
+  /** Head branch == base branch under the fixed base policy (Sprint 3b, CA #10) — a product/base-policy
+   *  limitation, NOT a Git error and NOT a PR-creation attempt. No approval. */
+  composePrHeadEqualsBaseUnavailable(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '현재 push된 브랜치가 PR base(main)와 같아서, 이 정책으로는 PR 생성을 준비할 수 없어요. PR 승인은 만들지 않았어요.',
+    };
+  }
+
+  /** A PR-creation phrase while already PR_APPROVED (Sprint 3b, Q11) — already approved, not created. No new approval. */
+  composePrAlreadyApproved(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: 'PR 생성 승인은 이미 기록돼 있어요. 아직 PR은 만들지 않았어요. 다시 승인하지 않았어요.',
+    };
+  }
+
+  /** PR request bundled with deploy/merge/release/force/… (Sprint 3b, CA #5) — unsupported companion; no PR. */
+  composePrUnsupportedCompanion(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: 'PR 생성 요청에 배포/merge/release 같은 작업은 함께 처리하지 않아요. PR 승인도, 배포/merge도 하지 않았어요.',
+    };
+  }
+
+  /** A deploy-only phrase while PR_APPROVED (Sprint 3b, CA #8) — state-specific: approval recorded, PR not
+   *  created, deployment not done. */
+  composePrApprovedDeployUnsupported(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: 'PR 생성 승인은 기록되어 있지만, 배포는 아직 지원하지 않아요.\nPR은 아직 만들지 않았고 배포도 하지 않았어요.',
     };
   }
 }

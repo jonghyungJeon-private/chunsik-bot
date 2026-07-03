@@ -3738,13 +3738,22 @@ describe('Approved Git Push Execution — runtime (Sprint 3a, ADR-0048)', () => 
     }
   });
 
-  it('GIT_PUSHED + PR/deploy phrase → already-pushed + future sprint, no PR/deploy (CA 104–105)', async () => {
-    for (const text of ['PR 만들어줘', '배포해줘']) {
-      const { deps, calls } = makeDeps({ applyAnchor: pushedAnchor() });
-      const result = await new ConversationRuntime(deps).handle(messageOf(text));
-      expect(calls.gitPush, text).toBe(0);
-      expect(result.reply.text, text).toBe(composer.composePushPrDeployUnsupported(CTX).text);
-    }
+  // (Sprint 3b, ADR-0049 supersedes 3a's GIT_PUSHED PR-phrase behavior) A PR-creation phrase now routes to
+  // the PR-approval flow — here `pushedAnchor()` pushed to `main`, so head == base → no approval. A bare
+  // deploy phrase still gets the (now deploy-only) future-sprint reply.
+  it('GIT_PUSHED + PR phrase (head==base main) → head/base limitation, no push, no approval (Sprint 3b)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: pushedAnchor() });
+    const result = await new ConversationRuntime(deps).handle(messageOf('PR 만들어줘'));
+    expect(calls.gitPush).toBe(0);
+    expect(calls.requestForRisk).toBe(0);
+    expect(result.reply.text).toBe(composer.composePrHeadEqualsBaseUnavailable(CTX).text);
+  });
+
+  it('GIT_PUSHED + deploy-only phrase → deploy-only future-sprint reply, no push (Sprint 3b)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: pushedAnchor() });
+    const result = await new ConversationRuntime(deps).handle(messageOf('배포해줘'));
+    expect(calls.gitPush).toBe(0);
+    expect(result.reply.text).toBe(composer.composePushPrDeployUnsupported(CTX).text);
   });
 
   // ── no side effects (CA 106–113) ────────────────────────────────────────────────────────────
@@ -3763,6 +3772,332 @@ describe('Approved Git Push Execution — runtime (Sprint 3a, ADR-0048)', () => 
     expect(calls.codeGenerationGenerate).toBe(0);
     expect(calls.run).toBe(0);
     expect(calls.resume).toBe(0);
+  });
+});
+
+// ── Sprint 3b — Explicit Pull Request Creation Approval (GIT_PUSHED → CRITICAL PR approval, ADR-0049) ──
+
+describe('Explicit PR Creation Approval — runtime (Sprint 3b, ADR-0049)', () => {
+  const REMOTE = 'origin';
+  const HEAD = 'feature/login'; // pushed head branch (≠ base "main")
+  const UPSTREAM = 'origin/feature/login';
+  const BASE = 'main';
+  const composer = new ResponseComposer();
+
+  /** A GIT_PUSHED anchor pushed to a FEATURE branch (head ≠ base) — ready for a PR-creation approval. */
+  const prReadyAnchor = (o: Partial<ApplyPreviewAnchor> = {}): ApplyPreviewAnchor =>
+    approvedAnchorOf({
+      status: 'GIT_PUSHED',
+      workspaceChangeRef: { id: 'wc-1', status: WorkspaceChangeStatus.APPLIED },
+      commitApprovalId: 'apply-appr-1',
+      commitHash: HEAD_SHA,
+      committedFiles: [TARGET_FILE],
+      pushApprovalId: 'apply-appr-1',
+      pushCommitHash: HEAD_SHA,
+      pushRemote: REMOTE,
+      pushBranch: HEAD,
+      pushUpstreamRef: UPSTREAM,
+      pushedCommitHash: HEAD_SHA,
+      pushedRemote: REMOTE,
+      pushedBranch: HEAD,
+      pushedUpstreamRef: UPSTREAM,
+      ...o,
+    });
+  /** A GIT_PUSHED anchor pushed to "main" (head == base). */
+  const pushedToMainAnchor = (): ApplyPreviewAnchor =>
+    prReadyAnchor({ pushBranch: BASE, pushUpstreamRef: 'origin/main', pushedBranch: BASE, pushedUpstreamRef: 'origin/main' });
+  /** A PR_APPROVAL_PENDING anchor with complete PR context. */
+  const prPendingAnchor = (o: Partial<ApplyPreviewAnchor> = {}): ApplyPreviewAnchor =>
+    prReadyAnchor({
+      status: 'PR_APPROVAL_PENDING',
+      prApprovalId: 'apply-appr-1',
+      prPushedCommitHash: HEAD_SHA,
+      prHeadBranch: HEAD,
+      prBaseBranch: BASE,
+      prTitle: 'Apply approved changes',
+      prBodyPreview: 'body preview',
+      ...o,
+    });
+  /** A PR_APPROVED anchor. */
+  const prApprovedAnchor = (o: Partial<ApplyPreviewAnchor> = {}): ApplyPreviewAnchor =>
+    prPendingAnchor({ status: 'PR_APPROVED', ...o });
+
+  const CREATE_PHRASES = [
+    'PR 만들어줘', 'pull request 만들어줘', 'GitHub PR 열어줘', 'open a PR', '깃허브 PR 만들어줘',
+    'PR 열어줘', 'pull request 생성해줘', 'merge request 만들어줘', 'create merge request',
+  ];
+  const BARE_NOUNS = ['PR', 'GitHub PR', 'pull request', 'merge request'];
+  const COMPANIONS = ['PR 만들고 배포', 'PR 만들고 merge', 'PR 만들고 release', 'PR 만들고 auto merge', 'PR 만들고 force', 'PR 만들고 reset'];
+
+  // ── creation + gating (CA 1–19) ──────────────────────────────────────────────────────────────
+  it('GIT_PUSHED + each explicit PR-creation phrase → one CRITICAL PR ApprovalRequest, PR_APPROVAL_PENDING (CA 1–9)', async () => {
+    for (const text of CREATE_PHRASES) {
+      const { deps, calls } = makeDeps({ applyAnchor: prReadyAnchor() });
+      const result = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.requestForRisk, text).toBe(1);
+      expect(calls.lastRequestForRiskInput?.riskLevel, text).toBe(RiskLevel.CRITICAL);
+      expect(calls.lastApplyAnchor?.status, text).toBe('PR_APPROVAL_PENDING');
+      expect(result.status, text).toBe('AWAITING_APPROVAL');
+    }
+  });
+
+  it('GIT_PUSHED + a bare PR noun (no create/open verb) → no PR approval (CA 10–13)', async () => {
+    for (const text of BARE_NOUNS) {
+      const { deps, calls } = makeDeps({ applyAnchor: prReadyAnchor() });
+      await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.requestForRisk, text).toBe(0);
+    }
+  });
+
+  it('GIT_PUSHED + ambiguous phrase → no PR approval (CA 14)', async () => {
+    for (const text of ['좋아', '오케이', '확인', '진행해', '다음 단계']) {
+      const { deps, calls } = makeDeps({ applyAnchor: prReadyAnchor() });
+      await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.requestForRisk, text).toBe(0);
+    }
+  });
+
+  it('non-GIT_PUSHED states + PR phrase → no PR approval; PR_APPROVED + PR phrase → already approved (CA 15–19)', async () => {
+    for (const anchor of [null, approvedAnchorOf({ status: 'WORKSPACE_APPLIED' }), approvedAnchorOf({ status: 'GIT_COMMITTED', commitHash: HEAD_SHA, committedFiles: [TARGET_FILE] }), approvedAnchorOf({ status: 'PUSH_APPROVED', pushBranch: HEAD, pushUpstreamRef: UPSTREAM, pushCommitHash: HEAD_SHA, commitHash: HEAD_SHA })]) {
+      const { deps, calls } = makeDeps({ applyAnchor: anchor });
+      await new ConversationRuntime(deps).handle(messageOf('PR 만들어줘'));
+      expect(calls.requestForRisk, String(anchor?.status)).toBe(0);
+    }
+    const { deps, calls } = makeDeps({ applyAnchor: prApprovedAnchor() });
+    const result = await new ConversationRuntime(deps).handle(messageOf('PR 만들어줘'));
+    expect(calls.requestForRisk).toBe(0);
+    expect(result.reply.text).toBe(composer.composePrAlreadyApproved(CTX).text);
+  });
+
+  // ── unsupported companions (CA 20–27) ────────────────────────────────────────────────────────
+  it('GIT_PUSHED + PR bundled with deploy/merge/release/auto-merge/force/reset → unsupported companion, no approval (CA 20–25)', async () => {
+    for (const text of COMPANIONS) {
+      const { deps, calls } = makeDeps({ applyAnchor: prReadyAnchor() });
+      const result = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.requestForRisk, text).toBe(0);
+      expect(result.reply.text, text).toBe(composer.composePrUnsupportedCompanion(CTX).text);
+    }
+  });
+
+  it('PR_APPROVED + PR bundled with deploy/merge → unsupported companion, no PR (CA 26–27)', async () => {
+    for (const text of ['PR 만들고 배포', 'PR 만들고 merge']) {
+      const { deps, calls } = makeDeps({ applyAnchor: prApprovedAnchor() });
+      const result = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.requestForRisk, text).toBe(0);
+      expect(result.reply.text, text).toBe(composer.composePrUnsupportedCompanion(CTX).text);
+    }
+  });
+
+  // ── context / verification guards (CA 28–40) ─────────────────────────────────────────────────
+  it('incomplete / unsafe pushed context → composePrApprovalUnavailable, no approval, log never throws (CA 28–40)', async () => {
+    const bad: Array<[string, Partial<ApplyPreviewAnchor>]> = [
+      ['missing pushedCommitHash', { pushedCommitHash: undefined }],
+      ['invalid pushedCommitHash', { pushedCommitHash: 'not-a-sha' }],
+      ['pushedCommitHash != pushCommitHash', { pushCommitHash: 'c'.repeat(40) }],
+      ['pushedCommitHash != commitHash', { commitHash: 'd'.repeat(40) }],
+      ['missing pushedBranch', { pushedBranch: undefined }],
+      ['unsafe pushedBranch', { pushedBranch: 'bad:branch' }],
+      ['missing pushedRemote', { pushedRemote: undefined }],
+      ['unsafe pushedRemote', { pushedRemote: '-bad' }],
+      ['missing pushedUpstreamRef', { pushedUpstreamRef: undefined }],
+      ['malformed pushedUpstreamRef', { pushedUpstreamRef: 'noslash' }],
+      ['parsed branch != pushedBranch', { pushedUpstreamRef: 'origin/other' }],
+      ['parsed remote != pushedRemote', { pushedUpstreamRef: 'upstream/feature/login' }],
+      ['missing workspaceRef', { workspaceRef: undefined }],
+      ['missing executionPlanRef', { executionPlanRef: undefined }],
+    ];
+    for (const [label, patch] of bad) {
+      const { deps, calls } = makeDeps({ applyAnchor: prReadyAnchor(patch) });
+      const result = await new ConversationRuntime(deps).handle(messageOf('PR 만들어줘'));
+      expect(calls.requestForRisk, label).toBe(0);
+      expect(result.reply.text, label).toBe(composer.composePrApprovalUnavailable(CTX).text);
+    }
+  });
+
+  // ── target / title / body / reason / risk (CA 41–65) ─────────────────────────────────────────
+  it('deterministic target: base == "main" policy, head == pushedBranch, head==base blocks (CA 41–46)', async () => {
+    const ok = makeDeps({ applyAnchor: prReadyAnchor() });
+    await new ConversationRuntime(ok.deps).handle(messageOf('PR 만들어줘'));
+    expect(ok.calls.lastApplyAnchor?.prBaseBranch).toBe('main');
+    expect(ok.calls.lastApplyAnchor?.prHeadBranch).toBe(HEAD);
+    expect(ok.calls.lastRequestForRiskInput?.reason).toContain('base: main');
+
+    const hb = makeDeps({ applyAnchor: pushedToMainAnchor() });
+    const result = await new ConversationRuntime(hb.deps).handle(messageOf('PR 만들어줘'));
+    expect(hb.calls.requestForRisk).toBe(0);
+    expect(result.reply.text).toBe(composer.composePrHeadEqualsBaseUnavailable(CTX).text);
+  });
+
+  it('deterministic bounded title: sanitizes control/newline/markdown/backticks, bounds length, falls back (CA 47–51)', async () => {
+    const titleOf = async (instruction: string): Promise<string> => {
+      const { deps, calls } = makeDeps({ applyAnchor: prReadyAnchor({ instruction }) });
+      await new ConversationRuntime(deps).handle(messageOf('PR 만들어줘'));
+      return calls.lastApplyAnchor?.prTitle ?? '';
+    };
+    expect(await titleOf('add logout button')).toBe('add logout button'); // deterministic
+    expect(await titleOf('ab')).toBe('ab'); // control chars stripped
+    expect(await titleOf('line1\nline2')).toBe('line1 line2'); // newlines collapse to one line
+    expect(await titleOf('# Title `code`')).toBe('Title code'); // markdown heading + backticks removed
+    expect((await titleOf('x'.repeat(300))).length).toBe(100); // bounded to MAX_PR_TITLE
+    expect(await titleOf('   ')).toBe('Apply approved changes'); // blank → fallback
+  });
+
+  it('deterministic bounded body: committed-file COUNT only (no paths), no raw diff/content, says no deploy (CA 52–57)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: prReadyAnchor({ committedFiles: [TARGET_FILE] }) });
+    await new ConversationRuntime(deps).handle(messageOf('PR 만들어줘'));
+    const body = calls.lastApplyAnchor?.prBodyPreview ?? '';
+    expect(body).toContain('1개'); // committed-file count
+    expect(body).not.toContain(TARGET_FILE); // NO file paths (CA #5)
+    expect(body).not.toContain('foo.ts');
+    expect(body).not.toContain('+++'); // no raw diff
+    expect(body).not.toContain('---');
+    expect(body).toContain('배포'); // says no deployment
+    expect(body.length).toBeLessThanOrEqual(1000); // bounded
+  });
+
+  it('CRITICAL reason: pushed commit + head/base + permission-only + not-in-3b + future hosting + no deploy/merge; no overclaim (CA 58–65, CA #12)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: prReadyAnchor() });
+    await new ConversationRuntime(deps).handle(messageOf('PR 만들어줘'));
+    const reason = calls.lastRequestForRiskInput?.reason ?? '';
+    expect(calls.lastRequestForRiskInput?.riskLevel).toBe(RiskLevel.CRITICAL);
+    expect(reason).toContain(`pushed commit: ${HEAD_SHA}`);
+    expect(reason).toContain('head: feature/login');
+    expect(reason).toContain('base: main');
+    expect(reason).toContain('records permission only');
+    expect(reason).toContain('NOT performed in Sprint 3b');
+    expect(reason).toContain('future execution requires a separate repository-hosting step');
+    expect(reason).toContain('no deployment has been performed');
+    expect(reason).toContain('no merge has been performed');
+    expect(reason).toContain('does not guarantee a PR can be created'); // CA #12 discipline
+  });
+
+  // ── decision flow (CA 66–80) ─────────────────────────────────────────────────────────────────
+  it('PR_APPROVAL_PENDING + ambiguous / PR-creation / PR+deploy / PR+merge / deploy-only → re-prompt, no decide (CA 66–70)', async () => {
+    for (const text of ['음 글쎄', 'PR 만들어줘', 'PR 만들고 배포', 'PR 만들고 merge', '배포해줘']) {
+      const { deps, calls } = makeDeps({ applyAnchor: prPendingAnchor() });
+      const result = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.decide, text).toBe(0);
+      expect(calls.requestForRisk, text).toBe(0);
+      expect(calls.applyAnchorSet, text).toBe(0); // no re-anchor
+      expect(result.status, text).toBe('AWAITING_APPROVAL');
+    }
+  });
+
+  it('PR_APPROVAL_PENDING + "승인" verifies the ApprovalRequest (missing / plan-mismatch → no decide) (CA 71)', async () => {
+    const gone = makeDeps({ applyAnchor: prPendingAnchor(), approvalsGetResult: null });
+    await new ConversationRuntime(gone.deps).handle(messageOf('승인'));
+    expect(gone.calls.decide).toBe(0);
+    const mismatch = makeDeps({ applyAnchor: prPendingAnchor(), approvalsGetResult: { ...pendingApprovalOf(), id: 'apply-appr-1', executionPlanRef: { id: 'other-plan', goal: 'g' } } });
+    await new ConversationRuntime(mismatch.deps).handle(messageOf('승인'));
+    expect(mismatch.calls.decide).toBe(0);
+  });
+
+  it('PR_APPROVAL_PENDING + "승인" → PR_APPROVED only, no PR creation (CA 72)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: prPendingAnchor(), approvalsGetResult: { ...pendingApprovalOf(), id: 'apply-appr-1' } });
+    const result = await new ConversationRuntime(deps).handle(messageOf('승인'));
+    expect(calls.decide).toBe(1);
+    expect(calls.lastApplyAnchor?.status).toBe('PR_APPROVED');
+    expect(result.reply.text).toBe(composer.composePrApprovalRecorded(CTX).text);
+  });
+
+  it('PR_APPROVAL_PENDING + "거절"/"취소" → GIT_PUSHED, clear ONLY PR fields, pushed/commit context preserved (CA 73–74, 81–84)', async () => {
+    for (const [text, expected] of [['거절', 'DENIED'], ['취소', 'CANCELLED']] as const) {
+      const { deps, calls } = makeDeps({ applyAnchor: prPendingAnchor(), approvalsGetResult: { ...pendingApprovalOf(), id: 'apply-appr-1' } });
+      const result = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.decide, text).toBe(1);
+      expect(result.status, text).toBe(expected);
+      expect(calls.lastApplyAnchor?.status, text).toBe('GIT_PUSHED');
+      expect(calls.lastApplyAnchor?.prApprovalId, text).toBeUndefined();
+      expect(calls.lastApplyAnchor?.prHeadBranch, text).toBeUndefined();
+      expect(calls.lastApplyAnchor?.prBaseBranch, text).toBeUndefined();
+      expect(calls.lastApplyAnchor?.prTitle, text).toBeUndefined();
+      expect(calls.lastApplyAnchor?.prBodyPreview, text).toBeUndefined();
+      expect(calls.lastApplyAnchor?.pushedCommitHash, text).toBe(HEAD_SHA); // pushed context preserved
+      expect(calls.lastApplyAnchor?.pushedBranch, text).toBe(HEAD);
+      expect(calls.lastApplyAnchor?.commitHash, text).toBe(HEAD_SHA); // commit context preserved
+      expect(calls.lastApplyAnchor?.committedFiles, text).toEqual([TARGET_FILE]);
+      const wanted = text === '거절' ? composer.composePrApprovalDenied(CTX).text : composer.composePrApprovalCancelled(CTX).text;
+      expect(result.reply.text, text).toBe(wanted);
+    }
+  });
+
+  it('PR_APPROVAL_PENDING with incomplete context → safe failure, no decide (CA 75)', async () => {
+    for (const patch of [{ prApprovalId: undefined }, { prHeadBranch: undefined }, { prPushedCommitHash: undefined }, { prTitle: undefined }] as Partial<ApplyPreviewAnchor>[]) {
+      const { deps, calls } = makeDeps({ applyAnchor: prPendingAnchor(patch) });
+      const result = await new ConversationRuntime(deps).handle(messageOf('승인'));
+      expect(calls.decide).toBe(0);
+      expect(result.reply.text).toBe(composer.composePrApprovalUnavailable(CTX).text);
+    }
+  });
+
+  it('PR_APPROVED preserves PR + pushed/commit/workspace context; PR phrase → already approved; ambiguous → no PR (CA 76–79)', async () => {
+    const approved = prApprovedAnchor();
+    expect(approved.prApprovalId).toBe('apply-appr-1');
+    expect(approved.prPushedCommitHash).toBe(HEAD_SHA);
+    expect(approved.prHeadBranch).toBe(HEAD);
+    expect(approved.prBaseBranch).toBe(BASE);
+    expect(approved.prTitle).toBe('Apply approved changes');
+    expect(approved.prBodyPreview).toBe('body preview');
+    expect(approved.pushedCommitHash).toBe(HEAD_SHA); // pushed context preserved
+    expect(approved.committedFiles).toEqual([TARGET_FILE]); // commit/workspace context preserved
+    const already = makeDeps({ applyAnchor: prApprovedAnchor() });
+    const r1 = await new ConversationRuntime(already.deps).handle(messageOf('PR 만들어줘'));
+    expect(already.calls.requestForRisk).toBe(0);
+    expect(r1.reply.text).toBe(composer.composePrAlreadyApproved(CTX).text);
+    const amb = makeDeps({ applyAnchor: prApprovedAnchor() });
+    await new ConversationRuntime(amb.deps).handle(messageOf('좋아'));
+    expect(amb.calls.requestForRisk).toBe(0);
+  });
+
+  it('PR_APPROVED + deploy-only phrase → state-specific: approval recorded, PR not created, deploy not done (CA 80, 108)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: prApprovedAnchor() });
+    const result = await new ConversationRuntime(deps).handle(messageOf('배포해줘'));
+    expect(calls.requestForRisk).toBe(0);
+    expect(result.reply.text).toBe(composer.composePrApprovedDeployUnsupported(CTX).text);
+  });
+
+  // ── no side effects (CA 85–100) ──────────────────────────────────────────────────────────────
+  it('the PR-approval path performs NO git/PR/hosting/command/write/patch/codegen/orchestrator side effect; no fresh Git read (CA 85–100)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: prReadyAnchor() });
+    await new ConversationRuntime(deps).handle(messageOf('PR 만들어줘'));
+    expect(calls.requestForRisk).toBe(1); // the ONLY effect
+    expect(calls.gitPush).toBe(0);
+    expect(calls.gitCommit).toBe(0);
+    expect(calls.gitInfo).toBe(0); // CA #12: no fresh Git read
+    expect(calls.gitStatus).toBe(0);
+    expect(calls.gitDiff).toBe(0);
+    expect(calls.commandRun).toBe(0);
+    expect(calls.workspaceApply).toBe(0);
+    expect(calls.patchGenerate).toBe(0);
+    expect(calls.codeGenerationGenerate).toBe(0);
+    expect(calls.run).toBe(0);
+    expect(calls.resume).toBe(0);
+    // no PR/hosting capability exists at all (no GitHubProvider / RepositoryHosting / createPullRequest)
+    expect(Object.keys(deps.git)).not.toContain('createPullRequest');
+    expect(Object.keys(deps.git)).not.toContain('pullRequest');
+    expect(Object.keys(deps).some((k) => /github|hosting|pullrequest/i.test(k))).toBe(false);
+  });
+
+  // ── composer wording (CA 101–109) ────────────────────────────────────────────────────────────
+  it('composer wording: approval-only, never claims PR created/deployed/merged/released/verified (CA 101–109)', () => {
+    const requested = composer.composePrApprovalRequested(CTX, { pushedCommitHash: HEAD_SHA, headBranch: HEAD, baseBranch: BASE, title: 'Apply approved changes' }).text;
+    expect(requested).toContain('승인');
+    expect(requested).toContain('PR을 만들지 않아요');
+    const recorded = composer.composePrApprovalRecorded(CTX).text;
+    expect(recorded).toContain('PR은 만들지 않았어요');
+    const denied = composer.composePrApprovalDenied(CTX).text;
+    expect(denied).toContain('push된 그대로');
+    expect(denied).toContain('PR은 만들지 않았어요');
+    expect(composer.composePrApprovalUnavailable(CTX).text).toContain('PR은 만들지 않았어요');
+    expect(composer.composePrAlreadyApproved(CTX).text).toContain('만들지 않았어요');
+    expect(composer.composePrUnsupportedCompanion(CTX).text).toMatch(/배포|merge|release/);
+    expect(composer.composePushPrDeployUnsupported(CTX).text).toContain('배포는 아직 지원하지 않아요');
+    expect(composer.composePushPrDeployUnsupported(CTX).text).not.toContain('PR 생성'); // deploy-only now
+    expect(composer.composePrApprovedDeployUnsupported(CTX).text).toContain('PR은 아직 만들지 않았');
+    // no composer claims a PR was created / deployed / merged / released / hosting-verified (CA 109 / #12)
+    for (const t of [requested, recorded, denied, composer.composePrApprovalCancelled(CTX).text, composer.composePrHeadEqualsBaseUnavailable(CTX).text, composer.composePrAlreadyApproved(CTX).text]) {
+      expect(t).not.toMatch(/배포했|병합했|merged|deployed|released|production/i);
+    }
   });
 });
 
