@@ -10,7 +10,9 @@ export default defineConfig({
     },
   },
   test: {
-    include: ['packages/**/src/**/*.test.ts'],
+    // apps/** added (Sprint 3d-A, ADR-0051) so the single env-reading path `apps/chunsik/src/config.ts`
+    // can be tested directly (CA change 8) — the narrowest enabling change, no broad refactor.
+    include: ['packages/**/src/**/*.test.ts', 'apps/**/src/**/*.test.ts'],
     environment: 'node',
   },
 });

@@ -3138,3 +3138,81 @@ mirrored), ADR-0045 (Explicit Git Commit Approval — decision-flow structure), 
 hosting method added), ADR-0031 (Execution Orchestrator — not extended or called). **Supersedes ADR-0048's
 `GIT_PUSHED` PR-phrase behavior only.** Plan:
 `docs/plans/sprint-3b-explicit-pr-creation-approval-plan.md`.
+
+## ADR-0051 — Repository Identity Configuration (safe reviewed `provider/owner/repo` source; no hosting mutation)
+
+- **Status:** ✅ Accepted (v2, Phase 3, Sprint 3d-A — Product Construction), Chief Architect plan review:
+  APPROVED WITH CHANGES (all 10 required changes applied) → implemented.
+- **Date:** 2026-07-03
+- **Scope:** The **config-only subset of the future Repository Hosting capability** (ADR-0050, Sprint 3c accepted
+  design): the safe, reviewed source of `provider/owner/repo` a **future** PR-creation execution sprint (3d-C)
+  will consume. It adds the `RepositoryIdentity`/`RepositoryIdentityConfig` domain types, exact validators, a
+  pure `RepositoryIdentityResolver` (the safe missing-identity **detection path**), and the single env-reading
+  config-loading path in `apps/chunsik/src/config.ts`. It performs **no** hosting mutation.
+
+### Most important rule
+> **Repository identity is explicit reviewed configuration** — a validated `{ provider:'github', owner, repo }`.
+> It is **never** parsed from a git remote, **never** carries a token, and **never** widens `RepositoryInfo`
+> (ADR-0023 stands — remote URLs stay excluded). This Sprint does **not** by itself satisfy PR-execution
+> readiness: it implements no `RepositoryHostingProvider`, no hosting-state verification, no GitHub auth, no
+> GitHub API call, and no PR creation. **Actual PR creation remains blocked until later Repository Hosting
+> implementation Sprints (3d-B/3d-C) are accepted.**
+
+### Decision
+- **Where identity lives (Q1).** `apps/chunsik/src/config.ts` (the single documented env-reading site) reads
+  **only** `CHUNSIK_GITHUB_OWNER` / `CHUNSIK_GITHUB_REPO` into a raw `RepositoryIdentityConfig`; it reads
+  **no** `CHUNSIK_GITHUB_PROVIDER` and **no** token env var (`provider` is fixed to `'github'`). Framework-
+  agnostic types, validators, and the resolver live in `packages/core`. `loadConfig(env = process.env)` gains
+  an injectable `env` param (default `process.env`) for narrow testability (CA change 8) — env reading stays
+  in this one file.
+- **Global, not per-project (Q2).** Global runtime config for the first-narrow implementation. Grounded:
+  `Project`/`ProjectManager.register(path, session)` capture a local path only with no reviewed identity
+  field, and `Project.metadata` is an untyped unbounded `Record` (an unsafe identity source). Per-project
+  identity is deferred to a later Sprint that adds a **reviewed typed** identity field to project registration
+  — never the untyped `metadata` bag.
+- **Validation (Q3, CA changes 1/4/5/6).** `isSupportedHostingProvider` (`github` only; GHE deferred);
+  `isSafeRepoOwner` (`/^[A-Za-z0-9](?:-?[A-Za-z0-9])*$/`, ≤39 — no leading/trailing/consecutive hyphen);
+  `isSafeRepoName` (`[A-Za-z0-9._-]`, ≤100; not `.`/`..`; **no leading dot**; **no `.git` suffix**). A
+  conservative `looksLikeSecret` (case-insensitive) additionally rejects GitHub token prefixes (`ghp_`,
+  `github_pat_`, `gho_`, `ghu_`, `ghs_`, `ghr_`) and credential-like substrings (`token`, `secret`,
+  `password`, `pat_`) — **false rejection is acceptable** for identity config. Whitespace/control/URL are
+  rejected by the character classes.
+- **Exposure (Q4).** Future Repository Hosting receives a validated **`RepositoryIdentity`** — not the raw
+  `RepositoryIdentityConfig` (pre-validation) and not a `Ref` (no persisted aggregate exists or is needed for
+  a tiny immutable value). The resolver returns `{ status:'resolved', identity }` or `{ status:'missing',
+  reason }` where `reason ∈ { not-configured, unsupported-provider, invalid-owner, invalid-repo }` — a fixed
+  enum, never an echoed input value.
+- **No secrets (Q5, CA change 1).** `RepositoryIdentity`/`RepositoryIdentityConfig` have **no** token field
+  and **no** remoteUrl field; the resolver copies **only** `provider`/`owner`/`repo` (never spreads config, so
+  an incidental extra key cannot leak); the resolver never logs and never throws (constructor arity 0). The
+  app config reads no token env var. Sprint 3d-A adds no anchor field and no approval-reason text, so a token
+  cannot reach the anchor / `ApprovalRequest.reason` / logs.
+- **Missing identity fails safely (Q8).** `RepositoryIdentityResolver.resolve` returns a safe `missing` result
+  (both owner+repo absent → `not-configured`; one present → `invalid-owner`/`invalid-repo`), which a future
+  execution sprint maps to a "PR 생성 대상 저장소가 설정되지 않았어요. PR은 만들지 않았어요." response. 3d-A provides
+  only the detection path — it wires nothing into `ConversationRuntime`.
+- **Git unchanged (Q6).** No `RepositoryInfo.remoteUrl`, no `GitProvider.info` remote-URL exposure, no git
+  remote parsing.
+- **Repository Hosting not implemented (Q7).** No `RepositoryHostingProvider`/`RepositoryHostingManager`/
+  `GitHubRepositoryHostingProvider`, no `PR_CREATED` state, no GitHub API call, no PR creation, no merge/
+  deploy/release, no reviewer/label/assignee mutation, no `CommandExecution`, no runtime shell-out, no
+  ChatGPT/GitHub connector in product code.
+
+### Consequences
+- + The blocking prerequisite ADR-0050 identified (a reviewed `RepositoryIdentity` source) now exists, without
+  any hosting mutation surface — a future 3d-B/3d-C can consume a validated identity or fail safely when absent.
+- + Reuses the single env-reading config path and the framework-agnostic domain/validator/value-object
+  conventions; adds no provider/adapter package and no runtime wiring.
+- − `ChunsikConfig` gains an optional `repositoryHosting`; `vitest.config.ts` `test.include` gains
+  `apps/**/src/**/*.test.ts` (narrowest change enabling the config-loader test, CA change 8). Nothing is wired
+  into `ConversationRuntime`/`ResponseComposer`/the apply anchor/`ApprovalRequest`.
+- − This Sprint does **not** satisfy PR-execution readiness; actual PR creation remains blocked until 3d-B/3d-C
+  are accepted.
+
+### Relations
+ADR-0050 (Sprint 3c — Repository Hosting capability design; this is its accepted config-only subset,
+satisfying the "blocked until a reviewed RepositoryIdentity configuration source exists" prerequisite),
+ADR-0049 (Sprint 3b — `PR_APPROVED` anchor a future execution sprint consumes alongside this identity),
+ADR-0023 (CAP-002 Git — the remote-URL-exclusion decision this Sprint upholds; `RepositoryInfo` unchanged),
+ADR-0025 (CAP-004 Approval — the no-secret-in-reason discipline mirrored). Plan:
+`docs/plans/sprint-3d-a-repository-identity-configuration-plan.md`.
