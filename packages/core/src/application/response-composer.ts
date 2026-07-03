@@ -5,6 +5,7 @@ import type {
   GitDiff,
   GitStatus,
   OutboundMessage,
+  PullRequestStatusPreview,
 } from '../domain';
 import type { AiExecutionResult } from '../ports';
 
@@ -1490,6 +1491,64 @@ export class ResponseComposer {
     return {
       context,
       text: '머지/배포/릴리즈는 이후 단계예요. 지금은 하지 않았어요. PR은 이미 만들어져 있어요.',
+    };
+  }
+
+  // ── Sprint 3e (ADR-0055): read-only PR STATUS PREVIEW wording — point-in-time only, never verified/safe-to-merge. ──
+
+  /**
+   * A bounded, point-in-time PR status preview (Sprint 3e). States it is a current-snapshot observation; never
+   * "safe to merge" / "CI verified" / "deploy ready". Checks summary is provider-reported and may be partial
+   * (check-runs only); empty check-runs is NOT rendered as success. No raw logs / review body / file data.
+   */
+  composePrStatusPreview(context: ConversationContext, preview: PullRequestStatusPreview): OutboundMessage {
+    const head = preview.headBranch.slice(0, MAX_GIT_REF_DISPLAY);
+    const base = preview.baseBranch.slice(0, MAX_GIT_REF_DISPLAY);
+    const stateKo =
+      preview.state === 'open' ? '열림' : preview.state === 'closed' ? '닫힘(provider 보고)' : preview.state === 'merged' ? '머지됨(provider 보고)' : '알 수 없음';
+    const c = preview.checks;
+    const checksLine =
+      c.totalCount === 0
+        ? '- 체크: 현재 표시할 체크 결과가 없거나 확인되지 않았어요'
+        : `- 체크: 성공 ${c.successCount} / 실패 ${c.failureCount} / 대기 ${c.pendingCount} (총 ${c.totalCount}) — 제공자 보고 기준이라 일부 체크는 반영되지 않을 수 있어요`;
+    const lines = [
+      '현재 조회 기준으로 PR 상태를 확인했어요. (지금 이 시점 조회 결과이며, 계속 바뀔 수 있어요)',
+      `- PR: #${preview.ref.pullRequestNumber} ${preview.ref.pullRequestUrl.slice(0, MAX_PR_URL_DISPLAY)}`,
+      `- 상태: ${stateKo}${preview.isDraft ? ' (draft)' : ''}`,
+      `- 브랜치: ${head} → ${base}`,
+      `- 커밋: ${preview.headCommitHash.slice(0, 7)}`,
+      checksLine,
+    ];
+    if (preview.reviews && preview.reviews.state !== 'unknown') {
+      lines.push(
+        `- 리뷰: 승인 ${preview.reviews.approvedCount ?? 0} / 변경요청 ${preview.reviews.changesRequestedCount ?? 0} (현재 리뷰 신호이며 머지 승인 게이트는 아니에요)`,
+      );
+    }
+    lines.push('머지/배포/릴리즈는 하지 않았어요. 안전하게 머지해도 된다는 뜻은 아니에요.');
+    return { context, text: clampToMessageBudget(lines.join('\n')) };
+  }
+
+  /** Repository identity / GitHub token not configured for status preview (Sprint 3e) — read-only, no state change. */
+  composePrStatusNotConfigured(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: 'PR 상태를 확인할 저장소 또는 GitHub 토큰이 설정되지 않았어요. (상태 조회만 하며 아무것도 변경하지 않았어요)',
+    };
+  }
+
+  /** PR status preview context is incomplete/mismatched (Sprint 3e) — read-only, no state change. */
+  composePrStatusUnavailable(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '지금은 PR 상태를 확인할 수 없어요. (아무것도 변경하지 않았어요)',
+    };
+  }
+
+  /** PR status read failed / result was stale-unattributable (Sprint 3e) — "could not check", NOT "checks failed". */
+  composePrStatusCheckFailed(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '현재 PR 상태를 확인하지 못했어요. PR이 없어졌거나 체크가 실패했다는 뜻은 아니에요. (아무것도 변경하지 않았어요)',
     };
   }
 }

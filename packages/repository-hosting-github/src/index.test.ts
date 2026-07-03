@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { GitHubRepositoryHostingProvider } from './index';
 import type { GitHubHostingConfig } from './index';
-import type { PullRequestCreationInput, RepositoryIdentity } from '@chunsik/core';
+import type { PullRequestCreationInput, PullRequestRef, RepositoryIdentity } from '@chunsik/core';
 
 const IDENTITY: RepositoryIdentity = { provider: 'github', owner: 'acme', repo: 'widgets' };
 const TOKEN = 'ghp_superSecretTokenValue';
@@ -247,6 +247,66 @@ describe('GitHubRepositoryHostingProvider (CAP-010 adapter, ADR-0053, Sprint 3d-
           expect(m).not.toContain('REQ-TITLE-SECRET');
           expect(m).not.toContain('REQ-BODY-SECRET');
         });
+    });
+  });
+
+  describe('getPullRequestStatus — read-only (Sprint 3e, ADR-0055)', () => {
+    const PR_REF: PullRequestRef = { provider: 'github', owner: 'acme', repo: 'widgets', pullRequestNumber: 42, pullRequestUrl: 'https://github.com/acme/widgets/pull/42' };
+    const statusInput = { identity: IDENTITY, pullRequestRef: PR_REF, expectedHeadBranch: 'feature/x', expectedBaseBranch: 'main', expectedCommitHash: 'abc1234' };
+    /** Route the 3 read-only GETs (pull / check-runs / reviews) by URL. */
+    function statusFetch(over: { pull?: unknown; checks?: unknown; reviews?: unknown; pullStatus?: number } = {}) {
+      return fakeFetch((url) => {
+        if (url.includes('/check-runs')) return { status: 200, body: over.checks ?? { total_count: 2, check_runs: [{ status: 'completed', conclusion: 'success' }, { status: 'completed', conclusion: 'success' }] } };
+        if (url.endsWith('/reviews?per_page=100')) return { status: 200, body: over.reviews ?? [{ state: 'APPROVED', user: { login: 'r1' } }] };
+        return { status: over.pullStatus ?? 200, body: over.pull ?? { state: 'open', merged: false, draft: false, head: { ref: 'feature/x', sha: 'abc1234' }, base: { ref: 'main' } } };
+      });
+    }
+
+    it('performs bounded read-only GETs: pull, check-runs (per_page), reviews (per_page) — one each, no pagination/retry', async () => {
+      const { fn, calls } = statusFetch();
+      await provider(fn).getPullRequestStatus(statusInput);
+      expect(calls).toHaveLength(3);
+      expect(calls.every((c) => c.init.method === 'GET' || c.init.method === undefined)).toBe(true);
+      expect(calls.some((c) => c.url === 'https://api.github.com/repos/acme/widgets/pulls/42')).toBe(true);
+      expect(calls.some((c) => c.url === 'https://api.github.com/repos/acme/widgets/commits/abc1234/check-runs?per_page=100')).toBe(true);
+      expect(calls.some((c) => c.url === 'https://api.github.com/repos/acme/widgets/pulls/42/reviews?per_page=100')).toBe(true);
+    });
+
+    it('maps pull/checks/reviews to a bounded preview with internally-generated observedAt', async () => {
+      const { fn } = statusFetch();
+      const s = await provider(fn).getPullRequestStatus(statusInput);
+      expect(s.state).toBe('open');
+      expect(s.headBranch).toBe('feature/x');
+      expect(s.baseBranch).toBe('main');
+      expect(s.headCommitHash).toBe('abc1234');
+      expect(s.checks).toEqual({ state: 'success', totalCount: 2, successCount: 2, failureCount: 0, pendingCount: 0 });
+      expect(s.reviews).toEqual({ state: 'approved', approvedCount: 1, changesRequestedCount: 0 });
+      expect(typeof s.observedAt).toBe('string');
+      expect(s.observedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/); // ISO-like, internally generated
+      expect(s.ref).toEqual(PR_REF);
+    });
+
+    it('empty check-runs → unknown (not success)', async () => {
+      const { fn } = statusFetch({ checks: { total_count: 0, check_runs: [] } });
+      const s = await provider(fn).getPullRequestStatus(statusInput);
+      expect(s.checks).toEqual({ state: 'unknown', totalCount: 0, successCount: 0, failureCount: 0, pendingCount: 0 });
+    });
+
+    it('maps merged / failing checks / changes-requested', async () => {
+      const merged = await provider(statusFetch({ pull: { state: 'closed', merged: true, draft: false, head: { ref: 'feature/x', sha: 'abc1234' }, base: { ref: 'main' } } }).fn).getPullRequestStatus(statusInput);
+      expect(merged.state).toBe('merged');
+      const failing = await provider(statusFetch({ checks: { total_count: 2, check_runs: [{ status: 'completed', conclusion: 'failure' }, { status: 'in_progress' }] } }).fn).getPullRequestStatus(statusInput);
+      expect(failing.checks).toEqual({ state: 'failure', totalCount: 2, successCount: 0, failureCount: 1, pendingCount: 1 });
+      const cr = await provider(statusFetch({ reviews: [{ state: 'CHANGES_REQUESTED', user: { login: 'r1' } }, { state: 'APPROVED', user: { login: 'r2' } }] }).fn).getPullRequestStatus(statusInput);
+      expect(cr.reviews).toEqual({ state: 'changes_requested', approvedCount: 1, changesRequestedCount: 1 });
+    });
+
+    it('non-200 on any read throws a sanitized error (no token/raw body)', async () => {
+      const p = provider(statusFetch({ pullStatus: 403, pull: { message: TOKEN } }).fn);
+      await p.getPullRequestStatus(statusInput).catch((e: unknown) => {
+        expect(String((e as Error).message)).toMatch(/github hosting/);
+        expect(String((e as Error).message)).not.toContain(TOKEN);
+      });
     });
   });
 });

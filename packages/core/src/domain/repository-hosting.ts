@@ -180,3 +180,40 @@ export function isSafeGitHubPullRequestUrl(
   if (!Number.isInteger(prNumber) || prNumber <= 0) return false;
   return url === `https://github.com/${identity.owner}/${identity.repo}/pull/${prNumber}`;
 }
+
+// ─── Sprint 3e (ADR-0055) — read-only Pull Request STATUS PREVIEW types ─────────────────────────────────────
+// Point-in-time, provider-reported, bounded status of an existing PR_CREATED PR. NOT a durable verified /
+// safe-to-merge state, NOT merge/deploy/release. No raw provider response / token / check logs / review body /
+// file paths / diff / file content is ever represented here.
+
+export type PullRequestState = 'open' | 'closed' | 'merged' | 'unknown';
+export type PullRequestChecksState = 'success' | 'failure' | 'pending' | 'neutral' | 'skipped' | 'unknown';
+export type PullRequestReviewState = 'approved' | 'changes_requested' | 'commented' | 'none' | 'unknown';
+
+/**
+ * A bounded, provider-reported, point-in-time PR status observation (Sprint 3e, ADR-0055). `observedAt` is
+ * generated internally by the adapter at read time (never caller/user-supplied). All counts are non-negative
+ * integers. This is NOT a durable guarantee; it can change immediately after the response.
+ */
+export interface PullRequestStatusPreview {
+  ref: PullRequestRef;
+  state: PullRequestState;
+  headBranch: string;
+  baseBranch: string;
+  headCommitHash: string;
+  isDraft?: boolean;
+  checks: {
+    state: PullRequestChecksState;
+    totalCount: number;
+    successCount: number;
+    failureCount: number;
+    pendingCount: number;
+  };
+  reviews?: {
+    state: PullRequestReviewState;
+    approvedCount?: number;
+    changesRequestedCount?: number;
+  };
+  /** ISO timestamp generated internally at status-read time (adapter/provider clock) — never from user input. */
+  observedAt: string;
+}

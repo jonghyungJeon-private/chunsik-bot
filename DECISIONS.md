@@ -3517,3 +3517,64 @@ errors added), ADR-0051 (`RepositoryIdentity`/resolver reused), ADR-0049 (`PR_AP
 consumed; its "PR_APPROVED + create → already approved" behavior is **superseded** — that phrase now executes),
 ADR-0048/0046/0025 (approval-halt + Ref-gating lineage), ADR-0023 (Git stays local-only). Plan:
 `docs/plans/sprint-3d-d-pr-creation-execution-plan.md`.
+
+## ADR-0055 — Pull Request Status Preview (read-only, point-in-time hosting status from PR_CREATED)
+
+- **Status:** ✅ Accepted (v2, Phase 3, Sprint 3e — Product Construction), Chief Architect plan review:
+  APPROVED WITH CHANGES (all 10 required changes applied) → implemented.
+- **Date:** 2026-07-03
+- **Scope:** A **read-only** repository-hosting status preview on an existing `PR_CREATED` anchor — at
+  `PR_CREATED`, an explicit PR/CI/check/review status phrase returns a bounded, point-in-time,
+  provider-reported `PullRequestStatusPreview`. No mutation, no new anchor state.
+
+### Most important rule
+> A PR status preview is a **read-only, point-in-time hosting observation — never a durable guarantee.** It is
+> **not** "PR verification" / "CI verification" / "safe-to-merge" / "merge readiness" (naming discipline), and
+> performs **no** merge/auto-merge/deploy/release/CI-rerun/check-rerun/review-mutation/reviewer/label/assignee/
+> metadata/PR-close-reopen/draft-convert. The runtime calls `RepositoryHostingManager` only (never the adapter),
+> passes **no** token, requires **no** `ApprovalRef`, and **keeps `PR_CREATED`** (no re-anchor, no new state).
+
+### Decision
+- **No new state (Q2).** Keep `PR_CREATED`; no `PR_STATUS_PREVIEWED`/`PR_VERIFIED`/`READY_TO_MERGE`/`PR_MERGED`/
+  `PR_CLOSED`. A provider-reported merged/closed state is *reported* but never re-anchors or infers deploy/release.
+- **Domain (Q3/CA change 3).** `PullRequestStatusPreview { ref: PullRequestRef; state; headBranch; baseBranch;
+  headCommitHash; isDraft?; checks{state,total/success/failure/pending}; reviews?{state,approved/changes}; observedAt }`
+  — provider-independent, bounded; **`observedAt` is generated internally at read time (adapter clock), never
+  caller/user-supplied**; no raw provider response / token / check logs / review body / file paths / diff /
+  file content.
+- **Method (Q4/Q5/CA change 1).** `getPullRequestStatus` added to `RepositoryHostingProvider` +
+  `RepositoryHostingManager` — **read-only, no `ApprovalRef`**. Input carries a **`PullRequestRef`** (not a bare
+  number); the manager validates `provider.kind`, identity, `ref` (provider/owner/repo == identity, safe
+  positive number, canonical github.com URL), safe head/base, SHA-shaped commit **before** the provider read,
+  then validates result integrity (ref/head/base/commit match the request; non-negative integer counts). A
+  mismatch is a **stale/unattributable** read → the runtime words it "could not check current status", **never**
+  "checks failed" (CA change 8).
+- **Anchored PR only (Q1/CA change 2).** Triggered only at `PR_CREATED` by an explicit PR/CI/check/review status
+  phrase (`interpretPrStatusIntent` — a status noun AND a query verb; a bare "상태" does not trigger; merge/
+  deploy/release/reviewer/label route to the companion-unsupported reply). The query target is **always
+  `anchor.pullRequestRef`** — a user-supplied PR number/URL is never parsed or used.
+- **GitHub adapter (Q11/CA changes 4/5/9).** Read-only, github.com only: bounded `GET` pull /
+  `GET commits/{sha}/check-runs?per_page=100` / `GET pulls/{n}/reviews?per_page=100` — **one call each, no
+  pagination loop, no retry**. **check-runs only** (legacy commit statuses may be unrepresented — documented;
+  the response says checks are provider-reported and may be partial). Empty check-runs → `unknown` (never
+  rendered as success — CA change 10). Reviews summarized latest-per-reviewer (a current signal, **not** a merge
+  approval gate — CA change 6; no review body text). Sanitized errors (no token/Authorization/raw body).
+- **Token boundary (Q7)** identical to ADR-0054 — adapter-local only; missing token/identity → safe
+  not-configured, no state change, no crash.
+- **Unchanged (Q12/Q13).** `GitProvider`/`GitManager`/`LocalGitProvider`/`RepositoryInfo`,
+  `ExecutionOrchestrator`, `WorkspaceWrite`/`Patch`/`CodeGeneration`/`CommandExecution`. No GitHub write verb.
+- **Future (Q14).** 3e unlocks no mutation; merge-approval / merge-execution / deployment each remain separate
+  future CA-gated sprints.
+
+### Consequences
+- + Users get useful post-creation feedback (state/checks/reviews) as a point-in-time preview, with no new
+  mutation surface and no new state.
+- + Reuses the port/manager/adapter/anchor/token boundary unchanged in contract; adds only read-only methods.
+- − Adds a `PullRequestStatusPreview` type, a read-only `getPullRequestStatus` (port/manager/adapter), a
+  `PR_CREATED` status route + handler + 4 composers. Nothing mutates; the anchor never changes.
+
+### Relations
+ADR-0054 (reads the `PR_CREATED` anchor; runtime-calls-manager-only + token boundary reused), ADR-0053 (adapter
+gains a read-only `GET` method), ADR-0052 (port/manager gain a read-only method; `isSafeGitHubPullRequestUrl`
+reused), ADR-0051 (`RepositoryIdentity`), ADR-0023 (Git stays local-only). Plan:
+`docs/plans/sprint-3e-pr-status-preview-plan.md`.

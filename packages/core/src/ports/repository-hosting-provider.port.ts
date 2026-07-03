@@ -1,4 +1,10 @@
-import type { PullRequestCreationInput, PullRequestResult, RepositoryIdentity } from '../domain';
+import type {
+  PullRequestCreationInput,
+  PullRequestRef,
+  PullRequestResult,
+  PullRequestStatusPreview,
+  RepositoryIdentity,
+} from '../domain';
 
 /**
  * PORT: repository-hosting platform operations (CAP-010, ADR-0052 — the Sprint 3d-B skeleton). Distinct from
@@ -34,4 +40,15 @@ export interface RepositoryHostingProvider {
   /** The ONLY mutating method — creates exactly one Pull Request from validated, bounded input. Takes **no**
    *  `ApprovalRef` (consumed by the Manager). Port shape only in 3d-B; no real implementation ships. */
   createPullRequest(input: PullRequestCreationInput): Promise<PullRequestResult>;
+
+  /** READ-ONLY point-in-time PR status (CAP-010, ADR-0055 — Sprint 3e). No mutation, no ApprovalRef. Returns a
+   *  bounded, provider-reported {@link PullRequestStatusPreview} with an internally-generated `observedAt`.
+   *  Bounded GET calls only (no pagination/retry loops); sanitized errors (no token/raw payload). */
+  getPullRequestStatus(input: {
+    identity: RepositoryIdentity;
+    pullRequestRef: PullRequestRef;
+    expectedHeadBranch: string;
+    expectedBaseBranch: string;
+    expectedCommitHash: string;
+  }): Promise<PullRequestStatusPreview>;
 }

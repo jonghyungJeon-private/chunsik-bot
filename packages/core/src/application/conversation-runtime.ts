@@ -53,6 +53,7 @@ import type {
   ProposedChange,
   PullRequestRef,
   PullRequestResult,
+  PullRequestStatusPreview,
   RepositoryIdentity,
   RunCommandInput,
   Session,
@@ -503,6 +504,14 @@ export interface ConversationRuntimeDeps {
         expectedCommitHash: string;
         approvalRef: ApprovalRef;
       }): Promise<PullRequestResult>;
+      /** Read-only PR status preview (Sprint 3e, ADR-0055) — no ApprovalRef, no mutation, no state change. */
+      getPullRequestStatus(input: {
+        identity: RepositoryIdentity;
+        pullRequestRef: PullRequestRef;
+        expectedHeadBranch: string;
+        expectedBaseBranch: string;
+        expectedCommitHash: string;
+      }): Promise<PullRequestStatusPreview>;
     };
   };
   readonly logger: Logger;
@@ -609,6 +618,14 @@ const DEPLOY_ONLY_WORDS = /(배포|deploy|릴리즈|release)/i;
  *  reviewer/label/assignee. Consulted ONLY at PR_CREATED to answer "that's a future step" (no mutation). */
 const PR_CREATED_COMPANION_WORDS =
   /(배포|deploy|릴리즈|release|머지|\bmerge\b|병합|auto\s*-?\s*merge|자동\s*머지|리뷰어|reviewer|라벨|\blabel\b|assignee|담당자)/i;
+
+/** Explicit PR/CI/check/review STATUS-query phrases (Sprint 3e, ADR-0055) — only consulted at PR_CREATED. A
+ *  status-context noun (PR/풀리퀘/pull request/CI/체크/check(s)/리뷰/review) AND a query verb (상태/status/확인/
+ *  어때/봐/알려/통과/열려) must BOTH be present, in either order. A bare "상태" with no PR/CI/check/review context
+ *  never matches (CA Q1); merge/deploy/release/reviewer/label/assignee are NOT status phrases (they route to the
+ *  companion-unsupported reply). */
+const PR_STATUS_NOUN = /(\bpr\b|풀\s*리퀘|pull\s*request|\bci\b|체크|checks?|리뷰|review)/i;
+const PR_STATUS_QUERY = /(상태|status|확인|어때|봐줘|봐|알려|통과(했|돼|되)|열려\s*있|open\s*\?)/i;
 
 /** A PR-ish noun (Sprint 3b, ADR-0049) — only ever consulted at GIT_PUSHED/PR_APPROVAL_PENDING/PR_APPROVED.
  *  A bare 좋아/오케이/확인/진행해/다음 단계 never matches. A noun ALONE is not a PR-creation request (CA #1). */
@@ -1083,6 +1100,17 @@ export class ConversationRuntime {
   }
 
   /**
+   * Explicit PR/CI/check/review STATUS-preview intent (Sprint 3e, ADR-0055) — only consulted at PR_CREATED.
+   * True only when BOTH a status-context noun (PR/CI/check/review) AND a query verb (상태/확인/…) are present, so
+   * a bare "상태" never triggers (CA Q1) and merge/deploy/release/reviewer/label phrases (no status noun+query)
+   * do not match — they keep routing to the companion-unsupported reply.
+   */
+  static interpretPrStatusIntent(text: string): boolean {
+    const t = text.trim().toLowerCase();
+    return PR_STATUS_NOUN.test(t) && PR_STATUS_QUERY.test(t);
+  }
+
+  /**
    * Resolve the commit message for a commit-approval turn (Sprint 2x, CA #6/#7/#8). If the text carries a
    * user message (a single quoted segment after a `메시지`/`message` keyword) it is accepted only when it is
    * exactly one candidate, single-line, ≤120 chars, control-char-free, and trimmed non-empty — otherwise
@@ -1213,6 +1241,10 @@ export class ConversationRuntime {
     // (Sprint 3d-D) After a PR was created/connected: a PR create phrase → already created (+ URL, no new call);
     // a deploy/merge/release/companion phrase → unsupported future step. Never re-creates / merges / deploys.
     if (applyAnchor?.status === 'PR_CREATED') {
+      // (Sprint 3e) an explicit PR/CI/check/review status phrase → read-only status preview (checked first).
+      if (ConversationRuntime.interpretPrStatusIntent(message.text)) {
+        return this.handlePrStatusPreviewTurn(message, session, applyAnchor);
+      }
       const prKind = ConversationRuntime.interpretPrIntent(message.text);
       if (prKind === 'create') return this.handlePrAlreadyCreatedTurn(message, session, applyAnchor);
       if (prKind === 'pr-unsupported' || PR_CREATED_COMPANION_WORDS.test(message.text)) {
@@ -3078,6 +3110,63 @@ export class ConversationRuntime {
   private async handlePrCreatedCompanionUnsupportedTurn(message: InboundMessage, session: Session): Promise<TurnResult> {
     const reply = this.deps.composer.composePrCreatedCompanionUnsupported(message.context);
     return this.respondComposed(message, session, reply);
+  }
+
+  /**
+   * READ-ONLY PR status preview (Sprint 3e, ADR-0055) — at PR_CREATED, an explicit PR/CI/check/review status
+   * phrase queries the ANCHORED PR (never a user-supplied number/URL). Calls the manager only (never the
+   * provider/adapter), passes NO token, requires NO ApprovalRef. KEEPS `PR_CREATED` on every path (no state
+   * change, no mutation). A read failure/stale-context means "could not check current status" — never "PR not
+   * created / checks failed".
+   */
+  private async handlePrStatusPreviewTurn(
+    message: InboundMessage,
+    session: Session,
+    anchor: ApplyPreviewAnchor,
+  ): Promise<TurnResult> {
+    const identity = this.deps.repositoryHosting?.identity;
+    const manager = this.deps.repositoryHosting?.manager;
+    if (!identity || !manager) {
+      return this.respondComposed(message, session, this.deps.composer.composePrStatusNotConfigured(message.context));
+    }
+    // Complete PR_CREATED context, incl. the approved identity + durable PullRequestRef (the ONLY query source).
+    const ref = anchor.pullRequestRef;
+    if (
+      anchor.status !== 'PR_CREATED' ||
+      !ref ||
+      !anchor.repositoryIdentity ||
+      !anchor.pullRequestHeadBranch ||
+      !anchor.pullRequestBaseBranch ||
+      !anchor.pullRequestCommitHash
+    ) {
+      return this.respondComposed(message, session, this.deps.composer.composePrStatusUnavailable(message.context));
+    }
+    // Resolved identity must match both the approved anchor identity and the ref (never a user-supplied PR).
+    if (
+      anchor.repositoryIdentity.provider !== identity.provider ||
+      anchor.repositoryIdentity.owner !== identity.owner ||
+      anchor.repositoryIdentity.repo !== identity.repo ||
+      ref.provider !== identity.provider ||
+      ref.owner !== identity.owner ||
+      ref.repo !== identity.repo
+    ) {
+      return this.respondComposed(message, session, this.deps.composer.composePrStatusUnavailable(message.context));
+    }
+    let preview: PullRequestStatusPreview;
+    try {
+      preview = await manager.getPullRequestStatus({
+        identity,
+        pullRequestRef: ref,
+        expectedHeadBranch: anchor.pullRequestHeadBranch,
+        expectedBaseBranch: anchor.pullRequestBaseBranch,
+        expectedCommitHash: anchor.pullRequestCommitHash,
+      });
+    } catch {
+      // Read-only failure or stale/unattributable result → could not check; NOT "checks failed"/"PR not created".
+      return this.respondComposed(message, session, this.deps.composer.composePrStatusCheckFailed(message.context));
+    }
+    // Point-in-time preview — KEEP PR_CREATED (no re-anchor, no new state, no mutation — Q2).
+    return this.respondComposed(message, session, this.deps.composer.composePrStatusPreview(message.context, preview));
   }
 
   /** A PR request bundled with deploy/merge/release/force/… (Sprint 3b, CA #5) — unsupported companion; no approval, no PR. */
