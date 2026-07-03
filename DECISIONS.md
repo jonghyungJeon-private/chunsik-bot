@@ -3291,3 +3291,75 @@ ADR-0049 (Sprint 3b — `PR_APPROVED` anchor a future execution sprint consumes 
 ADR-0023 (CAP-002 Git — the remote-URL-exclusion decision this Sprint upholds; `RepositoryInfo` unchanged),
 ADR-0025 (CAP-004 Approval — the no-secret-in-reason discipline mirrored). Plan:
 `docs/plans/sprint-3d-a-repository-identity-configuration-plan.md`.
+
+## ADR-0052 — RepositoryHosting Skeleton (CAP-010 domain/port/manager/token; NO real provider, NO mutation)
+
+- **Status:** ✅ Accepted (v2, Phase 3, Sprint 3d-B — Product Construction), Chief Architect plan review:
+  APPROVED WITH CHANGES (all 12 required changes applied) → implemented.
+- **Date:** 2026-07-03
+- **Scope:** The **non-mutating skeleton** of CAP-010 Repository Hosting (the design accepted in ADR-0050,
+  reusing the identity source from ADR-0051): the provider-independent domain types +
+  `RepositoryHostingProvider` port + `RepositoryHostingManager` + `REPOSITORY_HOSTING_PROVIDER` token,
+  exercised only by **fake providers in unit tests**.
+
+### Most important rule
+> **RepositoryHosting is a hosting/platform capability. It is not Git.** No PR method is added to
+> `GitProvider`/`GitManager`/`LocalGitProvider`/`CommandExecution`/runtime shell/`ExecutionOrchestrator`/
+> `WorkspaceWrite`/`PatchManager`/`CodeGeneration`. `RepositoryHostingProvider.createPullRequest` exists as a
+> **port shape only** — Sprint 3d-B ships **no real provider implementation**, no GitHub adapter, no DI
+> binding, and **no product-runtime path can reach it**; only fake providers in unit tests may implement or
+> call it. A successful `RepositoryHostingManager` unit test means the **manager boundary behaves correctly
+> with a fake provider** — it does **not** mean product PR creation works. **Actual product PR creation
+> remains blocked** until a real adapter + runtime flow are separately planned, implemented, reviewed, merged,
+> and accepted.
+
+### Decision
+- **Types added** (`packages/core/src/domain/repository-hosting.ts`): `PullRequestCreationInput`,
+  `PullRequestResult`, `PullRequestRef` (+ `pullRequestRef()`), `MAX_PR_TITLE`/`MAX_PR_BODY`,
+  `normalizePrTitle`, `isSafeGitHubPullRequestUrl`. **Reuses** `RepositoryIdentity`/
+  `RepositoryHostingProviderKind` from ADR-0051 — not duplicated.
+- **`PullRequestCreationInput`** carries only `identity/headBranch/baseBranch/title/body/expectedCommitHash` —
+  **no** `ApprovalRef` (Manager input only), token, raw diff, file content, GitHub SDK type, git remote URL, or
+  `pushedRemote` (remote/upstream context belongs to the prior Git push anchor, not a hosting input).
+- **`PullRequestResult`** is **provider-reported, not independent truth** (mirrors `GitPushResult`). The
+  Manager validates it against the request and finalizes `reused` by the taken path.
+- **`RepositoryHostingProvider` port**: `repositoryExists` / `branchExists` / `findOpenPullRequest` /
+  `createPullRequest`; `readonly kind`; takes **no** `ApprovalRef`.
+- **`RepositoryHostingManager`** owns approval gating (`ApprovalRef.status === APPROVED`), **`provider.kind ===
+  identity.provider`** matching before any provider call, input validation, deterministic title normalization
+  (collapse whitespace + trim; empty → reject; provider receives the normalized title), call ordering
+  (`repositoryExists` → `branchExists(head)` → `branchExists(base)` → `findOpenPullRequest` → a **single**
+  `createPullRequest` only if all pass and no existing PR), **manager-owned `reused`** (true via the
+  existing-PR path, false via the create path — the provider-reported flag is not trusted), and result
+  integrity — incl. `pullRequestCommitHash === expectedCommitHash` and `isSafeGitHubPullRequestUrl` (https /
+  github.com / exact `/<owner>/<repo>/pull/<number>` / exact casing / no credentials / no query / no fragment /
+  no percent-encoding / bounded). The `ApprovalRef` is consumed here and **never** passed to the provider; the
+  provider receives only the bounded `PullRequestCreationInput`.
+- **Non-idempotent creation blocked by default**: if `findOpenPullRequest` throws (unsupported), the Manager
+  blocks and does not call `createPullRequest`. A valid existing open PR is returned with `reused: true` and no
+  create; an invalid existing result fails safe (no fallback create).
+- **Reused helpers**: `isSafePushBranch` (head/base) + the SHA-shape guard; identity validators (ADR-0051).
+  **`isSafePushRemote` is NOT used** — RepositoryHosting works with identity + branch names, not git remotes.
+- **Deterministic capability errors**: the Manager throws bounded internal messages; **raw provider errors are
+  never forwarded or embedded**.
+- **No token binding / no wiring**: `REPOSITORY_HOSTING_PROVIDER` token added, but `app.module.ts` binds **no**
+  real or fake provider; an exported-but-unbound manager is acceptable. `ConversationRuntime`,
+  `ApplyPreviewAnchor` (no `PR_CREATED`), `ResponseComposer` (no PR-created wording), `ExecutionOrchestrator`,
+  and Git capability are unchanged.
+
+### Consequences
+- + Establishes the validated RepositoryHosting seam (domain/port/manager/token) a future GitHub adapter and
+  PR-execution flow plug into, with all approval/validation/ordering/integrity discipline in place and proven
+  by fake-provider unit tests.
+- + Mirrors the CAP-002 Git Port/Manager/Token pattern and the `GitPushResult` provider-reported discipline;
+  reuses ADR-0051 identity + ADR-0048 branch/SHA guards.
+- − No real adapter, no GitHub API, no PR creation, no `PR_CREATED`, no runtime wiring exist yet; actual
+  PR-creation execution remains a separate CA-gated sprint (3d-C+), and the product flow still stops at
+  `PR_APPROVED`.
+
+### Relations
+ADR-0050 (Sprint 3c — the RepositoryHosting design this skeleton realizes), ADR-0051 (Sprint 3d-A —
+`RepositoryIdentity`/validators reused), ADR-0048 (Sprint 3a — `isSafePushBranch` + SHA guard reused; the
+provider-reported `GitPushResult` discipline mirrored by `PullRequestResult`), ADR-0046/ADR-0025 (the
+`GitManager` Ref-gating template the manager mirrors; `ApprovalRef` consumed at the manager, never the
+provider). Plan: `docs/plans/sprint-3d-b-repository-hosting-skeleton-plan.md`.

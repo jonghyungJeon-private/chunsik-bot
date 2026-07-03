@@ -15,9 +15,14 @@ function codeOf(text: string): string {
 
 const resolverCode = codeOf(src('./repository-identity-resolver.ts'));
 const domainCode = codeOf(src('../domain/repository-hosting.ts'));
+const managerCode = codeOf(src('./repository-hosting-manager.ts'));
+const portCode = codeOf(src('../ports/repository-hosting-provider.port.ts'));
 const runtimeSrc = src('./conversation-runtime.ts');
 const composerSrc = src('./response-composer.ts');
 const gitDomainSrc = src('../domain/git.ts');
+const gitProviderPortSrc = src('../ports/git-provider.port.ts');
+const gitManagerSrc = src('./git-manager.ts');
+const appModuleSrc = src('../../../../apps/chunsik/src/app.module.ts');
 
 describe('Sprint 3d-A absence guards (ADR-0051 — config-only; no hosting mutation, no wiring, no secrets)', () => {
   it('the new modules use no process/shell/network/command surface (tests 20/24/25/26/27)', () => {
@@ -64,5 +69,64 @@ describe('Sprint 3d-A absence guards (ADR-0051 — config-only; no hosting mutat
     expect(composerSrc.includes('RepositoryIdentity')).toBe(false);
     expect(composerSrc.includes('createPullRequest')).toBe(false);
     expect(composerSrc.includes('repositoryHosting')).toBe(false);
+  });
+});
+
+describe('Sprint 3d-B absence guards (ADR-0052 — skeleton only; no adapter/API/mutation/wiring)', () => {
+  it('the new hosting modules use no GitHub adapter / GitHub API / octokit / shell / command surface (tests 43–47)', () => {
+    for (const forbidden of [
+      'GitHubRepositoryHostingProvider',
+      'octokit',
+      'Octokit',
+      'api.github.com',
+      'child_process',
+      'spawn(',
+      'execSync',
+      'fetch(',
+      'node:http',
+      'node:https',
+      'CommandRunner',
+      'CommandExecution',
+    ]) {
+      expect(managerCode.includes(forbidden), `manager must not contain "${forbidden}"`).toBe(false);
+      expect(portCode.includes(forbidden), `port must not contain "${forbidden}"`).toBe(false);
+      expect(domainCode.includes(forbidden), `domain must not contain "${forbidden}"`).toBe(false);
+    }
+  });
+
+  it('the new hosting modules contain no merge/deploy/release/reviewer/label/assignee surface (tests 53–58)', () => {
+    for (const forbidden of ['merge', 'deploy', 'release', 'reviewer', 'label', 'assignee']) {
+      expect(managerCode.includes(forbidden), `manager must not contain "${forbidden}"`).toBe(false);
+      expect(portCode.includes(forbidden), `port must not contain "${forbidden}"`).toBe(false);
+    }
+  });
+
+  it('RepositoryHostingManager has no remote input and does not import isSafePushRemote (test 72)', () => {
+    expect(managerCode.includes('isSafePushRemote')).toBe(false);
+    expect(managerCode.includes('isSafePushBranch')).toBe(true); // allowed reuse
+  });
+
+  it('ConversationRuntime has no PR_CREATED / RepositoryHosting reference (tests 48/50)', () => {
+    expect(runtimeSrc.includes('PR_CREATED')).toBe(false);
+    expect(runtimeSrc.includes('RepositoryHosting')).toBe(false);
+    expect(runtimeSrc.includes('createPullRequest')).toBe(false);
+  });
+
+  it('ResponseComposer has no PR-created wording / RepositoryHosting reference (test 49)', () => {
+    expect(composerSrc.includes('PR_CREATED')).toBe(false);
+    expect(composerSrc.includes('RepositoryHosting')).toBe(false);
+  });
+
+  it('Git capability has no PR method (tests 51/52) — GitProvider/GitManager unchanged', () => {
+    expect(gitProviderPortSrc.includes('createPullRequest')).toBe(false);
+    expect(gitProviderPortSrc.includes('PullRequest')).toBe(false);
+    expect(gitManagerSrc.includes('createPullRequest')).toBe(false);
+    expect(gitManagerSrc.includes('PullRequest')).toBe(false);
+  });
+
+  it('app.module.ts does not bind REPOSITORY_HOSTING_PROVIDER (test 78 — no real/fake provider binding)', () => {
+    expect(appModuleSrc.includes('REPOSITORY_HOSTING_PROVIDER')).toBe(false);
+    expect(appModuleSrc.includes('RepositoryHostingProvider')).toBe(false);
+    expect(appModuleSrc.includes('RepositoryHostingManager')).toBe(false);
   });
 });

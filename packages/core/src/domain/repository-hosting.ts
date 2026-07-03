@@ -85,3 +85,98 @@ export function isSafeRepoName(s: unknown): s is string {
   if (looksLikeSecret(s)) return false; // CA change 1 — token-shaped value
   return true;
 }
+
+// ─── Sprint 3d-B (ADR-0052) — RepositoryHosting SKELETON types ──────────────────────────────────────────────
+// The non-mutating shape a FUTURE PR-creation execution sprint (3d-C+) will use. No adapter, no GitHub API, no
+// PR creation exists in 3d-B — only these types + a port + a manager, exercised by fake providers in tests.
+
+/** Bounded PR subject (non-empty required after normalization). */
+export const MAX_PR_TITLE = 200;
+/** Bounded PR body. */
+export const MAX_PR_BODY = 8000;
+
+/**
+ * Input to `RepositoryHostingManager.createPullRequest` — assembled (future) from a live `PR_APPROVED` anchor +
+ * a configured {@link RepositoryIdentity}. Bounded/sanitized fields ONLY. Deliberately has **no** `ApprovalRef`
+ * (that is Manager input, not provider input), **no** token, **no** raw diff, **no** file content, **no** GitHub
+ * SDK type, **no** git remote URL, and **no** `pushedRemote` (upstream/remote context belongs to the prior Git
+ * push anchor, not to a hosting-provider input) — Sprint 3d-B CA changes 6/7, Q2.
+ */
+export interface PullRequestCreationInput {
+  identity: RepositoryIdentity;
+  headBranch: string;
+  baseBranch: string;
+  title: string;
+  body: string;
+  expectedCommitHash: string;
+}
+
+/**
+ * PROVIDER-REPORTED pull-request creation/open result — **NOT an independent verification** beyond what the
+ * provider returned (mirrors `GitPushResult`, ADR-0048). The Manager validates its integrity against the
+ * request (incl. `pullRequestCommitHash === expectedCommitHash`) and finalizes {@link PullRequestResult.reused}
+ * by the taken path; it must not overclaim (Q3).
+ */
+export interface PullRequestResult {
+  provider: RepositoryHostingProviderKind;
+  owner: string;
+  repo: string;
+  pullRequestNumber: number;
+  pullRequestUrl: string;
+  pullRequestHeadBranch: string;
+  pullRequestBaseBranch: string;
+  pullRequestCommitHash: string;
+  /** Manager-owned path semantic: `true` via the existing-open-PR path, `false` via the create path — the
+   *  provider-reported value is not trusted (Q3/CA change 3). */
+  reused: boolean;
+}
+
+/** Durable, repository-scoped handle (a PR number is meaningless without provider/owner/repo — Q4). */
+export interface PullRequestRef {
+  provider: RepositoryHostingProviderKind;
+  owner: string;
+  repo: string;
+  pullRequestNumber: number;
+  pullRequestUrl: string;
+}
+
+/** Pure derivation of a {@link PullRequestRef} from a {@link PullRequestResult} (mirrors `executionPlanRef`). */
+export function pullRequestRef(r: PullRequestResult): PullRequestRef {
+  return {
+    provider: r.provider,
+    owner: r.owner,
+    repo: r.repo,
+    pullRequestNumber: r.pullRequestNumber,
+    pullRequestUrl: r.pullRequestUrl,
+  };
+}
+
+/**
+ * Deterministic PR-title normalization (Sprint 3d-B, CA change 2): collapse every whitespace run to a single
+ * space and trim. Returns `''` for a non-string or all-whitespace input (the Manager rejects an empty result).
+ * The provider receives the NORMALIZED title, never the raw one.
+ */
+export function normalizePrTitle(raw: unknown): string {
+  if (typeof raw !== 'string') return '';
+  return raw.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * PR-URL validation (Sprint 3d-B, CA changes 8/9, Q11). Accepts ONLY the canonical github.com PR URL for the
+ * given identity + number: `https://github.com/<owner>/<repo>/pull/<number>` — https only, github.com host,
+ * exact path, exact owner/repo casing, **no** credentials/userinfo, **no** query string, **no** fragment, **no**
+ * percent-encoding, bounded length. GitHub Enterprise is deferred. Implemented as an exact string match against
+ * the canonical URL (the identity's owner/repo are already validated safe), with explicit `@`/`?`/`#`/`%` guards
+ * documenting the rejected shapes.
+ */
+export function isSafeGitHubPullRequestUrl(
+  url: unknown,
+  identity: RepositoryIdentity,
+  prNumber: number,
+): boolean {
+  if (typeof url !== 'string') return false;
+  if (url.length === 0 || url.length > 300) return false; // bounded
+  if (url.includes('@') || url.includes('?') || url.includes('#') || url.includes('%')) return false; // no creds/query/fragment/percent-encoding
+  if (!Number.isInteger(prNumber) || prNumber <= 0) return false;
+  return url === `https://github.com/${identity.owner}/${identity.repo}/pull/${prNumber}`;
+}
