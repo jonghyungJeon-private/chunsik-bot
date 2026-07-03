@@ -15,6 +15,9 @@ export const QUEUE_PROVIDER = Symbol('QueueProvider');
 export const VECTOR_PROVIDER = Symbol('VectorProvider');
 export const WORKSPACE_PROVIDER = Symbol('WorkspaceProvider');
 export const GIT_PROVIDER = Symbol('GitProvider');
+// CAP-010 RepositoryHosting skeleton (Sprint 3d-B, ADR-0052). Token only — NO real provider is bound in
+// `app.module.ts` in 3d-B; no GitHub adapter exists yet.
+export const REPOSITORY_HOSTING_PROVIDER = Symbol('RepositoryHostingProvider');
 export const WORKSPACE_WRITER = Symbol('WorkspaceWriter');
 export const COMMAND_RUNNER = Symbol('CommandRunner');
 export const EXECUTION_PLANNER = Symbol('ExecutionPlanner');

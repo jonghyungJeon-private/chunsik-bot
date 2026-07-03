@@ -6,6 +6,7 @@ export * from './queue-provider.port';
 export * from './vector-provider.port';
 export * from './workspace-provider.port';
 export * from './git-provider.port';
+export * from './repository-hosting-provider.port';
 export * from './workspace-writer.port';
 export * from './command-runner.port';
 export * from './execution-planner.port';
