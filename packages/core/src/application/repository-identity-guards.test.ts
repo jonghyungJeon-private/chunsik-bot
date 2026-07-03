@@ -98,8 +98,11 @@ describe('Sprint 3d-B absence guards (ADR-0052 — skeleton only; no adapter/API
     }
   });
 
-  it('the new hosting modules contain no merge/deploy/release/reviewer/label/assignee surface (tests 53–58)', () => {
-    for (const forbidden of ['merge', 'deploy', 'release', 'reviewer', 'label', 'assignee']) {
+  // (Sprint 3g, ADR-0057 supersedes) The manager/port now DO carry a merge surface (`mergePullRequest`/
+  // `getMergePreflight`/`PullRequestMergeability`) by CA-approved design. The ENDURING invariant: still NO
+  // deploy/release/reviewer/label/assignee surface (merge execution never touches those).
+  it('the new hosting modules contain no deploy/release/reviewer/label/assignee surface (tests 53–58; 3g adds merge only)', () => {
+    for (const forbidden of ['deploy', 'release', 'reviewer', 'label', 'assignee']) {
       expect(managerCode.includes(forbidden), `manager must not contain "${forbidden}"`).toBe(false);
       expect(portCode.includes(forbidden), `port must not contain "${forbidden}"`).toBe(false);
     }

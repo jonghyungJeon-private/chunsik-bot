@@ -11,6 +11,8 @@ import {
 import type {
   ApprovalRef,
   PullRequestCreationInput,
+  PullRequestMergePreflight,
+  PullRequestMergeResult,
   PullRequestRef,
   PullRequestResult,
   PullRequestStatusPreview,
@@ -238,6 +240,147 @@ export class RepositoryHostingManager {
       if (!Number.isInteger(n) || n < 0) throw new Error('repository hosting: invalid status check counts');
     }
     return preview;
+  }
+
+  /**
+   * Execute a PR merge (CAP-010, ADR-0057 — Sprint 3g). The first repository-hosting mutation AFTER PR creation.
+   * The Manager consumes/validates the `ApprovalRef` (never forwarded to the provider), runs the full LIVE
+   * preflight, and makes at most ONE mutating call. Ordering mirrors `createPullRequest`:
+   *   1. backstop validation                         → BlockedError (no read, no mutation)
+   *   2. getMergePreflight (live read)                → throws → BlockedError ("could not read live state")
+   *   3. preflight-result INTEGRITY (ALWAYS)          → mismatch → BlockedError (STALE / mismatched approval context)
+   *   4. state: 'merged' → alreadyMerged result (NO mutation; integrity in step 3 guarantees the exact approved
+   *      head was merged, CA change 2); 'closed'/'unknown' → BlockedError; 'open' → continue
+   *   5. mergeability policy (open only)              → non-MERGEABLE → BlockedError
+   *   6. single provider.mergePullRequest             → throws → UnverifiedError (may have merged)
+   *   7. merge-result INTEGRITY                       → mismatch → UnverifiedError
+   * A KNOWN pre-mutation failure is `RepositoryHostingBlockedError` ("not merged"); any failure at/after the
+   * mutating call is `RepositoryHostingUnverifiedError` ("could not verify" — never "not merged").
+   */
+  async mergePullRequest(input: {
+    identity: RepositoryIdentity;
+    pullRequestRef: PullRequestRef;
+    expectedHeadBranch: string;
+    expectedBaseBranch: string;
+    expectedHeadSha: string;
+    approvalRef: ApprovalRef;
+  }): Promise<PullRequestMergeResult> {
+    const { identity, pullRequestRef, expectedHeadBranch, expectedBaseBranch, expectedHeadSha, approvalRef } = input;
+
+    // ── 1. Backstop validation BEFORE any provider call. All → BlockedError (definitively no merge). ─────────
+    if (approvalRef.status !== ApprovalStatus.APPROVED) {
+      throw new RepositoryHostingBlockedError(
+        `repository hosting: PR merge requires an APPROVED approval (got ${approvalRef.status})`,
+      );
+    }
+    if (this.provider.kind !== identity.provider) {
+      throw new RepositoryHostingBlockedError('repository hosting: provider kind does not match identity provider');
+    }
+    if (!isSupportedHostingProvider(identity.provider)) {
+      throw new RepositoryHostingBlockedError('repository hosting: unsupported hosting provider');
+    }
+    if (!isSafeRepoOwner(identity.owner) || !isSafeRepoName(identity.repo)) {
+      throw new RepositoryHostingBlockedError('repository hosting: unsafe repository identity');
+    }
+    if (
+      pullRequestRef.provider !== identity.provider ||
+      pullRequestRef.owner !== identity.owner ||
+      pullRequestRef.repo !== identity.repo
+    ) {
+      throw new RepositoryHostingBlockedError('repository hosting: pull request ref identity mismatch');
+    }
+    if (!Number.isSafeInteger(pullRequestRef.pullRequestNumber) || pullRequestRef.pullRequestNumber <= 0) {
+      throw new RepositoryHostingBlockedError('repository hosting: invalid pull request number');
+    }
+    if (!isSafeGitHubPullRequestUrl(pullRequestRef.pullRequestUrl, identity, pullRequestRef.pullRequestNumber)) {
+      throw new RepositoryHostingBlockedError('repository hosting: invalid pull request URL');
+    }
+    if (!isSafePushBranch(expectedHeadBranch)) throw new RepositoryHostingBlockedError('repository hosting: unsafe head branch');
+    if (!isSafePushBranch(expectedBaseBranch)) throw new RepositoryHostingBlockedError('repository hosting: unsafe base branch');
+    if (expectedHeadBranch === expectedBaseBranch) {
+      throw new RepositoryHostingBlockedError('repository hosting: head and base branch must differ');
+    }
+    if (!SHA_SHAPED.test(expectedHeadSha)) throw new RepositoryHostingBlockedError('repository hosting: invalid expectedHeadSha');
+
+    // ── 2. Live pre-merge read IMMEDIATELY before mutation. Any read failure → BlockedError (no mutation yet). ─
+    let preflight: PullRequestMergePreflight;
+    try {
+      preflight = await this.provider.getMergePreflight({
+        identity,
+        pullRequestRef,
+        expectedHeadBranch,
+        expectedBaseBranch,
+        expectedCommitHash: expectedHeadSha,
+      });
+    } catch {
+      throw new RepositoryHostingBlockedError('repository hosting: could not read live PR merge state; merge not performed');
+    }
+
+    // ── 3. Preflight-result INTEGRITY — ALWAYS, regardless of state (CA change 2). Mismatch → Blocked (stale). ─
+    if (
+      preflight.ref.provider !== identity.provider ||
+      preflight.ref.owner !== identity.owner ||
+      preflight.ref.repo !== identity.repo ||
+      preflight.ref.pullRequestNumber !== pullRequestRef.pullRequestNumber ||
+      preflight.ref.pullRequestUrl !== pullRequestRef.pullRequestUrl
+    ) {
+      throw new RepositoryHostingBlockedError('repository hosting: merge preflight ref mismatch (stale/unattributable); merge not performed');
+    }
+    if (preflight.headBranch !== expectedHeadBranch) {
+      throw new RepositoryHostingBlockedError('repository hosting: merge preflight head branch mismatch (stale); merge not performed');
+    }
+    if (preflight.baseBranch !== expectedBaseBranch) {
+      throw new RepositoryHostingBlockedError('repository hosting: merge preflight base branch mismatch (stale); merge not performed');
+    }
+    if (preflight.headCommitHash !== expectedHeadSha) {
+      throw new RepositoryHostingBlockedError('repository hosting: merge preflight head SHA differs from approved head (stale); merge not performed');
+    }
+
+    // ── 4. State branch. 'merged' at the EXACT approved head (step 3 guaranteed) → idempotent, NO mutation. ───
+    if (preflight.state === 'merged') {
+      return {
+        provider: identity.provider,
+        owner: identity.owner,
+        repo: identity.repo,
+        pullRequestNumber: pullRequestRef.pullRequestNumber,
+        pullRequestUrl: pullRequestRef.pullRequestUrl,
+        merged: true,
+        mergedHeadSha: preflight.headCommitHash,
+        alreadyMerged: true,
+      };
+    }
+    if (preflight.state !== 'open') {
+      throw new RepositoryHostingBlockedError(`repository hosting: PR is not open (state ${preflight.state}); merge not performed`);
+    }
+
+    // ── 5. Mergeability policy — ONLY MERGEABLE proceeds; every other value blocks (never merge on uncertainty). ─
+    if (preflight.mergeability !== 'MERGEABLE') {
+      throw new RepositoryHostingBlockedError(
+        `repository hosting: PR is not mergeable (${preflight.mergeability}); merge not performed`,
+      );
+    }
+
+    // ── 6. SINGLE mutating call. Any throw here → UnverifiedError (the merge MAY have happened). ──────────────
+    let result: PullRequestMergeResult;
+    try {
+      result = await this.provider.mergePullRequest({ identity, pullRequestRef, expectedHeadSha });
+    } catch {
+      throw new RepositoryHostingUnverifiedError('repository hosting: PR merge could not be completed/verified');
+    }
+
+    // ── 7. Merge-result INTEGRITY. A returned-but-inconsistent result is ambiguous → Unverified (not "not merged"). ─
+    if (
+      result.provider !== identity.provider ||
+      result.owner !== identity.owner ||
+      result.repo !== identity.repo ||
+      result.pullRequestNumber !== pullRequestRef.pullRequestNumber ||
+      result.pullRequestUrl !== pullRequestRef.pullRequestUrl ||
+      result.merged !== true ||
+      result.mergedHeadSha !== expectedHeadSha
+    ) {
+      throw new RepositoryHostingUnverifiedError('repository hosting: PR merge result could not be verified');
+    }
+    return { ...result, alreadyMerged: false }; // manager-owned alreadyMerged
   }
 
   private async repositoryExists(identity: RepositoryIdentity): Promise<boolean> {

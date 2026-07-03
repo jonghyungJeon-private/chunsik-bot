@@ -341,10 +341,17 @@ describe('Sprint 3d-C absence guards (adapter-only; no octokit / shell / wiring 
     expect(adapterSrc.includes('process.env')).toBe(false);
     expect(adapterSrc.includes('CHUNSIK_GITHUB_TOKEN')).toBe(false);
   });
-  it('adapter uses only the four allowed endpoints — no merge/deploy/release/reviewer/label/assignee (test 51)', () => {
-    for (const forbidden of ['/merge', 'requested_reviewers', 'labels', 'assignees', '/deployments', '/releases', 'reviewer']) {
+  // (Sprint 3g, ADR-0057 supersedes) The adapter now uses the PR `/merge` endpoint (PUT) by CA-approved design.
+  // ENDURING invariant: still NO deploy/release/reviewer/label/assignee/branch-deletion surface.
+  it('adapter adds only the /merge endpoint — no deploy/release/reviewer/label/assignee/branch-delete (test 51; 3g)', () => {
+    for (const forbidden of ['requested_reviewers', 'labels', 'assignees', '/deployments', '/releases', 'reviewer', 'DELETE']) {
       expect(adapterSrc.includes(forbidden)).toBe(false);
     }
+    // the merge endpoint IS present now, and merge_method is 'merge' only (no squash/rebase, no force).
+    expect(adapterSrc.includes('/merge')).toBe(true);
+    expect(adapterSrc.includes("merge_method: 'merge'")).toBe(true);
+    expect(adapterSrc.includes('squash')).toBe(false);
+    expect(adapterSrc.includes('rebase')).toBe(false);
   });
   // (Sprint 3d-D, ADR-0054 supersedes) The adapter is now wired into app.module and the runtime has PR
   // creation execution + PR_CREATED. The ENDURING invariant kept here: the runtime/composer never IMPORT the
@@ -358,5 +365,100 @@ describe('Sprint 3d-C absence guards (adapter-only; no octokit / shell / wiring 
   it('Git capability has no PR method (tests 49/50)', () => {
     expect(gitProviderPortSrc.includes('createPullRequest')).toBe(false);
     expect(gitManagerSrc.includes('createPullRequest')).toBe(false);
+  });
+});
+
+describe('GitHubRepositoryHostingProvider — merge preflight + execution (CAP-010 adapter, ADR-0057, Sprint 3g)', () => {
+  const PR_REF: PullRequestRef = { provider: 'github', owner: 'acme', repo: 'widgets', pullRequestNumber: 42, pullRequestUrl: 'https://github.com/acme/widgets/pull/42' };
+  const preflightInput = { identity: IDENTITY, pullRequestRef: PR_REF, expectedHeadBranch: 'feature/x', expectedBaseBranch: 'main', expectedCommitHash: 'abc1234' };
+  const mergeInput = { identity: IDENTITY, pullRequestRef: PR_REF, expectedHeadSha: 'abc1234' };
+
+  function ghPreflightPull(over: Record<string, unknown> = {}) {
+    return { state: 'open', merged: false, mergeable: true, mergeable_state: 'clean', head: { ref: 'feature/x', sha: 'abc1234' }, base: { ref: 'main' }, ...over };
+  }
+
+  describe('getMergePreflight (read-only)', () => {
+    it('GETs the PR once and maps open + clean → MERGEABLE, echoing the input ref + head/base/commit', async () => {
+      const { fn, calls } = fakeFetch(() => ({ status: 200, body: ghPreflightPull() }));
+      const pf = await provider(fn).getMergePreflight(preflightInput);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].init.method).toBe('GET');
+      expect(calls[0].url).toBe('https://api.github.com/repos/acme/widgets/pulls/42');
+      expect(pf.state).toBe('open');
+      expect(pf.mergeability).toBe('MERGEABLE');
+      expect(pf.ref).toEqual(PR_REF);
+      expect(pf.headBranch).toBe('feature/x');
+      expect(pf.baseBranch).toBe('main');
+      expect(pf.headCommitHash).toBe('abc1234');
+      expect(typeof pf.observedAt).toBe('string');
+    });
+
+    it('maps mergeable_state → normalized mergeability conservatively', async () => {
+      const cases: Array<[Record<string, unknown>, string]> = [
+        [{ mergeable_state: 'clean' }, 'MERGEABLE'],
+        [{ mergeable_state: 'has_hooks' }, 'MERGEABLE'],
+        [{ mergeable_state: 'dirty' }, 'CONFLICTING'],
+        [{ mergeable_state: 'blocked' }, 'BLOCKED'],
+        [{ mergeable_state: 'draft' }, 'BLOCKED'],
+        [{ mergeable_state: 'behind' }, 'STALE_HEAD'],
+        [{ mergeable_state: 'unstable' }, 'UNKNOWN'],
+        [{ mergeable_state: 'weird' }, 'UNKNOWN'],
+        [{ mergeable: false }, 'CONFLICTING'],
+        [{ mergeable: null }, 'UNKNOWN'],
+      ];
+      for (const [over, expected] of cases) {
+        const { fn } = fakeFetch(() => ({ status: 200, body: ghPreflightPull(over) }));
+        const pf = await provider(fn).getMergePreflight(preflightInput);
+        expect(pf.mergeability, JSON.stringify(over)).toBe(expected);
+      }
+    });
+
+    it('merged=true → state "merged"', async () => {
+      const { fn } = fakeFetch(() => ({ status: 200, body: ghPreflightPull({ state: 'closed', merged: true }) }));
+      const pf = await provider(fn).getMergePreflight(preflightInput);
+      expect(pf.state).toBe('merged');
+    });
+
+    it('non-200 → sanitized throw (no token), and 403 does not leak the token', async () => {
+      const { fn } = fakeFetch(() => ({ status: 404 }));
+      await expect(provider(fn).getMergePreflight(preflightInput)).rejects.toThrow(/getMergePreflight/);
+      const p = provider(fakeFetch(() => ({ status: 403 })).fn);
+      await p.getMergePreflight(preflightInput).catch((e: unknown) => {
+        expect(String((e as Error).message)).not.toContain(TOKEN);
+      });
+    });
+  });
+
+  describe('mergePullRequest (single mutating PUT)', () => {
+    it('PUTs /pulls/{n}/merge with sha + merge_method "merge"; 200 + merged → merged result', async () => {
+      const { fn, calls } = fakeFetch(() => ({ status: 200, body: { merged: true, sha: 'def4567aa' } }));
+      const r = await provider(fn).mergePullRequest(mergeInput);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].init.method).toBe('PUT');
+      expect(calls[0].url).toBe('https://api.github.com/repos/acme/widgets/pulls/42/merge');
+      const body = JSON.parse(String(calls[0].init.body));
+      expect(body.sha).toBe('abc1234');
+      expect(body.merge_method).toBe('merge');
+      expect(body.merge_method).not.toBe('squash');
+      expect(body.merge_method).not.toBe('rebase');
+      expect(r.merged).toBe(true);
+      expect(r.mergedHeadSha).toBe('abc1234'); // the head we asked to merge
+      expect(r.mergeCommitHash).toBe('def4567aa');
+      expect(r.alreadyMerged).toBe(false);
+    });
+
+    it('non-200 → sanitized throw (no token leak)', async () => {
+      const { fn } = fakeFetch(() => ({ status: 409 }));
+      await expect(provider(fn).mergePullRequest(mergeInput)).rejects.toThrow(/mergePullRequest/);
+      const p = provider(fakeFetch(() => ({ status: 403 })).fn);
+      await p.mergePullRequest(mergeInput).catch((e: unknown) => {
+        expect(String((e as Error).message)).not.toContain(TOKEN);
+      });
+    });
+
+    it('200 but merged=false → throws (does not claim merged)', async () => {
+      const { fn } = fakeFetch(() => ({ status: 200, body: { merged: false, message: 'not mergeable' } }));
+      await expect(provider(fn).mergePullRequest(mergeInput)).rejects.toThrow();
+    });
   });
 });

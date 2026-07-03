@@ -3647,3 +3647,85 @@ ADR-0054 (reads/preserves the `PR_CREATED` chain), ADR-0055 (read-only status pr
 `MERGE_APPROVED`), ADR-0049 (CRITICAL request → `*_APPROVAL_PENDING` → decision → `*_APPROVED` template
 mirrored), ADR-0025 (CAP-004 Approval — `requestForRisk`/`get`/`decide`, CRITICAL), ADR-0023 (Git local-only).
 Plan: `docs/plans/sprint-3f-explicit-pr-merge-approval-plan.md`.
+
+## ADR-0057 — Pull Request Merge Execution Preflight (actual merge from MERGE_APPROVED, live-preflight-guarded)
+
+- **Status:** ✅ Accepted (v2, Phase 3, Sprint 3g — Product Construction), Chief Architect plan review:
+  APPROVED WITH CHANGES (all 5 required changes applied) → implemented.
+- **Date:** 2026-07-03
+- **Scope:** The first repository-hosting mutation AFTER PR creation — an explicit merge-execution command at a
+  live `MERGE_APPROVED` anchor executes an actual PR merge on the hosting provider, but only after a full live
+  preflight and only via a new `RepositoryHostingManager`/`RepositoryHostingProvider` merge method. Mirrors the
+  Sprint 3d-D PR-creation-execution safety model (ADR-0054), applied to merge.
+
+### Most important rule
+> **A merge execution mutates exactly ONE approved PR — and nothing else.** `PR_MERGED` means only: the approved
+> PR was merged on the hosting provider during this run, or the exact approved head was observed already merged
+> during this run. It does **NOT** mean deployed / released / production-ready / branch-deleted / CI-permanently-
+> verified / local-main-synced. No deploy/release/tag/branch-deletion/force-merge/auto-merge/PR-branch-update/
+> PR-close-reopen/reviewer-label-assignee/check-rerun/workflow-dispatch, no local git mutation, no
+> `CommandExecution`/shell, no `ExecutionOrchestrator`/`WorkspaceWrite`/`Patch`/`CodeGeneration` change. The
+> hosting token stays adapter-local (never core/domain/anchor/reason/response/logs). Unknown post-attempt errors
+> are **unverified**, never "not merged".
+
+### Decision
+- **State (Q1).** Add only `PR_MERGED` (terminal) after `MERGE_APPROVED` — no `MERGE_EXECUTION_PENDING` (the 3f
+  `MERGE_APPROVED` gate is the approval; execution needs no second approval), no `DEPLOYED`/`RELEASED`/
+  `BRANCH_DELETED`. New anchor fields: `mergedAt` (**runtime record/observe timestamp** — `now()`, not the
+  provider's original merge time, CA change 3), `mergeExecutedBy`, `mergedHeadSha` (required on `PR_MERGED`),
+  `mergeCommitHash?` (provider-reported, optional). `PR_MERGED` preserves the full chain + the 3f approval
+  evidence.
+- **Trigger (Q3, CA change 1).** Only at `MERGE_APPROVED`/`PR_MERGED`. `interpretMergeExecutionIntent` = a merge
+  word + a request/execution verb (`해줘`/`실행`/`실제`/`지금`/`승인된`/`now`/`execute`/`merge this`/`approved`), with the
+  MERGE_QUESTION status/check/possibility guard taking precedence. **`머지해줘`/`이 PR 머지해줘`/`merge this PR`
+  EXECUTE** — the user already passed the 3f CRITICAL gate, so a direct merge imperative is a valid execution
+  command; safety comes from state + approval revalidation + live preflight + expected head SHA + mergeability,
+  not a magic wording. A bare `머지`/`merge` noun → `composeMergeAlreadyApproved` (ask to merge explicitly, CA
+  change 4); `머지 상태 확인해줘`/`머지 체크해줘` → read-only 3e status path (`interpretMergeStatusIntent`); `PR_CREATED
+  + 머지해줘` → approval (3f), `MERGE_APPROVAL_PENDING + 머지해줘` → re-prompt (3f), `MERGE_APPROVED + 배포/릴리즈` →
+  unsupported companion.
+- **Live preflight (16 checks).** Runtime re-validates the approval evidence (`mergeApprovalId` →
+  `approvals.get` → `APPROVED` → `executionPlanRef.id` match) + the anchored context (identity matches resolved
+  identity + ref; pullRequestRef/number/url/head/base/commit present); the Manager backstop-validates then reads
+  the LIVE PR immediately before mutation via `getMergePreflight`, checking (integrity **always**, before the
+  already-merged branch — CA change 2) ref/head/base/`headCommitHash == expectedHeadSha`, then state (open) +
+  mergeability. Any pre-mutation failure → `RepositoryHostingBlockedError` ("not merged").
+- **Mergeability (Q6).** Normalized provider-independent `PullRequestMergeability = MERGEABLE|BLOCKED|
+  CONFLICTING|UNKNOWN|STALE_HEAD`; only `MERGEABLE` proceeds; everything else blocks (never merge on
+  uncertainty). No force merge, no branch-protection bypass, no PR-branch auto-update. Raw→normalized mapping
+  (e.g. GitHub `mergeable`/`mergeable_state`) lives adapter-side only; the core never sees the payload.
+- **Already-merged idempotency (CA change 2).** Live state `merged` at the EXACT approved head (integrity passed)
+  → `PR_MERGED`, `alreadyMerged=true`, no mutating call. Merged at a DIFFERENT head → Blocked/Stale, stays
+  `MERGE_APPROVED` (never claims the approved head was merged when a different head may have been).
+- **Capability (Q5).** New `RepositoryHostingManager.mergePullRequest` (consumes/validates the `ApprovalRef`,
+  never forwarded) + `RepositoryHostingProvider.getMergePreflight` (read-only) + `.mergePullRequest` (the only
+  new mutating method; receives hosting-safe refs + expected head SHA only, no `ApprovalRef`). `alreadyMerged` is
+  Manager-owned (mirrors `reused`). Merge is a **hosting** mutation — `GitProvider`/`GitManager` gain no method
+  (ADR-0023).
+- **GitHub adapter.** `getMergePreflight` → read-only `GET /repos/{o}/{r}/pulls/{n}`; `mergePullRequest` → single
+  `PUT /repos/{o}/{r}/pulls/{n}/merge` with `{ sha: expectedHeadSha, merge_method: 'merge' }` (the `sha` guard
+  refuses a moved head). Built-in fetch, github.com only, sanitized errors, token adapter-local.
+- **Failure semantics (Q7, extends ADR-0054).** Known pre-mutation block → Blocked ("not merged"); any throw or
+  result-integrity failure at/after the mutating call → Unverified ("could not verify — check PR status", never
+  "not merged"); live-already-merged at the exact head → idempotent `PR_MERGED`. Every failure keeps
+  `MERGE_APPROVED`.
+- **Unchanged.** `CommandExecution`/`ExecutionOrchestrator`/`WorkspaceWrite`/`Patch`/`CodeGeneration`, Git
+  capability, deploy/release/tag/branch-deletion/auto-merge/reviewer-label-assignee/check-rerun/workflow-dispatch/
+  local-post-merge-sync (all out of scope).
+
+### Consequences
+- + The product now owns a verified `PR_MERGED` state — the first remote mutation after PR creation — behind the
+  existing CRITICAL 3f approval gate + a conservative live preflight, reusing the ADR-0054 Blocked-vs-Unverified
+  safety rule and the ADR-0055 integrity-checked read shape.
+- − `domain`/`port`/`RepositoryHostingManager`/`ConversationRuntime`/`ResponseComposer`/`GitHubRepositoryHosting
+  Provider` each gain the merge preflight + execution surface (one new state, two provider methods, one manager
+  method, one runtime handler, six composers). Nothing deploys/releases; merge occurs only on
+  `MERGE_APPROVED` + an explicit execution command + all 16 preflight checks passing.
+
+### Relations
+ADR-0056 (consumes the `MERGE_APPROVED` anchor + `mergeApprovalId` approval evidence as the sole trigger source),
+ADR-0054 (reads/preserves the `PR_CREATED` chain; extends the remote-mutation Blocked-vs-Unverified rule),
+ADR-0055 (mirrors the integrity-checked point-in-time read; the read-only status preview also serves `PR_MERGED`),
+ADR-0052/0053 (extends the `RepositoryHostingProvider` port + Manager + GitHub adapter), ADR-0025 (CAP-004
+Approval — `get`/`APPROVED`/`ApprovalRef`), ADR-0023 (Git local-only; merge is a hosting mutation).
+Plan: `docs/plans/sprint-3g-pr-merge-execution-preflight-plan.md`.

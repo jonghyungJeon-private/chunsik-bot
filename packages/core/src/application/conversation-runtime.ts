@@ -51,6 +51,7 @@ import type {
   Project,
   PromptSpec,
   ProposedChange,
+  PullRequestMergeResult,
   PullRequestRef,
   PullRequestResult,
   PullRequestStatusPreview,
@@ -245,10 +246,17 @@ export type ApplyPreviewAnchorStatus =
   | 'MERGE_APPROVAL_PENDING'
   /**
    * The merge approval was granted (Sprint 3f, ADR-0056) — records permission to merge this PR context only.
-   * NOT merged, NOT deployed, NOT released, NOT safe-to-merge, NOT mergeable-verified. Actual merge execution
-   * is a future, separate, CA-reviewed sprint.
+   * NOT merged, NOT deployed, NOT released, NOT safe-to-merge, NOT mergeable-verified. From Sprint 3g, an
+   * explicit merge-execution command here executes the merge (after a full live preflight).
    */
-  | 'MERGE_APPROVED';
+  | 'MERGE_APPROVED'
+  /**
+   * The approved Pull Request was merged on the hosting provider DURING THIS RUN — or the exact approved head was
+   * observed already merged during this run's live preflight (Sprint 3g, ADR-0057). Terminal for this chain.
+   * NOT deployed, NOT released, NOT production-ready, NOT branch-deleted, NOT CI-permanently-verified, NOT
+   * local-main-synced.
+   */
+  | 'PR_MERGED';
 
 /**
  * Anchored fact set for "a diff preview was shown; the user may explicitly ask to apply it" (Sprint 2s,
@@ -368,6 +376,16 @@ export interface ApplyPreviewAnchor {
   /** The actor who decided the merge approval (Sprint 3f) — REQUIRED at MERGE_APPROVED (CA change 2); cleared
    *  on deny/cancel. */
   mergeApprovalDecisionBy?: Id;
+  /** The RUNTIME record timestamp (Sprint 3g, ADR-0057) — REQUIRED at PR_MERGED: when ChunsikBot recorded or
+   *  OBSERVED the merge result during this run (now()), NOT the provider's original merge time (which, on the
+   *  already-merged path, may have happened earlier). */
+  mergedAt?: IsoTimestamp;
+  /** The actor who triggered merge execution (Sprint 3g) — REQUIRED at PR_MERGED. */
+  mergeExecutedBy?: Id;
+  /** The head SHA that was merged (Sprint 3g) — REQUIRED at PR_MERGED; equals the anchored pullRequestCommitHash. */
+  mergedHeadSha?: string;
+  /** Provider-reported merge commit SHA (Sprint 3g) — optional (provider-dependent). */
+  mergeCommitHash?: string;
 }
 
 /**
@@ -534,6 +552,16 @@ export interface ConversationRuntimeDeps {
         expectedBaseBranch: string;
         expectedCommitHash: string;
       }): Promise<PullRequestStatusPreview>;
+      /** PR merge execution (Sprint 3g, ADR-0057) — the Manager consumes the ApprovalRef + runs the live
+       *  preflight; the runtime calls this ONLY (never the provider), passes NO token. */
+      mergePullRequest(input: {
+        identity: RepositoryIdentity;
+        pullRequestRef: PullRequestRef;
+        expectedHeadBranch: string;
+        expectedBaseBranch: string;
+        expectedHeadSha: string;
+        approvalRef: ApprovalRef;
+      }): Promise<PullRequestMergeResult>;
     };
   };
   readonly logger: Logger;
@@ -662,6 +690,11 @@ const MERGE_QUESTION =
   /(가능|안전|괜찮|되나|되나요|통과|상태|확인|봐줘|봐|알려|체크|\bcheck\b|\bstatus\b|\bmergeable\b|can\s+i|is\s+it|\?)/i;
 // An explicit merge approval/execution REQUEST verb ("머지 승인해줘"/"머지해줘"/"머지해도 되게 승인"/"merge this"/"approve merge").
 const MERGE_REQUEST_VERB = /(승인|approve|approval|요청|받아|해줘|해\s*줘|해도\s*되게|merge\s+this|이\s*pr\s*머지)/i;
+// A merge-EXECUTION verb (Sprint 3g, ADR-0057, CA change 1) — only consulted at MERGE_APPROVED/PR_MERGED, AFTER
+// the MERGE_QUESTION status guard. At MERGE_APPROVED the user already passed the CRITICAL merge-approval gate, so
+// a direct merge imperative (해줘/실행/실제/지금/승인된/now/execute/merge this/approved) IS an execution command. A
+// bare "머지"/"merge" noun (no verb) is NOT execution (→ composeMergeAlreadyApproved).
+const MERGE_EXECUTION_VERB = /(해줘|해\s*줘|실제|실행|지금|승인된|\bnow\b|\bexecute\b|merge\s+this|\bapproved\b)/i;
 
 /** A PR-ish noun (Sprint 3b, ADR-0049) — only ever consulted at GIT_PUSHED/PR_APPROVAL_PENDING/PR_APPROVED.
  *  A bare 좋아/오케이/확인/진행해/다음 단계 never matches. A noun ALONE is not a PR-creation request (CA #1). */
@@ -1195,6 +1228,31 @@ export class ConversationRuntime {
   }
 
   /**
+   * Explicit merge-EXECUTION intent (Sprint 3g, ADR-0057, CA change 1) — only consulted at MERGE_APPROVED /
+   * PR_MERGED. A merge word + a request/execution verb → `'execute'`; the MERGE_QUESTION status/check/possibility
+   * guard takes precedence (so "머지 상태 확인해줘"/"머지 체크해줘"/"머지 가능해?" never execute); a bare "머지"/"merge"
+   * noun (no verb) → null (→ composeMergeAlreadyApproved). At MERGE_APPROVED the CRITICAL 3f approval was already
+   * granted, so "머지해줘"/"이 PR 머지해줘"/"merge this PR" are valid execution commands.
+   */
+  static interpretMergeExecutionIntent(text: string): 'execute' | null {
+    const t = text.trim().toLowerCase();
+    if (!MERGE_WORD.test(t)) return null;
+    if (MERGE_QUESTION.test(t)) return null; // status/check/possibility → not execution (read-only path)
+    if (MERGE_EXECUTION_VERB.test(t)) return 'execute';
+    return null; // bare "머지"/"merge" noun → already-approved reply, no execution
+  }
+
+  /**
+   * A merge STATUS/CHECK phrase (Sprint 3g) → routes to the read-only status preview at MERGE_APPROVED/PR_MERGED,
+   * so "머지 상태 확인해줘"/"머지 체크해줘" land on the 3e preview even though PR_STATUS_NOUN does not include "머지".
+   * A merge word + a MERGE_QUESTION status/check/possibility word (never execution).
+   */
+  static interpretMergeStatusIntent(text: string): boolean {
+    const t = text.trim().toLowerCase();
+    return MERGE_WORD.test(t) && MERGE_QUESTION.test(t);
+  }
+
+  /**
    * Resolve the commit message for a commit-approval turn (Sprint 2x, CA #6/#7/#8). If the text carries a
    * user message (a single quoted segment after a `메시지`/`message` keyword) it is accepted only when it is
    * exactly one candidate, single-line, ≤120 chars, control-char-free, and trimmed non-empty — otherwise
@@ -1345,18 +1403,48 @@ export class ConversationRuntime {
         return this.handlePrCreatedCompanionUnsupportedTurn(message, session);
       }
     }
-    // (Sprint 3f, ADR-0056) After merge approval is recorded: a status phrase → read-only preview (keeps
-    // MERGE_APPROVED); a merge phrase → already approved (future execution only); deploy/release/companion →
-    // unsupported future step. NEVER merges/deploys/releases.
+    // (Sprint 3f/3g) After merge approval is recorded, in order (status → execution → bare-mention → companion):
+    // a status/check phrase → read-only preview (keeps MERGE_APPROVED); an explicit merge-EXECUTION command →
+    // live preflight → merge (Sprint 3g); a bare merge mention (no exec verb) → already-approved (ask to merge
+    // explicitly, no mutation); deploy/release/reviewer/label/assignee → unsupported future step.
     if (applyAnchor?.status === 'MERGE_APPROVED') {
-      if (ConversationRuntime.interpretPrStatusIntent(message.text)) {
+      if (
+        ConversationRuntime.interpretPrStatusIntent(message.text) ||
+        ConversationRuntime.interpretMergeStatusIntent(message.text)
+      ) {
         return this.handlePrStatusPreviewTurn(message, session, applyAnchor);
       }
-      if (ConversationRuntime.interpretMergeIntent(message.text) === 'merge') {
+      // (Sprint 3g, ADR-0057, CA change 1) "머지해줘"/"이 PR 머지해줘"/"merge this PR"/"실제 머지해줘"/… → EXECUTE.
+      if (ConversationRuntime.interpretMergeExecutionIntent(message.text) === 'execute') {
+        return this.handleMergeExecutionTurn(message, session, actor, applyAnchor);
+      }
+      // A bare "머지"/"merge" mention (merge word, no execution verb, not a status phrase) → already approved,
+      // ask to merge explicitly (CA change 4). NO mutation. Checked before the deploy/companion words so a merge
+      // noun does not fall into the companion-unsupported reply.
+      if (MERGE_WORD.test(message.text)) {
         return this.handleMergeAlreadyApprovedTurn(message, session);
       }
       if (DEPLOY_ONLY_WORDS.test(message.text) || PR_CREATED_COMPANION_WORDS.test(message.text)) {
         return this.handleMergeApprovedCompanionUnsupportedTurn(message, session);
+      }
+    }
+    // (Sprint 3g, ADR-0057) Terminal PR_MERGED: a status/check phrase → read-only preview (keeps PR_MERGED); any
+    // merge phrase → already merged (NO new mutation); deploy/release/companion → unsupported future step.
+    if (applyAnchor?.status === 'PR_MERGED') {
+      if (
+        ConversationRuntime.interpretPrStatusIntent(message.text) ||
+        ConversationRuntime.interpretMergeStatusIntent(message.text)
+      ) {
+        return this.handlePrStatusPreviewTurn(message, session, applyAnchor);
+      }
+      if (
+        ConversationRuntime.interpretMergeExecutionIntent(message.text) === 'execute' ||
+        MERGE_WORD.test(message.text)
+      ) {
+        return this.handleMergeAlreadyMergedTurn(message, session, applyAnchor);
+      }
+      if (DEPLOY_ONLY_WORDS.test(message.text) || PR_CREATED_COMPANION_WORDS.test(message.text)) {
+        return this.handleMergeExecutionUnsupportedCompanionTurn(message, session);
       }
     }
     // (CA #1) NO global/no-anchor push handling is installed — push handling is anchored to GIT_COMMITTED /
@@ -3238,11 +3326,11 @@ export class ConversationRuntime {
       return this.respondComposed(message, session, this.deps.composer.composePrStatusNotConfigured(message.context));
     }
     // Complete PR_CREATED context, incl. the approved identity + durable PullRequestRef (the ONLY query source).
-    // (Sprint 3f) also reachable from MERGE_APPROVED — read-only, and it never re-anchors so the caller's state
-    // (PR_CREATED or MERGE_APPROVED) is preserved.
+    // (Sprint 3f/3g) also reachable from MERGE_APPROVED and PR_MERGED — read-only, and it never re-anchors so the
+    // caller's state (PR_CREATED / MERGE_APPROVED / PR_MERGED) is preserved.
     const ref = anchor.pullRequestRef;
     if (
-      (anchor.status !== 'PR_CREATED' && anchor.status !== 'MERGE_APPROVED') ||
+      (anchor.status !== 'PR_CREATED' && anchor.status !== 'MERGE_APPROVED' && anchor.status !== 'PR_MERGED') ||
       !ref ||
       !anchor.repositoryIdentity ||
       !anchor.pullRequestHeadBranch ||
@@ -3434,6 +3522,132 @@ export class ConversationRuntime {
   /** A deploy/release/reviewer/label/assignee phrase while MERGE_APPROVED (Sprint 3f) — unsupported future step; no mutation. */
   private async handleMergeApprovedCompanionUnsupportedTurn(message: InboundMessage, session: Session): Promise<TurnResult> {
     const reply = this.deps.composer.composeMergeApprovedCompanionUnsupported(message.context);
+    return this.respondComposed(message, session, reply);
+  }
+
+  /**
+   * Execute a PR merge from MERGE_APPROVED (Sprint 3g, ADR-0057) — the first repository-hosting mutation after PR
+   * creation. Re-validates the 3f approval evidence + the full anchored context, then calls the Manager, which
+   * runs the LIVE preflight and makes at most ONE mutating call. Calls the manager only (never the provider/
+   * adapter), passes NO token. Failure is SAFE: a KNOWN pre-mutation BlockedError may say "not merged"; a known
+   * post-attempt UnverifiedError AND any unknown throw are UNVERIFIED (never "not merged"). Keeps MERGE_APPROVED
+   * on every failure path. NO merge unless MERGE_APPROVED + execution command + all preflight checks pass.
+   */
+  private async handleMergeExecutionTurn(
+    message: InboundMessage,
+    session: Session,
+    actor: Actor,
+    anchor: ApplyPreviewAnchor,
+  ): Promise<TurnResult> {
+    const identity = this.deps.repositoryHosting?.identity;
+    const manager = this.deps.repositoryHosting?.manager;
+    // Not configured: no resolved identity OR no manager (missing GitHub token) — safe not-configured, no call.
+    if (!identity || !manager) {
+      return this.respondComposed(message, session, this.deps.composer.composeMergeExecutionUnavailable(message.context));
+    }
+    const ref = anchor.pullRequestRef;
+    // Anchor/context preflight (checks 1–8). Any missing → Blocked (definitively no merge).
+    if (
+      anchor.status !== 'MERGE_APPROVED' ||
+      !anchor.mergeApprovalId ||
+      !anchor.executionPlanRef ||
+      !anchor.repositoryIdentity ||
+      !ref ||
+      !anchor.pullRequestNumber ||
+      !anchor.pullRequestUrl ||
+      !anchor.pullRequestHeadBranch ||
+      !anchor.pullRequestBaseBranch ||
+      !anchor.pullRequestCommitHash
+    ) {
+      this.logPrApprovalFailed(session, anchor, 'merge execution context incomplete');
+      return this.failComposed(message, session, this.deps.composer.composeMergeExecutionPreflightBlocked(message.context));
+    }
+    // Resolved identity must match the approved anchor identity AND the durable ref (never a fresh/user id).
+    if (
+      anchor.repositoryIdentity.provider !== identity.provider ||
+      anchor.repositoryIdentity.owner !== identity.owner ||
+      anchor.repositoryIdentity.repo !== identity.repo ||
+      ref.provider !== identity.provider ||
+      ref.owner !== identity.owner ||
+      ref.repo !== identity.repo
+    ) {
+      this.logPrApprovalFailed(session, anchor, 'merge execution identity mismatch');
+      return this.failComposed(message, session, this.deps.composer.composeMergeExecutionPreflightBlocked(message.context));
+    }
+    // Re-read the 3f approval evidence via STRUCTURED fields + ApprovalRef only — never parse reason. No new request.
+    const request = await this.deps.approvals.get(anchor.mergeApprovalId);
+    if (
+      !request ||
+      request.status !== ApprovalStatus.APPROVED ||
+      request.executionPlanRef.id !== anchor.executionPlanRef.id
+    ) {
+      this.logPrApprovalFailed(session, anchor, 'merge approval missing/not-approved/plan-mismatch');
+      return this.failComposed(message, session, this.deps.composer.composeMergeExecutionPreflightBlocked(message.context));
+    }
+    let result: PullRequestMergeResult;
+    try {
+      result = await manager.mergePullRequest({
+        identity,
+        pullRequestRef: ref,
+        expectedHeadBranch: anchor.pullRequestHeadBranch,
+        expectedBaseBranch: anchor.pullRequestBaseBranch,
+        expectedHeadSha: anchor.pullRequestCommitHash,
+        approvalRef: approvalRef(request),
+      });
+    } catch (err) {
+      // Fail SAFE. Only a KNOWN pre-mutation BlockedError may say "not merged"; a known post-attempt
+      // UnverifiedError AND any unknown generic/non-Error throw are UNVERIFIED (the merge may have happened), so
+      // we never claim "not merged". Keep MERGE_APPROVED on every failure path (the approval is still valid).
+      if (err instanceof RepositoryHostingBlockedError) {
+        this.logPrApprovalFailed(session, anchor, 'merge blocked before mutation');
+        return this.failComposed(message, session, this.deps.composer.composeMergeExecutionPreflightBlocked(message.context));
+      }
+      this.logPrApprovalFailed(session, anchor, 'merge unverified (mutation ambiguity)');
+      return this.failComposed(message, session, this.deps.composer.composeMergeExecutionUnverified(message.context));
+    }
+    // Success (freshly merged OR the exact approved head observed already merged) → anchor PR_MERGED, preserving
+    // the full causal chain + 3f approval evidence; mergedAt is the RUNTIME record timestamp (CA change 3).
+    await this.deps.applyPreviewFlow.anchor(session, {
+      ...anchor,
+      status: 'PR_MERGED',
+      mergedAt: now(),
+      mergeExecutedBy: actor.id,
+      mergedHeadSha: result.mergedHeadSha,
+      mergeCommitHash: result.mergeCommitHash,
+    });
+    const view = {
+      owner: result.owner,
+      repo: result.repo,
+      prNumber: result.pullRequestNumber,
+      prUrl: result.pullRequestUrl,
+    };
+    const reply = result.alreadyMerged
+      ? this.deps.composer.composeMergeExecutionAlreadyMerged(message.context, view)
+      : this.deps.composer.composeMergeExecutionSucceeded(message.context, {
+          ...view,
+          mergedHeadSha: result.mergedHeadSha,
+          mergeCommitHash: result.mergeCommitHash,
+        });
+    return this.respondComposed(message, session, reply);
+  }
+
+  /** A merge phrase at PR_MERGED (Sprint 3g) — the PR is already merged; no new mutation. */
+  private async handleMergeAlreadyMergedTurn(message: InboundMessage, session: Session, anchor: ApplyPreviewAnchor): Promise<TurnResult> {
+    if (!anchor.repositoryIdentity || !anchor.pullRequestNumber || !anchor.pullRequestUrl) {
+      return this.respondComposed(message, session, this.deps.composer.composeMergeExecutionUnsupportedCompanion(message.context));
+    }
+    const reply = this.deps.composer.composeMergeExecutionAlreadyMerged(message.context, {
+      owner: anchor.repositoryIdentity.owner,
+      repo: anchor.repositoryIdentity.repo,
+      prNumber: anchor.pullRequestNumber,
+      prUrl: anchor.pullRequestUrl,
+    });
+    return this.respondComposed(message, session, reply);
+  }
+
+  /** A deploy/release/reviewer/label/assignee/branch-deletion phrase at PR_MERGED (Sprint 3g) — unsupported future step; no mutation. */
+  private async handleMergeExecutionUnsupportedCompanionTurn(message: InboundMessage, session: Session): Promise<TurnResult> {
+    const reply = this.deps.composer.composeMergeExecutionUnsupportedCompanion(message.context);
     return this.respondComposed(message, session, reply);
   }
 

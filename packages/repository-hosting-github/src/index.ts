@@ -2,6 +2,9 @@ import { isSafeGitHubPullRequestUrl } from '@chunsik/core';
 import type {
   PullRequestChecksState,
   PullRequestCreationInput,
+  PullRequestMergeability,
+  PullRequestMergePreflight,
+  PullRequestMergeResult,
   PullRequestRef,
   PullRequestResult,
   PullRequestReviewState,
@@ -217,6 +220,80 @@ export class GitHubRepositoryHostingProvider implements RepositoryHostingProvide
     };
   }
 
+  async getMergePreflight(input: {
+    identity: RepositoryIdentity;
+    pullRequestRef: PullRequestRef;
+    expectedHeadBranch: string;
+    expectedBaseBranch: string;
+    expectedCommitHash: string;
+  }): Promise<PullRequestMergePreflight> {
+    // READ-ONLY, single bounded GET (no pagination/retry). Maps GitHub `state`/`merged`/`mergeable`/
+    // `mergeable_state` → normalized state + mergeability; core never sees the raw payload (ADR-0057).
+    const { identity, pullRequestRef } = input;
+    const owner = enc(identity.owner);
+    const repo = enc(identity.repo);
+    const res = await this.request('getMergePreflight', 'GET', `/repos/${owner}/${repo}/pulls/${pullRequestRef.pullRequestNumber}`);
+    if (res.status !== 200) throw this.statusError('getMergePreflight', res.status);
+    const pull = (await this.json(res, 'getMergePreflight')) as GitHubPull & {
+      state?: unknown;
+      merged?: unknown;
+      mergeable?: unknown;
+      mergeable_state?: unknown;
+    };
+    const headRef = pull?.head?.ref;
+    const baseRef = pull?.base?.ref;
+    const headSha = pull?.head?.sha;
+    if (typeof headRef !== 'string' || typeof baseRef !== 'string' || typeof headSha !== 'string') {
+      throw new Error('github hosting: getMergePreflight returned invalid pull fields');
+    }
+    const state: PullRequestState =
+      pull?.merged === true ? 'merged' : pull?.state === 'open' ? 'open' : pull?.state === 'closed' ? 'closed' : 'unknown';
+    return {
+      ref: pullRequestRef,
+      state,
+      headBranch: headRef,
+      baseBranch: baseRef,
+      headCommitHash: headSha,
+      mergeability: mapMergeability(pull?.merged, pull?.mergeable, pull?.mergeable_state),
+      // observedAt is generated internally at read time — never caller/user-supplied.
+      observedAt: new Date().toISOString(),
+    };
+  }
+
+  async mergePullRequest(input: {
+    identity: RepositoryIdentity;
+    pullRequestRef: PullRequestRef;
+    expectedHeadSha: string;
+  }): Promise<PullRequestMergeResult> {
+    // Single mutating PUT. `sha` = the expected head — GitHub refuses (409) if the PR head has moved, so a moved
+    // head never merges. merge_method 'merge' only (no squash/rebase). No force, no branch deletion, no
+    // auto-merge, no reviewer/label/assignee mutation. Any non-200 throws (manager → Unverified).
+    const { identity, pullRequestRef, expectedHeadSha } = input;
+    const owner = enc(identity.owner);
+    const repo = enc(identity.repo);
+    const res = await this.request(
+      'mergePullRequest',
+      'PUT',
+      `/repos/${owner}/${repo}/pulls/${pullRequestRef.pullRequestNumber}/merge`,
+      { sha: expectedHeadSha, merge_method: 'merge' },
+    );
+    if (res.status !== 200) throw this.statusError('mergePullRequest', res.status); // 200 only; else Unverified upstream
+    const body = (await this.json(res, 'mergePullRequest')) as { merged?: unknown; sha?: unknown };
+    if (body?.merged !== true) throw new Error('github hosting: mergePullRequest did not confirm merged');
+    const mergeCommitHash = typeof body?.sha === 'string' && SHA_SHAPED.test(body.sha) ? body.sha : undefined;
+    return {
+      provider: 'github',
+      owner: identity.owner,
+      repo: identity.repo,
+      pullRequestNumber: pullRequestRef.pullRequestNumber,
+      pullRequestUrl: pullRequestRef.pullRequestUrl,
+      merged: true,
+      mergedHeadSha: expectedHeadSha, // GitHub merged the requested head (sha param); response carries only the merge commit
+      mergeCommitHash,
+      alreadyMerged: false, // manager finalizes the path-derived flag
+    };
+  }
+
   /** Map a GitHub PR object to a provider-reported PullRequestResult, rejecting fork/invalid results. */
   private mapPull(item: GitHubPull, identity: RepositoryIdentity, op: string): PullRequestResult {
     // Same-repository only — fork PRs rejected (CA change 7).
@@ -256,7 +333,7 @@ export class GitHubRepositoryHostingProvider implements RepositoryHostingProvide
   /** Single `fetch` per call (no retry — CA change 13). Sanitized failures (no token/body/headers). */
   private async request(
     op: string,
-    method: 'GET' | 'POST',
+    method: 'GET' | 'POST' | 'PUT',
     path: string,
     jsonBody?: unknown,
   ): Promise<Response> {
@@ -302,4 +379,31 @@ export class GitHubRepositoryHostingProvider implements RepositoryHostingProvide
 /** Encode a single REST path segment (owner/repo/branch); encodes `/` in branch names too (CA change 5). */
 function enc(segment: string): string {
   return encodeURIComponent(segment);
+}
+
+/**
+ * Map GitHub `merged`/`mergeable`/`mergeable_state` → the normalized, provider-independent
+ * {@link PullRequestMergeability} (ADR-0057, Sprint 3g). Conservative: only definitively-mergeable states become
+ * `MERGEABLE`; anything the API cannot determine (`mergeable === null`, `mergeable_state` `unknown`/`unstable`/
+ * other) becomes `UNKNOWN` so the Manager blocks (never merge on uncertainty). The core never sees this raw
+ * payload — the mapping lives adapter-side only.
+ */
+function mapMergeability(merged: unknown, mergeable: unknown, mergeableState: unknown): PullRequestMergeability {
+  if (merged === true) return 'MERGEABLE'; // already merged — state is checked first by the manager; not used to merge
+  if (mergeable === false) return 'CONFLICTING';
+  if (mergeable !== true) return 'UNKNOWN'; // null/undefined → GitHub still computing → block
+  switch (mergeableState) {
+    case 'clean':
+    case 'has_hooks':
+      return 'MERGEABLE';
+    case 'dirty':
+      return 'CONFLICTING';
+    case 'blocked':
+    case 'draft':
+      return 'BLOCKED';
+    case 'behind':
+      return 'STALE_HEAD';
+    default:
+      return 'UNKNOWN'; // 'unstable'/'unknown'/anything else → block conservatively
+  }
 }

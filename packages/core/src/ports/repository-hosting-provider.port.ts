@@ -1,5 +1,7 @@
 import type {
   PullRequestCreationInput,
+  PullRequestMergePreflight,
+  PullRequestMergeResult,
   PullRequestRef,
   PullRequestResult,
   PullRequestStatusPreview,
@@ -51,4 +53,26 @@ export interface RepositoryHostingProvider {
     expectedBaseBranch: string;
     expectedCommitHash: string;
   }): Promise<PullRequestStatusPreview>;
+
+  /** READ-ONLY immediate pre-merge snapshot (CAP-010, ADR-0057 — Sprint 3g). No mutation, no ApprovalRef.
+   *  Returns a bounded {@link PullRequestMergePreflight} incl. NORMALIZED `mergeability` (raw provider payload is
+   *  mapped adapter-side; core never sees it) with an internally-generated `observedAt`. Bounded GET only;
+   *  sanitized errors (no token/raw payload). Distinct from `getPullRequestStatus` (read-only user status). */
+  getMergePreflight(input: {
+    identity: RepositoryIdentity;
+    pullRequestRef: PullRequestRef;
+    expectedHeadBranch: string;
+    expectedBaseBranch: string;
+    expectedCommitHash: string;
+  }): Promise<PullRequestMergePreflight>;
+
+  /** The ONLY new mutating method (CAP-010, ADR-0057 — Sprint 3g) — merges exactly one PR. Takes **no**
+   *  `ApprovalRef` (consumed by the Manager); receives only hosting-safe refs + the expected head SHA (sent to the
+   *  provider so it refuses a moved head). No force merge / branch deletion / auto-merge / reviewer-label-assignee
+   *  mutation. Called only AFTER the Manager's full live preflight passes. */
+  mergePullRequest(input: {
+    identity: RepositoryIdentity;
+    pullRequestRef: PullRequestRef;
+    expectedHeadSha: string;
+  }): Promise<PullRequestMergeResult>;
 }
