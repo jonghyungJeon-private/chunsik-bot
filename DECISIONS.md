@@ -3578,3 +3578,72 @@ ADR-0054 (reads the `PR_CREATED` anchor; runtime-calls-manager-only + token boun
 gains a read-only `GET` method), ADR-0052 (port/manager gain a read-only method; `isSafeGitHubPullRequestUrl`
 reused), ADR-0051 (`RepositoryIdentity`), ADR-0023 (Git stays local-only). Plan:
 `docs/plans/sprint-3e-pr-status-preview-plan.md`.
+
+## ADR-0056 — Explicit Pull Request Merge Approval (approval gate only; NO merge, NO GitHub write)
+
+- **Status:** ✅ Accepted (v2, Phase 3, Sprint 3f — Product Construction), Chief Architect plan review:
+  APPROVED WITH CHANGES (all 7 required changes applied) → implemented.
+- **Date:** 2026-07-03
+- **Scope:** A `RiskLevel.CRITICAL` **merge-approval gate** on an existing `PR_CREATED` anchor — an explicit
+  merge / merge-approval phrase records permission to merge a specific PR context and halts. Mirrors the
+  Sprint 3b PR-creation-approval flow (ADR-0049), applied to merge. **No merge execution, no GitHub write API.**
+
+### Most important rule
+> **A merge approval is a permission record — not a merge.** `MERGE_APPROVED` means permission recorded only —
+> **never** merged/deployed/released/safe-to-merge/CI-passed/reviews-approved/GitHub-mergeable/branch-deleted/
+> production-ready. Sprint 3f adds **only** the approval states + decision flow: no merge, no GitHub write API,
+> no `RepositoryHosting`/`GitProvider`/`GitManager` merge method, no `CommandExecution`/shell, no
+> `ExecutionOrchestrator` change. Actual merge execution is a future, separate, CA-reviewed sprint.
+
+### Decision
+- **States (Q2).** Add `MERGE_APPROVAL_PENDING`, `MERGE_APPROVED` after `PR_CREATED` (no `PR_MERGED`/`MERGED`/
+  `DEPLOY_APPROVAL_PENDING`/`DEPLOYED`/`RELEASED`). New fields: `mergeApprovalId`, `mergeApprovalRequestedAt`,
+  `mergeApprovedAt`, and **`mergeApprovalDecisionBy` (required on `MERGE_APPROVED`** — CA change 2). Both states
+  preserve the full `PR_CREATED` causal chain (identity/pullRequestRef/head/base/commit/push/commit/workspace).
+  No token/raw response/diff/file content/check logs/review body/remoteUrl stored.
+- **Trigger (Q1).** From `PR_CREATED`, `interpretMergeIntent` (checked after the 3e status intent) returns
+  `'merge'` for a merge word + a request/approval/execution verb → `handleMergeApprovalTurn`. A merge
+  safety/possibility **question** ("머지 가능해?/안전해?"), a bare "진행해"/"좋아"/"승인" (no merge word), a PR
+  **status** phrase (→ 3e preview), and deploy/release phrases do **not** create a merge approval. An explicit
+  merge-execution phrase ("머지해줘"/"merge this PR") records **approval only**, and the reply says it does not
+  merge (CA-approved).
+- **Approval reason.** Deterministic bounded `buildMergeApprovalReason`: `operation` + `repository: owner/repo`
+  + `pull request: #n url` + head/base + short commit + **`pr source: created|connected-existing`** (renamed
+  from "status" — CA change 6) + "no merge/deployment/release has been performed" + "merge is not guaranteed
+  safe or mergeable by this approval; checks/reviews/hosting state are not verified" (CA change 6). Never says
+  "merge creation" (CA change 1), never a positive checks-passed/reviews-approved/mergeable/safe-to-merge
+  claim, no token/diff/file/check/review payload. **Never parsed later** — structured fields + `ApprovalRef`
+  are authority (CA change 3).
+- **Pending (Q7).** `MERGE_APPROVAL_PENDING` intercepts every turn (`handleMergeApprovalDecisionTurn`): a
+  merge/deploy/status phrase → ambiguous re-prompt (no decide, no merge); **"진행해" approves only while
+  pending** (CA change 4); approve requires `ApprovalManager.get` exists + PENDING + `executionPlanRef` match
+  (structured only).
+- **Deny/cancel (Q8) → `PR_CREATED`**, clearing **only** merge fields (`mergeApprovalId`/`RequestedAt`/
+  `ApprovedAt`/`DecisionBy`); PR/push/commit/workspace preserved. **Approve (Q9) → `MERGE_APPROVED`** (+
+  `mergeApprovedAt`, `mergeApprovalDecisionBy`); all context preserved; **still no merge.**
+- **`MERGE_APPROVED` follow-up (Q10/Q11).** A merge phrase → already-approved (future execution only); deploy/
+  release/reviewer/label/assignee → unsupported future step; a **status phrase → the 3e read-only status
+  preview, keeping `MERGE_APPROVED`** (never re-anchored), with a reminder line "머지 승인은 기록되어 있지만,
+  아직 머지는 하지 않았어요" so the preview never implies the approval was consumed/cleared (CA change 5). A
+  merge phrase at `MERGE_APPROVED` performs no merge/provider/Git/command/shell call (CA change 7).
+- **Fresh status not required (Q5).** Approval records permission without a fresh preview; the reason/response
+  avoid implying checks/reviews/mergeability safety. **Future merge execution (Q14, deferred)** must
+  re-validate: live `MERGE_APPROVED`, identity, pullRequestRef, head/base/commit, PR open + not-merged +
+  not-closed, current head SHA, mergeability if exposed, checks/reviews per future CA policy — **none
+  implemented in 3f.**
+- **Unchanged (Q4/Q12/Q13).** `RepositoryHostingProvider`/`RepositoryHostingManager`/
+  `GitHubRepositoryHostingProvider` (no merge method), Git capability, `ExecutionOrchestrator`, `WorkspaceWrite`/
+  `Patch`/`CodeGeneration`/`CommandExecution`.
+
+### Consequences
+- + A CRITICAL, auditable merge-permission gate before any (future) merge mutation, consistent with the
+  commit/push/PR-creation approval gates; reuses the accepted approval-halt template + CAP-004.
+- − `ConversationRuntime`/`ApplyPreviewAnchor`/`ResponseComposer` gain the two states + merge flow + 7
+  composers; the 3e status preview widens to also serve `MERGE_APPROVED` (read-only, no re-anchor). Nothing
+  mutates GitHub; no merge occurs.
+
+### Relations
+ADR-0054 (reads/preserves the `PR_CREATED` chain), ADR-0055 (read-only status preview reused from
+`MERGE_APPROVED`), ADR-0049 (CRITICAL request → `*_APPROVAL_PENDING` → decision → `*_APPROVED` template
+mirrored), ADR-0025 (CAP-004 Approval — `requestForRisk`/`get`/`decide`, CRITICAL), ADR-0023 (Git local-only).
+Plan: `docs/plans/sprint-3f-explicit-pr-merge-approval-plan.md`.

@@ -4435,7 +4435,9 @@ describe('Explicit PR Creation Approval — runtime (Sprint 3b, ADR-0049)', () =
     const r = await new ConversationRuntime(again.deps).handle(messageOf('PR 만들어줘'));
     expect(again.calls.hostingCreatePR).toBe(0);
     expect(r.reply.text).toBe(composer.composePrAlreadyCreated(CTX, { prNumber: 42, prUrl: 'https://github.com/acme/widgets/pull/42' }).text);
-    for (const text of ['배포해줘', 'merge 해줘', 'release 해줘']) {
+    // (Sprint 3f supersedes) a bare deploy/release phrase at PR_CREATED still → companion-unsupported; a merge
+    // phrase now routes to merge approval (covered by the 3f tests), so it is no longer a companion here.
+    for (const text of ['배포해줘', 'release 해줘']) {
       const { deps, calls } = makeDeps({ applyAnchor: PR_CREATED_ANCHOR(), approvalsGetResult: APPROVED_REQ() });
       const rr = await new ConversationRuntime(deps).handle(messageOf(text));
       expect(calls.hostingCreatePR, text).toBe(0);
@@ -4585,6 +4587,177 @@ describe('Explicit PR Creation Approval — runtime (Sprint 3b, ADR-0049)', () =
     expect(calls.hostingGetStatus).toBe(1);
     expect(calls.hostingCreatePR).toBe(0);
     expect(calls.gitPush + calls.gitCommit + calls.gitStatus + calls.commandRun + calls.workspaceApply + calls.run).toBe(0);
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────────────────────
+  // Sprint 3f (ADR-0056): explicit PR merge APPROVAL gate (permission only; NO merge/GitHub write).
+  // ─────────────────────────────────────────────────────────────────────────────────────────────
+  const MERGE_PENDING_ANCHOR = (o: Partial<ApplyPreviewAnchor> = {}): ApplyPreviewAnchor =>
+    PR_CREATED_ANCHOR({ status: 'MERGE_APPROVAL_PENDING', mergeApprovalId: 'apply-appr-1', mergeApprovalRequestedAt: TS, ...o });
+  const MERGE_APPROVED_ANCHOR = (o: Partial<ApplyPreviewAnchor> = {}): ApplyPreviewAnchor =>
+    PR_CREATED_ANCHOR({ status: 'MERGE_APPROVED', mergeApprovalId: 'apply-appr-1', mergeApprovalRequestedAt: TS, mergeApprovedAt: TS, mergeApprovalDecisionBy: 'actor-1', ...o });
+
+  it('PR_CREATED + explicit merge approval / merge phrase → MERGE_APPROVAL_PENDING, CRITICAL, no merge (CA 1/2)', async () => {
+    for (const text of ['머지 승인해줘', 'PR 머지 승인 요청해줘', '이 PR 머지해도 되게 승인 요청해줘', 'approve merge', 'merge this PR', '머지해줘']) {
+      const { deps, calls } = makeDeps({ applyAnchor: PR_CREATED_ANCHOR() });
+      const r = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.requestForRisk, text).toBe(1);
+      expect(calls.lastRequestForRiskInput?.riskLevel, text).toBe(RiskLevel.CRITICAL);
+      expect(calls.lastApplyAnchor?.status, text).toBe('MERGE_APPROVAL_PENDING');
+      expect(r.status, text).toBe('AWAITING_APPROVAL');
+      expect(r.reply.text, text).toContain('아직 머지는 하지 않았어요');
+    }
+  });
+
+  it('PR_CREATED + merge question / deploy / status / "진행해" / bare noun → no merge approval (CA 3/4/5/71)', async () => {
+    for (const text of ['머지 가능해?', '머지해도 안전해?', '배포해줘', '릴리즈해줘', '진행해', '좋아', '승인']) {
+      const { deps, calls } = makeDeps({ applyAnchor: PR_CREATED_ANCHOR() });
+      await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.requestForRisk, text).toBe(0);
+    }
+    // "PR 상태 봐줘" → status preview, not merge approval (CA 4)
+    const s = makeDeps({ applyAnchor: PR_CREATED_ANCHOR() });
+    await new ConversationRuntime(s.deps).handle(messageOf('PR 상태 봐줘'));
+    expect(s.calls.requestForRisk).toBe(0);
+    expect(s.calls.hostingGetStatus).toBe(1);
+  });
+
+  it('non-PR_CREATED states + merge phrase → no merge approval (CA 6)', async () => {
+    for (const anchor of [prApprovedAnchor(), prReadyAnchor(), null]) {
+      const { deps, calls } = makeDeps({ applyAnchor: anchor });
+      await new ConversationRuntime(deps).handle(messageOf('머지 승인해줘'));
+      expect(calls.requestForRisk, String(anchor?.status)).toBe(0);
+    }
+  });
+
+  it('reason: CRITICAL, deterministic, owner/repo/PR/head/base/commit + "no merge/deploy/release", "pr source", no secrets/safety (CA 13–25/65/76–80)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: PR_CREATED_ANCHOR() });
+    await new ConversationRuntime(deps).handle(messageOf('머지 승인해줘'));
+    const reason = calls.lastRequestForRiskInput!.reason;
+    expect(calls.lastRequestForRiskInput!.executionPlanRef).toEqual({ id: 'plan-1', goal: 'g' });
+    expect(reason).toContain('acme/widgets');
+    expect(reason).toContain('#42');
+    expect(reason).toContain('feature/login');
+    expect(reason).toContain('main');
+    expect(reason).toContain('no merge has been performed');
+    expect(reason).toContain('pr source: created');
+    expect(reason).not.toContain('merge creation');
+    expect(reason).not.toMatch(/token|ghp_|raw diff|file content|check log|review body/i);
+    // must not POSITIVELY claim checks/reviews/mergeability/safety; the required NEGATION line is present.
+    expect(reason).not.toContain('checks passed');
+    expect(reason).not.toContain('reviews approved');
+    expect(reason).not.toMatch(/is mergeable|safe to merge\b/i);
+    expect(reason).toContain('not guaranteed safe or mergeable by this approval');
+  });
+
+  it('MERGE_APPROVAL_PENDING intercepts approve/deny/cancel; merge/deploy/status phrases re-prompt (CA 7–12/72)', async () => {
+    // approve (incl. "진행해")
+    for (const text of ['승인', '진행해']) {
+      const { deps, calls } = makeDeps({ applyAnchor: MERGE_PENDING_ANCHOR() });
+      const r = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.decide, text).toBe(1);
+      expect(calls.lastApplyAnchor?.status, text).toBe('MERGE_APPROVED');
+      expect(r.status, text).toBe('RESPONDED');
+    }
+    for (const [text, expected] of [['거절', 'DENIED'], ['취소', 'CANCELLED']] as const) {
+      const { deps, calls } = makeDeps({ applyAnchor: MERGE_PENDING_ANCHOR() });
+      const r = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.decide, text).toBe(1);
+      expect(calls.lastApplyAnchor?.status, text).toBe('PR_CREATED');
+      expect(r.status, text).toBe(expected);
+    }
+    for (const text of ['머지해줘', '배포해줘', 'PR 상태 봐줘']) {
+      const { deps, calls } = makeDeps({ applyAnchor: MERGE_PENDING_ANCHOR() });
+      const r = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.decide, text).toBe(0); // ambiguous → re-prompt, no decide
+      expect(calls.hostingGetStatus, text).toBe(0);
+      expect(r.status, text).toBe('AWAITING_APPROVAL');
+    }
+  });
+
+  it('MERGE_APPROVAL_PENDING preserves the chain + merge fields; approve → MERGE_APPROVED with decisionBy/approvedAt (CA 26–28/40–42/67)', async () => {
+    const pend = MERGE_PENDING_ANCHOR();
+    expect(pend.pullRequestRef).toBeTruthy();
+    expect(pend.repositoryIdentity).toBeTruthy();
+    expect(pend.mergeApprovalId).toBe('apply-appr-1');
+    expect(pend.mergeApprovalRequestedAt).toBeTruthy();
+    const { deps, calls } = makeDeps({ applyAnchor: MERGE_PENDING_ANCHOR() });
+    await new ConversationRuntime(deps).handle(messageOf('승인'));
+    const a = calls.lastApplyAnchor!;
+    expect(a.status).toBe('MERGE_APPROVED');
+    expect(a.mergeApprovedAt).toBeTruthy();
+    expect(a.mergeApprovalDecisionBy).toBe('actor-1');
+    expect(a.pullRequestRef).toBeTruthy();
+    expect(a.repositoryIdentity).toBeTruthy();
+    expect(a.pullRequestCommitHash).toBe(HEAD_SHA);
+  });
+
+  it('approval decision uses structured fields only (CA 35–39/69/70)', async () => {
+    // unrelated reason text but matching structured fields → approves
+    const ok = makeDeps({ applyAnchor: MERGE_PENDING_ANCHOR(), approvalsGetResult: { ...pendingApprovalOf(), id: 'apply-appr-1', reason: 'totally unrelated text' } });
+    await new ConversationRuntime(ok.deps).handle(messageOf('승인'));
+    expect(ok.calls.lastApplyAnchor?.status).toBe('MERGE_APPROVED');
+    // plan mismatch (even if reason looks right) → no approve
+    const bad = makeDeps({ applyAnchor: MERGE_PENDING_ANCHOR(), approvalsGetResult: { ...pendingApprovalOf(), id: 'apply-appr-1', executionPlanRef: { id: 'other', goal: 'g' } } });
+    const r = await new ConversationRuntime(bad.deps).handle(messageOf('승인'));
+    expect(bad.calls.lastApplyAnchor?.status).not.toBe('MERGE_APPROVED');
+    expect(r.reply.text).toBe(composer.composeMergeApprovalUnavailable(CTX).text);
+    // missing request → unavailable
+    const missing = makeDeps({ applyAnchor: MERGE_PENDING_ANCHOR(), approvalsGetResult: null });
+    await new ConversationRuntime(missing.deps).handle(messageOf('승인'));
+    expect(missing.calls.lastApplyAnchor).toBeUndefined();
+  });
+
+  it('deny/cancel → PR_CREATED, clear ONLY merge fields, preserve PR/push/commit/workspace chain (CA 29–34/68)', async () => {
+    for (const text of ['거절', '취소']) {
+      const { deps, calls } = makeDeps({ applyAnchor: MERGE_PENDING_ANCHOR() });
+      await new ConversationRuntime(deps).handle(messageOf(text));
+      const a = calls.lastApplyAnchor!;
+      expect(a.status, text).toBe('PR_CREATED');
+      expect(a.mergeApprovalId, text).toBeUndefined();
+      expect(a.mergeApprovalRequestedAt, text).toBeUndefined();
+      expect(a.mergeApprovedAt, text).toBeUndefined();
+      expect(a.mergeApprovalDecisionBy, text).toBeUndefined();
+      expect(a.pullRequestRef, text).toBeTruthy(); // preserved
+      expect(a.repositoryIdentity, text).toBeTruthy();
+      expect(a.pushedCommitHash, text).toBe(HEAD_SHA);
+      expect(a.committedFiles, text).toEqual([TARGET_FILE]);
+    }
+  });
+
+  it('MERGE_APPROVED follow-ups: merge → already approved; deploy → future step; status → read-only preview keeps MERGE_APPROVED (CA 43–45/73–75/81)', async () => {
+    const merge = makeDeps({ applyAnchor: MERGE_APPROVED_ANCHOR() });
+    const rm = await new ConversationRuntime(merge.deps).handle(messageOf('머지해줘'));
+    expect(merge.calls.requestForRisk).toBe(0);
+    expect(merge.calls.applyAnchorSet).toBe(0); // no re-anchor
+    expect(rm.reply.text).toBe(composer.composeMergeAlreadyApproved(CTX).text);
+    expect(rm.reply.text).not.toMatch(/merged|deployed|released/i);
+
+    const dep = makeDeps({ applyAnchor: MERGE_APPROVED_ANCHOR() });
+    const rd = await new ConversationRuntime(dep.deps).handle(messageOf('배포해줘'));
+    expect(rd.reply.text).toBe(composer.composeMergeApprovedCompanionUnsupported(CTX).text);
+
+    const st = makeDeps({ applyAnchor: MERGE_APPROVED_ANCHOR() });
+    const rs = await new ConversationRuntime(st.deps).handle(messageOf('PR 상태 확인해줘'));
+    expect(st.calls.hostingGetStatus).toBe(1);
+    expect(st.calls.applyAnchorSet).toBe(0); // keeps MERGE_APPROVED (no re-anchor)
+    expect(rs.reply.text).toContain('머지 승인은 기록되어 있지만, 아직 머지는 하지 않았어요');
+    expect(rs.reply.text).not.toMatch(/merged|병합했/i);
+  });
+
+  it('no mutation anywhere in the merge-approval flow (CA 46–62/66)', async () => {
+    for (const [anchor, text] of [
+      [PR_CREATED_ANCHOR(), '머지 승인해줘'],
+      [MERGE_PENDING_ANCHOR(), '승인'],
+      [MERGE_APPROVED_ANCHOR(), '머지해줘'],
+    ] as const) {
+      const { deps, calls } = makeDeps({ applyAnchor: anchor });
+      const r = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.hostingCreatePR, text).toBe(0);
+      expect(calls.gitPush + calls.gitCommit + calls.gitStatus + calls.commandRun + calls.workspaceApply + calls.run, text).toBe(0);
+      expect(r.reply.text, text).not.toMatch(/merged\b|병합했|deployed|배포했|released|릴리즈했|safe to merge|안전하게 머지|CI verified/i);
+      expect(r.reply.text, text).not.toContain('merge creation');
+    }
   });
 });
 

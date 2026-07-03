@@ -237,7 +237,18 @@ export type ApplyPreviewAnchorStatus =
    * (Sprint 3d-D, ADR-0054). The first state that means a PR exists on the hosting provider. NOT merged,
    * NOT deployed, NOT released, NOT reviewed, NOT CI-passed, NOT independently re-verified after creation.
    */
-  | 'PR_CREATED';
+  | 'PR_CREATED'
+  /**
+   * A CRITICAL merge-approval ApprovalRequest is pending decision (Sprint 3f, ADR-0056). Intercepts every turn.
+   * NO merge has been performed and none is performed even on approve — permission recording only.
+   */
+  | 'MERGE_APPROVAL_PENDING'
+  /**
+   * The merge approval was granted (Sprint 3f, ADR-0056) — records permission to merge this PR context only.
+   * NOT merged, NOT deployed, NOT released, NOT safe-to-merge, NOT mergeable-verified. Actual merge execution
+   * is a future, separate, CA-reviewed sprint.
+   */
+  | 'MERGE_APPROVED';
 
 /**
  * Anchored fact set for "a diff preview was shown; the user may explicitly ask to apply it" (Sprint 2s,
@@ -346,6 +357,17 @@ export interface ApplyPreviewAnchor {
   pullRequestCommitHash?: string;
   /** True when an existing open PR was connected instead of creating a new one (Sprint 3d-D). */
   pullRequestReused?: boolean;
+  /** The pending/decided merge-approval ApprovalRequest id (Sprint 3f, ADR-0056) — DISTINCT from
+   *  prApprovalId/pushApprovalId/commitApprovalId/approvalId. Set at MERGE_APPROVAL_PENDING; preserved at
+   *  MERGE_APPROVED; cleared on deny/cancel. */
+  mergeApprovalId?: Id;
+  /** When the merge approval was requested (Sprint 3f). Set at MERGE_APPROVAL_PENDING; cleared on deny/cancel. */
+  mergeApprovalRequestedAt?: IsoTimestamp;
+  /** When the merge approval was recorded (Sprint 3f). Set at MERGE_APPROVED; cleared on deny/cancel. */
+  mergeApprovedAt?: IsoTimestamp;
+  /** The actor who decided the merge approval (Sprint 3f) — REQUIRED at MERGE_APPROVED (CA change 2); cleared
+   *  on deny/cancel. */
+  mergeApprovalDecisionBy?: Id;
 }
 
 /**
@@ -627,6 +649,16 @@ const PR_CREATED_COMPANION_WORDS =
 const PR_STATUS_NOUN = /(\bpr\b|풀\s*리퀘|pull\s*request|\bci\b|체크|checks?|리뷰|review)/i;
 const PR_STATUS_QUERY = /(상태|status|확인|어때|봐줘|봐|알려|통과(했|돼|되)|열려\s*있|open\s*\?)/i;
 
+/** Explicit merge-APPROVAL / merge phrases (Sprint 3f, ADR-0056) — only consulted at PR_CREATED, AFTER the
+ *  status intent. A merge word is required; a merge QUESTION (가능/안전/되나/통과/?/mergeable) is NOT an approval
+ *  request; only a merge word + a request/approval/execution verb triggers. "머지해줘" (execution wording) is
+ *  treated as a merge-approval REQUEST (Sprint 3f records permission only). */
+const MERGE_WORD = /(머지|병합|\bmerge\b)/i;
+// A merge SAFETY/POSSIBILITY question (not an approval request): possibility/safety word or a trailing "?".
+const MERGE_QUESTION = /(가능|안전|괜찮|되나|되나요|통과|\bmergeable\b|can\s+i|is\s+it|\?)/i;
+// An explicit merge approval/execution REQUEST verb ("머지 승인해줘"/"머지해줘"/"머지해도 되게 승인"/"merge this"/"approve merge").
+const MERGE_REQUEST_VERB = /(승인|approve|approval|요청|받아|해줘|해\s*줘|해도\s*되게|merge\s+this|이\s*pr\s*머지)/i;
+
 /** A PR-ish noun (Sprint 3b, ADR-0049) — only ever consulted at GIT_PUSHED/PR_APPROVAL_PENDING/PR_APPROVED.
  *  A bare 좋아/오케이/확인/진행해/다음 단계 never matches. A noun ALONE is not a PR-creation request (CA #1). */
 const PR_WORD = /(\bpr\b|pull\s*request|풀\s*리퀘|merge\s*request|\bmr\b)/i;
@@ -857,6 +889,40 @@ function buildPrBody(input: {
   ]
     .join('\n')
     .slice(0, MAX_PR_BODY);
+}
+
+/**
+ * Deterministic bounded PR MERGE-APPROVAL reason (Sprint 3f, ADR-0056). Records permission-only intent for a
+ * specific PR context — owner/repo/PR number/URL/head/base/short commit/pr-source — and explicitly states no
+ * merge/deploy/release was performed and that the approval does NOT verify checks/reviews/mergeability/safety.
+ * NO token / raw diff / file content / check logs / review body / full GitHub response. Never parsed later.
+ */
+function buildMergeApprovalReason(input: {
+  owner: string;
+  repo: string;
+  prNumber: number;
+  prUrl: string;
+  headBranch: string;
+  baseBranch: string;
+  commitHash: string;
+  reused: boolean;
+}): string {
+  return [
+    'operation: pull request merge approval planning',
+    `repository: ${boundGitRef(input.owner)}/${boundGitRef(input.repo)}`,
+    `pull request: #${input.prNumber} ${input.prUrl.slice(0, MAX_GIT_REF_DISPLAY)}`,
+    `head: ${boundGitRef(input.headBranch)}`,
+    `base: ${boundGitRef(input.baseBranch)}`,
+    `commit: ${input.commitHash.slice(0, 7)}`,
+    `pr source: ${input.reused ? 'connected-existing' : 'created'}`,
+    'risk: CRITICAL',
+    'no merge has been performed',
+    'no deployment has been performed',
+    'no release has been performed',
+    'this approval records permission only',
+    'actual merge execution is NOT performed in Sprint 3f and requires a separate repository-hosting step',
+    'merge is not guaranteed safe or mergeable by this approval; checks/reviews/hosting state are not verified',
+  ].join('\n');
 }
 
 /** Bound on how many extracted target-path candidates trigger a workspace.list call per turn
@@ -1111,6 +1177,20 @@ export class ConversationRuntime {
   }
 
   /**
+   * Explicit merge-APPROVAL intent (Sprint 3f, ADR-0056) — only consulted at PR_CREATED, AFTER the status
+   * intent. Returns `'merge'` only for a merge word + an explicit approval/execution request verb; a merge
+   * safety/possibility QUESTION or a bare merge noun returns null (→ falls through to the companion reply). A
+   * bare "진행해"/"좋아"/"승인" has no merge word → null (so PR_CREATED + "진행해" never creates a merge approval).
+   */
+  static interpretMergeIntent(text: string): 'merge' | null {
+    const t = text.trim().toLowerCase();
+    if (!MERGE_WORD.test(t)) return null;
+    if (MERGE_QUESTION.test(t)) return null; // "머지 가능해?/안전해?/통과?" → not an approval request
+    if (MERGE_REQUEST_VERB.test(t)) return 'merge';
+    return null; // bare "머지" noun → companion-unsupported
+  }
+
+  /**
    * Resolve the commit message for a commit-approval turn (Sprint 2x, CA #6/#7/#8). If the text carries a
    * user message (a single quoted segment after a `메시지`/`message` keyword) it is accepted only when it is
    * exactly one candidate, single-line, ≤120 chars, control-char-free, and trimmed non-empty — otherwise
@@ -1181,6 +1261,11 @@ export class ConversationRuntime {
     if (applyAnchor?.status === 'PR_APPROVAL_PENDING') {
       return this.handlePrApprovalDecisionTurn(message, session, actor, applyAnchor);
     }
+    // (Sprint 3f, ADR-0056) A pending merge approval intercepts EVERY turn — decision flow ONLY; a
+    // merge/deploy/status phrase while pending re-prompts (no decide, no merge). "진행해" approves ONLY here.
+    if (applyAnchor?.status === 'MERGE_APPROVAL_PENDING') {
+      return this.handleMergeApprovalDecisionTurn(message, session, actor, applyAnchor);
+    }
     // (Sprint 2y, ADR-0046) Approved git commit EXECUTION — GATED to commit-relevant states only (CA #4).
     // Checked before the 2x commit-intent so "이제 실제 커밋해줘" executes rather than re-printing
     // already-approved. push-only is NOT intercepted outside commit states (WORKSPACE_APPLIED "push" stays
@@ -1245,10 +1330,29 @@ export class ConversationRuntime {
       if (ConversationRuntime.interpretPrStatusIntent(message.text)) {
         return this.handlePrStatusPreviewTurn(message, session, applyAnchor);
       }
+      // (Sprint 3f, ADR-0056) an explicit merge approval / merge phrase → CRITICAL merge-approval halt (records
+      // permission only; NO merge). Checked before create/companion so "머지해줘" plans an approval, not a companion.
+      if (ConversationRuntime.interpretMergeIntent(message.text) === 'merge') {
+        return this.handleMergeApprovalTurn(message, session, actor, applyAnchor);
+      }
       const prKind = ConversationRuntime.interpretPrIntent(message.text);
       if (prKind === 'create') return this.handlePrAlreadyCreatedTurn(message, session, applyAnchor);
       if (prKind === 'pr-unsupported' || PR_CREATED_COMPANION_WORDS.test(message.text)) {
         return this.handlePrCreatedCompanionUnsupportedTurn(message, session);
+      }
+    }
+    // (Sprint 3f, ADR-0056) After merge approval is recorded: a status phrase → read-only preview (keeps
+    // MERGE_APPROVED); a merge phrase → already approved (future execution only); deploy/release/companion →
+    // unsupported future step. NEVER merges/deploys/releases.
+    if (applyAnchor?.status === 'MERGE_APPROVED') {
+      if (ConversationRuntime.interpretPrStatusIntent(message.text)) {
+        return this.handlePrStatusPreviewTurn(message, session, applyAnchor);
+      }
+      if (ConversationRuntime.interpretMergeIntent(message.text) === 'merge') {
+        return this.handleMergeAlreadyApprovedTurn(message, session);
+      }
+      if (DEPLOY_ONLY_WORDS.test(message.text) || PR_CREATED_COMPANION_WORDS.test(message.text)) {
+        return this.handleMergeApprovedCompanionUnsupportedTurn(message, session);
       }
     }
     // (CA #1) NO global/no-anchor push handling is installed — push handling is anchored to GIT_COMMITTED /
@@ -3130,9 +3234,11 @@ export class ConversationRuntime {
       return this.respondComposed(message, session, this.deps.composer.composePrStatusNotConfigured(message.context));
     }
     // Complete PR_CREATED context, incl. the approved identity + durable PullRequestRef (the ONLY query source).
+    // (Sprint 3f) also reachable from MERGE_APPROVED — read-only, and it never re-anchors so the caller's state
+    // (PR_CREATED or MERGE_APPROVED) is preserved.
     const ref = anchor.pullRequestRef;
     if (
-      anchor.status !== 'PR_CREATED' ||
+      (anchor.status !== 'PR_CREATED' && anchor.status !== 'MERGE_APPROVED') ||
       !ref ||
       !anchor.repositoryIdentity ||
       !anchor.pullRequestHeadBranch ||
@@ -3165,8 +3271,15 @@ export class ConversationRuntime {
       // Read-only failure or stale/unattributable result → could not check; NOT "checks failed"/"PR not created".
       return this.respondComposed(message, session, this.deps.composer.composePrStatusCheckFailed(message.context));
     }
-    // Point-in-time preview — KEEP PR_CREATED (no re-anchor, no new state, no mutation — Q2).
-    return this.respondComposed(message, session, this.deps.composer.composePrStatusPreview(message.context, preview));
+    // Point-in-time preview — KEEP the current state (PR_CREATED or MERGE_APPROVED): no re-anchor, no new
+    // state, no mutation. From MERGE_APPROVED, add a reminder that the merge approval is still recorded and no
+    // merge happened — the preview must not imply the approval was consumed/cleared (Sprint 3f, CA change 5).
+    const mergeApproved = anchor.status === 'MERGE_APPROVED';
+    return this.respondComposed(
+      message,
+      session,
+      this.deps.composer.composePrStatusPreview(message.context, preview, { mergeApproved }),
+    );
   }
 
   /** A PR request bundled with deploy/merge/release/force/… (Sprint 3b, CA #5) — unsupported companion; no approval, no PR. */
@@ -3174,6 +3287,150 @@ export class ConversationRuntime {
     const reply = this.deps.composer.composePrUnsupportedCompanion(message.context);
     await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
     return this.responded(session, reply);
+  }
+
+  /**
+   * Explicit merge approval / merge phrase while PR_CREATED (Sprint 3f, ADR-0056) — records a CRITICAL merge
+   * approval and halts at MERGE_APPROVAL_PENDING. Mirrors handlePrApprovalTurn. **NO merge, NO GitHub write.**
+   * Requires complete PR_CREATED context (identity + pullRequestRef + head/base/commit + executionPlanRef).
+   */
+  private async handleMergeApprovalTurn(
+    message: InboundMessage,
+    session: Session,
+    actor: Actor,
+    anchor: ApplyPreviewAnchor,
+  ): Promise<TurnResult> {
+    const ref = anchor.pullRequestRef;
+    if (
+      anchor.status !== 'PR_CREATED' ||
+      !ref ||
+      !anchor.repositoryIdentity ||
+      !anchor.pullRequestNumber ||
+      !anchor.pullRequestUrl ||
+      !anchor.pullRequestHeadBranch ||
+      !anchor.pullRequestBaseBranch ||
+      !anchor.pullRequestCommitHash ||
+      !anchor.executionPlanRef
+    ) {
+      this.logPrApprovalFailed(session, anchor, 'merge approval context incomplete');
+      return this.failComposed(message, session, this.deps.composer.composeMergeApprovalUnavailable(message.context));
+    }
+    const approval = await this.deps.approvals.requestForRisk({
+      executionPlanRef: anchor.executionPlanRef,
+      riskLevel: RiskLevel.CRITICAL,
+      reason: buildMergeApprovalReason({
+        owner: anchor.repositoryIdentity.owner,
+        repo: anchor.repositoryIdentity.repo,
+        prNumber: anchor.pullRequestNumber,
+        prUrl: anchor.pullRequestUrl,
+        headBranch: anchor.pullRequestHeadBranch,
+        baseBranch: anchor.pullRequestBaseBranch,
+        commitHash: anchor.pullRequestCommitHash,
+        reused: anchor.pullRequestReused ?? false,
+      }),
+      requestedBy: actor.id,
+    });
+    await this.deps.applyPreviewFlow.anchor(session, {
+      ...anchor,
+      status: 'MERGE_APPROVAL_PENDING',
+      mergeApprovalId: approval.id,
+      mergeApprovalRequestedAt: now(),
+    });
+    const reply = this.deps.composer.composeMergeApprovalRequested(message.context, {
+      owner: anchor.repositoryIdentity.owner,
+      repo: anchor.repositoryIdentity.repo,
+      prNumber: anchor.pullRequestNumber,
+      prUrl: anchor.pullRequestUrl,
+      headBranch: anchor.pullRequestHeadBranch,
+      baseBranch: anchor.pullRequestBaseBranch,
+      commitHash: anchor.pullRequestCommitHash,
+    });
+    await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+    return { status: 'AWAITING_APPROVAL', reply, sessionId: session.id };
+  }
+
+  /**
+   * Decide the pending merge approval (Sprint 3f) — mirrors handlePrApprovalDecisionTurn. A merge/deploy/status
+   * phrase while pending is a premature request → ambiguous re-prompt (NO decide, NO merge). Approve →
+   * MERGE_APPROVED (record only, + mergeApprovedAt/mergeApprovalDecisionBy). Deny/cancel → PR_CREATED clearing
+   * ONLY merge fields (PR/push/commit/workspace preserved). Structured fields only — never parse reason.
+   */
+  private async handleMergeApprovalDecisionTurn(
+    message: InboundMessage,
+    session: Session,
+    actor: Actor,
+    anchor: ApplyPreviewAnchor,
+  ): Promise<TurnResult> {
+    if (anchor.status !== 'MERGE_APPROVAL_PENDING' || !anchor.mergeApprovalId || !anchor.executionPlanRef) {
+      this.logPrApprovalFailed(session, anchor, 'pending merge approval context incomplete');
+      return this.failComposed(message, session, this.deps.composer.composeMergeApprovalUnavailable(message.context));
+    }
+    // A merge / status phrase, or any deploy-only phrase, while PENDING → ambiguous re-prompt (no decide).
+    const decision =
+      ConversationRuntime.interpretMergeIntent(message.text) !== null ||
+      ConversationRuntime.interpretPrStatusIntent(message.text) ||
+      DEPLOY_ONLY_WORDS.test(message.text)
+        ? 'ambiguous'
+        : ConversationRuntime.interpretDecision(message.text);
+    if (decision === 'ambiguous') {
+      const fresh = await this.deps.approvals.get(anchor.mergeApprovalId);
+      const reply = fresh
+        ? this.deps.composer.composeApprovalNotice(message.context, fresh)
+        : this.deps.composer.composeMergeApprovalUnavailable(message.context);
+      await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+      return { status: 'AWAITING_APPROVAL', reply, sessionId: session.id };
+    }
+    // Verify the referenced ApprovalRequest via STRUCTURED fields only — never parse reason.
+    const request = await this.deps.approvals.get(anchor.mergeApprovalId);
+    if (
+      !request ||
+      request.status !== ApprovalStatus.PENDING ||
+      request.executionPlanRef.id !== anchor.executionPlanRef.id
+    ) {
+      this.logPrApprovalFailed(session, anchor, 'merge approval request missing/mismatched');
+      return this.failComposed(message, session, this.deps.composer.composeMergeApprovalUnavailable(message.context));
+    }
+    const approved = decision === 'approve';
+    await this.deps.approvals.decide(anchor.mergeApprovalId, this.decisionOf(anchor.mergeApprovalId, actor.id, approved));
+    if (!approved) {
+      // Deny/cancel → back to PR_CREATED, clear ONLY merge fields; PR/push/commit/workspace preserved.
+      await this.deps.applyPreviewFlow.anchor(session, {
+        ...anchor,
+        status: 'PR_CREATED',
+        mergeApprovalId: undefined,
+        mergeApprovalRequestedAt: undefined,
+        mergeApprovedAt: undefined,
+        mergeApprovalDecisionBy: undefined,
+      });
+      const reply =
+        decision === 'deny'
+          ? this.deps.composer.composeMergeApprovalDenied(message.context)
+          : this.deps.composer.composeMergeApprovalCancelled(message.context);
+      await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+      return { status: decision === 'deny' ? 'DENIED' : 'CANCELLED', reply, sessionId: session.id };
+    }
+    // approve — record only; re-anchor MERGE_APPROVED preserving all context. NO merge.
+    await this.deps.applyPreviewFlow.anchor(session, {
+      ...anchor,
+      status: 'MERGE_APPROVED',
+      mergeApprovedAt: now(),
+      mergeApprovalDecisionBy: actor.id,
+    });
+    const reply = this.deps.composer.composeMergeApprovalRecorded(message.context);
+    await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+    return { status: 'RESPONDED', reply, sessionId: session.id };
+  }
+
+  /** A merge phrase while already MERGE_APPROVED (Sprint 3f) — already approved; actual merge is a future step. No mutation. */
+  private async handleMergeAlreadyApprovedTurn(message: InboundMessage, session: Session): Promise<TurnResult> {
+    const reply = this.deps.composer.composeMergeAlreadyApproved(message.context);
+    return this.respondComposed(message, session, reply);
+  }
+
+  /** A deploy/release/reviewer/label/assignee phrase while MERGE_APPROVED (Sprint 3f) — unsupported future step; no mutation. */
+  private async handleMergeApprovedCompanionUnsupportedTurn(message: InboundMessage, session: Session): Promise<TurnResult> {
+    const reply = this.deps.composer.composeMergeApprovedCompanionUnsupported(message.context);
+    return this.respondComposed(message, session, reply);
   }
 
   /** A deploy-only phrase while PR_APPROVED (Sprint 3b, CA #8) — state-specific: PR approval recorded, PR not
