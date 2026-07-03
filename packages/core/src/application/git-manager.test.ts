@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { GitManager } from './git-manager';
+import { GitManager, GitMainSyncBlockedError, GitMainSyncUnverifiedError } from './git-manager';
 import { WorkspaceNotSafeError } from '../errors';
 import { ApprovalStatus } from '../domain';
-import type { ApprovalRef, GitCommitResult, GitStatus, RepositoryInfo } from '../domain';
+import type { ApprovalRef, GitCommitResult, GitMainSyncResult, GitStatus, RepositoryInfo } from '../domain';
 import type { GitProvider } from '../ports';
 
 function fakeProvider(over: Partial<GitProvider> = {}): GitProvider {
@@ -116,5 +116,128 @@ describe('GitManager.commitFiles (CAP-002, ADR-0046 — Ref-gated first git muta
     const { provider, commitFiles } = commitProvider();
     await expect(new GitManager(provider).commitFiles(commitInput({ rootPath: '  ' }))).rejects.toThrow(/rootPath/);
     expect(commitFiles).not.toHaveBeenCalled();
+  });
+});
+
+describe('GitManager.syncMain (CAP-002, ADR-0058 — post-merge local main fast-forward)', () => {
+  const EXPECTED = 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2'; // expected remote main tip (== mergeCommitHash)
+  const PREV = '0000000abcabcabcabcabcabcabcabcabcabc000'; // local main before sync (CAS base)
+  const syncResult = (over: Partial<GitMainSyncResult> = {}): GitMainSyncResult => ({
+    branch: 'main',
+    syncMode: 'ref-only',
+    workingTreeUpdated: false,
+    syncedCommitHash: EXPECTED,
+    previousMainCommit: PREV,
+    alreadyUpToDate: false,
+    ...over,
+  });
+  const cleanStatus = (over: Partial<GitStatus> = {}): GitStatus => ({
+    clean: true,
+    branch: 'feature/x',
+    staged: [],
+    unstaged: [],
+    untracked: [],
+    ...over,
+  });
+  const syncFF = vi.fn(async () => syncResult());
+  function syncProvider(over: Partial<GitProvider> = {}): GitProvider {
+    return fakeProvider({
+      async isRepository() {
+        return true;
+      },
+      async status() {
+        return cleanStatus();
+      },
+      async info(rootPath: string): Promise<RepositoryInfo> {
+        return { isRepository: true, rootPath, branch: 'feature/x', headSha: 'abc', detached: false };
+      },
+      async getLocalRefCommit() {
+        return { commitHash: PREV };
+      },
+      async getRemoteRefCommit() {
+        return { commitHash: EXPECTED };
+      },
+      syncMainFastForward: syncFF,
+      ...over,
+    } as Partial<GitProvider>);
+  }
+  const runSync = (p: GitProvider, over: Record<string, unknown> = {}) =>
+    new GitManager(p).syncMain({ rootPath: '/repo', remote: 'origin', branch: 'main', expectedRemoteCommit: EXPECTED, ...over } as Parameters<GitManager['syncMain']>[0]);
+
+  it('happy path: preflight passes → single syncMainFastForward call with the observed previous commit', async () => {
+    syncFF.mockClear();
+    const r = await runSync(syncProvider());
+    expect(syncFF).toHaveBeenCalledTimes(1);
+    expect(syncFF).toHaveBeenCalledWith('/repo', 'origin', 'main', EXPECTED, PREV); // CAS base passed
+    expect(r.syncedCommitHash).toBe(EXPECTED);
+    expect(r.previousMainCommit).toBe(PREV);
+  });
+
+  it('unsafe input (rootPath / remote / branch / expected SHA) → Blocked, no provider read/mutation', async () => {
+    for (const over of [{ rootPath: '  ' }, { remote: 'bad remote' }, { branch: 'bad branch' }, { expectedRemoteCommit: 'not-a-sha!' }]) {
+      const ff = vi.fn(async () => syncResult());
+      await expect(runSync(syncProvider({ syncMainFastForward: ff }), over)).rejects.toBeInstanceOf(GitMainSyncBlockedError);
+      expect(ff).not.toHaveBeenCalled();
+    }
+  });
+
+  it('not a repository → Blocked, no mutation', async () => {
+    const ff = vi.fn(async () => syncResult());
+    await expect(runSync(syncProvider({ async isRepository() { return false; }, syncMainFastForward: ff }))).rejects.toBeInstanceOf(GitMainSyncBlockedError);
+    expect(ff).not.toHaveBeenCalled();
+  });
+
+  it('dirty / staged / untracked / unmerged working tree → Blocked, no mutation (CA 5/6/7)', async () => {
+    const dirties: Partial<GitStatus>[] = [
+      { clean: false, unstaged: ['a'] },
+      { staged: ['b'] },
+      { untracked: ['c'] },
+      { hasUnmergedPaths: true },
+    ];
+    for (const s of dirties) {
+      const ff = vi.fn(async () => syncResult());
+      await expect(runSync(syncProvider({ async status() { return cleanStatus(s); }, syncMainFastForward: ff }))).rejects.toBeInstanceOf(GitMainSyncBlockedError);
+      expect(ff).not.toHaveBeenCalled();
+    }
+  });
+
+  it('detached HEAD → Blocked, no mutation (CA 21)', async () => {
+    const ff = vi.fn(async () => syncResult());
+    await expect(
+      runSync(syncProvider({ async info(rootPath: string) { return { isRepository: true, rootPath, branch: '', detached: true }; }, syncMainFastForward: ff })),
+    ).rejects.toBeInstanceOf(GitMainSyncBlockedError);
+    expect(ff).not.toHaveBeenCalled();
+  });
+
+  it('no local main → Blocked, no mutation (CA — local main must exist)', async () => {
+    const ff = vi.fn(async () => syncResult());
+    await expect(runSync(syncProvider({ async getLocalRefCommit() { return null; }, syncMainFastForward: ff }))).rejects.toBeInstanceOf(GitMainSyncBlockedError);
+    expect(ff).not.toHaveBeenCalled();
+  });
+
+  it('remote main read failure → Blocked BEFORE mutation (CA 8)', async () => {
+    const ff = vi.fn(async () => syncResult());
+    await expect(runSync(syncProvider({ async getRemoteRefCommit() { throw new Error('offline'); }, syncMainFastForward: ff }))).rejects.toBeInstanceOf(GitMainSyncBlockedError);
+    expect(ff).not.toHaveBeenCalled();
+  });
+
+  it('remote main tip != expected merge commit → Blocked, no mutation (CA 9)', async () => {
+    const ff = vi.fn(async () => syncResult());
+    await expect(runSync(syncProvider({ async getRemoteRefCommit() { return { commitHash: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' }; }, syncMainFastForward: ff }))).rejects.toBeInstanceOf(GitMainSyncBlockedError);
+    expect(ff).not.toHaveBeenCalled();
+  });
+
+  it('phase-aware (CA change 2): provider Blocked → Blocked; Unverified → Unverified; unknown → Unverified', async () => {
+    const blocked = syncProvider({ async syncMainFastForward() { throw new GitMainSyncBlockedError('non-ff'); } });
+    await expect(runSync(blocked)).rejects.toBeInstanceOf(GitMainSyncBlockedError); // NOT blanket-converted (CA 23)
+    const unverified = syncProvider({ async syncMainFastForward() { throw new GitMainSyncUnverifiedError('mid-update'); } });
+    await expect(runSync(unverified)).rejects.toBeInstanceOf(GitMainSyncUnverifiedError); // CA 24
+    const generic = syncProvider({ async syncMainFastForward() { throw new Error('boom'); } });
+    await expect(runSync(generic)).rejects.toBeInstanceOf(GitMainSyncUnverifiedError); // conservative
+  });
+
+  it('result integrity: syncedCommitHash != expected → Unverified', async () => {
+    const bad = syncProvider({ async syncMainFastForward() { return syncResult({ syncedCommitHash: 'feedfeedfeedfeedfeedfeedfeedfeedfeedfeed' }); } });
+    await expect(runSync(bad)).rejects.toBeInstanceOf(GitMainSyncUnverifiedError);
   });
 });

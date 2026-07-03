@@ -10,6 +10,7 @@ import {
   type GitRunner,
   type GitRunResult,
 } from './index';
+import { GitMainSyncBlockedError } from '@chunsik/core';
 
 const created: string[] = [];
 afterAll(() => {
@@ -477,5 +478,124 @@ describe('sanitizeGitStderr', () => {
     const masked = sanitizeGitStderr('fatal: https://user:abcd1234token@github.com/x/y.git not found');
     expect(masked).not.toContain('abcd1234token');
     expect(masked).toContain('***@');
+  });
+});
+
+describe('LocalGitProvider — post-merge local main sync (CAP-002, ADR-0058, Sprint 3h)', () => {
+  /** A remote repo (on main, one commit A) + a clone; returns paths and commit A. */
+  function makeRemoteAndClone(): { remote: string; local: string; A: string } {
+    const remote = makeRepo(); // main @ A ("init")
+    const A = git(remote, 'rev-parse', 'HEAD').trim();
+    const parent = mkdtempSync(join(tmpdir(), 'chunsik-clone-'));
+    created.push(parent);
+    const local = join(parent, 'local');
+    git(parent, 'clone', '-q', remote, 'local');
+    git(local, 'config', 'user.email', 't@example.com');
+    git(local, 'config', 'user.name', 'Tester');
+    git(local, 'config', 'commit.gpgsign', 'false');
+    return { remote, local, A };
+  }
+  /** Add commit B to the remote's main; returns B. */
+  function commitOnRemoteMain(remote: string): string {
+    writeFileSync(join(remote, 'f2.txt'), 'x\n');
+    git(remote, 'add', 'f2.txt');
+    git(remote, 'commit', '-q', '-m', 'B');
+    return git(remote, 'rev-parse', 'HEAD').trim();
+  }
+
+  it('getRemoteRefCommit reads the remote main tip and does NOT move local main', async () => {
+    const { remote, local, A } = makeRemoteAndClone();
+    const B = commitOnRemoteMain(remote);
+    const observed = await provider.getRemoteRefCommit(local, 'origin', 'main');
+    expect(observed.commitHash).toBe(B);
+    expect(git(local, 'rev-parse', 'refs/heads/main').trim()).toBe(A); // unchanged (read-only)
+  });
+
+  it('getLocalRefCommit returns the local main tip, or null for a nonexistent branch', async () => {
+    const { local, A } = makeRemoteAndClone();
+    expect((await provider.getLocalRefCommit(local, 'main'))?.commitHash).toBe(A);
+    expect(await provider.getLocalRefCommit(local, 'nope-branch')).toBeNull();
+  });
+
+  it('checked-out-main mode: fast-forwards the checked-out main + working tree (workingTreeUpdated true)', async () => {
+    const { remote, local, A } = makeRemoteAndClone();
+    const B = commitOnRemoteMain(remote);
+    const r = await provider.syncMainFastForward(local, 'origin', 'main', B, A);
+    expect(r.syncMode).toBe('checked-out-main');
+    expect(r.workingTreeUpdated).toBe(true);
+    expect(r.alreadyUpToDate).toBe(false);
+    expect(r.syncedCommitHash).toBe(B);
+    expect(r.previousMainCommit).toBe(A);
+    expect(git(local, 'rev-parse', 'refs/heads/main').trim()).toBe(B); // local main moved to B
+  });
+
+  it('ref-only mode: fast-forwards refs/heads/main only, leaving the current checkout untouched (workingTreeUpdated false)', async () => {
+    const { remote, local, A } = makeRemoteAndClone();
+    const B = commitOnRemoteMain(remote);
+    git(local, 'checkout', '-q', '-b', 'feature'); // current branch != main
+    const r = await provider.syncMainFastForward(local, 'origin', 'main', B, A);
+    expect(r.syncMode).toBe('ref-only');
+    expect(r.workingTreeUpdated).toBe(false);
+    expect(r.syncedCommitHash).toBe(B);
+    expect(git(local, 'rev-parse', 'refs/heads/main').trim()).toBe(B); // local main ref moved
+    expect(git(local, 'symbolic-ref', '--short', 'HEAD').trim()).toBe('feature'); // checkout unchanged
+  });
+
+  it('non-fast-forward → GitMainSyncBlockedError (no force/reset), local main untouched', async () => {
+    const { remote, local, A } = makeRemoteAndClone();
+    const B = commitOnRemoteMain(remote);
+    // diverge local main to C (a child of A that is not an ancestor of B)
+    writeFileSync(join(local, 'local-only.txt'), 'y\n');
+    git(local, 'add', 'local-only.txt');
+    git(local, 'commit', '-q', '-m', 'C');
+    const C = git(local, 'rev-parse', 'refs/heads/main').trim();
+    await expect(provider.syncMainFastForward(local, 'origin', 'main', B, C)).rejects.toBeInstanceOf(GitMainSyncBlockedError);
+    expect(git(local, 'rev-parse', 'refs/heads/main').trim()).toBe(C); // unchanged
+  });
+
+  it('fetched-tip mismatch (expected != actual remote) → GitMainSyncBlockedError before any ref move', async () => {
+    const { remote, local, A } = makeRemoteAndClone();
+    commitOnRemoteMain(remote);
+    const wrong = 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef';
+    await expect(provider.syncMainFastForward(local, 'origin', 'main', wrong, A)).rejects.toBeInstanceOf(GitMainSyncBlockedError);
+    expect(git(local, 'rev-parse', 'refs/heads/main').trim()).toBe(A);
+  });
+
+  it('CAS mismatch (local main != expectedPreviousCommit) → GitMainSyncBlockedError', async () => {
+    const { remote, local } = makeRemoteAndClone();
+    const B = commitOnRemoteMain(remote);
+    const wrongPrev = 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef';
+    await expect(provider.syncMainFastForward(local, 'origin', 'main', B, wrongPrev)).rejects.toBeInstanceOf(GitMainSyncBlockedError);
+  });
+
+  it('already up to date (no new remote commit) → alreadyUpToDate, no ref move', async () => {
+    const { local, A } = makeRemoteAndClone();
+    const r = await provider.syncMainFastForward(local, 'origin', 'main', A, A);
+    expect(r.alreadyUpToDate).toBe(true);
+    expect(r.workingTreeUpdated).toBe(false);
+    expect(r.syncedCommitHash).toBe(A);
+    expect(git(local, 'rev-parse', 'refs/heads/main').trim()).toBe(A);
+  });
+
+  it('argv guard: sync uses ls-remote / fetch / merge --ff-only|update-ref only — NEVER --force/-f/reset --hard/push/branch delete', async () => {
+    const { remote, local, A } = makeRemoteAndClone();
+    const B = commitOnRemoteMain(remote);
+    // Wrap the real runner to capture every argv the sync emits.
+    const seen: string[][] = [];
+    const recording: GitRunner = (args, opts) => {
+      seen.push(args);
+      // delegate to a real spawn so behavior is real
+      const r = spawnSync('git', args, { cwd: opts.cwd, timeout: opts.timeoutMs, encoding: 'utf8' });
+      return { code: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '', timedOut: false, failed: !!r.error };
+    };
+    await new LocalGitProvider(recording).getRemoteRefCommit(local, 'origin', 'main');
+    await new LocalGitProvider(recording).syncMainFastForward(local, 'origin', 'main', B, A);
+    const flat = seen.map((a) => a.join(' '));
+    for (const bad of ['--force', ' -f', 'reset --hard', 'reset', 'push', 'branch -d', 'branch -D', '--hard']) {
+      expect(flat.some((c) => c.includes(bad)), bad).toBe(false);
+    }
+    expect(flat.some((c) => c.includes('ls-remote'))).toBe(true);
+    expect(flat.some((c) => c.startsWith('--no-pager fetch') || c.includes(' fetch '))).toBe(true);
+    expect(flat.some((c) => c.includes('merge --ff-only') || c.includes('update-ref'))).toBe(true);
   });
 });

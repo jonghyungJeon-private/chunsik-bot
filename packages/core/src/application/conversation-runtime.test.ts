@@ -32,6 +32,7 @@ import type {
   PatchSet,
   ProposedChange,
   Project,
+  GitMainSyncResult,
   PullRequestMergeResult,
   PullRequestRef,
   PullRequestResult,
@@ -63,6 +64,7 @@ import type {
 } from './conversation-runtime';
 import { StatelessApprovalFlow } from './stateless-approval-flow';
 import { RepositoryHostingBlockedError, RepositoryHostingUnverifiedError } from './repository-hosting-manager';
+import { GitMainSyncBlockedError, GitMainSyncUnverifiedError } from './git-manager';
 
 const TS = '2026-07-01T00:00:00.000Z';
 const CTX: ConversationContext = { platform: 'test', channelId: 'c1', userId: 'u1' };
@@ -184,6 +186,20 @@ const gitPushResultOf = (
   branch: input.branch,
   upstreamRef: `${input.remote}/${input.branch}`,
   commitHash: input.commitHash,
+  ...o,
+});
+
+/** Default fake GitMainSyncResult (Sprint 3h) — a valid ref-only fast-forward to the expected commit. */
+const gitMainSyncResultOf = (
+  input: { branch: string; expectedRemoteCommit: string },
+  o: Partial<GitMainSyncResult> = {},
+): GitMainSyncResult => ({
+  branch: input.branch,
+  syncMode: 'ref-only',
+  workingTreeUpdated: false,
+  syncedCommitHash: input.expectedRemoteCommit,
+  previousMainCommit: 'aaaaaaa',
+  alreadyUpToDate: false,
   ...o,
 });
 
@@ -363,11 +379,13 @@ interface Calls {
   gitCommit: number;
   gitInfo: number;
   gitPush: number;
+  gitSyncMain: number;
   lastGitStatusRoot?: string;
   lastGitDiffRoot?: string;
   lastGitCommitInput?: { rootPath: string; files: string[]; message: string; approvalRef: ApprovalRef };
   lastGitInfoRoot?: string;
   lastGitPushInput?: { rootPath: string; remote: string; branch: string; commitHash: string; approvalRef: ApprovalRef };
+  lastGitSyncMainInput?: { rootPath: string; remote: string; branch: string; expectedRemoteCommit: string };
   commandExecGet: number;
   loggerWarn: number;
   hostingCreatePR: number;
@@ -500,6 +518,10 @@ interface Opts {
   /** `git.pushApprovedCommit` result (Sprint 3a) — defaults to a valid `gitPushResultOf` echoing the input;
    *  pass 'throw' to simulate a push failure, or a literal GitPushResult to force an integrity mismatch. */
   gitPush?: GitPushResult | 'throw';
+  /** `git.syncMain` result (Sprint 3h) — defaults to a valid `gitMainSyncResultOf` echoing the input;
+   *  'throw-blocked' → GitMainSyncBlockedError, 'throw-unverified' → GitMainSyncUnverifiedError, 'throw-generic'
+   *  → a plain Error, or a literal GitMainSyncResult (e.g. ref-only / already-up-to-date). */
+  gitSyncMain?: GitMainSyncResult | 'throw-blocked' | 'throw-unverified' | 'throw-generic';
   /** When true, `commandExecutions.get` throws (Sprint 2w — validation-lookup failure must not fail preview). */
   commandExecGetThrows?: boolean;
   /** Repository Hosting identity (Sprint 3d-D) — defaults to a valid github identity so PR approval works; pass
@@ -578,6 +600,7 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
     workspaceApply: 0,
     commandRun: 0,
     gitStatus: 0,
+    gitSyncMain: 0,
     gitDiff: 0,
     gitCommit: 0,
     gitInfo: 0,
@@ -821,6 +844,14 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
         calls.lastGitPushInput = input;
         if (opts.gitPush === 'throw') throw new Error('git push boom');
         return opts.gitPush ?? gitPushResultOf(input);
+      },
+      async syncMain(input) {
+        calls.gitSyncMain++;
+        calls.lastGitSyncMainInput = input;
+        if (opts.gitSyncMain === 'throw-blocked') throw new GitMainSyncBlockedError('sync blocked');
+        if (opts.gitSyncMain === 'throw-unverified') throw new GitMainSyncUnverifiedError('sync unverified');
+        if (opts.gitSyncMain === 'throw-generic') throw new Error('sync boom');
+        return opts.gitSyncMain ?? gitMainSyncResultOf(input);
       },
     },
     // Sprint 3d-D: Repository Hosting. Default = configured (valid identity + a fake manager echoing a valid
@@ -4985,6 +5016,138 @@ describe('Explicit PR Creation Approval — runtime (Sprint 3b, ADR-0049)', () =
       // token never appears in the anchor or the response text
       expect(JSON.stringify(calls.lastApplyAnchor ?? {}), String(mode)).not.toMatch(/ghp_|github_pat_|token/i);
       expect(r.reply.text, String(mode)).not.toMatch(/ghp_|github_pat_/i);
+    }
+  });
+
+  // ── Sprint 3h (ADR-0058): post-merge LOCAL main synchronization — fast-forward-only, mode-split, phase-aware. ──
+  const MERGE_COMMIT = 'facefeed1234567890facefeed1234567890face'; // the expected remote main tip on PR_MERGED
+  const PR_MERGED_ANCHOR = (o: Partial<ApplyPreviewAnchor> = {}): ApplyPreviewAnchor =>
+    MERGE_MERGED_ANCHOR({ mergeCommitHash: MERGE_COMMIT, ...o });
+  const MAIN_SYNCED_ANCHOR = (o: Partial<ApplyPreviewAnchor> = {}): ApplyPreviewAnchor =>
+    PR_MERGED_ANCHOR({ status: 'MAIN_SYNCED', syncedMainCommit: MERGE_COMMIT, mainSyncedAt: TS, mainSyncBranch: 'main', syncMode: 'ref-only', workingTreeUpdated: false, previousMainCommit: 'aaaaaaa', ...o });
+
+  it('PR_MERGED + explicit sync command → local sync preflight runs, anchors MAIN_SYNCED (CA 1/11/12)', async () => {
+    for (const text of ['main 동기화해줘', '로컬 main 최신화해줘', '머지된 main 받아와줘', 'sync main', 'update local main']) {
+      const { deps, calls } = makeDeps({ applyAnchor: PR_MERGED_ANCHOR() });
+      const r = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.gitSyncMain, text).toBe(1);
+      expect(calls.lastGitSyncMainInput?.expectedRemoteCommit, text).toBe(MERGE_COMMIT);
+      expect(calls.lastGitSyncMainInput?.remote, text).toBe('origin');
+      expect(calls.lastGitSyncMainInput?.branch, text).toBe('main');
+      const a = calls.lastApplyAnchor!;
+      expect(a.status, text).toBe('MAIN_SYNCED');
+      expect(a.syncedMainCommit, text).toBe(MERGE_COMMIT);
+      expect(typeof a.mainSyncedAt, text).toBe('string');
+      expect(a.mainSyncBranch, text).toBe('main');
+      // full PR_MERGED chain + merge evidence preserved (CA 12)
+      expect(a.pullRequestRef, text).toBeTruthy();
+      expect(a.mergeCommitHash, text).toBe(MERGE_COMMIT);
+      expect(a.mergedHeadSha, text).toBe(HEAD_SHA);
+      expect(r.reply.text, text).not.toMatch(/deployed|released|배포했|릴리즈했/i);
+    }
+  });
+
+  it('non-PR_MERGED + sync command → no sync (CA 2)', async () => {
+    for (const anchor of [PR_CREATED_ANCHOR(), MERGE_APPROVED_ANCHOR(), MERGE_PENDING_ANCHOR(), null]) {
+      const { deps, calls } = makeDeps({ applyAnchor: anchor });
+      await new ConversationRuntime(deps).handle(messageOf('main 동기화해줘'));
+      expect(calls.gitSyncMain, String(anchor?.status)).toBe(0);
+    }
+  });
+
+  it('ref-only success response says the current checkout is unchanged; never "workspace synced" (CA 13/20/26)', async () => {
+    const refOnly = gitMainSyncResultOf({ branch: 'main', expectedRemoteCommit: MERGE_COMMIT }, { syncMode: 'ref-only', workingTreeUpdated: false, previousMainCommit: 'aaaaaaa' });
+    const { deps, calls } = makeDeps({ applyAnchor: PR_MERGED_ANCHOR(), gitSyncMain: refOnly });
+    const r = await new ConversationRuntime(deps).handle(messageOf('main 동기화해줘'));
+    expect(calls.lastApplyAnchor?.syncMode).toBe('ref-only');
+    expect(calls.lastApplyAnchor?.workingTreeUpdated).toBe(false);
+    expect(r.reply.text).toContain('로컬 main ref');
+    expect(r.reply.text).toContain('현재 체크아웃한 브랜치는 그대로');
+    expect(r.reply.text).toContain('배포/릴리즈/브랜치 삭제는 하지 않았어요');
+    expect(r.reply.text).not.toMatch(/워크스페이스.*동기화|working tree is now main/i);
+  });
+
+  it('checked-out-main success response says the checked-out main was fast-forwarded (CA 19/27)', async () => {
+    const checkedOut = gitMainSyncResultOf({ branch: 'main', expectedRemoteCommit: MERGE_COMMIT }, { syncMode: 'checked-out-main', workingTreeUpdated: true, previousMainCommit: 'aaaaaaa' });
+    const { deps, calls } = makeDeps({ applyAnchor: PR_MERGED_ANCHOR(), gitSyncMain: checkedOut });
+    const r = await new ConversationRuntime(deps).handle(messageOf('로컬 main 최신화해줘'));
+    expect(calls.lastApplyAnchor?.syncMode).toBe('checked-out-main');
+    expect(calls.lastApplyAnchor?.workingTreeUpdated).toBe(true);
+    expect(r.reply.text).toContain('체크아웃된 로컬 main');
+    expect(r.reply.text).toMatch(/fast-forward/i);
+    expect(r.reply.text).toContain('깨끗');
+  });
+
+  it('missing mergeCommitHash → Blocked; NO mergedHeadSha fallback, no syncMain call (CA 4/25)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: PR_MERGED_ANCHOR({ mergeCommitHash: undefined }) });
+    const r = await new ConversationRuntime(deps).handle(messageOf('main 동기화해줘'));
+    expect(calls.gitSyncMain).toBe(0);
+    expect(calls.applyAnchorSet).toBe(0);
+    expect(r.reply.text).toContain('동기화하지 않았어요');
+  });
+
+  it('identity mismatch / base != main → Blocked, no syncMain call (CA 3)', async () => {
+    const mism = makeDeps({ applyAnchor: PR_MERGED_ANCHOR(), hostingIdentity: { provider: 'github', owner: 'evil', repo: 'widgets' } });
+    await new ConversationRuntime(mism.deps).handle(messageOf('main 동기화해줘'));
+    expect(mism.calls.gitSyncMain).toBe(0);
+    const notMain = makeDeps({ applyAnchor: PR_MERGED_ANCHOR({ pullRequestBaseBranch: 'develop' }) });
+    await new ConversationRuntime(notMain.deps).handle(messageOf('main 동기화해줘'));
+    expect(notMain.calls.gitSyncMain).toBe(0);
+  });
+
+  it('not configured (no identity) → unavailable, no syncMain call', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: PR_MERGED_ANCHOR(), hostingIdentity: null });
+    const r = await new ConversationRuntime(deps).handle(messageOf('main 동기화해줘'));
+    expect(calls.gitSyncMain).toBe(0);
+    expect(r.reply.text).toContain('동기화할 수 없어요');
+  });
+
+  it('KNOWN pre-ref-update Blocked → "not synced", stays PR_MERGED (CA 23)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: PR_MERGED_ANCHOR(), gitSyncMain: 'throw-blocked' });
+    const r = await new ConversationRuntime(deps).handle(messageOf('main 동기화해줘'));
+    expect(calls.gitSyncMain).toBe(1);
+    expect(calls.applyAnchorSet).toBe(0); // NOT anchored MAIN_SYNCED
+    expect(r.reply.text).toContain('동기화하지 않았어요');
+    expect(r.reply.text).not.toMatch(/동기화했어요|synced\b/i);
+  });
+
+  it('UNVERIFIED after ref-update (and unknown throw) → never "not synced", stays PR_MERGED (CA 14/24)', async () => {
+    for (const mode of ['throw-unverified', 'throw-generic'] as const) {
+      const { deps, calls } = makeDeps({ applyAnchor: PR_MERGED_ANCHOR(), gitSyncMain: mode });
+      const r = await new ConversationRuntime(deps).handle(messageOf('main 동기화해줘'));
+      expect(calls.gitSyncMain, mode).toBe(1);
+      expect(calls.applyAnchorSet, mode).toBe(0); // NOT MAIN_SYNCED
+      expect(r.reply.text, mode).toContain('확인하지 못했어요');
+      expect(r.reply.text, mode).not.toMatch(/동기화하지 않았|not synced/i); // must NOT claim not synced
+    }
+  });
+
+  it('MAIN_SYNCED terminal: sync → already synced; status → read-only preview keeps MAIN_SYNCED; deploy → companion (CA 15/16)', async () => {
+    const s1 = makeDeps({ applyAnchor: MAIN_SYNCED_ANCHOR() });
+    const r1 = await new ConversationRuntime(s1.deps).handle(messageOf('main 동기화해줘'));
+    expect(s1.calls.gitSyncMain).toBe(0); // no re-sync
+    expect(s1.calls.applyAnchorSet).toBe(0);
+    expect(r1.reply.text).toMatch(/이미 최신|동기화/);
+
+    const s2 = makeDeps({ applyAnchor: MAIN_SYNCED_ANCHOR() });
+    const r2 = await new ConversationRuntime(s2.deps).handle(messageOf('PR 상태 확인해줘'));
+    expect(s2.calls.hostingGetStatus).toBe(1);
+    expect(s2.calls.applyAnchorSet).toBe(0); // keeps MAIN_SYNCED
+    expect(r2.reply.text).not.toMatch(/deployed|released/i);
+
+    const s3 = makeDeps({ applyAnchor: MAIN_SYNCED_ANCHOR() });
+    const r3 = await new ConversationRuntime(s3.deps).handle(messageOf('배포해줘'));
+    expect(s3.calls.gitSyncMain).toBe(0);
+    expect(r3.reply.text).not.toMatch(/deployed|배포했|released/i);
+  });
+
+  it('sync path touches NO push/commit/merge and no branch deletion (CA 15/16/17/18)', async () => {
+    for (const mode of [undefined, 'throw-blocked', 'throw-unverified'] as const) {
+      const { deps, calls } = makeDeps({ applyAnchor: PR_MERGED_ANCHOR(), gitSyncMain: mode });
+      const r = await new ConversationRuntime(deps).handle(messageOf('main 동기화해줘'));
+      expect(calls.gitPush + calls.gitCommit + calls.hostingCreatePR + calls.hostingMergePR + calls.commandRun + calls.run, String(mode)).toBe(0);
+      // no POSITIVE deploy/release/branch-deletion claim (the success reply may say these were NOT done).
+      expect(r.reply.text, String(mode)).not.toMatch(/deployed|released|배포했|릴리즈했|삭제했|브랜치를 삭제/i);
     }
   });
 });

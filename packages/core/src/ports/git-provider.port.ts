@@ -1,4 +1,4 @@
-import type { GitCommitResult, GitDiff, GitPushResult, GitStatus, RepositoryInfo } from '../domain';
+import type { GitCommitResult, GitDiff, GitMainSyncResult, GitPushResult, GitStatus, RepositoryInfo } from '../domain';
 
 /**
  * PORT: read-only git **repository** inspection (CAP-002, ADR-0023).
@@ -55,4 +55,37 @@ export interface GitProvider {
    * `GitManager.pushApprovedCommit`; this port takes no ApprovalRef.
    */
   pushApprovedCommit(rootPath: string, remote: string, branch: string, commitHash: string): Promise<GitPushResult>;
+
+  /**
+   * READ-ONLY (CAP-002, ADR-0058 — Sprint 3h): observe the remote branch tip WITHOUT updating any local ref or the
+   * working tree (`git ls-remote`-style). Single bounded argv call, timeout, masked stderr, NO remote URL exposed.
+   * Throws on failure (the Manager maps it to a pre-mutation *Blocked*). Validates remote/branch defensively first.
+   */
+  getRemoteRefCommit(rootPath: string, remote: string, branch: string): Promise<{ commitHash: string }>;
+
+  /**
+   * READ-ONLY (CAP-002, ADR-0058 — Sprint 3h): the LOCAL branch tip (`git rev-parse refs/heads/<branch>`), or `null`
+   * when the branch does not exist. Used for the local-main-exists check + the compare-and-swap base
+   * (`previousMainCommit`). No mutation. Argument-array spawn only.
+   */
+  getLocalRefCommit(rootPath: string, branch: string): Promise<{ commitHash: string } | null>;
+
+  /**
+   * The THIRD mutating method (CAP-002, ADR-0058 — Sprint 3h) — a **fast-forward-only** local `main` sync, mode-split
+   * by the current checkout and compare-and-swap guarded against `expectedPreviousCommit`. Fetches the remote branch,
+   * then either fast-forwards the checked-out `main` (working tree/index moves) or, when another branch is checked
+   * out, fast-forwards ONLY `refs/heads/main` (no checkout switch, no working-tree change). NEVER `--force`/`-f`,
+   * NEVER `reset --hard`, NEVER a push, NEVER a branch deletion, NEVER a checkout switch. Detached HEAD, a non-
+   * fast-forward, a fetched-tip mismatch, or a moved local main BEFORE the ref update are **pre-ref-update** failures
+   * and throw `GitMainSyncBlockedError` ("not synced"); any failure AT/AFTER the ref-update attempt throws
+   * `GitMainSyncUnverifiedError` ("never say not synced"). Approval gating (if any) is the Manager's job; this port
+   * takes no ApprovalRef (mirrors commitFiles/pushApprovedCommit).
+   */
+  syncMainFastForward(
+    rootPath: string,
+    remote: string,
+    branch: string,
+    expectedRemoteCommit: string,
+    expectedPreviousCommit: string,
+  ): Promise<GitMainSyncResult>;
 }
