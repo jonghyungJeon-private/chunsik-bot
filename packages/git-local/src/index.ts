@@ -1,7 +1,10 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
-import type { GitCommitResult, GitDiff, GitProvider, GitPushResult, GitStatus, RepositoryInfo } from '@chunsik/core';
-import { isSafePushBranch, isSafePushRemote } from '@chunsik/core';
+import type { GitCommitResult, GitDiff, GitMainSyncResult, GitProvider, GitPushResult, GitStatus, RepositoryInfo } from '@chunsik/core';
+import { GitMainSyncBlockedError, GitMainSyncUnverifiedError, isSafePushBranch, isSafePushRemote } from '@chunsik/core';
+
+/** SHA-shape guard for the sync commits. */
+const SYNC_SHA_SHAPED = /^[0-9a-f]{7,40}$/i;
 
 /** Per-call git timeout (ms). */
 const GIT_TIMEOUT_MS = 5000;
@@ -287,5 +290,98 @@ export class LocalGitProvider implements GitProvider {
     const res = this.exec(rootPath, ['--no-pager', 'push', remote, `HEAD:${branch}`]);
     if (res.code !== 0) throw this.failure('push', res);
     return { remote, branch, upstreamRef: `${remote}/${branch}`, commitHash };
+  }
+
+  /** READ-ONLY (ADR-0058): the remote branch tip via `git ls-remote` — no local ref/working-tree change. */
+  async getRemoteRefCommit(rootPath: string, remote: string, branch: string): Promise<{ commitHash: string }> {
+    if (!isSafePushRemote(remote) || !isSafePushBranch(branch)) throw new Error('git ls-remote rejects an unsafe target');
+    const res = this.exec(rootPath, ['--no-pager', 'ls-remote', '--exit-code', remote, `refs/heads/${branch}`]);
+    if (res.code !== 0) throw this.failure('ls-remote', res);
+    const sha = res.stdout.trim().split(/\s+/)[0] ?? '';
+    if (!SYNC_SHA_SHAPED.test(sha)) throw new Error('git ls-remote returned an invalid commit');
+    return { commitHash: sha };
+  }
+
+  /** READ-ONLY (ADR-0058): the local branch tip, or null when the branch does not exist. */
+  async getLocalRefCommit(rootPath: string, branch: string): Promise<{ commitHash: string } | null> {
+    if (!isSafePushBranch(branch)) throw new Error('git rev-parse rejects an unsafe branch');
+    const res = this.exec(rootPath, ['--no-pager', 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]);
+    if (res.code !== 0) return null; // branch does not exist
+    const sha = res.stdout.trim();
+    if (!SYNC_SHA_SHAPED.test(sha)) throw new Error('git rev-parse returned an invalid commit');
+    return { commitHash: sha };
+  }
+
+  /**
+   * The THIRD mutating git operation (CAP-002, ADR-0058) — a FAST-FORWARD-ONLY local `main` sync, mode-split by the
+   * current checkout, compare-and-swap guarded on `expectedPreviousCommit`. Argument-array only (no shell). NEVER
+   * `--force`/`-f`, NEVER `reset --hard`, NEVER a push, NEVER a checkout switch (ref-only), NEVER a branch deletion.
+   * PHASE-AWARE errors (CA change 2/3): fetch / fetched-tip mismatch / non-fast-forward / detached / CAS-precheck
+   * failures are PRE-ref-update → GitMainSyncBlockedError; the ff-only merge / update-ref and the read-back are the
+   * ref-update phase → GitMainSyncUnverifiedError on failure.
+   */
+  async syncMainFastForward(
+    rootPath: string,
+    remote: string,
+    branch: string,
+    expectedRemoteCommit: string,
+    expectedPreviousCommit: string,
+  ): Promise<GitMainSyncResult> {
+    // Defensive (throws plain Error → Manager treats as pre-mutation; but these are backstops — the Manager pre-validated).
+    if (!isSafePushRemote(remote)) throw new GitMainSyncBlockedError('git main sync rejects an unsafe remote');
+    if (!isSafePushBranch(branch)) throw new GitMainSyncBlockedError('git main sync rejects an unsafe branch');
+    if (!SYNC_SHA_SHAPED.test(expectedRemoteCommit) || !SYNC_SHA_SHAPED.test(expectedPreviousCommit)) {
+      throw new GitMainSyncBlockedError('git main sync rejects an invalid commit');
+    }
+
+    // ── PRE-ref-update phase → GitMainSyncBlockedError on any failure (nothing local moved). ────────────────
+    // 1. bounded fetch of the remote branch (updates FETCH_HEAD / remote-tracking ref; no working-tree change).
+    const fetchRes = this.exec(rootPath, ['--no-pager', 'fetch', '--no-tags', remote, branch]);
+    if (fetchRes.code !== 0) throw new GitMainSyncBlockedError(`git main sync: fetch failed: ${sanitizeGitStderr(fetchRes.stderr)}`);
+    // 2. verify the fetched tip equals the expected remote commit (else stale).
+    const fetched = this.exec(rootPath, ['--no-pager', 'rev-parse', '--verify', '--quiet', 'FETCH_HEAD']);
+    if (fetched.code !== 0 || fetched.stdout.trim() !== expectedRemoteCommit) {
+      throw new GitMainSyncBlockedError('git main sync: fetched remote tip does not match the expected commit; not synchronized');
+    }
+    // 3. verify fast-forward is possible: previous main is an ancestor of the expected commit.
+    const anc = this.exec(rootPath, ['--no-pager', 'merge-base', '--is-ancestor', expectedPreviousCommit, expectedRemoteCommit]);
+    if (anc.code === 1) throw new GitMainSyncBlockedError('git main sync: not a fast-forward (local main is not an ancestor); not synchronized');
+    if (anc.code !== 0) throw new GitMainSyncBlockedError('git main sync: could not determine fast-forward safety; not synchronized');
+    // 4. current checkout → mode; detached HEAD → Blocked.
+    const sym = this.exec(rootPath, ['--no-pager', 'symbolic-ref', '--quiet', '--short', 'HEAD']);
+    const attached = sym.code === 0 && sym.stdout.trim() !== '';
+    if (!attached) throw new GitMainSyncBlockedError('git main sync: HEAD is detached; not synchronized');
+    const currentBranch = sym.stdout.trim();
+    const syncMode: GitMainSyncResult['syncMode'] = currentBranch === branch ? 'checked-out-main' : 'ref-only';
+    // 5. CAS precheck: local main is still the observed previous commit (else it moved before the update).
+    const localNow = this.exec(rootPath, ['--no-pager', 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]);
+    if (localNow.code !== 0 || localNow.stdout.trim() !== expectedPreviousCommit) {
+      throw new GitMainSyncBlockedError('git main sync: local main moved before the update; not synchronized');
+    }
+
+    // Already up to date → no ref move (still a success; no working-tree change).
+    if (expectedPreviousCommit === expectedRemoteCommit) {
+      return { branch, syncMode, workingTreeUpdated: false, syncedCommitHash: expectedRemoteCommit, previousMainCommit: expectedPreviousCommit, alreadyUpToDate: true };
+    }
+
+    // ── REF-UPDATE phase (+ read-back) → GitMainSyncUnverifiedError on any failure (the ref may have moved). ─
+    let workingTreeUpdated: boolean;
+    if (syncMode === 'checked-out-main') {
+      // ff-only merge moves the checked-out main + working tree/index (never a merge commit, never a reset).
+      const ff = this.exec(rootPath, ['--no-pager', 'merge', '--ff-only', expectedRemoteCommit]);
+      if (ff.code !== 0) throw new GitMainSyncUnverifiedError(`git main sync: fast-forward merge could not be verified: ${sanitizeGitStderr(ff.stderr)}`);
+      workingTreeUpdated = true;
+    } else {
+      // ref-only: git-native CAS update of refs/heads/main; the current checkout/working tree are untouched.
+      const upd = this.exec(rootPath, ['--no-pager', 'update-ref', `refs/heads/${branch}`, expectedRemoteCommit, expectedPreviousCommit]);
+      if (upd.code !== 0) throw new GitMainSyncUnverifiedError(`git main sync: ref update could not be verified: ${sanitizeGitStderr(upd.stderr)}`);
+      workingTreeUpdated = false;
+    }
+    // read back the local main commit and verify it reached the expected commit.
+    const after = this.exec(rootPath, ['--no-pager', 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]);
+    if (after.code !== 0 || after.stdout.trim() !== expectedRemoteCommit) {
+      throw new GitMainSyncUnverifiedError('git main sync: local main did not reach the expected commit');
+    }
+    return { branch, syncMode, workingTreeUpdated, syncedCommitHash: expectedRemoteCommit, previousMainCommit: expectedPreviousCommit, alreadyUpToDate: false };
   }
 }

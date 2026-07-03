@@ -76,6 +76,31 @@ export interface GitPushResult {
 }
 
 /**
+ * Result of a post-merge local `main` synchronization (CAP-002, ADR-0058 — Sprint 3h). Returned by
+ * `GitProvider.syncMainFastForward`/`GitManager.syncMain`. **Fast-forward only** — never a force/hard-reset. NOT an
+ * independent verification of the remote; it reports what the LOCAL sync did this run. `syncMode` distinguishes a
+ * checked-out-main fast-forward (working tree/index moved) from a ref-only fast-forward (only `refs/heads/main`
+ * moved; the current checkout/working tree untouched). `MAIN_SYNCED` means local main reached `syncedCommitHash` —
+ * never deployed/released/branch-deleted.
+ */
+export interface GitMainSyncResult {
+  /** The local ref synchronized (always 'main' per policy). */
+  branch: string;
+  /** Which strategy ran (ADR-0058, CA change 1). `checked-out-main` = the current checkout WAS main; `ref-only` =
+   *  the current checkout was another branch, so only `refs/heads/main` was fast-forwarded. */
+  syncMode: 'checked-out-main' | 'ref-only';
+  /** True only in `checked-out-main` mode when the fast-forward moved the working tree/index (false when
+   *  already up to date, and always false in `ref-only` mode). */
+  workingTreeUpdated: boolean;
+  /** The local main commit after the fast-forward (equals the expected remote main tip). */
+  syncedCommitHash: string;
+  /** The local main commit BEFORE the fast-forward (the CAS base; for the response/audit — ADR-0058, CA change 3). */
+  previousMainCommit: string;
+  /** True when local main already equalled the expected commit (no ref move happened). */
+  alreadyUpToDate: boolean;
+}
+
+/**
  * Minimal, read-only repository metadata (CAP-002). Intentionally **excludes
  * remote URLs** — HTTPS remotes can embed credentials; exposing them needs a
  * future masking policy + ADR (ADR-0023).

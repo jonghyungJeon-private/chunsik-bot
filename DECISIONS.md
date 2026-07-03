@@ -3729,3 +3729,75 @@ ADR-0055 (mirrors the integrity-checked point-in-time read; the read-only status
 ADR-0052/0053 (extends the `RepositoryHostingProvider` port + Manager + GitHub adapter), ADR-0025 (CAP-004
 Approval — `get`/`APPROVED`/`ApprovalRef`), ADR-0023 (Git local-only; merge is a hosting mutation).
 Plan: `docs/plans/sprint-3g-pr-merge-execution-preflight-plan.md`.
+
+## ADR-0058 — Post-Merge Local Main Synchronization (fast-forward-only local main sync from PR_MERGED)
+
+- **Status:** ✅ Accepted (v2, Phase 3, Sprint 3h — Product Construction), Chief Architect plan review:
+  APPROVED WITH CHANGES (all 6 required changes applied) → implemented.
+- **Date:** 2026-07-04
+- **Scope:** From a live `PR_MERGED` anchor, an explicit sync command synchronizes the **local** workspace
+  repository's `main` ref to the expected post-merge remote `main` commit — **fast-forward only**, via the **Git**
+  capability (CAP-002), never a shell. Closes the "remote main advanced but the local workspace is on an old head"
+  gap. Mirrors the ADR-0054 remote-mutation safety model, applied to local Git.
+
+### Most important rule
+> **A local main sync is a fast-forward of the LOCAL `main` ref — and nothing else.** `MAIN_SYNCED` means local
+> main reached the expected commit this run; it does **NOT** mean deployed / released / production-ready /
+> branch-deleted / remote-branch-cleaned / CI-permanently-verified / current-feature-branch-merged, and it does
+> **not** unlock deploy/release. No force/`--force`/`reset --hard` (no hard reset), no branch deletion (local/
+> remote/GitHub), no remote push, no PR mutation, no `CommandExecution`/shell, no `ExecutionOrchestrator`/
+> `WorkspaceWrite`/`Patch`/`CodeGeneration` change. If a fast-forward is not possible → **block, never force**.
+> Unknown failure after the local ref-update attempt is **unverified**, never "not synced".
+
+### Decision
+- **State (Q1, CA change 1).** Add `MAIN_SYNCED` only (terminal). New anchor fields (required on `MAIN_SYNCED`):
+  `syncedMainCommit`, `mainSyncedAt` (**runtime record timestamp**, `now()`), `mainSyncBranch` ('main'), `syncMode`
+  (`checked-out-main` | `ref-only`), `workingTreeUpdated`, `previousMainCommit` (CAS base). Preserves the full
+  `PR_MERGED` chain + merge evidence.
+- **Trigger (Q3).** Only at `PR_MERGED`/`MAIN_SYNCED`. `interpretMainSyncIntent` = a sync verb (동기화/최신화/받아와/
+  sync/pull/update main) AND a main target; a bare "sync"/"main" alone does not trigger. Checked BEFORE the 3g
+  already-merged routing so "머지된 main 받아와줘" syncs (not read as a merge phrase). A sync phrase in any other
+  state never syncs.
+- **Ownership (Q2).** The **Git capability** owns the sync primitives; `ConversationRuntime` only composes. New:
+  `GitProvider.getRemoteRefCommit` (read-only `ls-remote`), `GitProvider.getLocalRefCommit` (read-only
+  `rev-parse`), `GitProvider.syncMainFastForward` (the single mutating primitive), `GitManager.syncMain`
+  (orchestrates the preflight + the single mutation; **no ApprovalRef** — a local, non-destructive, ff-only ref
+  move gated by PR_MERGED + explicit command + preflight). No new capability, no shell, no ExecutionOrchestrator.
+- **Strategy (Q4, CA change 1) — mode split + CAS (CA change 3).** Fast-forward only; no hard reset, no force.
+  `current==main` → **checked-out-main** ff (working tree/index moved by `git merge --ff-only`); `current!=main`
+  → **ref-only** ff of `refs/heads/main` (`git update-ref <new> <old>` CAS; no checkout switch, no working-tree
+  change); detached HEAD → Block; non-ff → Block. The local ref update is compare-and-swap against the observed
+  `previousMainCommit`; moved-before → Block, moved-during/after → Unverified.
+- **Expected remote tip (Q5, CA change 4).** The expected remote `main` tip is `PR_MERGED.mergeCommitHash`;
+  **absent → Block, with NO fallback to `mergedHeadSha`** ("ChunsikBot cannot prove which remote main commit
+  should be synchronized"). A future sprint may add a bounded ancestry policy.
+- **Preflight (14 checks).** Runtime: `PR_MERGED` + identity match + base=='main' + `mergedHeadSha` +
+  `mergeCommitHash` + rootPath. Manager: isRepository + clean/no-untracked/no-staged/no-unstaged/no-unmerged +
+  not-detached + local main exists (CAS base) + remote main observed + remote tip == expected + bounded. All
+  pre-ref-update failures → *Blocked*.
+- **Failure semantics (Q5, CA change 2) — phase-aware.** KNOWN pre-ref-update failure → `GitMainSyncBlockedError`
+  ("not synced"); any failure AT/AFTER the local ref-update attempt → `GitMainSyncUnverifiedError` (never "not
+  synced"). The provider throws phase-aware typed errors; the Manager propagates Blocked as Blocked and
+  Unverified/unknown as Unverified — it does **not** blanket-convert. Every failure keeps `PR_MERGED`.
+- **Response wording (Q8, CA change 5).** Mode-aware: ref-only says "local main ref synchronized, current checkout
+  unchanged, working tree remained clean"; checked-out-main says "checked-out main fast-forwarded, working tree
+  updated, clean after sync". Never "workspace synced"/"working tree is now main". Every path states what was NOT
+  done (deploy/release/branch deletion). Composers: `composeMainSyncSucceeded`/`Blocked`/`Unverified`/`Unavailable`.
+- **Out of scope (Q6/Q7).** No branch deletion (local/remote/GitHub), no deploy/release/tag, no force/reset/push,
+  no PR mutation, no RepositoryHosting change, no CommandExecution/shell, no ExecutionOrchestrator/WorkspaceWrite/
+  Patch/CodeGeneration change. `MAIN_SYNCED` does not unlock deploy/release.
+
+### Consequences
+- + The product can now bring the local workspace's `main` to the merged commit safely (ff-only, mode-split,
+  CAS-guarded, phase-aware), closing the post-merge local-state gap without any destructive Git operation.
+- − `domain`/`GitProvider`/`GitManager`/`ConversationRuntime`/`ResponseComposer`/`git-local` gain the sync surface
+  (one new terminal state, three provider methods, one manager method + two typed errors, one runtime handler,
+  four composers). Nothing deploys/releases/deletes; `main` is never force-moved.
+
+### Relations
+ADR-0057 (consumes the `PR_MERGED` anchor + `mergeCommitHash`/`mergedHeadSha`/`pullRequestBaseBranch`/
+`repositoryIdentity` as the sole trigger source + sync evidence), ADR-0054/0048/0046 (extends the remote-mutation
+Blocked-vs-Unverified rule; the third Git mutation, single bounded argv, adapter-side, no shell), ADR-0055 (mirrors
+the point-in-time read shape; the read-only status preview also serves `MAIN_SYNCED`), ADR-0023/0047 (Git =
+local-only repository capability; `GitStatus` fields reused). Plan:
+`docs/plans/sprint-3h-post-merge-local-main-sync-plan.md`.

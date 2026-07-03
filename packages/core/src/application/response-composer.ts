@@ -1690,4 +1690,64 @@ export class ResponseComposer {
       text: '배포/릴리즈/리뷰어/라벨/담당자 변경, 브랜치 삭제 등은 이후 단계예요. 지금은 하지 않았어요.',
     };
   }
+
+  // ── Sprint 3h (ADR-0058): post-merge LOCAL main sync. Never "deployed/released/branch-deleted". ──
+
+  /** Local main sync SUCCEEDED (Sprint 3h) — mode-aware wording (CA change 5). Never says "workspace synced" or
+   *  "working tree is now main"; distinguishes ref-only (current checkout untouched) from checked-out-main. */
+  composeMainSyncSucceeded(
+    context: ConversationContext,
+    input: {
+      syncMode: 'checked-out-main' | 'ref-only';
+      syncedCommitHash: string;
+      previousMainCommit: string;
+      workingTreeUpdated: boolean;
+      alreadyUpToDate: boolean;
+    },
+  ): OutboundMessage {
+    const reached = input.syncedCommitHash.slice(0, 7);
+    const lines: string[] =
+      input.syncMode === 'checked-out-main'
+        ? [
+            input.alreadyUpToDate
+              ? `체크아웃된 로컬 main은 이미 최신이에요 (${reached}). 옮길 게 없었어요.`
+              : `체크아웃된 로컬 main을 ${reached}로 fast-forward 했어요. 워킹트리가 fast-forward로 갱신됐어요.`,
+            '동기화 후에도 워킹트리는 깨끗해요.',
+          ]
+        : [
+            input.alreadyUpToDate
+              ? `로컬 main ref는 이미 최신이에요 (${reached}). 옮길 게 없었어요.`
+              : `로컬 main ref를 ${reached}로 동기화했어요.`,
+            '현재 체크아웃한 브랜치는 그대로예요 (변경하지 않았어요). 워킹트리도 깨끗해요.',
+          ];
+    lines.push('로컬 main만 fast-forward 했어요. 배포/릴리즈/브랜치 삭제는 하지 않았어요.');
+    return { context, text: clampToMessageBudget(lines.join('\n')) };
+  }
+
+  /** A KNOWN pre-ref-update block (dirty/untracked/staged tree, detached HEAD, remote read failure, remote main !=
+   *  expected merge, non-fast-forward, local main moved, no local main, no mergeCommitHash). Definitively NOT
+   *  synchronized. Never claims synced. (Sprint 3h) */
+  composeMainSyncBlocked(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '로컬 main을 동기화하지 않았어요. 워킹트리가 깨끗하지 않거나(스테이징/추적되지 않은 파일/detached HEAD), 원격 main을 확인할 수 없거나 기대한 머지 커밋과 다르거나 fast-forward가 불가능해서, 안전을 위해 진행하지 않았어요. git status로 확인해 주세요. (배포/릴리즈/브랜치 삭제도 하지 않았어요)',
+    };
+  }
+
+  /** Local main sync UNVERIFIED (Sprint 3h) — the ref-update was attempted but could not be confirmed. MUST NOT
+   *  say "not synced" and MUST NOT say "synced" — ask the user to check git status/log. */
+  composeMainSyncUnverified(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '로컬 main 동기화를 시도했지만 결과를 확인하지 못했어요. 옮겨졌을 수도, 아닐 수도 있어요 — git status / git log로 로컬 main을 확인해 주세요. (배포/릴리즈는 하지 않았어요)',
+    };
+  }
+
+  /** Local main sync not available — repository/identity not configured (Sprint 3h). No state change. */
+  composeMainSyncUnavailable(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '로컬 main을 동기화할 수 없어요. 저장소 또는 설정을 확인해 주세요. (아무것도 변경하지 않았어요)',
+    };
+  }
 }

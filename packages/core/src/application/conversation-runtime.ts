@@ -1,5 +1,6 @@
 import { describeAiFailure } from './ai-failure';
 import { RepositoryHostingBlockedError } from './repository-hosting-manager';
+import { GitMainSyncBlockedError, GitMainSyncUnverifiedError } from './git-manager';
 import {
   ApprovalStatus,
   Capability,
@@ -37,6 +38,7 @@ import type {
   GenerateCodeInput,
   GitCommitResult,
   GitDiff,
+  GitMainSyncResult,
   GitPushResult,
   GitStatus,
   RepositoryInfo,
@@ -252,11 +254,17 @@ export type ApplyPreviewAnchorStatus =
   | 'MERGE_APPROVED'
   /**
    * The approved Pull Request was merged on the hosting provider DURING THIS RUN — or the exact approved head was
-   * observed already merged during this run's live preflight (Sprint 3g, ADR-0057). Terminal for this chain.
-   * NOT deployed, NOT released, NOT production-ready, NOT branch-deleted, NOT CI-permanently-verified, NOT
-   * local-main-synced.
+   * observed already merged during this run's live preflight (Sprint 3g, ADR-0057). NOT deployed, NOT released,
+   * NOT production-ready, NOT branch-deleted, NOT CI-permanently-verified, NOT local-main-synced. From Sprint 3h,
+   * an explicit sync command here fast-forwards the LOCAL main.
    */
-  | 'PR_MERGED';
+  | 'PR_MERGED'
+  /**
+   * The LOCAL workspace repository's `main` ref was synchronized (fast-forward) to the expected post-merge remote
+   * `main` commit DURING THIS RUN (Sprint 3h, ADR-0058). Terminal for this chain. NOT deployed, NOT released, NOT
+   * production-ready, NOT branch-deleted, NOT remote-branch-cleaned, NOT CI-permanently-verified.
+   */
+  | 'MAIN_SYNCED';
 
 /**
  * Anchored fact set for "a diff preview was shown; the user may explicitly ask to apply it" (Sprint 2s,
@@ -386,6 +394,20 @@ export interface ApplyPreviewAnchor {
   mergedHeadSha?: string;
   /** Provider-reported merge commit SHA (Sprint 3g) — optional (provider-dependent). */
   mergeCommitHash?: string;
+  /** The local main commit reached after the post-merge fast-forward (Sprint 3h, ADR-0058) — REQUIRED at
+   *  MAIN_SYNCED; equals the expected remote main tip (== mergeCommitHash). */
+  syncedMainCommit?: string;
+  /** The RUNTIME record timestamp of the local main sync (Sprint 3h) — REQUIRED at MAIN_SYNCED (now()). */
+  mainSyncedAt?: IsoTimestamp;
+  /** The local ref synchronized (Sprint 3h) — REQUIRED at MAIN_SYNCED (always 'main' per PR_BASE_BRANCH_POLICY). */
+  mainSyncBranch?: string;
+  /** Which sync strategy ran (Sprint 3h, CA change 1) — REQUIRED at MAIN_SYNCED. */
+  syncMode?: 'checked-out-main' | 'ref-only';
+  /** Whether the fast-forward moved the working tree (Sprint 3h, CA change 1) — REQUIRED at MAIN_SYNCED; true only
+   *  in checked-out-main mode. */
+  workingTreeUpdated?: boolean;
+  /** The local main commit BEFORE the fast-forward (Sprint 3h, CA change 3) — REQUIRED at MAIN_SYNCED (CAS base). */
+  previousMainCommit?: string;
 }
 
 /**
@@ -523,6 +545,10 @@ export interface ConversationRuntimeDeps {
      *  ONLY remote mutation; Ref-gated (APPROVED), pushes exactly the approved commit to the approved
      *  upstream (`git push <remote> HEAD:<branch>`), never force/tags/all/-u, never a PR/deploy. */
     pushApprovedCommit(input: { rootPath: string; remote: string; branch: string; commitHash: string; approvalRef: ApprovalRef }): Promise<GitPushResult>;
+    /** Post-merge LOCAL main synchronization (Sprint 3h, ADR-0058) — the same already-registered GitManager.
+     *  Fast-forward-only; NO ApprovalRef (local, non-destructive, gated by PR_MERGED + explicit command +
+     *  preflight). The runtime calls this ONLY — never the provider primitives, never shells to git. */
+    syncMain(input: { rootPath: string; remote: string; branch: string; expectedRemoteCommit: string }): Promise<GitMainSyncResult>;
   };
   /**
    * Repository Hosting (CAP-010, Sprint 3d-D, ADR-0054) — actual PR creation execution. OPTIONAL: absent/empty
@@ -695,6 +721,13 @@ const MERGE_REQUEST_VERB = /(승인|approve|approval|요청|받아|해줘|해\s*
 // a direct merge imperative (해줘/실행/실제/지금/승인된/now/execute/merge this/approved) IS an execution command. A
 // bare "머지"/"merge" noun (no verb) is NOT execution (→ composeMergeAlreadyApproved).
 const MERGE_EXECUTION_VERB = /(해줘|해\s*줘|실제|실행|지금|승인된|\bnow\b|\bexecute\b|merge\s+this|\bapproved\b)/i;
+// Post-merge LOCAL main sync (Sprint 3h, ADR-0058) — only consulted at PR_MERGED/MAIN_SYNCED. A sync command needs
+// a sync VERB (동기화/최신화/받아와/sync/pull/update ... main) AND a MAIN target — a bare "sync"/"pull" or a bare "main"
+// alone never triggers.
+const SYNC_WORD = /(동기화|최신화|받아와|받아\s*줘|\bsync\b|\bpull\b|update\s+(local\s+)?main|당겨)/i;
+const MAIN_WORD = /(\bmain\b|메인|origin\/main)/i;
+/** The origin to sync local main from (github.com origin; fixed like PR_BASE_BRANCH_POLICY). */
+const MAIN_SYNC_REMOTE = 'origin';
 
 /** A PR-ish noun (Sprint 3b, ADR-0049) — only ever consulted at GIT_PUSHED/PR_APPROVAL_PENDING/PR_APPROVED.
  *  A bare 좋아/오케이/확인/진행해/다음 단계 never matches. A noun ALONE is not a PR-creation request (CA #1). */
@@ -1253,6 +1286,19 @@ export class ConversationRuntime {
   }
 
   /**
+   * Explicit post-merge LOCAL main sync intent (Sprint 3h, ADR-0058) — only consulted at PR_MERGED / MAIN_SYNCED.
+   * Requires a sync verb (동기화/최신화/받아와/sync/pull/update main) AND a main target — so a bare "sync"/"pull" or a
+   * bare "main" alone does not trigger. Covers "main 동기화해줘"/"로컬 main 최신화해줘"/"머지된 main 받아와줘"/"sync main"/
+   * "update local main".
+   */
+  static interpretMainSyncIntent(text: string): 'sync' | null {
+    const t = text.trim().toLowerCase();
+    if (!SYNC_WORD.test(t)) return null;
+    if (MAIN_WORD.test(t) || /update\s+(local\s+)?main/.test(t)) return 'sync';
+    return null;
+  }
+
+  /**
    * Resolve the commit message for a commit-approval turn (Sprint 2x, CA #6/#7/#8). If the text carries a
    * user message (a single quoted segment after a `메시지`/`message` keyword) it is accepted only when it is
    * exactly one candidate, single-line, ≤120 chars, control-char-free, and trimmed non-empty — otherwise
@@ -1428,9 +1474,37 @@ export class ConversationRuntime {
         return this.handleMergeApprovedCompanionUnsupportedTurn(message, session);
       }
     }
-    // (Sprint 3g, ADR-0057) Terminal PR_MERGED: a status/check phrase → read-only preview (keeps PR_MERGED); any
-    // merge phrase → already merged (NO new mutation); deploy/release/companion → unsupported future step.
+    // (Sprint 3g/3h) PR_MERGED, in order: an explicit LOCAL main sync command → fast-forward sync (Sprint 3h,
+    // checked FIRST so "머지된 main 받아와줘" syncs rather than being read as a merge phrase); a status/check phrase →
+    // read-only preview (keeps PR_MERGED); any merge phrase → already merged (NO new mutation); deploy/release/
+    // companion → unsupported future step.
     if (applyAnchor?.status === 'PR_MERGED') {
+      if (ConversationRuntime.interpretMainSyncIntent(message.text) === 'sync') {
+        return this.handleMainSyncTurn(message, session, actor, applyAnchor);
+      }
+      if (
+        ConversationRuntime.interpretPrStatusIntent(message.text) ||
+        ConversationRuntime.interpretMergeStatusIntent(message.text)
+      ) {
+        return this.handlePrStatusPreviewTurn(message, session, applyAnchor);
+      }
+      if (
+        ConversationRuntime.interpretMergeExecutionIntent(message.text) === 'execute' ||
+        MERGE_WORD.test(message.text)
+      ) {
+        return this.handleMergeAlreadyMergedTurn(message, session, applyAnchor);
+      }
+      if (DEPLOY_ONLY_WORDS.test(message.text) || PR_CREATED_COMPANION_WORDS.test(message.text)) {
+        return this.handleMergeExecutionUnsupportedCompanionTurn(message, session);
+      }
+    }
+    // (Sprint 3h, ADR-0058) Terminal MAIN_SYNCED: a sync command → already synced (no mutation); a status/check
+    // phrase → read-only preview (keeps MAIN_SYNCED); any merge phrase → already merged; deploy/release/companion →
+    // unsupported future step. NEVER re-syncs/merges/deploys.
+    if (applyAnchor?.status === 'MAIN_SYNCED') {
+      if (ConversationRuntime.interpretMainSyncIntent(message.text) === 'sync') {
+        return this.handleMainAlreadySyncedTurn(message, session, applyAnchor);
+      }
       if (
         ConversationRuntime.interpretPrStatusIntent(message.text) ||
         ConversationRuntime.interpretMergeStatusIntent(message.text)
@@ -3330,7 +3404,10 @@ export class ConversationRuntime {
     // caller's state (PR_CREATED / MERGE_APPROVED / PR_MERGED) is preserved.
     const ref = anchor.pullRequestRef;
     if (
-      (anchor.status !== 'PR_CREATED' && anchor.status !== 'MERGE_APPROVED' && anchor.status !== 'PR_MERGED') ||
+      (anchor.status !== 'PR_CREATED' &&
+        anchor.status !== 'MERGE_APPROVED' &&
+        anchor.status !== 'PR_MERGED' &&
+        anchor.status !== 'MAIN_SYNCED') ||
       !ref ||
       !anchor.repositoryIdentity ||
       !anchor.pullRequestHeadBranch ||
@@ -3648,6 +3725,94 @@ export class ConversationRuntime {
   /** A deploy/release/reviewer/label/assignee/branch-deletion phrase at PR_MERGED (Sprint 3g) — unsupported future step; no mutation. */
   private async handleMergeExecutionUnsupportedCompanionTurn(message: InboundMessage, session: Session): Promise<TurnResult> {
     const reply = this.deps.composer.composeMergeExecutionUnsupportedCompanion(message.context);
+    return this.respondComposed(message, session, reply);
+  }
+
+  /**
+   * Post-merge LOCAL main synchronization from PR_MERGED (Sprint 3h, ADR-0058) — fast-forward-only. Re-validates the
+   * PR_MERGED evidence + the anchored identity, then calls the Git Manager (which runs the local + remote preflight
+   * and makes at most ONE fast-forward mutation). Calls the manager only (never the provider primitives, never
+   * shells to git), passes NO ApprovalRef. Failure is SAFE and PHASE-AWARE: a KNOWN pre-ref-update
+   * GitMainSyncBlockedError may say "not synchronized"; a GitMainSyncUnverifiedError (and any unknown throw) is
+   * UNVERIFIED (never "not synced"). Keeps PR_MERGED on every failure path. No deploy/release/branch deletion.
+   */
+  private async handleMainSyncTurn(
+    message: InboundMessage,
+    session: Session,
+    actor: Actor,
+    anchor: ApplyPreviewAnchor,
+  ): Promise<TurnResult> {
+    const identity = this.deps.repositoryHosting?.identity;
+    // Not configured: no resolved identity → cannot verify we are syncing the right repository. Safe not-configured.
+    if (!identity) {
+      return this.respondComposed(message, session, this.deps.composer.composeMainSyncUnavailable(message.context));
+    }
+    // Anchor/context preflight (checks 1–5, 10). Any missing/mismatch → Blocked (definitively not synced).
+    if (
+      anchor.status !== 'PR_MERGED' ||
+      !anchor.repositoryIdentity ||
+      anchor.repositoryIdentity.provider !== identity.provider ||
+      anchor.repositoryIdentity.owner !== identity.owner ||
+      anchor.repositoryIdentity.repo !== identity.repo ||
+      anchor.pullRequestBaseBranch !== PR_BASE_BRANCH_POLICY ||
+      !anchor.mergedHeadSha ||
+      !anchor.mergeCommitHash || // CA change 4 — require the exact merge commit; NO mergedHeadSha fallback
+      !anchor.workspaceRef?.rootPath
+    ) {
+      this.logPrApprovalFailed(session, anchor, 'main sync context incomplete');
+      return this.failComposed(message, session, this.deps.composer.composeMainSyncBlocked(message.context));
+    }
+    let result: GitMainSyncResult;
+    try {
+      result = await this.deps.git.syncMain({
+        rootPath: anchor.workspaceRef.rootPath,
+        remote: MAIN_SYNC_REMOTE,
+        branch: PR_BASE_BRANCH_POLICY,
+        expectedRemoteCommit: anchor.mergeCommitHash,
+      });
+    } catch (err) {
+      // Phase-aware: only a KNOWN pre-ref-update BlockedError may say "not synced"; an UnverifiedError AND any
+      // unknown throw are UNVERIFIED (the local ref may have moved). Keep PR_MERGED on every failure path.
+      if (err instanceof GitMainSyncBlockedError) {
+        this.logPrApprovalFailed(session, anchor, 'main sync blocked before ref update');
+        return this.failComposed(message, session, this.deps.composer.composeMainSyncBlocked(message.context));
+      }
+      void (err instanceof GitMainSyncUnverifiedError);
+      this.logPrApprovalFailed(session, anchor, 'main sync unverified (ref-update ambiguity)');
+      return this.failComposed(message, session, this.deps.composer.composeMainSyncUnverified(message.context));
+    }
+    // Success → anchor MAIN_SYNCED, preserving the full PR_MERGED chain + merge evidence; mainSyncedAt is the
+    // RUNTIME record timestamp.
+    await this.deps.applyPreviewFlow.anchor(session, {
+      ...anchor,
+      status: 'MAIN_SYNCED',
+      syncedMainCommit: result.syncedCommitHash,
+      mainSyncedAt: now(),
+      mainSyncBranch: result.branch,
+      syncMode: result.syncMode,
+      workingTreeUpdated: result.workingTreeUpdated,
+      previousMainCommit: result.previousMainCommit,
+    });
+    void actor;
+    const reply = this.deps.composer.composeMainSyncSucceeded(message.context, {
+      syncMode: result.syncMode,
+      syncedCommitHash: result.syncedCommitHash,
+      previousMainCommit: result.previousMainCommit,
+      workingTreeUpdated: result.workingTreeUpdated,
+      alreadyUpToDate: result.alreadyUpToDate,
+    });
+    return this.respondComposed(message, session, reply);
+  }
+
+  /** A sync command at MAIN_SYNCED (Sprint 3h) — local main is already synchronized; no new mutation. */
+  private async handleMainAlreadySyncedTurn(message: InboundMessage, session: Session, anchor: ApplyPreviewAnchor): Promise<TurnResult> {
+    const reply = this.deps.composer.composeMainSyncSucceeded(message.context, {
+      syncMode: anchor.syncMode ?? 'ref-only',
+      syncedCommitHash: anchor.syncedMainCommit ?? '',
+      previousMainCommit: anchor.previousMainCommit ?? anchor.syncedMainCommit ?? '',
+      workingTreeUpdated: anchor.workingTreeUpdated ?? false,
+      alreadyUpToDate: true,
+    });
     return this.respondComposed(message, session, reply);
   }
 
