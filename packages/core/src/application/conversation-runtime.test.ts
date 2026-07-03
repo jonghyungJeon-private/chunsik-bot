@@ -4336,16 +4336,28 @@ describe('Explicit PR Creation Approval — runtime (Sprint 3b, ADR-0049)', () =
     expect(r.reply.text).not.toContain('PR을 만들었어요');
   });
 
-  it('blocked manager error → "PR not created"; unverified error → does NOT say "not created" (CA change 6 / tests 91–95)', async () => {
+  it('ONLY a known BlockedError says "PR not created"; Unverified + generic + non-Error → safe unverified (3d-D impl review)', async () => {
+    // 1. Known pre-mutation BlockedError → "PR은 만들지 않았어요" allowed; no PR_CREATED.
     const blocked = makeDeps({ applyAnchor: prApprovedAnchor(), approvalsGetResult: APPROVED_REQ(), hostingManager: { async createPullRequest() { throw new RepositoryHostingBlockedError('x'); } } });
     const rb = await new ConversationRuntime(blocked.deps).handle(messageOf('PR 만들어줘'));
     expect(rb.reply.text).toBe(composer.composePrCreationBlocked(CTX).text);
     expect(rb.reply.text).toContain('PR은 만들지 않았어요');
-    const unver = makeDeps({ applyAnchor: prApprovedAnchor(), approvalsGetResult: APPROVED_REQ(), hostingManager: { async createPullRequest() { throw new RepositoryHostingUnverifiedError('x'); } } });
-    const ru = await new ConversationRuntime(unver.deps).handle(messageOf('PR 만들어줘'));
-    expect(ru.reply.text).toBe(composer.composePrCreationUnverified(CTX).text);
-    expect(ru.reply.text).not.toContain('PR은 만들지 않았어요');
-    expect(ru.reply.text).toContain('확인하지 못했어요');
+    expect(blocked.calls.lastApplyAnchor?.status).not.toBe('PR_CREATED');
+
+    // 2–4. UnverifiedError, a generic Error, and a non-Error throw ALL map to unverified — never "not created".
+    const unverifiedThrowers = [
+      { async createPullRequest() { throw new RepositoryHostingUnverifiedError('u'); } },
+      { async createPullRequest() { throw new Error('unexpected generic'); } },
+      { async createPullRequest(): Promise<PullRequestResult> { throw 'string failure'; } }, // non-Error throw
+    ];
+    for (const [i, hostingManager] of unverifiedThrowers.entries()) {
+      const { deps, calls } = makeDeps({ applyAnchor: prApprovedAnchor(), approvalsGetResult: APPROVED_REQ(), hostingManager });
+      const r = await new ConversationRuntime(deps).handle(messageOf('PR 만들어줘'));
+      expect(r.reply.text, `case ${i}`).toBe(composer.composePrCreationUnverified(CTX).text);
+      expect(r.reply.text, `case ${i}`).not.toContain('PR은 만들지 않았어요');
+      expect(r.reply.text, `case ${i}`).toContain('확인하지 못했어요');
+      expect(calls.lastApplyAnchor?.status, `case ${i}`).not.toBe('PR_CREATED');
+    }
   });
 
   it('PR_CREATED anchor preserves the full causal chain + PR result; no token/remoteUrl (CA 61–72)', async () => {

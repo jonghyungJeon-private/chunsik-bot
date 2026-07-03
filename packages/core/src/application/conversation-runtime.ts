@@ -1,5 +1,5 @@
 import { describeAiFailure } from './ai-failure';
-import { RepositoryHostingUnverifiedError } from './repository-hosting-manager';
+import { RepositoryHostingBlockedError } from './repository-hosting-manager';
 import {
   ApprovalStatus,
   Capability,
@@ -3021,14 +3021,16 @@ export class ConversationRuntime {
         approvalRef: approvalRef(request),
       });
     } catch (err) {
-      // Post-attempt ambiguity → the PR may exist; do NOT claim it wasn't created (CA change 6). Keep PR_APPROVED.
-      if (err instanceof RepositoryHostingUnverifiedError) {
-        this.logPrApprovalFailed(session, anchor, 'PR creation unverified (mutation ambiguity)');
-        return this.failComposed(message, session, this.deps.composer.composePrCreationUnverified(message.context));
+      // First remote mutation — fail SAFE. Only a KNOWN pre-mutation BlockedError may say "PR was not created";
+      // a known post-attempt UnverifiedError AND any unknown generic/non-Error throw are treated as UNVERIFIED
+      // (the POST may have reached the provider), so we never overclaim no PR (CA 3d-D impl review). Keep
+      // PR_APPROVED on every failure path.
+      if (err instanceof RepositoryHostingBlockedError) {
+        this.logPrApprovalFailed(session, anchor, 'PR creation blocked before mutation');
+        return this.failComposed(message, session, this.deps.composer.composePrCreationBlocked(message.context));
       }
-      // Blocked pre-mutation → no PR was created. Keep PR_APPROVED.
-      this.logPrApprovalFailed(session, anchor, 'PR creation blocked before mutation');
-      return this.failComposed(message, session, this.deps.composer.composePrCreationBlocked(message.context));
+      this.logPrApprovalFailed(session, anchor, 'PR creation unverified (mutation ambiguity)');
+      return this.failComposed(message, session, this.deps.composer.composePrCreationUnverified(message.context));
     }
     // Success → re-anchor PR_CREATED, preserving the full causal chain + PR result (CA change 8).
     await this.deps.applyPreviewFlow.anchor(session, {
