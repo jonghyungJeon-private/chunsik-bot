@@ -214,7 +214,17 @@ export type ApplyPreviewAnchorStatus =
    * An approved git push was executed (Sprint 3a, ADR-0048) — the approved commit was pushed to the approved
    * upstream. The first state that means pushed to a remote. NOT PR-created, NOT deployed.
    */
-  | 'GIT_PUSHED';
+  | 'GIT_PUSHED'
+  /**
+   * A CRITICAL Pull-Request-creation ApprovalRequest is pending decision (Sprint 3b, ADR-0049). Intercepts
+   * every turn like AWAITING_APPROVAL. NO Pull Request has been created, and none is created even on approve.
+   */
+  | 'PR_APPROVAL_PENDING'
+  /**
+   * The PR-creation approval was granted (Sprint 3b, ADR-0049) — records permission only. NOT PR-created,
+   * NOT deployed, NOT merged, NOT released. Actual PR creation is a future repository-hosting sprint.
+   */
+  | 'PR_APPROVED';
 
 /**
  * Anchored fact set for "a diff preview was shown; the user may explicitly ask to apply it" (Sprint 2s,
@@ -289,6 +299,22 @@ export interface ApplyPreviewAnchor {
   pushedBranch?: string;
   /** The upstream ref the approved commit was pushed to (Sprint 3a) — == the approved `pushUpstreamRef`. */
   pushedUpstreamRef?: string;
+  /** The pending/decided PR-creation ApprovalRequest id (Sprint 3b, ADR-0049) — DISTINCT from
+   *  pushApprovalId/commitApprovalId/approvalId. Set at PR_APPROVAL_PENDING; preserved at PR_APPROVED;
+   *  cleared on deny/cancel. */
+  prApprovalId?: Id;
+  /** Snapshot of `pushedCommitHash` at PR-approval time (Sprint 3b) — the pushed commit the PR is for. */
+  prPushedCommitHash?: string;
+  /** Deterministic PR head branch (Sprint 3b) — == the approved `pushedBranch` (safe/bounded). */
+  prHeadBranch?: string;
+  /** Deterministic PR base branch (Sprint 3b) — the fixed product policy `main` (never inferred/user-provided). */
+  prBaseBranch?: string;
+  /** Deterministic bounded PR title (Sprint 3b) — sanitized `instruction`, fallback "Apply approved changes".
+   *  NOT a raw diff / file content. */
+  prTitle?: string;
+  /** Deterministic bounded PR body preview (Sprint 3b) — generated-by-ChunsikBot + short hash + head→base +
+   *  committed-file COUNT only (NO file paths / diff / content). Audit-stored; NOT sent anywhere in 3b. */
+  prBodyPreview?: string;
 }
 
 /**
@@ -522,9 +548,35 @@ const MAX_GIT_REF_DISPLAY = 80;
  *  a bare 좋아/오케이/확인/진행해/다음 단계 never matches. Only consulted at PUSH_APPROVED / GIT_PUSHED. */
 const PUSH_EXECUTION_WORDS =
   /(승인된?\s*(푸시|push)\s*실행|(푸시|push)\s*실행|이제\s*실제\s*(푸시|push)|execute\s+(the\s+)?approved\s+push|run\s+approved\s+push|push\s+approved\s+commit)/i;
-/** PR / deploy phrases (Sprint 3a) — at GIT_PUSHED these get an "already pushed; PR/deploy is a future
- *  sprint" reply (never a PR/deploy). */
-const PR_DEPLOY_WORDS = /(\bpr\b|pull\s*request|풀\s*리퀘|배포|deploy)/i;
+/** Deploy-only phrases (Sprint 3b, ADR-0049 — replaces the 3a `PR_DEPLOY_WORDS`) — a bare deploy request
+ *  (no PR word) at GIT_PUSHED/PR_APPROVED gets a state-appropriate "deploy not supported" reply. PR phrases
+ *  are handled by `interpretPrIntent`, NOT here. */
+const DEPLOY_ONLY_WORDS = /(배포|deploy|릴리즈|release)/i;
+
+/** A PR-ish noun (Sprint 3b, ADR-0049) — only ever consulted at GIT_PUSHED/PR_APPROVAL_PENDING/PR_APPROVED.
+ *  A bare 좋아/오케이/확인/진행해/다음 단계 never matches. A noun ALONE is not a PR-creation request (CA #1). */
+const PR_WORD = /(\bpr\b|pull\s*request|풀\s*리퀘|merge\s*request|\bmr\b)/i;
+/** Explicit PR-CREATION phrases (Sprint 3b, Q4 — CA #1/#2/#3): a PR-ish noun REQUIRES a create/open verb.
+ *  Covers Korean spacing/order incl. "깃허브 PR 만들어줘" (CA #2) and "merge request 만들어줘"/"create merge
+ *  request" (CA #3). A bare "PR"/"GitHub PR"/"pull request"/"merge request" is NOT sufficient (CA #1). */
+const PR_CREATION_WORDS =
+  /((깃허브\s*)?(\bpr\b|pull\s*request|풀\s*리퀘|merge\s*request|\bmr\b)\s*(만들|생성|열|올려)|github\s*pr\s*(만들|생성|열|올려)|open\s+(a\s+)?(pr|pull\s*request|merge\s*request)|create\s+(a\s+)?(pr|pull\s*request|merge\s*request))/i;
+/** Companions that must NOT ride along with a PR request (Sprint 3b, Constraint 10 / Q5 / CA #5) — only ever
+ *  consulted when a PR word is present (2z CA #2 lesson). `\bmerge\b(?!\s*request)` keeps the GitLab synonym
+ *  "merge request" a CREATE phrase while catching "auto merge" / "PR 만들고 merge". */
+const PR_FORBIDDEN_COMPANION =
+  /(배포|deploy|auto\s*-?\s*merge|자동\s*머지|\bmerge\b(?!\s*request)|머지|병합|릴리즈|release|--?force|강제|\bforce\b|(^|\s)-f(\s|$)|리셋|\breset\b|checkout|체크아웃|stash|스태시|rebase|리베이스|\btag\b|태그|브랜치\s*생성|create\s+branch)/i;
+
+/** Fixed PR base-branch product policy for ChunsikBot V2 (Sprint 3b, Q6/CA #6/#11 — CA option C). RepositoryInfo
+ *  exposes NO default branch and no config default-branch source exists, so the base branch is a STATED PRODUCT
+ *  POLICY, not an inferred/user-provided value. Revisit if a safer configured default-branch source is added. */
+const PR_BASE_BRANCH_POLICY = 'main';
+/** Bounded PR subject length (Sprint 3b, CA #4). */
+const MAX_PR_TITLE = 100;
+/** Defensive bound on the PR body preview length (Sprint 3b, CA #5). */
+const MAX_PR_BODY = 1000;
+/** Fixed PR title fallback when `instruction` is empty/blank after sanitization (Sprint 3b, CA #4). */
+const PR_TITLE_FALLBACK = 'Apply approved changes';
 
 /** Git-commit display/approval bounds (Sprint 2x, CA #7). */
 const MAX_COMMIT_OUT_OF_SCOPE_SHOWN = 10;
@@ -628,6 +680,77 @@ function buildPushApprovalReason(input: {
     'no git push has been performed',
     'this approval records permission only; actual git push is NOT executed in Sprint 2z — future execution requires a separate step',
     'this is a point-in-time snapshot; the branch is not guaranteed pushable later — future push execution must re-read Git state before pushing',
+  ].join('\n');
+}
+
+/**
+ * Deterministic bounded PR title (Sprint 3b, ADR-0049, CA #4). Sanitizes the preserved `instruction`: strips
+ * control chars, removes backticks and leading markdown heading/quote markers, collapses whitespace to single
+ * spaces, trims, and caps at MAX_PR_TITLE. Falls back to the fixed PR_TITLE_FALLBACK when empty/blank.
+ * `instruction` is user-originated, so it is never used raw. NOT a raw diff / file content.
+ */
+function derivePrTitle(instruction?: string): string {
+  const cleaned = (instruction ?? '')
+    .replace(/`+/g, '') // remove backticks
+    .replace(/^\s*[#>]+\s*/gm, '') // remove leading markdown heading/quote markers (per line, before newlines collapse)
+    .replace(/\s+/g, ' ') // collapse ALL whitespace (incl. newlines/tabs) to a single space
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\x00-\x1f\x7f]/g, '') // strip remaining (non-whitespace) control chars
+    .trim();
+  if (!cleaned) return PR_TITLE_FALLBACK;
+  return cleaned.slice(0, MAX_PR_TITLE);
+}
+
+/**
+ * Deterministic bounded PR body preview (Sprint 3b, ADR-0049, CA #5). Generated-by-ChunsikBot + pushed short
+ * hash + head→base + committed-file COUNT ONLY (never file paths / diff / content) + explicit no-deployment /
+ * approval-only. Bounded by clampToMessageBudget.
+ */
+function buildPrBodyPreview(input: {
+  pushedCommitHash: string;
+  headBranch: string;
+  baseBranch: string;
+  committedFileCount: number;
+}): string {
+  // All parts are inherently bounded (short hash + boundGitRef-capped branches + a count); a defensive
+  // MAX_PR_BODY cap keeps it deterministic and bounded (CA #5).
+  return [
+    'ChunsikBot이 생성한 PR 초안입니다.',
+    `커밋: ${input.pushedCommitHash.slice(0, 7)}`,
+    `대상: ${boundGitRef(input.headBranch)} → ${boundGitRef(input.baseBranch)}`,
+    `변경 파일 수: ${input.committedFileCount}개`,
+    '배포는 하지 않았어요. PR은 아직 생성되지 않았고 승인만 기록해요.',
+  ]
+    .join('\n')
+    .slice(0, MAX_PR_BODY);
+}
+
+/**
+ * Bounded CRITICAL PR-creation approval reason (Sprint 3b, ADR-0049, CA #6/#12). No diff/file content/paths.
+ * Explicitly states no PR created / no deployment / no merge / permission-only / not-in-3b / future
+ * repository-hosting step, and the "not verified on hosting, not guaranteed creatable" discipline.
+ */
+function buildPrApprovalReason(input: {
+  pushedCommitHash: string;
+  headBranch: string;
+  baseBranch: string;
+  title: string;
+}): string {
+  return [
+    'operation: pull request creation approval planning',
+    `pushed commit: ${input.pushedCommitHash}`,
+    `head: ${boundGitRef(input.headBranch)}`,
+    `base: ${boundGitRef(input.baseBranch)}`,
+    `title: ${input.title.slice(0, MAX_PR_TITLE)}`,
+    'risk: CRITICAL',
+    'no pull request has been created',
+    'no deployment has been performed',
+    'no merge has been performed',
+    'this approval records permission only',
+    'actual PR creation is NOT performed in Sprint 3b',
+    'future execution requires a separate repository-hosting step',
+    'creating a PR mutates shared collaboration state (CI, notifications, reviews, branch protections, automations)',
+    'approval is based on the pushed context currently recorded by ChunsikBot; it does not verify the branch on the hosting provider and does not guarantee a PR can be created',
   ].join('\n');
 }
 
@@ -856,6 +979,22 @@ export class ConversationRuntime {
   }
 
   /**
+   * Explicit PR-creation intent (Sprint 3b, ADR-0049) — only consulted inside the GIT_PUSHED / PR_APPROVED
+   * routing guards (never a global/no-anchor handler). A forbidden-companion is classified ONLY when a PR
+   * word is present (2z CA #2 lesson), so a bare "배포"/"merge"/"reset" is NOT PR handling. Returns:
+   *  - null → no PR word, OR a bare PR noun WITHOUT a create/open verb (→ existing behavior — CA #1);
+   *  - 'pr-unsupported' → PR bundled with deploy/merge/release/auto-merge/force/reset/… (CA #5);
+   *  - 'create' → an explicit PR-creation phrase ("PR 만들어줘"/"open a PR"/"merge request 만들어줘"/…).
+   */
+  static interpretPrIntent(text: string): 'create' | 'pr-unsupported' | null {
+    const t = text.trim().toLowerCase();
+    if (!PR_WORD.test(t)) return null; // no PR word → not PR handling
+    if (PR_FORBIDDEN_COMPANION.test(t)) return 'pr-unsupported'; // PR + deploy/merge/release/force/…
+    if (PR_CREATION_WORDS.test(t)) return 'create';
+    return null; // a bare PR noun without a create/open verb → not PR handling (CA #1)
+  }
+
+  /**
    * Resolve the commit message for a commit-approval turn (Sprint 2x, CA #6/#7/#8). If the text carries a
    * user message (a single quoted segment after a `메시지`/`message` keyword) it is accepted only when it is
    * exactly one candidate, single-line, ≤120 chars, control-char-free, and trimmed non-empty — otherwise
@@ -921,6 +1060,11 @@ export class ConversationRuntime {
     if (applyAnchor?.status === 'PUSH_APPROVAL_PENDING') {
       return this.handlePushApprovalDecisionTurn(message, session, actor, applyAnchor);
     }
+    // (Sprint 3b, ADR-0049) A pending PR-creation approval intercepts EVERY turn — decision flow ONLY (CA #7);
+    // a PR-creation/PR+forbidden/deploy phrase is not approve/deny/cancel, so it re-prompts. No PR created.
+    if (applyAnchor?.status === 'PR_APPROVAL_PENDING') {
+      return this.handlePrApprovalDecisionTurn(message, session, actor, applyAnchor);
+    }
     // (Sprint 2y, ADR-0046) Approved git commit EXECUTION — GATED to commit-relevant states only (CA #4).
     // Checked before the 2x commit-intent so "이제 실제 커밋해줘" executes rather than re-printing
     // already-approved. push-only is NOT intercepted outside commit states (WORKSPACE_APPLIED "push" stays
@@ -954,14 +1098,27 @@ export class ConversationRuntime {
       if (pushKind === 'push-unsupported') return this.handlePushUnsupportedCompanionTurn(message, session);
       if (pushKind === 'push') return this.handlePushAlreadyApprovedTurn(message, session);
     }
-    // (Sprint 3a, ADR-0048) already pushed — a repeat execution/push phrase says already pushed (no new
-    // push); a push+forbidden → unsupported companion; a PR/deploy phrase → already-pushed + future-sprint.
+    // (Sprint 3a/3b) At GIT_PUSHED: a repeat push-execution/push phrase → already pushed; a push+forbidden →
+    // unsupported companion (checked first, so a push+PR bundle is a push companion). (Sprint 3b, ADR-0049) an
+    // explicit PR-creation phrase → CRITICAL PR approval; a PR+forbidden → unsupported companion; a bare
+    // deploy-only phrase → deploy-only future-sprint (PR-creation is now supported, so it is no longer bundled).
     if (applyAnchor?.status === 'GIT_PUSHED') {
       const exKind = ConversationRuntime.interpretPushExecutionIntent(message.text);
       if (exKind === 'push-unsupported') return this.handlePushUnsupportedCompanionTurn(message, session);
       if (exKind === 'execute') return this.handlePushAlreadyPushedTurn(message, session, applyAnchor);
-      if (PR_DEPLOY_WORDS.test(message.text)) return this.handlePushPrDeployUnsupportedTurn(message, session);
+      const prKind = ConversationRuntime.interpretPrIntent(message.text);
+      if (prKind === 'pr-unsupported') return this.handlePrUnsupportedCompanionTurn(message, session);
+      if (prKind === 'create') return this.handlePrApprovalTurn(message, session, actor, applyAnchor);
+      if (DEPLOY_ONLY_WORDS.test(message.text)) return this.handlePushPrDeployUnsupportedTurn(message, session);
       if (ConversationRuntime.interpretPushIntent(message.text) === 'push') return this.handlePushAlreadyPushedTurn(message, session, applyAnchor);
+    }
+    // (Sprint 3b, ADR-0049) already PR-approved — a PR+forbidden → unsupported companion (before create, CA #9);
+    // a PR-creation phrase → already approved (not created, Q11); a deploy-only phrase → state-specific reply.
+    if (applyAnchor?.status === 'PR_APPROVED') {
+      const prKind = ConversationRuntime.interpretPrIntent(message.text);
+      if (prKind === 'pr-unsupported') return this.handlePrUnsupportedCompanionTurn(message, session);
+      if (prKind === 'create') return this.handlePrAlreadyApprovedTurn(message, session);
+      if (DEPLOY_ONLY_WORDS.test(message.text)) return this.handlePrApprovedDeployUnsupportedTurn(message, session);
     }
     // (CA #1) NO global/no-anchor push handling is installed — push handling is anchored to GIT_COMMITTED /
     // PUSH_APPROVAL_PENDING / PUSH_APPROVED only; every other state keeps its existing behavior.
@@ -2503,6 +2660,195 @@ export class ConversationRuntime {
       executionPlanId: anchor.executionPlanRef?.id,
       pushApprovalId: anchor.pushApprovalId,
     }); // deliberately NO diff text / file content / stderr
+  }
+
+  /**
+   * A PR-creation phrase while GIT_PUSHED (Sprint 3b, ADR-0049) — records a CRITICAL PR-creation approval.
+   * Verify pushed context + safe target, derive deterministic head/base/title/body, create the approval,
+   * halt at PR_APPROVAL_PENDING. NO Pull Request is created; NO GitHub API; NO fresh Git read (the pushed
+   * anchor is the source of truth — CA #12). NO deploy/merge/branch/release.
+   */
+  private async handlePrApprovalTurn(
+    message: InboundMessage,
+    session: Session,
+    actor: Actor,
+    anchor: ApplyPreviewAnchor,
+  ): Promise<TurnResult> {
+    // 1. (Constraint 9/CA #14) complete + safe pushed context, else composePrApprovalUnavailable (no approval).
+    //    Log never throws (2x lesson — optional field access).
+    const parsed = anchor.pushedUpstreamRef ? parsePushUpstream(anchor.pushedUpstreamRef) : null;
+    if (
+      anchor.status !== 'GIT_PUSHED' ||
+      !anchor.pushedCommitHash ||
+      !/^[0-9a-f]{7,40}$/i.test(anchor.pushedCommitHash) ||
+      anchor.pushedCommitHash !== anchor.pushCommitHash ||
+      anchor.pushedCommitHash !== anchor.commitHash ||
+      !anchor.pushedRemote ||
+      !isSafePushRemote(anchor.pushedRemote) ||
+      !anchor.pushedBranch ||
+      !isSafePushBranch(anchor.pushedBranch) ||
+      !anchor.pushedUpstreamRef ||
+      !parsed ||
+      parsed.remote !== anchor.pushedRemote ||
+      parsed.branch !== anchor.pushedBranch ||
+      !anchor.workspaceRef ||
+      !anchor.executionPlanRef
+    ) {
+      this.logPrApprovalFailed(session, anchor, 'pushed context incomplete/unsafe for PR approval');
+      return this.failComposed(message, session, this.deps.composer.composePrApprovalUnavailable(message.context));
+    }
+    // 2. Deterministic PR target (CA #6/#7). base = fixed policy; head = pushed branch (already safe).
+    const headBranch = anchor.pushedBranch;
+    const baseBranch = PR_BASE_BRANCH_POLICY;
+    // 3. (Q8/CA #10) head == base → product/base-policy limitation, NOT a Git error; NO approval.
+    if (headBranch === baseBranch) {
+      return this.respondComposed(message, session, this.deps.composer.composePrHeadEqualsBaseUnavailable(message.context));
+    }
+    // 4. Deterministic bounded title/body (CA #4/#5). Body carries the committed-file COUNT only (no paths).
+    const title = derivePrTitle(anchor.instruction);
+    const bodyPreview = buildPrBodyPreview({
+      pushedCommitHash: anchor.pushedCommitHash,
+      headBranch,
+      baseBranch,
+      committedFileCount: anchor.committedFiles?.length ?? 0,
+    });
+    // 5. Create the CRITICAL PR-creation ApprovalRequest — the ONLY effect. NO PR creation, NO GitHub API.
+    const approval = await this.deps.approvals.requestForRisk({
+      executionPlanRef: anchor.executionPlanRef,
+      riskLevel: RiskLevel.CRITICAL,
+      reason: buildPrApprovalReason({ pushedCommitHash: anchor.pushedCommitHash, headBranch, baseBranch, title }),
+      requestedBy: actor.id,
+    });
+    // 6. Halt at PR_APPROVAL_PENDING, preserving ALL pushed/commit/workspace context + distinct PR context.
+    await this.deps.applyPreviewFlow.anchor(session, {
+      ...anchor,
+      status: 'PR_APPROVAL_PENDING',
+      prApprovalId: approval.id,
+      prPushedCommitHash: anchor.pushedCommitHash,
+      prHeadBranch: headBranch,
+      prBaseBranch: baseBranch,
+      prTitle: title,
+      prBodyPreview: bodyPreview,
+    });
+    const reply = this.deps.composer.composePrApprovalRequested(message.context, {
+      pushedCommitHash: anchor.pushedCommitHash,
+      headBranch,
+      baseBranch,
+      title,
+    });
+    await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+    return { status: 'AWAITING_APPROVAL', reply, sessionId: session.id };
+  }
+
+  /**
+   * Decide the pending PR-creation approval (Sprint 3b, ADR-0049) — mirrors handlePushApprovalDecisionTurn
+   * with strict guards (CA #7/#14). A PR-creation / PR+forbidden / deploy-only phrase is a premature request
+   * → ambiguous re-prompt (no decide, no PR). Approve → record only, re-anchor PR_APPROVED PRESERVING all
+   * context (CA #16). Deny/cancel → revert to GIT_PUSHED clearing ONLY PR fields (CA #15). NEVER creates a PR.
+   */
+  private async handlePrApprovalDecisionTurn(
+    message: InboundMessage,
+    session: Session,
+    actor: Actor,
+    anchor: ApplyPreviewAnchor,
+  ): Promise<TurnResult> {
+    // 0. (CA #14) strict pending-context guard — any missing field → safe failure, NO decide/re-anchor.
+    if (
+      anchor.status !== 'PR_APPROVAL_PENDING' ||
+      !anchor.prApprovalId ||
+      !anchor.prPushedCommitHash ||
+      !anchor.prHeadBranch ||
+      !anchor.prBaseBranch ||
+      !anchor.prTitle ||
+      !anchor.workspaceRef ||
+      !anchor.executionPlanRef
+    ) {
+      this.logPrApprovalFailed(session, anchor, 'pending PR approval context incomplete');
+      return this.failComposed(message, session, this.deps.composer.composePrApprovalUnavailable(message.context));
+    }
+    // 1. (CA #7) a PR-creation / PR+forbidden phrase — or any deploy-only phrase — is a premature request
+    //    while PENDING, NOT a clean approve → classify ambiguous → re-prompt; NO decide, NO PR.
+    const decision =
+      ConversationRuntime.interpretPrIntent(message.text) !== null || DEPLOY_ONLY_WORDS.test(message.text)
+        ? 'ambiguous'
+        : ConversationRuntime.interpretDecision(message.text);
+    if (decision === 'ambiguous') {
+      const fresh = await this.deps.approvals.get(anchor.prApprovalId);
+      const reply = fresh
+        ? this.deps.composer.composeApprovalNotice(message.context, fresh)
+        : this.deps.composer.composePrApprovalUnavailable(message.context);
+      await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+      return { status: 'AWAITING_APPROVAL', reply, sessionId: session.id };
+    }
+    // 2. (CA #14) verify the referenced ApprovalRequest before deciding: exists, PENDING, same plan.
+    const request = await this.deps.approvals.get(anchor.prApprovalId);
+    if (
+      !request ||
+      request.status !== ApprovalStatus.PENDING ||
+      request.executionPlanRef.id !== anchor.executionPlanRef.id
+    ) {
+      this.logPrApprovalFailed(session, anchor, 'PR approval request missing/mismatched');
+      return this.failComposed(message, session, this.deps.composer.composePrApprovalUnavailable(message.context));
+    }
+    const approved = decision === 'approve';
+    await this.deps.approvals.decide(anchor.prApprovalId, this.decisionOf(anchor.prApprovalId, actor.id, approved));
+    if (!approved) {
+      // (CA #15) deny/cancel: revert to GIT_PUSHED, clear ONLY the PR fields; pushed/commit/workspace preserved.
+      await this.deps.applyPreviewFlow.anchor(session, {
+        ...anchor,
+        status: 'GIT_PUSHED',
+        prApprovalId: undefined,
+        prPushedCommitHash: undefined,
+        prHeadBranch: undefined,
+        prBaseBranch: undefined,
+        prTitle: undefined,
+        prBodyPreview: undefined,
+      });
+      const reply =
+        decision === 'deny'
+          ? this.deps.composer.composePrApprovalDenied(message.context)
+          : this.deps.composer.composePrApprovalCancelled(message.context);
+      await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+      return { status: decision === 'deny' ? 'DENIED' : 'CANCELLED', reply, sessionId: session.id };
+    }
+    // approve — record only; re-anchor PR_APPROVED PRESERVING all context (CA #16). NO PR creation.
+    await this.deps.applyPreviewFlow.anchor(session, { ...anchor, status: 'PR_APPROVED' });
+    const reply = this.deps.composer.composePrApprovalRecorded(message.context);
+    await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+    return { status: 'RESPONDED', reply, sessionId: session.id };
+  }
+
+  /** A PR-creation phrase while already PR_APPROVED (Sprint 3b, Q11) — already approved; not created; no new approval. */
+  private async handlePrAlreadyApprovedTurn(message: InboundMessage, session: Session): Promise<TurnResult> {
+    const reply = this.deps.composer.composePrAlreadyApproved(message.context);
+    await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+    return this.responded(session, reply);
+  }
+
+  /** A PR request bundled with deploy/merge/release/force/… (Sprint 3b, CA #5) — unsupported companion; no approval, no PR. */
+  private async handlePrUnsupportedCompanionTurn(message: InboundMessage, session: Session): Promise<TurnResult> {
+    const reply = this.deps.composer.composePrUnsupportedCompanion(message.context);
+    await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+    return this.responded(session, reply);
+  }
+
+  /** A deploy-only phrase while PR_APPROVED (Sprint 3b, CA #8) — state-specific: PR approval recorded, PR not
+   *  created, deployment not done. */
+  private async handlePrApprovedDeployUnsupportedTurn(message: InboundMessage, session: Session): Promise<TurnResult> {
+    const reply = this.deps.composer.composePrApprovedDeployUnsupported(message.context);
+    await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
+    return this.responded(session, reply);
+  }
+
+  /** Structured, no-content failure log for a PR-approval error (Sprint 3b) — never logs diff/file content.
+   *  Optional field access so it never throws on incomplete context (Sprint 2x lesson). */
+  private logPrApprovalFailed(session: Session, anchor: ApplyPreviewAnchor, reason: string): void {
+    this.deps.logger.warn('pr approval failed', {
+      reason,
+      sessionId: session.id,
+      executionPlanId: anchor.executionPlanRef?.id,
+      prApprovalId: anchor.prApprovalId,
+    }); // deliberately NO diff text / file content
   }
 
   /** (C) Resolve the workspace (if the capability needs it), run the execution, and frame the reply. */

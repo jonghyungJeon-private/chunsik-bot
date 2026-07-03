@@ -3047,3 +3047,94 @@ the Ref-gate + provider-argv + result-integrity template mirrored), ADR-0044/ADR
 **second mutating method, the first remote**, argv-only), ADR-0031 (Execution Orchestrator — deliberately not
 extended or called). Supersedes nothing. Plan:
 `docs/plans/sprint-3a-approved-git-push-execution-plan.md`.
+
+## ADR-0049 — Explicit Pull Request Creation Approval (GIT_PUSHED → CRITICAL PR-creation approval halt, no PR creation)
+
+- **Status:** ✅ Accepted (v2, Phase 3, Sprint 3b — Product Construction), Chief Architect Review:
+  APPROVED WITH CHANGES (16 required changes applied) → proceed.
+- **Date:** 2026-07-03
+- **Scope:** After Sprint 3a leaves a `GIT_PUSHED` anchor (the approved commit was pushed to the approved
+  upstream), an explicit PR-creation phrase ("PR 만들어줘"/"pull request 만들어줘"/"GitHub PR 열어줘"/"깃허브 PR
+  만들어줘"/"open a PR"/"create pull request"/"merge request 만들어줘") records a **CRITICAL Pull-Request-creation
+  approval**: verify the persisted pushed context, derive a deterministic PR target (head = pushed branch,
+  base = fixed policy `main`) + a bounded deterministic title/body, create one CRITICAL `ApprovalRequest`,
+  re-anchor `PR_APPROVAL_PENDING`, and return `AWAITING_APPROVAL`. On "승인" the approval is **recorded only**
+  → `PR_APPROVED`. **No Pull Request is created.**
+
+### Most important rule
+> **A Pull Request is a repository-hosting/platform mutation, not a local Git operation.** Sprint 3b adds an
+> **approval gate only** — no PR creation, no GitHub API call, no provider/manager PR method. `PR_APPROVED`
+> means the user granted permission to create a PR; it **never** means a PR was created, deployed, merged,
+> released, or made production-ready. Approval is based on the pushed context currently recorded by ChunsikBot;
+> it does **not** verify the branch on the hosting provider and does **not** guarantee a PR can be created.
+
+### Decision
+- **PR creation is NOT a Git capability responsibility (Q1, CA #1/#13).** No PR/hosting surface exists in the
+  repo today. For approval-only 3b, **no provider is added** — no `GitHubProvider`/`RepositoryHosting`, no
+  `GitManager.createPullRequest`/`GitProvider.createPullRequest`, no `createPullRequest` of any kind. The
+  entire flow lives in `ConversationRuntime` + `ApprovalManager` (CAP-004) + `ResponseComposer` + the
+  apply-preview anchor. Actual PR creation belongs to a **future Repository-Hosting/GitHub capability** (3c+).
+- **Two new anchor states + distinct PR context (Q2/Q3, CA #3/#15/#16).** `PR_APPROVAL_PENDING` / `PR_APPROVED`
+  (no `PR_CREATED`/`PULL_REQUEST_CREATED`). New fields **distinct** from push/commit/apply ids: `prApprovalId`,
+  `prPushedCommitHash`, `prHeadBranch`, `prBaseBranch`, `prTitle`, `prBodyPreview`. Set at
+  `PR_APPROVAL_PENDING`; **all** preserved at `PR_APPROVED`; on deny/cancel **only** these PR fields are
+  cleared (pushed/commit/workspace context preserved) and the anchor reverts to `GIT_PUSHED`.
+- **Trigger discipline (Q4/Q5, CA #1/#2/#3).** `interpretPrIntent`: a PR-ish noun (`PR`/`pull request`/`풀
+  리퀘`/`merge request`/`MR`, incl. `깃허브 PR`) is **not** sufficient — an explicit create/open verb
+  (`만들`/`생성`/`열`/`올려`/`open`/`create`) is **required**; a bare noun → null (no PR approval). A
+  forbidden companion (deploy/배포, merge/머지/병합, release/릴리즈, auto-merge/자동 머지, force/강제, reset/
+  checkout/stash/rebase/tag/branch-creation) is classified only when a PR word is present (2z CA #2 lesson) →
+  `'pr-unsupported'`. `merge request` is a PR synonym (needs a verb), distinct from a bundled `merge`
+  (`\bmerge\b(?!\s*request)`, rejected). Gated to `GIT_PUSHED` / `PR_APPROVAL_PENDING` / `PR_APPROVED` only;
+  every other state keeps existing behavior and creates no PR approval.
+- **Deterministic PR target (Q6/Q7/Q8, CA #6/#10/#11).** `prBaseBranch` = single named constant
+  `PR_BASE_BRANCH_POLICY = "main"` — a **stated ChunsikBot V2 product policy**, since `RepositoryInfo` exposes
+  no default branch and no configured default-branch source exists; never inferred, never user-provided.
+  `prHeadBranch` = `anchor.pushedBranch`, re-validated with `isSafePushBranch`. If `head === base` → **no
+  approval**, worded as a **product/base-policy limitation** (not a Git error, not a PR-creation attempt).
+- **Deterministic bounded title/body (Q8, CA #4/#5).** `proposedCommitMessage` is cleared at `GIT_COMMITTED`,
+  so the commit message is unavailable at `GIT_PUSHED`; `prTitle` = sanitized `instruction` (strip control
+  chars, remove backticks + leading markdown heading markers, collapse whitespace, bound to `MAX_PR_TITLE`),
+  fallback "Apply approved changes". `prBodyPreview` = generated-by-ChunsikBot + short hash + head→base +
+  committed-file **count only (NO file paths)** + "no deployment"; **no** raw diff, **no** file content, **no**
+  secrets. Nothing leaves the system in 3b (surfaced locally + stored on the anchor only).
+- **CRITICAL approval + explicit reason (Constraint 4, CA #6).** `RiskLevel.CRITICAL` (PR creation mutates
+  shared collaboration state: CI, notifications, reviews, branch protections, automations, deploy pipelines).
+  `buildPrApprovalReason` explicitly states: no PR created, **no deployment performed, no merge performed**,
+  permission only, not performed in Sprint 3b, **future execution requires a separate repository-hosting
+  step**, includes pushedCommitHash + head/base, and the "not verified on hosting / not guaranteed creatable"
+  discipline.
+- **No fresh Git read (CA #12).** 3b uses the `GIT_PUSHED` anchor as the source of truth and re-validates the
+  persisted target strings (SHA-shaped `pushedCommitHash == pushCommitHash == commitHash`; safe `pushedRemote`/
+  `pushedBranch`; `pushedUpstreamRef` parses and its parsed remote/branch match) — it does **not** call
+  `git.info`/`git.status`, because nothing is mutated. **Actual PR-creation execution (future) MUST re-validate
+  hosting/branch state before mutating.**
+- **Decision flow mirrors 2z (CA #7/#14).** `PR_APPROVAL_PENDING` intercepts every turn: a PR-creation /
+  PR+forbidden / deploy-only phrase is a premature request → **ambiguous re-prompt** (no decide, no PR); a
+  bare "승인"/"거절"/"취소" decides after verifying the referenced `ApprovalRequest` exists/PENDING/plan-matches.
+  Approve → `PR_APPROVED` (record only); deny/cancel → `GIT_PUSHED` clearing only PR fields. NO PR creation on
+  any path.
+- **State-appropriate deploy-only wording (CA #8).** A bare deploy phrase (배포/deploy, no PR): at `GIT_PUSHED`
+  → `composePushPrDeployUnsupported` (deploy-only, "이미 push된 상태예요"); at `PR_APPROVED` →
+  `composePrApprovedDeployUnsupported` ("PR 승인은 기록됐지만 배포는 아직 지원 안 함; PR도 배포도 하지 않음").
+
+### Consequences
+- + The product gains an explicit, auditable, CRITICAL approval gate before any repository-hosting mutation,
+  keeping remote-collaboration side effects behind human approval — consistent with the commit/push gates.
+- + Reuses the 2z push-approval template (request → `*_APPROVAL_PENDING` → decision → `*_APPROVED`) and the 3a
+  pushed context + ref validators; adds no capability and no provider.
+- − `ApplyPreviewAnchor` gains two statuses + six PR fields; `ConversationRuntime`/`ResponseComposer` gain the
+  PR-approval flow. Nothing is persisted beyond the PR context on the anchor; no external system is touched.
+- − Only approval is recorded; **actual PR creation, deployment, and merge remain separate, individually-
+  reviewed future sprints** owned by a future Repository-Hosting/GitHub capability.
+
+### Relations
+ADR-0048 (Approved Git Push Execution — provides the `GIT_PUSHED` anchor + `pushedCommitHash`/`pushedRemote`/
+`pushedBranch`/`pushedUpstreamRef` this sprint consumes; **its `GIT_PUSHED` PR-phrase behavior is superseded**
+— a PR-creation phrase now records an approval, while deploy-only phrases remain unsupported/future), ADR-0047
+(Explicit Git Push Approval — the CRITICAL request → `*_APPROVAL_PENDING` → decision → `*_APPROVED` template
+mirrored), ADR-0045 (Explicit Git Commit Approval — decision-flow structure), ADR-0025 (CAP-004 Approval —
+`requestForRisk`/`get`/`decide`, risk CRITICAL), ADR-0023 (CAP-002 Git — read-only reuse only; **no** PR/
+hosting method added), ADR-0031 (Execution Orchestrator — not extended or called). **Supersedes ADR-0048's
+`GIT_PUSHED` PR-phrase behavior only.** Plan:
+`docs/plans/sprint-3b-explicit-pr-creation-approval-plan.md`.
