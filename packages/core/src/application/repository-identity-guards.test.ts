@@ -60,15 +60,19 @@ describe('Sprint 3d-A absence guards (ADR-0051 — config-only; no hosting mutat
     expect(/remoteUrl/.test(gitDomainSrc)).toBe(false);
   });
 
-  it('ConversationRuntime is NOT wired to repository identity — no dep, no anchor field, no reason change (tests 48/49/53/54)', () => {
-    expect(runtimeSrc.includes('RepositoryIdentity')).toBe(false);
-    expect(runtimeSrc.includes('repositoryHosting')).toBe(false);
+  // (Sprint 3d-D, ADR-0054 supersedes) ConversationRuntime is now wired to an optional RepositoryHostingManager
+  // + resolved identity, and the composer has PR-created wording — that live wiring is covered by the 3d-D
+  // runtime tests. The ENDURING invariant kept here: the runtime/composer never import the GitHub adapter
+  // directly (the runtime calls the manager only — CA change 7).
+  it('ConversationRuntime never imports the GitHub adapter directly (CA change 7)', () => {
+    expect(runtimeSrc.includes('GitHubRepositoryHostingProvider')).toBe(false);
+    expect(runtimeSrc.includes('repository-hosting-github')).toBe(false);
   });
 
-  it('ResponseComposer is unchanged for PR creation — no identity/hosting-mutation references (test 50)', () => {
+  it('ResponseComposer references no RepositoryIdentity type, no createPullRequest, no adapter (Git unchanged)', () => {
     expect(composerSrc.includes('RepositoryIdentity')).toBe(false);
     expect(composerSrc.includes('createPullRequest')).toBe(false);
-    expect(composerSrc.includes('repositoryHosting')).toBe(false);
+    expect(composerSrc.includes('GitHubRepositoryHostingProvider')).toBe(false);
   });
 });
 
@@ -106,15 +110,12 @@ describe('Sprint 3d-B absence guards (ADR-0052 — skeleton only; no adapter/API
     expect(managerCode.includes('isSafePushBranch')).toBe(true); // allowed reuse
   });
 
-  it('ConversationRuntime has no PR_CREATED / RepositoryHosting reference (tests 48/50)', () => {
-    expect(runtimeSrc.includes('PR_CREATED')).toBe(false);
-    expect(runtimeSrc.includes('RepositoryHosting')).toBe(false);
-    expect(runtimeSrc.includes('createPullRequest')).toBe(false);
-  });
-
-  it('ResponseComposer has no PR-created wording / RepositoryHosting reference (test 49)', () => {
-    expect(composerSrc.includes('PR_CREATED')).toBe(false);
-    expect(composerSrc.includes('RepositoryHosting')).toBe(false);
+  // (Sprint 3d-D supersedes) The 3d-B "ConversationRuntime has no PR_CREATED", "composer has no PR-created
+  // wording", and "app.module does not bind REPOSITORY_HOSTING_PROVIDER" guards no longer hold — 3d-D wires the
+  // adapter and adds PR creation execution. The ENDURING invariants kept here:
+  it('ConversationRuntime calls the manager, never importing the GitHub adapter (CA change 7)', () => {
+    expect(runtimeSrc.includes('GitHubRepositoryHostingProvider')).toBe(false);
+    expect(runtimeSrc.includes('repository-hosting-github')).toBe(false);
   });
 
   it('Git capability has no PR method (tests 51/52) — GitProvider/GitManager unchanged', () => {
@@ -124,9 +125,10 @@ describe('Sprint 3d-B absence guards (ADR-0052 — skeleton only; no adapter/API
     expect(gitManagerSrc.includes('PullRequest')).toBe(false);
   });
 
-  it('app.module.ts does not bind REPOSITORY_HOSTING_PROVIDER (test 78 — no real/fake provider binding)', () => {
-    expect(appModuleSrc.includes('REPOSITORY_HOSTING_PROVIDER')).toBe(false);
-    expect(appModuleSrc.includes('RepositoryHostingProvider')).toBe(false);
-    expect(appModuleSrc.includes('RepositoryHostingManager')).toBe(false);
+  it('app.module.ts binds the GitHub adapter ONLY via REPOSITORY_HOSTING_PROVIDER construction (Sprint 3d-D)', () => {
+    // Wiring now exists (superseding the 3d-B "does not bind" guard); the adapter is constructed at the
+    // composition root and reached only through RepositoryHostingManager.
+    expect(appModuleSrc.includes('GitHubRepositoryHostingProvider')).toBe(true);
+    expect(appModuleSrc.includes('RepositoryHostingManager')).toBe(true);
   });
 });

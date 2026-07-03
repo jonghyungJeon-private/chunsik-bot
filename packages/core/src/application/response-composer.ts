@@ -102,6 +102,9 @@ const MAX_DIFF_CHARS_PER_FILE = 1000;
 /** Bound on displayed user-controllable git refs (remote/branch/upstream) in push replies (Sprint 2z,
  *  ADR-0047, CA #6) — a defensive display cap even though upstream parsing already rejects over-long refs. */
 const MAX_GIT_REF_DISPLAY = 80;
+/** Bound on a displayed PR URL (Sprint 3d-D) — the adapter already validates it to the canonical bounded
+ *  github.com form; this is a defensive display cap. */
+const MAX_PR_URL_DISPLAY = 200;
 /** Fixed upper bound on the "N개 파일... 생략했어요" notice's length (N is bounded by
  *  MAX_TARGET_CANDIDATES = 5 upstream, so always short) — reserved up front so the notice never has to
  *  compete for budget after the fact (ADR-0039). */
@@ -1395,6 +1398,98 @@ export class ResponseComposer {
     return {
       context,
       text: 'PR 생성 승인은 기록되어 있지만, 배포는 아직 지원하지 않아요.\nPR은 아직 만들지 않았고 배포도 하지 않았어요.',
+    };
+  }
+
+  // ── Sprint 3d-D (ADR-0054): actual PR creation execution wording. Never a token; never overclaims. ──
+
+  /** A new Pull Request was created (Sprint 3d-D). Shows repo/branches/short commit/URL; no merge/deploy/release. */
+  composePrCreated(
+    context: ConversationContext,
+    input: { owner: string; repo: string; headBranch: string; baseBranch: string; commitHash: string; prNumber: number; prUrl: string },
+  ): OutboundMessage {
+    const head = input.headBranch.slice(0, MAX_GIT_REF_DISPLAY);
+    const base = input.baseBranch.slice(0, MAX_GIT_REF_DISPLAY);
+    const text = clampToMessageBudget(
+      [
+        'PR을 만들었어요.',
+        `- 저장소: ${input.owner.slice(0, MAX_GIT_REF_DISPLAY)}/${input.repo.slice(0, MAX_GIT_REF_DISPLAY)}`,
+        `- 브랜치: ${head} → ${base}`,
+        `- 커밋: ${input.commitHash.slice(0, 7)}`,
+        `- PR: ${input.prUrl.slice(0, MAX_PR_URL_DISPLAY)}`,
+        '아직 머지/배포/릴리즈는 하지 않았어요.',
+      ].join('\n'),
+    );
+    return { context, text };
+  }
+
+  /** An existing open PR was connected instead of creating a new one (Sprint 3d-D, Q9) — never says "newly created". */
+  composePrCreatedReusedExisting(
+    context: ConversationContext,
+    input: { owner: string; repo: string; headBranch: string; baseBranch: string; commitHash: string; prNumber: number; prUrl: string },
+  ): OutboundMessage {
+    const head = input.headBranch.slice(0, MAX_GIT_REF_DISPLAY);
+    const base = input.baseBranch.slice(0, MAX_GIT_REF_DISPLAY);
+    const text = clampToMessageBudget(
+      [
+        '기존에 열려 있던 PR을 연결했어요.',
+        `- 저장소: ${input.owner.slice(0, MAX_GIT_REF_DISPLAY)}/${input.repo.slice(0, MAX_GIT_REF_DISPLAY)}`,
+        `- 브랜치: ${head} → ${base}`,
+        `- 커밋: ${input.commitHash.slice(0, 7)}`,
+        `- PR: ${input.prUrl.slice(0, MAX_PR_URL_DISPLAY)}`,
+        '새 PR을 만들지는 않았어요. 머지/배포/릴리즈도 하지 않았어요.',
+      ].join('\n'),
+    );
+    return { context, text };
+  }
+
+  /** Repository identity or GitHub token is not configured (Sprint 3d-D) — safe not-configured; NO PR attempt. */
+  composePrCreationNotConfigured(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: 'PR 생성 대상 저장소 또는 GitHub 토큰이 설정되지 않았어요. PR은 만들지 않았어요.',
+    };
+  }
+
+  /** PR execution context/approval mismatch (Sprint 3d-D) — pre-mutation; NO PR created. */
+  composePrCreationUnavailable(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '지금은 PR을 생성할 수 없어요. 승인/컨텍스트를 확인해 주세요. PR은 만들지 않았어요.',
+    };
+  }
+
+  /** PR creation blocked BEFORE any mutating call (repo/branch missing, existing-PR invalid/ambiguous) —
+   *  Sprint 3d-D, CA change 6/14. Definitively no PR created. */
+  composePrCreationBlocked(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: 'GitHub 저장소/브랜치 상태를 확인할 수 없어 PR을 생성하지 못했어요. PR은 만들지 않았어요.',
+    };
+  }
+
+  /** The create call was ATTEMPTED but could not be completed/verified (Sprint 3d-D, CA change 6) — a PR MAY
+   *  exist; must NOT claim it wasn't created. */
+  composePrCreationUnverified(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: 'PR 생성 완료를 확인하지 못했어요. GitHub 상태를 확인해 주세요.',
+    };
+  }
+
+  /** A PR create/open phrase while already PR_CREATED (Sprint 3d-D) — already created; returns the PR URL. */
+  composePrAlreadyCreated(context: ConversationContext, input: { prNumber: number; prUrl: string }): OutboundMessage {
+    return {
+      context,
+      text: `이미 PR을 만들었어요: #${input.prNumber} ${input.prUrl.slice(0, MAX_PR_URL_DISPLAY)}\n새 PR을 만들지 않았어요. 머지/배포/릴리즈는 하지 않았어요.`,
+    };
+  }
+
+  /** A deploy/merge/release/companion phrase while PR_CREATED (Sprint 3d-D) — unsupported future step. */
+  composePrCreatedCompanionUnsupported(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '머지/배포/릴리즈는 이후 단계예요. 지금은 하지 않았어요. PR은 이미 만들어져 있어요.',
     };
   }
 }

@@ -1,4 +1,5 @@
 import { describeAiFailure } from './ai-failure';
+import { RepositoryHostingBlockedError } from './repository-hosting-manager';
 import {
   ApprovalStatus,
   Capability,
@@ -14,6 +15,7 @@ import {
   codeProposalRef,
   commandExecutionRef,
   patchRef,
+  pullRequestRef,
   workspaceChangeRef,
 } from '../domain';
 import type {
@@ -49,6 +51,9 @@ import type {
   Project,
   PromptSpec,
   ProposedChange,
+  PullRequestRef,
+  PullRequestResult,
+  RepositoryIdentity,
   RunCommandInput,
   Session,
   Task,
@@ -222,9 +227,16 @@ export type ApplyPreviewAnchorStatus =
   | 'PR_APPROVAL_PENDING'
   /**
    * The PR-creation approval was granted (Sprint 3b, ADR-0049) — records permission only. NOT PR-created,
-   * NOT deployed, NOT merged, NOT released. Actual PR creation is a future repository-hosting sprint.
+   * NOT deployed, NOT merged, NOT released. From Sprint 3d-D it also carries `repositoryIdentity` (the
+   * approved target), and an explicit PR create/open phrase here EXECUTES creation.
    */
-  | 'PR_APPROVED';
+  | 'PR_APPROVED'
+  /**
+   * An actual Pull Request was created — or an existing open PR was safely connected — during this run
+   * (Sprint 3d-D, ADR-0054). The first state that means a PR exists on the hosting provider. NOT merged,
+   * NOT deployed, NOT released, NOT reviewed, NOT CI-passed, NOT independently re-verified after creation.
+   */
+  | 'PR_CREATED';
 
 /**
  * Anchored fact set for "a diff preview was shown; the user may explicitly ask to apply it" (Sprint 2s,
@@ -315,6 +327,24 @@ export interface ApplyPreviewAnchor {
   /** Deterministic bounded PR body preview (Sprint 3b) — generated-by-ChunsikBot + short hash + head→base +
    *  committed-file COUNT only (NO file paths / diff / content). Audit-stored; NOT sent anywhere in 3b. */
   prBodyPreview?: string;
+  /** The approved target repository identity (Sprint 3d-D, ADR-0054) — resolved from reviewed config at PR
+   *  APPROVAL time and stored here, so the approval covers the repo, not only head/base. Set at
+   *  PR_APPROVAL_PENDING; preserved at PR_APPROVED/PR_CREATED; cleared on deny/cancel. NO token. */
+  repositoryIdentity?: RepositoryIdentity;
+  /** Set once `status` becomes `PR_CREATED` (Sprint 3d-D) — provider/owner/repo/number/url handle. */
+  pullRequestRef?: PullRequestRef;
+  /** The created/connected Pull Request number (Sprint 3d-D). */
+  pullRequestNumber?: number;
+  /** The created/connected Pull Request URL (Sprint 3d-D) — validated github.com html_url. */
+  pullRequestUrl?: string;
+  /** The PR head branch as reported by the provider (Sprint 3d-D) — == `prHeadBranch`. */
+  pullRequestHeadBranch?: string;
+  /** The PR base branch as reported by the provider (Sprint 3d-D) — == `prBaseBranch`. */
+  pullRequestBaseBranch?: string;
+  /** The PR head commit sha as reported by the provider (Sprint 3d-D) — == `prPushedCommitHash`. */
+  pullRequestCommitHash?: string;
+  /** True when an existing open PR was connected instead of creating a new one (Sprint 3d-D). */
+  pullRequestReused?: boolean;
 }
 
 /**
@@ -453,6 +483,28 @@ export interface ConversationRuntimeDeps {
      *  upstream (`git push <remote> HEAD:<branch>`), never force/tags/all/-u, never a PR/deploy. */
     pushApprovedCommit(input: { rootPath: string; remote: string; branch: string; commitHash: string; approvalRef: ApprovalRef }): Promise<GitPushResult>;
   };
+  /**
+   * Repository Hosting (CAP-010, Sprint 3d-D, ADR-0054) — actual PR creation execution. OPTIONAL: absent/empty
+   * when not configured. `identity` is the reviewed config identity (from RepositoryIdentityResolver at
+   * composition; independent of token). `manager` is the `RepositoryHostingManager` — present ONLY when a
+   * GitHub token is configured (so the adapter could be constructed); when absent, PR creation execution is
+   * "not configured" and fails safe. The runtime calls `manager.createPullRequest` ONLY — NEVER the provider
+   * directly, and receives NO token.
+   */
+  readonly repositoryHosting?: {
+    identity?: RepositoryIdentity;
+    manager?: {
+      createPullRequest(input: {
+        identity: RepositoryIdentity;
+        headBranch: string;
+        baseBranch: string;
+        title: string;
+        body: string;
+        expectedCommitHash: string;
+        approvalRef: ApprovalRef;
+      }): Promise<PullRequestResult>;
+    };
+  };
   readonly logger: Logger;
 }
 
@@ -552,6 +604,11 @@ const PUSH_EXECUTION_WORDS =
  *  (no PR word) at GIT_PUSHED/PR_APPROVED gets a state-appropriate "deploy not supported" reply. PR phrases
  *  are handled by `interpretPrIntent`, NOT here. */
 const DEPLOY_ONLY_WORDS = /(배포|deploy|릴리즈|release)/i;
+
+/** Companion follow-ups that are unsupported once a PR is already created (Sprint 3d-D) — merge/deploy/release/
+ *  reviewer/label/assignee. Consulted ONLY at PR_CREATED to answer "that's a future step" (no mutation). */
+const PR_CREATED_COMPANION_WORDS =
+  /(배포|deploy|릴리즈|release|머지|\bmerge\b|병합|auto\s*-?\s*merge|자동\s*머지|리뷰어|reviewer|라벨|\blabel\b|assignee|담당자)/i;
 
 /** A PR-ish noun (Sprint 3b, ADR-0049) — only ever consulted at GIT_PUSHED/PR_APPROVAL_PENDING/PR_APPROVED.
  *  A bare 좋아/오케이/확인/진행해/다음 단계 never matches. A noun ALONE is not a PR-creation request (CA #1). */
@@ -735,9 +792,14 @@ function buildPrApprovalReason(input: {
   headBranch: string;
   baseBranch: string;
   title: string;
+  owner?: string;
+  repo?: string;
 }): string {
   return [
     'operation: pull request creation approval planning',
+    // Target repository for human review (Sprint 3d-D) — owner/repo only, NEVER a token. Structured anchor
+    // fields (anchor.repositoryIdentity) are the authority; this reason text is NOT parsed later (CA change 10).
+    ...(input.owner && input.repo ? [`repository: ${boundGitRef(input.owner)}/${boundGitRef(input.repo)}`] : []),
     `pushed commit: ${input.pushedCommitHash}`,
     `head: ${boundGitRef(input.headBranch)}`,
     `base: ${boundGitRef(input.baseBranch)}`,
@@ -752,6 +814,32 @@ function buildPrApprovalReason(input: {
     'creating a PR mutates shared collaboration state (CI, notifications, reviews, branch protections, automations)',
     'approval is based on the pushed context currently recorded by ChunsikBot; it does not verify the branch on the hosting provider and does not guarantee a PR can be created',
   ].join('\n');
+}
+
+/**
+ * Deterministic bounded PR BODY for the actual creation call (Sprint 3d-D, ADR-0054, CA change 11) — the text
+ * sent to the hosting provider. Generated-by-ChunsikBot + bounded title + pushed short hash + head→base +
+ * committed-file COUNT ONLY (never file paths / diff / content / token / remoteUrl) + explicit no
+ * merge/deploy/release. Bounded by MAX_PR_BODY. Re-derived from approved context — the stored `prBodyPreview`
+ * is not trusted verbatim.
+ */
+function buildPrBody(input: {
+  title: string;
+  pushedCommitHash: string;
+  headBranch: string;
+  baseBranch: string;
+  committedFileCount: number;
+}): string {
+  return [
+    'ChunsikBot이 생성한 PR입니다.',
+    `제목: ${input.title.slice(0, MAX_PR_TITLE)}`,
+    `커밋: ${input.pushedCommitHash.slice(0, 7)}`,
+    `대상: ${boundGitRef(input.headBranch)} → ${boundGitRef(input.baseBranch)}`,
+    `변경 파일 수: ${input.committedFileCount}개`,
+    '머지/배포/릴리즈는 하지 않았어요.',
+  ]
+    .join('\n')
+    .slice(0, MAX_PR_BODY);
 }
 
 /** Bound on how many extracted target-path candidates trigger a workspace.list call per turn
@@ -1117,8 +1205,19 @@ export class ConversationRuntime {
     if (applyAnchor?.status === 'PR_APPROVED') {
       const prKind = ConversationRuntime.interpretPrIntent(message.text);
       if (prKind === 'pr-unsupported') return this.handlePrUnsupportedCompanionTurn(message, session);
-      if (prKind === 'create') return this.handlePrAlreadyApprovedTurn(message, session);
+      // (Sprint 3d-D, ADR-0054) an explicit PR create/open phrase at PR_APPROVED now EXECUTES creation
+      // (state-driven trigger — the same grammar requested approval at GIT_PUSHED). Bare noun/승인/진행해 → null.
+      if (prKind === 'create') return this.handlePrCreationExecutionTurn(message, session, actor, applyAnchor);
       if (DEPLOY_ONLY_WORDS.test(message.text)) return this.handlePrApprovedDeployUnsupportedTurn(message, session);
+    }
+    // (Sprint 3d-D) After a PR was created/connected: a PR create phrase → already created (+ URL, no new call);
+    // a deploy/merge/release/companion phrase → unsupported future step. Never re-creates / merges / deploys.
+    if (applyAnchor?.status === 'PR_CREATED') {
+      const prKind = ConversationRuntime.interpretPrIntent(message.text);
+      if (prKind === 'create') return this.handlePrAlreadyCreatedTurn(message, session, applyAnchor);
+      if (prKind === 'pr-unsupported' || PR_CREATED_COMPANION_WORDS.test(message.text)) {
+        return this.handlePrCreatedCompanionUnsupportedTurn(message, session);
+      }
     }
     // (CA #1) NO global/no-anchor push handling is installed — push handling is anchored to GIT_COMMITTED /
     // PUSH_APPROVAL_PENDING / PUSH_APPROVED only; every other state keeps its existing behavior.
@@ -2674,6 +2773,13 @@ export class ConversationRuntime {
     actor: Actor,
     anchor: ApplyPreviewAnchor,
   ): Promise<TurnResult> {
+    // 0. (Sprint 3d-D, CA change 9) PR approval now binds the target repository identity — approving a PR
+    //    without a configured target repo is no longer meaningful. If identity is missing/invalid, do NOT
+    //    create PR_APPROVAL_PENDING or an ApprovalRequest — respond "not configured". (Token NOT needed here.)
+    const identity = this.deps.repositoryHosting?.identity;
+    if (!identity) {
+      return this.respondComposed(message, session, this.deps.composer.composePrCreationNotConfigured(message.context));
+    }
     // 1. (Constraint 9/CA #14) complete + safe pushed context, else composePrApprovalUnavailable (no approval).
     //    Log never throws (2x lesson — optional field access).
     const parsed = anchor.pushedUpstreamRef ? parsePushUpstream(anchor.pushedUpstreamRef) : null;
@@ -2716,10 +2822,18 @@ export class ConversationRuntime {
     const approval = await this.deps.approvals.requestForRisk({
       executionPlanRef: anchor.executionPlanRef,
       riskLevel: RiskLevel.CRITICAL,
-      reason: buildPrApprovalReason({ pushedCommitHash: anchor.pushedCommitHash, headBranch, baseBranch, title }),
+      reason: buildPrApprovalReason({
+        pushedCommitHash: anchor.pushedCommitHash,
+        headBranch,
+        baseBranch,
+        title,
+        owner: identity.owner,
+        repo: identity.repo,
+      }),
       requestedBy: actor.id,
     });
-    // 6. Halt at PR_APPROVAL_PENDING, preserving ALL pushed/commit/workspace context + distinct PR context.
+    // 6. Halt at PR_APPROVAL_PENDING, preserving ALL pushed/commit/workspace context + distinct PR context +
+    //    the approved repository identity (Sprint 3d-D).
     await this.deps.applyPreviewFlow.anchor(session, {
       ...anchor,
       status: 'PR_APPROVAL_PENDING',
@@ -2729,6 +2843,7 @@ export class ConversationRuntime {
       prBaseBranch: baseBranch,
       prTitle: title,
       prBodyPreview: bodyPreview,
+      repositoryIdentity: { provider: identity.provider, owner: identity.owner, repo: identity.repo },
     });
     const reply = this.deps.composer.composePrApprovalRequested(message.context, {
       pushedCommitHash: anchor.pushedCommitHash,
@@ -2803,6 +2918,7 @@ export class ConversationRuntime {
         prBaseBranch: undefined,
         prTitle: undefined,
         prBodyPreview: undefined,
+        repositoryIdentity: undefined,
       });
       const reply =
         decision === 'deny'
@@ -2818,11 +2934,150 @@ export class ConversationRuntime {
     return { status: 'RESPONDED', reply, sessionId: session.id };
   }
 
-  /** A PR-creation phrase while already PR_APPROVED (Sprint 3b, Q11) — already approved; not created; no new approval. */
-  private async handlePrAlreadyApprovedTurn(message: InboundMessage, session: Session): Promise<TurnResult> {
-    const reply = this.deps.composer.composePrAlreadyApproved(message.context);
-    await this.deps.memory.recordAssistant(reply.text, message.context, session.id);
-    return this.responded(session, reply);
+  /**
+   * Actual PR creation execution (Sprint 3d-D, ADR-0054) — from a live PR_APPROVED anchor + an explicit PR
+   * create/open phrase. Verifies the live approval + PR/pushed/identity context (STRUCTURED fields only, never
+   * parsing ApprovalRequest.reason), then calls `RepositoryHostingManager.createPullRequest` — the manager (not
+   * the runtime) owns provider.kind/repo/branch/find/reuse/create/result-integrity. Runtime NEVER calls the
+   * provider directly and receives NO token. Success → re-anchor PR_CREATED; failures keep PR_APPROVED (a
+   * blocked-pre-mutation failure says "PR not created"; a post-attempt UNVERIFIED failure must not).
+   */
+  private async handlePrCreationExecutionTurn(
+    message: InboundMessage,
+    session: Session,
+    actor: Actor,
+    anchor: ApplyPreviewAnchor,
+  ): Promise<TurnResult> {
+    void actor;
+    const identity = this.deps.repositoryHosting?.identity;
+    const manager = this.deps.repositoryHosting?.manager;
+    // Not configured: no resolved identity OR no manager (missing GitHub token) — safe not-configured, no call.
+    if (!identity || !manager) {
+      return this.respondComposed(message, session, this.deps.composer.composePrCreationNotConfigured(message.context));
+    }
+    // Complete PR_APPROVED context, incl. the approved repositoryIdentity (CA change 1). Missing → safe failure.
+    if (
+      anchor.status !== 'PR_APPROVED' ||
+      !anchor.prApprovalId ||
+      !anchor.prPushedCommitHash ||
+      !anchor.prHeadBranch ||
+      !anchor.prBaseBranch ||
+      !anchor.prTitle ||
+      !anchor.workspaceRef ||
+      !anchor.executionPlanRef ||
+      !anchor.repositoryIdentity
+    ) {
+      this.logPrApprovalFailed(session, anchor, 'PR execution context incomplete');
+      return this.failComposed(message, session, this.deps.composer.composePrCreationUnavailable(message.context));
+    }
+    // Resolved identity must EXACTLY match the identity approved at PR-approval time (CA change 1).
+    if (
+      anchor.repositoryIdentity.provider !== identity.provider ||
+      anchor.repositoryIdentity.owner !== identity.owner ||
+      anchor.repositoryIdentity.repo !== identity.repo
+    ) {
+      this.logPrApprovalFailed(session, anchor, 'resolved identity does not match approved identity');
+      return this.failComposed(message, session, this.deps.composer.composePrCreationUnavailable(message.context));
+    }
+    // Verify the live approval via STRUCTURED fields + ApprovalRef only — never parse reason text (CA change 2).
+    const request = await this.deps.approvals.get(anchor.prApprovalId);
+    if (
+      !request ||
+      request.status !== ApprovalStatus.APPROVED ||
+      request.executionPlanRef.id !== anchor.executionPlanRef.id
+    ) {
+      this.logPrApprovalFailed(session, anchor, 'PR approval missing/not-approved/plan-mismatch');
+      return this.failComposed(message, session, this.deps.composer.composePrCreationUnavailable(message.context));
+    }
+    // PR context must still match the pushed context exactly (no fresh Git read — Q14).
+    if (
+      !/^[0-9a-f]{7,40}$/i.test(anchor.prPushedCommitHash) ||
+      anchor.prPushedCommitHash !== anchor.pushedCommitHash ||
+      anchor.prPushedCommitHash !== anchor.pushCommitHash ||
+      anchor.prPushedCommitHash !== anchor.commitHash ||
+      anchor.prHeadBranch !== anchor.pushedBranch ||
+      anchor.prBaseBranch !== PR_BASE_BRANCH_POLICY
+    ) {
+      this.logPrApprovalFailed(session, anchor, 'PR context mismatch');
+      return this.failComposed(message, session, this.deps.composer.composePrCreationUnavailable(message.context));
+    }
+    // Deterministic bounded body (count only — CA change 11). The manager owns hosting checks + integrity.
+    const body = buildPrBody({
+      title: anchor.prTitle,
+      pushedCommitHash: anchor.prPushedCommitHash,
+      headBranch: anchor.prHeadBranch,
+      baseBranch: anchor.prBaseBranch,
+      committedFileCount: anchor.committedFiles?.length ?? 0,
+    });
+    let result: PullRequestResult;
+    try {
+      result = await manager.createPullRequest({
+        identity,
+        headBranch: anchor.prHeadBranch,
+        baseBranch: anchor.prBaseBranch,
+        title: anchor.prTitle,
+        body,
+        expectedCommitHash: anchor.prPushedCommitHash,
+        approvalRef: approvalRef(request),
+      });
+    } catch (err) {
+      // First remote mutation — fail SAFE. Only a KNOWN pre-mutation BlockedError may say "PR was not created";
+      // a known post-attempt UnverifiedError AND any unknown generic/non-Error throw are treated as UNVERIFIED
+      // (the POST may have reached the provider), so we never overclaim no PR (CA 3d-D impl review). Keep
+      // PR_APPROVED on every failure path.
+      if (err instanceof RepositoryHostingBlockedError) {
+        this.logPrApprovalFailed(session, anchor, 'PR creation blocked before mutation');
+        return this.failComposed(message, session, this.deps.composer.composePrCreationBlocked(message.context));
+      }
+      this.logPrApprovalFailed(session, anchor, 'PR creation unverified (mutation ambiguity)');
+      return this.failComposed(message, session, this.deps.composer.composePrCreationUnverified(message.context));
+    }
+    // Success → re-anchor PR_CREATED, preserving the full causal chain + PR result (CA change 8).
+    await this.deps.applyPreviewFlow.anchor(session, {
+      ...anchor,
+      status: 'PR_CREATED',
+      pullRequestRef: pullRequestRef(result),
+      pullRequestNumber: result.pullRequestNumber,
+      pullRequestUrl: result.pullRequestUrl,
+      pullRequestHeadBranch: result.pullRequestHeadBranch,
+      pullRequestBaseBranch: result.pullRequestBaseBranch,
+      pullRequestCommitHash: result.pullRequestCommitHash,
+      pullRequestReused: result.reused,
+    });
+    const view = {
+      owner: result.owner,
+      repo: result.repo,
+      headBranch: result.pullRequestHeadBranch,
+      baseBranch: result.pullRequestBaseBranch,
+      commitHash: result.pullRequestCommitHash,
+      prNumber: result.pullRequestNumber,
+      prUrl: result.pullRequestUrl,
+    };
+    const reply = result.reused
+      ? this.deps.composer.composePrCreatedReusedExisting(message.context, view)
+      : this.deps.composer.composePrCreated(message.context, view);
+    return this.respondComposed(message, session, reply);
+  }
+
+  /** A PR create/open phrase while already PR_CREATED (Sprint 3d-D) — already created; returns the PR URL; no
+   *  new manager/provider call. */
+  private async handlePrAlreadyCreatedTurn(
+    message: InboundMessage,
+    session: Session,
+    anchor: ApplyPreviewAnchor,
+  ): Promise<TurnResult> {
+    const reply = this.deps.composer.composePrAlreadyCreated(message.context, {
+      prNumber: anchor.pullRequestNumber ?? 0,
+      prUrl: anchor.pullRequestUrl ?? '',
+    });
+    return this.respondComposed(message, session, reply);
+  }
+
+  /** A deploy/merge/release/companion phrase while PR_CREATED (Sprint 3d-D) — unsupported future step; no
+   *  merge/deploy/release, no new PR. */
+  private async handlePrCreatedCompanionUnsupportedTurn(message: InboundMessage, session: Session): Promise<TurnResult> {
+    const reply = this.deps.composer.composePrCreatedCompanionUnsupported(message.context);
+    return this.respondComposed(message, session, reply);
   }
 
   /** A PR request bundled with deploy/merge/release/force/… (Sprint 3b, CA #5) — unsupported companion; no approval, no PR. */

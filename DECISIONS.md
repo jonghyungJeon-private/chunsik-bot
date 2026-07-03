@@ -3438,3 +3438,82 @@ that will consume it in 3d-D; `isSafeGitHubPullRequestUrl`/`PullRequestResult` r
 consumed), ADR-0050 (RepositoryHosting design), ADR-0048 (provider-reported `GitPushResult` discipline mirrored;
 `git-local` adapter template), ADR-0023 (Git stays local-only). **Runtime execution succeeds in Sprint 3d-D.**
 Plan: `docs/plans/sprint-3d-c-github-pr-creation-execution-plan.md`.
+
+## ADR-0054 — Actual PR Creation Execution (PR_APPROVED → wired GitHub adapter → PR_CREATED)
+
+- **Status:** ✅ Accepted (v2, Phase 3, Sprint 3d-D — Product Construction), Chief Architect plan review:
+  APPROVED WITH CHANGES (all 15 required changes applied) → implemented. **The first product-reachable
+  repository-hosting mutation.**
+- **Date:** 2026-07-03
+- **Scope:** Wire the GitHub adapter (ADR-0053) through `REPOSITORY_HOSTING_PROVIDER` →
+  `RepositoryHostingManager` (ADR-0052) into `ConversationRuntime`, and add the `PR_CREATED` state + explicit
+  execution trigger + safe-failure taxonomy, so a live `PR_APPROVED` anchor + an explicit PR create/open phrase
+  creates an actual Pull Request (or connects an existing open one).
+
+### Most important rule
+> Actual PR creation is a high-risk remote platform mutation. It fires ONLY on: a live `PR_APPROVED` anchor, an
+> explicit PR create/open phrase **at `PR_APPROVED`**, a resolved+validated `RepositoryIdentity` that **matches
+> the identity approved at PR-approval time**, a live-verified `ApprovalRef` (via `ApprovalManager.get`,
+> STRUCTURED fields only — `ApprovalRequest.reason` is NEVER parsed), and exact PR/pushed context match — then
+> `RepositoryHostingManager.createPullRequest`. The runtime calls the **manager only, never the
+> `GitHubRepositoryHostingProvider` directly**, and receives **no token**. It never fires on approval alone, a
+> bare "PR" noun, "승인"/"진행해"/"좋아", or deploy/merge/release.
+
+### Decision
+- **`PR_CREATED` state (Q1).** Added after `PR_APPROVED`. Means a provider-reported PR was created — or an
+  existing open PR was safely connected — **during this run**. NOT merged/deployed/released/reviewed/CI-passed/
+  safe-forever/independently-re-verified. Anchor stores `repositoryIdentity` + `pullRequestRef`/`Number`/`Url`/
+  `HeadBranch`/`BaseBranch`/`CommitHash`/`Reused` and preserves the full causal chain; NO token/raw response/
+  raw diff/file content/remoteUrl (Q2/CA change 8), with `pullRequestCommitHash === prPushedCommitHash`,
+  head/base == approved, `repositoryIdentity` == approved.
+- **Identity bound at APPROVAL time (CA change 1/9).** `handlePrApprovalTurn` (from `GIT_PUSHED`) now REQUIRES a
+  resolved `RepositoryIdentity` — if absent, it creates **no** `PR_APPROVAL_PENDING` and **no** `ApprovalRequest`
+  (safe "not configured"). The identity is stored on the `PR_APPROVAL_PENDING`/`PR_APPROVED` anchor; at
+  execution the runtime re-resolves it and requires an **exact match** with `anchor.repositoryIdentity`
+  (mismatch/absent → safe failure, no manager/provider call). Old `PR_APPROVED` anchors without
+  `repositoryIdentity` fail safe.
+- **State-driven trigger (Q3).** Reuses `interpretPrIntent === 'create'` at `PR_APPROVED` (same grammar that
+  requested approval at `GIT_PUSHED`; the state disambiguates). Bare noun/승인/진행해/좋아/deploy/merge/release do
+  not execute. `PR_APPROVAL_PENDING` still intercepts decisions — execution never bypasses approval (Q13).
+- **Token wiring (CA change 3/4/6).** `apps/chunsik/src/config.ts` reads `CHUNSIK_GITHUB_TOKEN` **only** to
+  construct `GitHubRepositoryHostingProvider` at the composition root; the token is **adapter-local** and never
+  enters `@chunsik/core`/`ConversationRuntime` deps/anchors/`ApprovalRequest.reason`/responses/logs. When the
+  token is **absent/blank**, the composition root constructs **no** adapter and injects **no** manager
+  (`ConversationRuntime` receives `RepositoryHostingManager | undefined`, never the token); PR creation then
+  fails safe as "not configured" at runtime **without crashing unrelated non-PR flows** (no startup crash).
+- **Ownership split (Q8/CA change 7).** Runtime owns conversation state, trigger, approval+context
+  verification, identity resolution+match, response, anchor transition. The **manager** owns provider.kind
+  match, input validation, `repositoryExists`/`branchExists(head)`/`branchExists(base)`/`findOpenPullRequest`,
+  existing-PR reuse, the single `createPullRequest`, and result integrity — the runtime does **not** duplicate
+  these and never calls/imports the provider.
+- **Typed manager errors (CA change 6).** `RepositoryHostingBlockedError` (pre-mutation: approval/input/repo/
+  branch/find/existing-invalid — definitively no PR → "PR은 만들지 않았어요") vs `RepositoryHostingUnverifiedError`
+  (the `createPullRequest` call was attempted but failed/unverified — a PR may exist → "PR 생성 완료를 확인하지
+  못했어요", must NOT claim no PR). Post-attempt ambiguity never overclaims.
+- **Reuse (Q9).** `pullRequestReused: true` → "기존에 열려 있던 PR을 연결했어요" (never "새 PR을 만들었어요");
+  `false` → "PR을 만들었어요". Body is re-derived deterministically (count only, no file paths/diff/token —
+  CA change 11).
+- **Unchanged.** Git capability (no `GitProvider`/`GitManager` PR method), `ExecutionOrchestrator`,
+  `WorkspaceWrite`/`Patch`/`CodeGeneration`/`CommandExecution`. No merge/auto-merge/deploy/release/reviewer/
+  label/assignee/draft/branch-creation/force-push. Tests use a fake manager / fake fetch — no live GitHub
+  network, no `CHUNSIK_GITHUB_TOKEN` required (CA change 15).
+
+### Consequences
+- + The product flow can now move past `PR_APPROVED` to an actual PR — behind a live approval, exact
+  identity/context match, an explicit execution phrase, and the manager's hosting-state + result-integrity
+  checks, with a safe-failure taxonomy that never overclaims.
+- + Reuses the accepted adapter/manager/identity unchanged in contract; the runtime touches the provider only
+  through the manager.
+- − `ConversationRuntime`/`ApplyPreviewAnchor`/`ResponseComposer` gained the `PR_CREATED` state + execution
+  flow + composers; `app.module.ts` binds the adapter when a token is present; the manager gained a typed-error
+  surface. Superseded prior-sprint absence guards (3d-A/3d-B/3d-C "not wired") were updated to their enduring
+  invariants (runtime never imports the adapter; Git unchanged).
+- − Actual GitHub side effects now occur when configured + explicitly requested; merge/deploy/release remain
+  out of scope and forbidden.
+
+### Relations
+ADR-0053 (adapter wired via `REPOSITORY_HOSTING_PROVIDER`), ADR-0052 (`RepositoryHostingManager` consumed; typed
+errors added), ADR-0051 (`RepositoryIdentity`/resolver reused), ADR-0049 (`PR_APPROVED` anchor + PR context
+consumed; its "PR_APPROVED + create → already approved" behavior is **superseded** — that phrase now executes),
+ADR-0048/0046/0025 (approval-halt + Ref-gating lineage), ADR-0023 (Git stays local-only). Plan:
+`docs/plans/sprint-3d-d-pr-creation-execution-plan.md`.

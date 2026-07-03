@@ -21,6 +21,31 @@ import { isSafePushBranch } from './push-target';
 const SHA_SHAPED = /^[0-9a-f]{7,40}$/i;
 
 /**
+ * PR creation failed **before any mutating call was made** (approval/input/identity invalid, repository/branch
+ * missing, existing-PR lookup unavailable/ambiguous, existing-PR result invalid). Definitively **no** Pull
+ * Request was created — a caller may safely say "PR은 만들지 않았어요" (Sprint 3d-D, ADR-0054, CA change 6).
+ */
+export class RepositoryHostingBlockedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RepositoryHostingBlockedError';
+  }
+}
+
+/**
+ * The mutating `createPullRequest` call was **attempted** but could not be completed/verified (request failed
+ * after the POST may have reached the provider, or the created result failed integrity). A Pull Request **may**
+ * have been created — a caller must **not** claim no PR was created; say "확인하지 못했어요" instead (Sprint
+ * 3d-D, ADR-0054, CA change 6).
+ */
+export class RepositoryHostingUnverifiedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RepositoryHostingUnverifiedError';
+  }
+}
+
+/**
  * Thin orchestration over a {@link RepositoryHostingProvider} — the RepositoryHosting capability skeleton
  * (CAP-010, ADR-0052 — Sprint 3d-B). **Non-mutating in product runtime:** no real provider is bound; only
  * fake providers in unit tests exercise this. A successful unit test means the Manager boundary behaves
@@ -47,31 +72,37 @@ export class RepositoryHostingManager {
   }): Promise<PullRequestResult> {
     const { identity, headBranch, baseBranch, body, expectedCommitHash, approvalRef } = input;
 
-    // ── Backstop validation BEFORE any provider call (mirrors GitManager) ──────────────────────────────────
+    // ── Backstop validation BEFORE any provider call (mirrors GitManager). All → BlockedError (no mutation). ─
     if (approvalRef.status !== ApprovalStatus.APPROVED) {
-      throw new Error(`repository hosting: PR creation requires an APPROVED approval (got ${approvalRef.status})`);
+      throw new RepositoryHostingBlockedError(
+        `repository hosting: PR creation requires an APPROVED approval (got ${approvalRef.status})`,
+      );
     }
     // provider.kind must match identity.provider (CA change 1 / Q10) — a mismatched composition must not run.
     if (this.provider.kind !== identity.provider) {
-      throw new Error('repository hosting: provider kind does not match identity provider');
+      throw new RepositoryHostingBlockedError('repository hosting: provider kind does not match identity provider');
     }
     if (!isSupportedHostingProvider(identity.provider)) {
-      throw new Error('repository hosting: unsupported hosting provider');
+      throw new RepositoryHostingBlockedError('repository hosting: unsupported hosting provider');
     }
     if (!isSafeRepoOwner(identity.owner) || !isSafeRepoName(identity.repo)) {
-      throw new Error('repository hosting: unsafe repository identity');
+      throw new RepositoryHostingBlockedError('repository hosting: unsafe repository identity');
     }
-    if (!isSafePushBranch(headBranch)) throw new Error('repository hosting: unsafe head branch');
-    if (!isSafePushBranch(baseBranch)) throw new Error('repository hosting: unsafe base branch');
-    if (headBranch === baseBranch) throw new Error('repository hosting: head and base branch must differ');
+    if (!isSafePushBranch(headBranch)) throw new RepositoryHostingBlockedError('repository hosting: unsafe head branch');
+    if (!isSafePushBranch(baseBranch)) throw new RepositoryHostingBlockedError('repository hosting: unsafe base branch');
+    if (headBranch === baseBranch) {
+      throw new RepositoryHostingBlockedError('repository hosting: head and base branch must differ');
+    }
     // Deterministic title normalization (CA change 2) — the provider receives the normalized title.
     const title = normalizePrTitle(input.title);
-    if (title.length === 0) throw new Error('repository hosting: PR title is empty after normalization');
-    if (title.length > MAX_PR_TITLE) throw new Error('repository hosting: PR title exceeds bound');
+    if (title.length === 0) throw new RepositoryHostingBlockedError('repository hosting: PR title is empty after normalization');
+    if (title.length > MAX_PR_TITLE) throw new RepositoryHostingBlockedError('repository hosting: PR title exceeds bound');
     if (typeof body !== 'string' || body.length > MAX_PR_BODY) {
-      throw new Error('repository hosting: PR body exceeds bound');
+      throw new RepositoryHostingBlockedError('repository hosting: PR body exceeds bound');
     }
-    if (!SHA_SHAPED.test(expectedCommitHash)) throw new Error('repository hosting: invalid expectedCommitHash');
+    if (!SHA_SHAPED.test(expectedCommitHash)) {
+      throw new RepositoryHostingBlockedError('repository hosting: invalid expectedCommitHash');
+    }
 
     const providerInput: PullRequestCreationInput = {
       identity,
@@ -82,15 +113,15 @@ export class RepositoryHostingManager {
       expectedCommitHash,
     };
 
-    // ── Ordered read-only hosting-state checks (call ordering, Q6) ─────────────────────────────────────────
+    // ── Ordered read-only hosting-state checks (call ordering, Q6). All failures → BlockedError (no mutation). ─
     if (!(await this.repositoryExists(identity))) {
-      throw new Error('repository hosting: repository not found on hosting provider');
+      throw new RepositoryHostingBlockedError('repository hosting: repository not found on hosting provider');
     }
     if (!(await this.branchExists(identity, headBranch))) {
-      throw new Error('repository hosting: head branch not found on hosting provider');
+      throw new RepositoryHostingBlockedError('repository hosting: head branch not found on hosting provider');
     }
     if (!(await this.branchExists(identity, baseBranch))) {
-      throw new Error('repository hosting: base branch not found on hosting provider');
+      throw new RepositoryHostingBlockedError('repository hosting: base branch not found on hosting provider');
     }
 
     // Existing-open-PR lookup (Q8/Q9). If the provider cannot answer (throws) → BLOCK by default (no create).
@@ -98,22 +129,37 @@ export class RepositoryHostingManager {
     try {
       existing = await this.provider.findOpenPullRequest(identity, headBranch, baseBranch);
     } catch {
-      throw new Error('repository hosting: could not determine existing pull requests; creation blocked');
+      throw new RepositoryHostingBlockedError('repository hosting: could not determine existing pull requests; creation blocked');
     }
     if (existing) {
       // Validate the existing result the same as a new one; commit hash must match expected (CA change 4).
-      this.assertResultIntegrity(existing, identity, headBranch, baseBranch, expectedCommitHash);
+      // An invalid existing result is a pre-mutation BLOCK (no create attempted) — CA change 6.
+      try {
+        this.assertResultIntegrity(existing, identity, headBranch, baseBranch, expectedCommitHash);
+      } catch (err) {
+        throw new RepositoryHostingBlockedError(
+          err instanceof Error ? err.message : 'repository hosting: existing PR result invalid',
+        );
+      }
       return { ...existing, reused: true }; // manager-owned reused (CA change 3)
     }
 
-    // ── Single mutating call (only if all checks passed and no existing PR) ────────────────────────────────
+    // ── Single mutating call (only if all checks passed and no existing PR). Failures here → UnverifiedError. ─
     let created: PullRequestResult;
     try {
       created = await this.provider.createPullRequest(providerInput);
     } catch {
-      throw new Error('repository hosting: PR creation could not be completed');
+      // The POST may have reached the provider — a PR may exist. Do NOT claim it wasn't created.
+      throw new RepositoryHostingUnverifiedError('repository hosting: PR creation could not be completed/verified');
     }
-    this.assertResultIntegrity(created, identity, headBranch, baseBranch, expectedCommitHash);
+    try {
+      this.assertResultIntegrity(created, identity, headBranch, baseBranch, expectedCommitHash);
+    } catch (err) {
+      // Creation was attempted (POST returned) but the result failed integrity — ambiguous, not "no PR".
+      throw new RepositoryHostingUnverifiedError(
+        err instanceof Error ? err.message : 'repository hosting: PR creation result could not be verified',
+      );
+    }
     return { ...created, reused: false }; // manager-owned reused (CA change 3)
   }
 
@@ -121,7 +167,7 @@ export class RepositoryHostingManager {
     try {
       return await this.provider.repositoryExists(identity);
     } catch {
-      throw new Error('repository hosting: could not verify repository existence');
+      throw new RepositoryHostingBlockedError('repository hosting: could not verify repository existence');
     }
   }
 
@@ -129,7 +175,7 @@ export class RepositoryHostingManager {
     try {
       return await this.provider.branchExists(identity, branch);
     } catch {
-      throw new Error('repository hosting: could not verify branch existence');
+      throw new RepositoryHostingBlockedError('repository hosting: could not verify branch existence');
     }
   }
 

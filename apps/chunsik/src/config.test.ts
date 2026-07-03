@@ -50,3 +50,16 @@ describe('loadConfig — repositoryHosting (Sprint 3d-A, ADR-0051, CA change 8)'
     });
   });
 });
+
+describe('loadConfig — githubToken (Sprint 3d-D, ADR-0054, CA change 3/6)', () => {
+  it('reads CHUNSIK_GITHUB_TOKEN into githubToken (adapter-local, never into repositoryHosting)', () => {
+    const cfg = loadConfig(env({ CHUNSIK_GITHUB_OWNER: 'acme', CHUNSIK_GITHUB_REPO: 'widgets', CHUNSIK_GITHUB_TOKEN: 'ghp_secret' }));
+    expect(cfg.githubToken).toBe('ghp_secret');
+    // the token never leaks into the identity config
+    expect(JSON.stringify(cfg.repositoryHosting)).not.toContain('ghp_secret');
+    expect(Object.keys(cfg.repositoryHosting ?? {}).sort()).toEqual(['owner', 'provider', 'repo']);
+  });
+  it('leaves githubToken undefined when unset', () => {
+    expect(loadConfig(env({ CHUNSIK_GITHUB_OWNER: 'acme', CHUNSIK_GITHUB_REPO: 'widgets' })).githubToken).toBeUndefined();
+  });
+});

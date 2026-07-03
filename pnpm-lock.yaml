@@ -41,6 +41,9 @@ importers:
       '@chunsik/queue-local':
         specifier: workspace:*
         version: link:../../packages/queue-local
+      '@chunsik/repository-hosting-github':
+        specifier: workspace:*
+        version: link:../../packages/repository-hosting-github
       '@chunsik/storage-sqlite':
         specifier: workspace:*
         version: link:../../packages/storage-sqlite

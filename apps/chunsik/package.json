@@ -17,6 +17,7 @@
     "@chunsik/vector-local": "workspace:*",
     "@chunsik/workspace-local": "workspace:*",
     "@chunsik/git-local": "workspace:*",
+    "@chunsik/repository-hosting-github": "workspace:*",
     "@chunsik/command-local": "workspace:*",
     "@chunsik/ai-cli": "workspace:*",
     "@chunsik/connectors": "workspace:*",
