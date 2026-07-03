@@ -105,10 +105,14 @@ remoteUrl.
 
 ```ts
 // Explicit merge-APPROVAL / merge phrase (Sprint 3f) — only consulted at PR_CREATED, AFTER interpretPrStatusIntent.
-// Returns 'merge' only for an explicit merge request/approval/execution phrase; null for a merge QUESTION
-// (가능/안전/되나/통과/?) or a bare merge noun (→ falls through to the companion-unsupported reply).
+// Returns 'merge' only for an explicit merge request/approval/execution phrase; null for a merge QUESTION —
+// a safety/possibility question (가능/안전/괜찮/되나/통과/?), a status/check/inspection inquiry
+// (상태/확인/봐/알려/체크/check/status), or a bare merge noun (→ falls through to the companion-unsupported reply).
+// MERGE_QUESTION below matches the implemented classifier verbatim; consulted only when MERGE_WORD is present,
+// so merge status/check phrases ("머지 상태 확인해줘"/"머지 확인해줘"/"머지 체크해줘") never become approvals (CA 3f impl review).
 const MERGE_WORD = /(머지|병합|\bmerge\b)/i;
-const MERGE_QUESTION = /(가능|안전|되나|되나요|통과|봐줘|상태|확인|\?|mergeable|can\s+i|is\s+it)/i;
+const MERGE_QUESTION =
+  /(가능|안전|괜찮|되나|되나요|통과|상태|확인|봐줘|봐|알려|체크|\bcheck\b|\bstatus\b|\bmergeable\b|can\s+i|is\s+it|\?)/i;
 const MERGE_REQUEST_VERB = /(승인|approval|approve|요청|받아|해줘|해도\s*되게|해\s*줘|merge\s+this|이\s*pr\s*머지)/i;
 static interpretMergeIntent(text): 'merge' | null {
   const t = text.trim().toLowerCase();
@@ -161,8 +165,8 @@ MERGE_APPROVED}` (read-only, never re-anchors → both states preserved).
   a merge/deploy/status phrase (`interpretMergeIntent`/`interpretPrStatusIntent`/`DEPLOY_ONLY_WORDS`) while
   pending → ambiguous re-prompt (no decide, no merge); else `interpretDecision`; verify `approvals.get(
   mergeApprovalId)` exists + PENDING + `executionPlanRef.id` matches (structured only, never parse reason);
-  approve → `approvals.decide` → re-anchor `MERGE_APPROVED` (+ `mergeApprovedAt = now()`, optional
-  `mergeApprovalDecisionBy = actor.id`; preserve all) → `composeMergeApprovalRecorded`; deny/cancel →
+  approve → `approvals.decide` → re-anchor `MERGE_APPROVED` (+ `mergeApprovedAt = now()`,
+  `mergeApprovalDecisionBy = actor.id`; required on MERGE_APPROVED; preserve all) → `composeMergeApprovalRecorded`; deny/cancel →
   `approvals.decide` → re-anchor `PR_CREATED` clearing **only** merge fields (mergeApprovalId/RequestedAt/
   ApprovedAt/DecisionBy) → `composeMergeApprovalDenied`/`Cancelled`. **NO merge on any path.**
 - **`handleMergeAlreadyApprovedTurn` (MERGE_APPROVED + merge phrase):** `composeMergeAlreadyApproved` ("이미
@@ -211,7 +215,9 @@ Never say merged / deployed / released / safe-to-merge / CI-verified / ready-to-
 - **Q1 (trigger)** — `interpretMergeIntent` at `PR_CREATED` (after status intent): merge word + request/approval/
   execution verb → merge approval; merge question / bare noun / status / deploy → not approval (§4.2).
 - **Q2 (states)** — add `MERGE_APPROVAL_PENDING`, `MERGE_APPROVED` + `mergeApprovalId`/`mergeApprovalRequestedAt`/
-  `mergeApprovedAt`/`mergeApprovalDecisionBy?`; no `PR_MERGED`/`DEPLOYED`/etc.
+  `mergeApprovedAt`/`mergeApprovalDecisionBy`; no `PR_MERGED`/`DEPLOYED`/etc. (These fields carry the TS
+  optional-marker `?` on the `ApplyPreviewAnchor` type because they are absent in earlier states, but
+  `mergeApprovedAt` and `mergeApprovalDecisionBy` are **required on `MERGE_APPROVED`** — set together at approve.)
 - **Q3 (perform merge?)** — **No.** Approval only.
 - **Q4 (RepositoryHostingProvider merge API?)** — **No** method added.
 - **Q5 (fresh status preview before approval?)** — **No** (permission recording only); wording avoids implying
