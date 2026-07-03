@@ -17,6 +17,7 @@ export * from './artifact-manager';
 export * from './workspace-manager';
 export * from './git-manager';
 export * from './push-target';
+export * from './repository-identity-resolver';
 export * from './deterministic-planner';
 export * from './planning-manager';
 export * from './approval-policy';
