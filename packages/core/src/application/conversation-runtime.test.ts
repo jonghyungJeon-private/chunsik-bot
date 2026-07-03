@@ -32,6 +32,7 @@ import type {
   PatchSet,
   ProposedChange,
   Project,
+  PullRequestMergeResult,
   PullRequestRef,
   PullRequestResult,
   PullRequestStatusPreview,
@@ -381,6 +382,8 @@ interface Calls {
   };
   hostingGetStatus: number;
   lastHostingStatusInput?: HostingStatusInput;
+  hostingMergePR: number;
+  lastHostingMergeInput?: HostingMergeInput;
 }
 
 /** Shape of the input the runtime passes to `RepositoryHostingManager.getPullRequestStatus` (Sprint 3e). */
@@ -390,6 +393,32 @@ interface HostingStatusInput {
   expectedHeadBranch: string;
   expectedBaseBranch: string;
   expectedCommitHash: string;
+}
+
+/** Shape of the input the runtime passes to `RepositoryHostingManager.mergePullRequest` (Sprint 3g). */
+interface HostingMergeInput {
+  identity: RepositoryIdentity;
+  pullRequestRef: PullRequestRef;
+  expectedHeadBranch: string;
+  expectedBaseBranch: string;
+  expectedHeadSha: string;
+  approvalRef: ApprovalRef;
+}
+
+/** Default fake PullRequestMergeResult echoing the merge input (Sprint 3g) — a valid, merged result. */
+function prMergeResultOf(input: HostingMergeInput, over: Partial<PullRequestMergeResult> = {}): PullRequestMergeResult {
+  return {
+    provider: 'github',
+    owner: input.identity.owner,
+    repo: input.identity.repo,
+    pullRequestNumber: input.pullRequestRef.pullRequestNumber,
+    pullRequestUrl: input.pullRequestRef.pullRequestUrl,
+    merged: true,
+    mergedHeadSha: input.expectedHeadSha,
+    mergeCommitHash: 'abcdef1234567890abcdef1234567890abcdef12',
+    alreadyMerged: false,
+    ...over,
+  };
 }
 
 /** Default fake PullRequestStatusPreview echoing the status input (Sprint 3e) — an integrity-consistent status. */
@@ -482,10 +511,15 @@ interface Opts {
   hostingManager?: {
     createPullRequest(input: HostingCreateInput): Promise<PullRequestResult>;
     getPullRequestStatus(input: HostingStatusInput): Promise<PullRequestStatusPreview>;
+    mergePullRequest?(input: HostingMergeInput): Promise<PullRequestMergeResult>;
   } | null;
   /** Repository Hosting status preview result (Sprint 3e) — defaults to a valid echoing preview; 'throw' to
    *  simulate a read failure, or a literal preview for a specific state/checks/reviews. */
   hostingStatus?: PullRequestStatusPreview | 'throw';
+  /** Repository Hosting merge result (Sprint 3g) — defaults to a valid merged result; 'throw-blocked' →
+   *  RepositoryHostingBlockedError, 'throw-unverified' → RepositoryHostingUnverifiedError, 'throw-generic' → a
+   *  plain Error, or a literal PullRequestMergeResult (e.g. alreadyMerged). */
+  hostingMerge?: PullRequestMergeResult | 'throw-blocked' | 'throw-unverified' | 'throw-generic';
 }
 
 /** Shape of the input the runtime passes to `RepositoryHostingManager.createPullRequest` (Sprint 3d-D). */
@@ -552,6 +586,7 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
     loggerWarn: 0,
     hostingCreatePR: 0,
     hostingGetStatus: 0,
+    hostingMergePR: 0,
   };
   const composer = new ResponseComposer();
   const intentResolver = new IntentResolver();
@@ -809,6 +844,14 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
                 calls.lastHostingStatusInput = input;
                 if (opts.hostingStatus === 'throw') throw new Error('status boom');
                 return opts.hostingStatus ?? prStatusOf(input);
+              },
+              async mergePullRequest(input: HostingMergeInput) {
+                calls.hostingMergePR++;
+                calls.lastHostingMergeInput = input;
+                if (opts.hostingMerge === 'throw-blocked') throw new RepositoryHostingBlockedError('merge blocked');
+                if (opts.hostingMerge === 'throw-unverified') throw new RepositoryHostingUnverifiedError('merge unverified');
+                if (opts.hostingMerge === 'throw-generic') throw new Error('merge boom');
+                return opts.hostingMerge ?? prMergeResultOf(input);
               },
             }),
     },
@@ -4737,9 +4780,11 @@ describe('Explicit PR Creation Approval — runtime (Sprint 3b, ADR-0049)', () =
     }
   });
 
-  it('MERGE_APPROVED follow-ups: merge → already approved; deploy → future step; status → read-only preview keeps MERGE_APPROVED (CA 43–45/73–75/81)', async () => {
+  it('MERGE_APPROVED follow-ups: bare "머지" mention → already approved; deploy → future step; status → read-only preview keeps MERGE_APPROVED (CA 43–45/73–75/81; Sprint 3g supersedes: "머지해줘" now EXECUTES — tests 27–29)', async () => {
+    // (Sprint 3g) a bare "머지" noun (no execution verb) stays a non-mutating already-approved reply; a direct
+    // "머지해줘" command now executes merge (covered by the 3g execution tests). No re-anchor here.
     const merge = makeDeps({ applyAnchor: MERGE_APPROVED_ANCHOR() });
-    const rm = await new ConversationRuntime(merge.deps).handle(messageOf('머지해줘'));
+    const rm = await new ConversationRuntime(merge.deps).handle(messageOf('머지'));
     expect(merge.calls.requestForRisk).toBe(0);
     expect(merge.calls.applyAnchorSet).toBe(0); // no re-anchor
     expect(rm.reply.text).toBe(composer.composeMergeAlreadyApproved(CTX).text);
@@ -4761,7 +4806,7 @@ describe('Explicit PR Creation Approval — runtime (Sprint 3b, ADR-0049)', () =
     for (const [anchor, text] of [
       [PR_CREATED_ANCHOR(), '머지 승인해줘'],
       [MERGE_PENDING_ANCHOR(), '승인'],
-      [MERGE_APPROVED_ANCHOR(), '머지해줘'],
+      [MERGE_APPROVED_ANCHOR(), '머지'], // (Sprint 3g) bare mention stays non-mutating; "머지해줘" now executes (3g tests)
     ] as const) {
       const { deps, calls } = makeDeps({ applyAnchor: anchor });
       const r = await new ConversationRuntime(deps).handle(messageOf(text));
@@ -4769,6 +4814,177 @@ describe('Explicit PR Creation Approval — runtime (Sprint 3b, ADR-0049)', () =
       expect(calls.gitPush + calls.gitCommit + calls.gitStatus + calls.commandRun + calls.workspaceApply + calls.run, text).toBe(0);
       expect(r.reply.text, text).not.toMatch(/merged\b|병합했|deployed|배포했|released|릴리즈했|safe to merge|안전하게 머지|CI verified/i);
       expect(r.reply.text, text).not.toContain('merge creation');
+    }
+  });
+
+  // ── Sprint 3g (ADR-0057): PR MERGE EXECUTION — actual merge from MERGE_APPROVED, live-preflight-guarded. ──
+  const MERGE_MERGED_ANCHOR = (o: Partial<ApplyPreviewAnchor> = {}): ApplyPreviewAnchor =>
+    MERGE_APPROVED_ANCHOR({ status: 'PR_MERGED', mergedAt: TS, mergeExecutedBy: 'actor-1', mergedHeadSha: HEAD_SHA, ...o });
+  const APPROVED_MERGE = () => approvedPrRequest(); // id apply-appr-1, APPROVED, matching plan
+
+  it('MERGE_APPROVED + direct merge command → merge execution preflight runs, anchors PR_MERGED (CA 27–29/1/18)', async () => {
+    for (const text of ['머지해줘', '이 PR 머지해줘', 'merge this PR', '실제 머지해줘', '이제 머지 실행해줘', '승인된 PR 머지해줘', 'merge now', 'execute merge']) {
+      const { deps, calls } = makeDeps({ applyAnchor: MERGE_APPROVED_ANCHOR(), approvalsGetResult: APPROVED_MERGE() });
+      const r = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.hostingMergePR, text).toBe(1);
+      expect(calls.lastHostingMergeInput?.expectedHeadSha, text).toBe(HEAD_SHA);
+      expect(calls.lastApplyAnchor?.status, text).toBe('PR_MERGED');
+      expect(r.reply.text, text).toContain('머지했어요');
+    }
+  });
+
+  it('MERGE_APPROVED + bare "머지" → no execution, composeMergeAlreadyApproved (CA 30/4)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: MERGE_APPROVED_ANCHOR(), approvalsGetResult: APPROVED_MERGE() });
+    const r = await new ConversationRuntime(deps).handle(messageOf('머지'));
+    expect(calls.hostingMergePR).toBe(0);
+    expect(calls.applyAnchorSet).toBe(0); // no re-anchor
+    expect(r.reply.text).toBe(composer.composeMergeAlreadyApproved(CTX).text);
+    expect(r.reply.text).not.toMatch(/merged\b|머지했|deployed|released/i);
+  });
+
+  it('MERGE_APPROVED + merge STATUS/CHECK phrase → read-only status path, no execution (CA 31/32)', async () => {
+    for (const text of ['머지 상태 확인해줘', 'merge status 확인해줘', '머지 확인해줘', '머지 체크해줘', '머지 가능해?']) {
+      const { deps, calls } = makeDeps({ applyAnchor: MERGE_APPROVED_ANCHOR(), approvalsGetResult: APPROVED_MERGE() });
+      const r = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.hostingMergePR, text).toBe(0);
+      expect(calls.hostingGetStatus, text).toBe(1);
+      expect(calls.applyAnchorSet, text).toBe(0); // keeps MERGE_APPROVED (read-only)
+      expect(r.reply.text, text).toContain('머지 승인은 기록되어 있지만, 아직 머지는 하지 않았어요');
+    }
+  });
+
+  it('forbidden merge-execution triggers: PR_CREATED/PENDING/deploy never merge (CA 2/3/4)', async () => {
+    // PR_CREATED + "머지해줘" → merge APPROVAL (3f), not execution
+    const cr = makeDeps({ applyAnchor: PR_CREATED_ANCHOR() });
+    await new ConversationRuntime(cr.deps).handle(messageOf('머지해줘'));
+    expect(cr.calls.hostingMergePR).toBe(0);
+    expect(cr.calls.requestForRisk).toBe(1); // records approval, does not merge
+    // MERGE_APPROVAL_PENDING + "머지해줘" → re-prompt, no merge/decide
+    const pend = makeDeps({ applyAnchor: MERGE_PENDING_ANCHOR() });
+    const rp = await new ConversationRuntime(pend.deps).handle(messageOf('머지해줘'));
+    expect(pend.calls.hostingMergePR).toBe(0);
+    expect(pend.calls.decide).toBe(0);
+    expect(rp.status).toBe('AWAITING_APPROVAL');
+    // MERGE_APPROVED + "배포해줘"/"릴리즈해줘" → unsupported companion, no merge
+    for (const text of ['배포해줘', '릴리즈해줘']) {
+      const { deps, calls } = makeDeps({ applyAnchor: MERGE_APPROVED_ANCHOR(), approvalsGetResult: APPROVED_MERGE() });
+      const r = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.hostingMergePR, text).toBe(0);
+      expect(r.reply.text, text).not.toMatch(/머지했|merged\b/i);
+    }
+  });
+
+  it('successful merge anchors PR_MERGED with mergedAt/mergeExecutedBy/mergedHeadSha, preserves chain + approval evidence (CA 18–20/39/40)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: MERGE_APPROVED_ANCHOR(), approvalsGetResult: APPROVED_MERGE() });
+    const r = await new ConversationRuntime(deps).handle(messageOf('머지해줘'));
+    const a = calls.lastApplyAnchor!;
+    expect(a.status).toBe('PR_MERGED');
+    expect(typeof a.mergedAt).toBe('string'); // runtime record timestamp (CA change 3)
+    expect((a.mergedAt ?? '').length).toBeGreaterThan(0);
+    expect(a.mergeExecutedBy).toBe('actor-1');
+    expect(a.mergedHeadSha).toBe(HEAD_SHA);
+    // full causal chain + 3f approval evidence preserved
+    expect(a.pullRequestRef).toBeTruthy();
+    expect(a.repositoryIdentity).toBeTruthy();
+    expect(a.pullRequestCommitHash).toBe(HEAD_SHA);
+    expect(a.mergeApprovalId).toBe('apply-appr-1');
+    expect(a.mergeApprovedAt).toBeTruthy();
+    expect(a.mergeApprovalDecisionBy).toBe('actor-1');
+    // response says merged, explicitly NOT deploy/release
+    expect(r.reply.text).toContain('머지했어요');
+    expect(r.reply.text).toMatch(/배포\/릴리즈는 하지 않았어요|배포\/릴리즈/);
+    expect(r.reply.text).not.toMatch(/deployed|released|배포했|릴리즈했|production/i);
+  });
+
+  it('live already merged (manager alreadyMerged=true) → PR_MERGED, already-merged response (CA 33)', async () => {
+    const ref = PR_CREATED_ANCHOR().pullRequestRef!;
+    const already: PullRequestMergeResult = {
+      provider: 'github', owner: 'acme', repo: 'widgets',
+      pullRequestNumber: ref.pullRequestNumber, pullRequestUrl: ref.pullRequestUrl,
+      merged: true, mergedHeadSha: HEAD_SHA, alreadyMerged: true,
+    };
+    const { deps, calls } = makeDeps({ applyAnchor: MERGE_APPROVED_ANCHOR(), approvalsGetResult: APPROVED_MERGE(), hostingMerge: already });
+    const r = await new ConversationRuntime(deps).handle(messageOf('머지해줘'));
+    expect(calls.hostingMergePR).toBe(1);
+    expect(calls.lastApplyAnchor?.status).toBe('PR_MERGED');
+    expect(r.reply.text).toContain('이미 머지되어 있어요');
+    expect(r.reply.text).not.toMatch(/deployed|released/i);
+  });
+
+  it('known pre-mutation Blocked → "not merged", stays MERGE_APPROVED (CA 22)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: MERGE_APPROVED_ANCHOR(), approvalsGetResult: APPROVED_MERGE(), hostingMerge: 'throw-blocked' });
+    const r = await new ConversationRuntime(deps).handle(messageOf('머지해줘'));
+    expect(calls.hostingMergePR).toBe(1);
+    expect(calls.applyAnchorSet).toBe(0); // NOT anchored PR_MERGED
+    expect(r.reply.text).toContain('머지하지 않았어요');
+    expect(r.reply.text).not.toMatch(/머지했|merged\b/i);
+  });
+
+  it('unknown/generic failure after mutating call → UNVERIFIED, never "not merged", stays MERGE_APPROVED (CA 21)', async () => {
+    for (const mode of ['throw-unverified', 'throw-generic'] as const) {
+      const { deps, calls } = makeDeps({ applyAnchor: MERGE_APPROVED_ANCHOR(), approvalsGetResult: APPROVED_MERGE(), hostingMerge: mode });
+      const r = await new ConversationRuntime(deps).handle(messageOf('머지해줘'));
+      expect(calls.hostingMergePR, mode).toBe(1);
+      expect(calls.applyAnchorSet, mode).toBe(0); // NOT PR_MERGED (unverified)
+      expect(r.reply.text, mode).toContain('확인하지 못했어요');
+      expect(r.reply.text, mode).not.toMatch(/머지하지 않았|not merged/i); // must NOT claim not merged
+    }
+  });
+
+  it('missing/invalid approval evidence → Blocked before mutation, stays MERGE_APPROVED (CA 5/6/7/8)', async () => {
+    for (const req of [null, { ...approvedPrRequest(), status: ApprovalStatus.PENDING }, { ...approvedPrRequest(), executionPlanRef: { id: 'other', goal: 'g' } }]) {
+      const { deps, calls } = makeDeps({ applyAnchor: MERGE_APPROVED_ANCHOR(), approvalsGetResult: req });
+      const r = await new ConversationRuntime(deps).handle(messageOf('머지해줘'));
+      expect(calls.hostingMergePR).toBe(0);
+      expect(calls.applyAnchorSet).toBe(0);
+      expect(r.reply.text).toContain('머지하지 않았어요');
+    }
+    // missing mergeApprovalId on the anchor → Blocked
+    const noId = makeDeps({ applyAnchor: MERGE_APPROVED_ANCHOR({ mergeApprovalId: undefined }), approvalsGetResult: APPROVED_MERGE() });
+    await new ConversationRuntime(noId.deps).handle(messageOf('머지해줘'));
+    expect(noId.calls.hostingMergePR).toBe(0);
+  });
+
+  it('not configured (no identity / no manager) → unavailable, no merge (CA 26 boundary)', async () => {
+    for (const opt of [{ hostingIdentity: null as null }, { hostingManager: null as null }]) {
+      const { deps, calls } = makeDeps({ applyAnchor: MERGE_APPROVED_ANCHOR(), approvalsGetResult: APPROVED_MERGE(), ...opt });
+      const r = await new ConversationRuntime(deps).handle(messageOf('머지해줘'));
+      expect(calls.hostingMergePR).toBe(0);
+      expect(r.reply.text).toContain('설정되지 않았어요');
+    }
+    // resolved identity ≠ approved anchor identity → Blocked (never merges a different repo)
+    const mism = makeDeps({ applyAnchor: MERGE_APPROVED_ANCHOR(), approvalsGetResult: APPROVED_MERGE(), hostingIdentity: { provider: 'github', owner: 'evil', repo: 'widgets' } });
+    await new ConversationRuntime(mism.deps).handle(messageOf('머지해줘'));
+    expect(mism.calls.hostingMergePR).toBe(0);
+  });
+
+  it('PR_MERGED terminal: merge phrase → already merged; status → read-only preview keeps PR_MERGED; deploy → companion (CA 36/37/38)', async () => {
+    const m1 = makeDeps({ applyAnchor: MERGE_MERGED_ANCHOR() });
+    const r1 = await new ConversationRuntime(m1.deps).handle(messageOf('머지해줘'));
+    expect(m1.calls.hostingMergePR).toBe(0);
+    expect(m1.calls.applyAnchorSet).toBe(0);
+    expect(r1.reply.text).toContain('이미 머지되어 있어요');
+
+    const m2 = makeDeps({ applyAnchor: MERGE_MERGED_ANCHOR() });
+    const r2 = await new ConversationRuntime(m2.deps).handle(messageOf('PR 상태 확인해줘'));
+    expect(m2.calls.hostingGetStatus).toBe(1);
+    expect(m2.calls.applyAnchorSet).toBe(0); // keeps PR_MERGED
+    expect(r2.reply.text).not.toMatch(/deployed|released/i);
+
+    const m3 = makeDeps({ applyAnchor: MERGE_MERGED_ANCHOR() });
+    const r3 = await new ConversationRuntime(m3.deps).handle(messageOf('배포해줘'));
+    expect(m3.calls.hostingMergePR).toBe(0);
+    expect(r3.reply.text).not.toMatch(/머지했|deployed|배포했|released/i);
+  });
+
+  it('merge execution touches NO Git/CommandExecution/workspace and never leaks a token (CA 23/24/25/26)', async () => {
+    for (const mode of [undefined, 'throw-blocked', 'throw-unverified'] as const) {
+      const { deps, calls } = makeDeps({ applyAnchor: MERGE_APPROVED_ANCHOR(), approvalsGetResult: APPROVED_MERGE(), hostingMerge: mode });
+      const r = await new ConversationRuntime(deps).handle(messageOf('머지해줘'));
+      expect(calls.gitPush + calls.gitCommit + calls.gitStatus + calls.commandRun + calls.workspaceApply + calls.run + calls.hostingCreatePR, String(mode)).toBe(0);
+      // token never appears in the anchor or the response text
+      expect(JSON.stringify(calls.lastApplyAnchor ?? {}), String(mode)).not.toMatch(/ghp_|github_pat_|token/i);
+      expect(r.reply.text, String(mode)).not.toMatch(/ghp_|github_pat_/i);
     }
   });
 });

@@ -1,9 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { RepositoryHostingManager } from './repository-hosting-manager';
+import {
+  RepositoryHostingBlockedError,
+  RepositoryHostingManager,
+  RepositoryHostingUnverifiedError,
+} from './repository-hosting-manager';
 import { ApprovalStatus } from '../domain';
 import type {
   ApprovalRef,
   PullRequestCreationInput,
+  PullRequestMergePreflight,
+  PullRequestMergeResult,
   PullRequestRef,
   PullRequestResult,
   PullRequestStatusPreview,
@@ -90,6 +96,64 @@ class FakeProvider implements RepositoryHostingProvider {
     if (this.statusThrows) throw new Error('RAW-PROVIDER-SECRET-status');
     return this.statusResult;
   }
+  // Sprint 3g: merge preflight + execution. Configurable result/throw. mergeInputs captures what the provider
+  // received — used to prove the provider never sees an ApprovalRef.
+  preflightResult: PullRequestMergePreflight = validPreflight();
+  preflightThrows = false;
+  mergeResult: PullRequestMergeResult = validMergeResult();
+  mergeThrows = false;
+  mergeInputs: Array<{ identity: RepositoryIdentity; pullRequestRef: PullRequestRef; expectedHeadSha: string }> = [];
+  async getMergePreflight(): Promise<PullRequestMergePreflight> {
+    this.calls.push('getMergePreflight');
+    if (this.preflightThrows) throw new Error('RAW-PROVIDER-SECRET-preflight');
+    return this.preflightResult;
+  }
+  async mergePullRequest(input: { identity: RepositoryIdentity; pullRequestRef: PullRequestRef; expectedHeadSha: string }): Promise<PullRequestMergeResult> {
+    this.calls.push('mergePullRequest');
+    this.mergeInputs.push(input);
+    if (this.mergeThrows) throw new Error('RAW-PROVIDER-SECRET-merge');
+    return this.mergeResult;
+  }
+}
+
+function validPreflight(over: Partial<PullRequestMergePreflight> = {}): PullRequestMergePreflight {
+  return {
+    ref: PR_REF,
+    state: 'open',
+    headBranch: HEAD,
+    baseBranch: BASE,
+    headCommitHash: COMMIT,
+    mergeability: 'MERGEABLE',
+    observedAt: '2026-07-03T00:00:00.000Z',
+    ...over,
+  };
+}
+
+function validMergeResult(over: Partial<PullRequestMergeResult> = {}): PullRequestMergeResult {
+  return {
+    provider: 'github',
+    owner: 'acme',
+    repo: 'widgets',
+    pullRequestNumber: 42,
+    pullRequestUrl: 'https://github.com/acme/widgets/pull/42',
+    merged: true,
+    mergedHeadSha: COMMIT,
+    mergeCommitHash: 'def4567',
+    alreadyMerged: false,
+    ...over,
+  };
+}
+
+function runMerge(p: FakeProvider, over: Record<string, unknown> = {}) {
+  return new RepositoryHostingManager(p).mergePullRequest({
+    identity: IDENTITY,
+    pullRequestRef: PR_REF,
+    expectedHeadBranch: HEAD,
+    expectedBaseBranch: BASE,
+    expectedHeadSha: COMMIT,
+    approvalRef: approved(),
+    ...over,
+  } as Parameters<RepositoryHostingManager['mergePullRequest']>[0]);
 }
 
 function runStatus(p: FakeProvider, over: Record<string, unknown> = {}) {
@@ -420,6 +484,130 @@ describe('RepositoryHostingManager (CAP-010 skeleton, ADR-0052, Sprint 3d-B)', (
       const p = new FakeProvider();
       await runStatus(p);
       expect(p.calls).toEqual(['getPullRequestStatus']);
+    });
+  });
+
+  describe('mergePullRequest — live preflight + execution (Sprint 3g, ADR-0057)', () => {
+    it('happy path: preflight (open, MERGEABLE, exact head) → single mergePullRequest call → merged, alreadyMerged=false', async () => {
+      const p = new FakeProvider();
+      const r = await runMerge(p);
+      expect(p.calls).toEqual(['getMergePreflight', 'mergePullRequest']);
+      expect(r.merged).toBe(true);
+      expect(r.alreadyMerged).toBe(false);
+      expect(r.mergedHeadSha).toBe(COMMIT);
+    });
+
+    it('the provider merge call receives NO ApprovalRef — only hosting-safe refs + expected head SHA', async () => {
+      const p = new FakeProvider();
+      await runMerge(p);
+      const received = p.mergeInputs[0] as Record<string, unknown>;
+      expect(received).toBeTruthy();
+      expect('approvalRef' in received).toBe(false);
+      expect('approvalRequest' in received).toBe(false);
+      expect(received.expectedHeadSha).toBe(COMMIT);
+    });
+
+    it('approval not APPROVED → Blocked before any provider call (no preflight, no merge)', async () => {
+      const p = new FakeProvider();
+      await expect(runMerge(p, { approvalRef: { ...approved(), status: ApprovalStatus.PENDING } })).rejects.toBeInstanceOf(RepositoryHostingBlockedError);
+      expect(p.calls).toEqual([]);
+    });
+
+    it('provider.getMergePreflight throws → Blocked, no mergePullRequest call, sanitized (no raw secret)', async () => {
+      const p = new FakeProvider();
+      p.preflightThrows = true;
+      await expect(runMerge(p)).rejects.toBeInstanceOf(RepositoryHostingBlockedError);
+      await expect(runMerge(p)).rejects.not.toThrow(/RAW-PROVIDER-SECRET/);
+      expect(p.calls).not.toContain('mergePullRequest');
+    });
+
+    it('preflight ref/head/base/commit mismatch → Blocked (stale), no mergePullRequest call', async () => {
+      for (const over of [
+        { ref: { ...PR_REF, pullRequestNumber: 99, pullRequestUrl: 'https://github.com/acme/widgets/pull/99' } },
+        { headBranch: 'other' },
+        { baseBranch: 'develop' },
+        { headCommitHash: 'feedbee' },
+      ]) {
+        const p = new FakeProvider();
+        p.preflightResult = validPreflight(over as Partial<PullRequestMergePreflight>);
+        await expect(runMerge(p)).rejects.toBeInstanceOf(RepositoryHostingBlockedError);
+        expect(p.calls).not.toContain('mergePullRequest');
+      }
+    });
+
+    it('live PR closed / unknown → Blocked, no mergePullRequest call (CA 11)', async () => {
+      for (const state of ['closed', 'unknown'] as const) {
+        const p = new FakeProvider();
+        p.preflightResult = validPreflight({ state });
+        await expect(runMerge(p)).rejects.toBeInstanceOf(RepositoryHostingBlockedError);
+        expect(p.calls).not.toContain('mergePullRequest');
+      }
+    });
+
+    it('live already merged at the EXACT approved head → alreadyMerged=true, NO mutating call (CA 33)', async () => {
+      const p = new FakeProvider();
+      p.preflightResult = validPreflight({ state: 'merged' });
+      const r = await runMerge(p);
+      expect(r.merged).toBe(true);
+      expect(r.alreadyMerged).toBe(true);
+      expect(r.mergedHeadSha).toBe(COMMIT);
+      expect(p.calls).toEqual(['getMergePreflight']); // no mergePullRequest
+    });
+
+    it('live already merged at a DIFFERENT head SHA → Blocked/Stale, no PR_MERGED, no mutating call (CA 34)', async () => {
+      const p = new FakeProvider();
+      p.preflightResult = validPreflight({ state: 'merged', headCommitHash: 'differ7' });
+      await expect(runMerge(p)).rejects.toBeInstanceOf(RepositoryHostingBlockedError);
+      expect(p.calls).toEqual(['getMergePreflight']);
+    });
+
+    it('live already merged at a DIFFERENT base/head branch → Blocked, no mutating call (CA 35)', async () => {
+      for (const over of [{ state: 'merged' as const, headBranch: 'other' }, { state: 'merged' as const, baseBranch: 'develop' }]) {
+        const p = new FakeProvider();
+        p.preflightResult = validPreflight(over);
+        await expect(runMerge(p)).rejects.toBeInstanceOf(RepositoryHostingBlockedError);
+        expect(p.calls).toEqual(['getMergePreflight']);
+      }
+    });
+
+    it('mergeability != MERGEABLE (UNKNOWN/CONFLICTING/BLOCKED/STALE_HEAD) → Blocked, no mutating call (CA 15/16/17)', async () => {
+      for (const mergeability of ['UNKNOWN', 'CONFLICTING', 'BLOCKED', 'STALE_HEAD'] as const) {
+        const p = new FakeProvider();
+        p.preflightResult = validPreflight({ mergeability });
+        await expect(runMerge(p)).rejects.toBeInstanceOf(RepositoryHostingBlockedError);
+        expect(p.calls).not.toContain('mergePullRequest');
+      }
+    });
+
+    it('provider.mergePullRequest throws AFTER attempt → Unverified (never "not merged"), sanitized (CA 21)', async () => {
+      const p = new FakeProvider();
+      p.mergeThrows = true;
+      await expect(runMerge(p)).rejects.toBeInstanceOf(RepositoryHostingUnverifiedError);
+      await expect(runMerge(p)).rejects.not.toThrow(/RAW-PROVIDER-SECRET/);
+      expect(p.calls).toContain('mergePullRequest');
+    });
+
+    it('merge-result integrity failure (mergedHeadSha != expected / wrong ref) → Unverified', async () => {
+      for (const over of [{ mergedHeadSha: 'wrong99' }, { pullRequestNumber: 7 }, { owner: 'evil' }]) {
+        const p = new FakeProvider();
+        p.mergeResult = validMergeResult(over as Partial<PullRequestMergeResult>);
+        await expect(runMerge(p)).rejects.toBeInstanceOf(RepositoryHostingUnverifiedError);
+      }
+    });
+
+    it('unsafe identity / branch / SHA / ref mismatch → Blocked before any provider call', async () => {
+      const bad: Array<Record<string, unknown>> = [
+        { identity: { provider: 'github', owner: 'has token', repo: 'widgets' } },
+        { expectedHeadBranch: 'bad branch' },
+        { expectedHeadSha: 'not-a-sha!' },
+        { expectedHeadBranch: BASE }, // head === base
+        { pullRequestRef: { ...PR_REF, owner: 'someone-else' } },
+      ];
+      for (const over of bad) {
+        const p = new FakeProvider();
+        await expect(runMerge(p, over)).rejects.toBeInstanceOf(RepositoryHostingBlockedError);
+        expect(p.calls).toEqual([]);
+      }
     });
   });
 });

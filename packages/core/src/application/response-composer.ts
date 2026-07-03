@@ -1579,11 +1579,13 @@ export class ResponseComposer {
     return { context, text: '지금은 PR 머지 승인을 준비할 수 없어요. (머지는 하지 않았어요)' };
   }
 
-  /** A merge phrase while already MERGE_APPROVED (Sprint 3f) — already recorded; actual merge is a future step. */
+  /** A WEAK/incomplete merge mention (bare "머지"/"merge", no execution verb) while MERGE_APPROVED (Sprint 3f,
+   *  re-worded Sprint 3g CA change 4). Approval is recorded; the user can now ask to merge explicitly. Used ONLY
+   *  for the bare mention — a direct merge command ("머지해줘"/…) executes instead. No mutation. */
   composeMergeAlreadyApproved(context: ConversationContext): OutboundMessage {
     return {
       context,
-      text: 'PR 머지 승인은 이미 기록되어 있어요.\n아직 머지는 하지 않았어요. (실제 머지는 이후 단계에서 진행돼요)',
+      text: 'PR 머지 승인은 이미 기록되어 있어요.\n머지하려면 "머지해줘"처럼 말씀해 주세요. (아직 머지하지 않았어요)',
     };
   }
 
@@ -1616,6 +1618,76 @@ export class ResponseComposer {
     return {
       context,
       text: '현재 PR 상태를 확인하지 못했어요. PR이 없어졌거나 체크가 실패했다는 뜻은 아니에요. (아무것도 변경하지 않았어요)',
+    };
+  }
+
+  // ── Sprint 3g (ADR-0057): PR MERGE EXECUTION. "머지했어요" NEVER means deployed/released/production-ready. ──
+
+  /** A KNOWN pre-mutation block (stale head / conflict / checks-or-reviews blocking / could-not-determine / PR
+   *  closed / approval or context mismatch). Definitively NOT merged. Never claims success. (Sprint 3g) */
+  composeMergeExecutionPreflightBlocked(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '지금은 머지하지 않았어요. 승인 이후 PR 상태가 바뀌었거나(헤드 변경/충돌/필수 체크·리뷰 미충족) 머지 가능 여부를 확인할 수 없어, 안전을 위해 머지를 진행하지 않았어요. PR 상태를 확인해 주세요. (배포/릴리즈도 하지 않았어요)',
+    };
+  }
+
+  /** Merge SUCCEEDED (Sprint 3g) — provider reported the approved PR merged. Merged ≠ deployed/released. */
+  composeMergeExecutionSucceeded(
+    context: ConversationContext,
+    input: { owner: string; repo: string; prNumber: number; prUrl: string; mergedHeadSha: string; mergeCommitHash?: string },
+  ): OutboundMessage {
+    const lines = [
+      'PR을 머지했어요.',
+      `대상: ${input.owner.slice(0, MAX_GIT_REF_DISPLAY)}/${input.repo.slice(0, MAX_GIT_REF_DISPLAY)} #${input.prNumber}`,
+      `- PR: ${input.prUrl.slice(0, MAX_PR_URL_DISPLAY)}`,
+      `- 머지된 헤드 커밋: ${input.mergedHeadSha.slice(0, 7)}`,
+    ];
+    if (input.mergeCommitHash) lines.push(`- 머지 커밋: ${input.mergeCommitHash.slice(0, 7)} (provider 보고)`);
+    lines.push('머지했다는 것이 배포/릴리즈를 뜻하지는 않아요. 배포/릴리즈는 하지 않았어요. 로컬 main 동기화나 브랜치 삭제도 하지 않았어요.');
+    return { context, text: clampToMessageBudget(lines.join('\n')) };
+  }
+
+  /** Merge outcome UNVERIFIED (Sprint 3g) — the mutating call was attempted but could not be completed/verified.
+   *  MUST NOT say "not merged" and MUST NOT say "merged" — ask the user to check PR status. */
+  composeMergeExecutionUnverified(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '머지를 시도했지만 결과를 확인하지 못했어요. 머지가 됐을 수도, 안 됐을 수도 있어요 — PR 상태를 확인해 주세요. (배포/릴리즈는 하지 않았어요)',
+    };
+  }
+
+  /** Merge execution capability not configured (no repository/token binding) (Sprint 3g) — no state change. */
+  composeMergeExecutionUnavailable(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '머지를 실행할 저장소 또는 GitHub 토큰이 설정되지 않았어요. (아무것도 변경하지 않았어요)',
+    };
+  }
+
+  /** The approved PR was observed ALREADY merged at the exact approved head (Sprint 3g) — idempotent, no new
+   *  mutation. Merged ≠ deployed/released. */
+  composeMergeExecutionAlreadyMerged(
+    context: ConversationContext,
+    input: { owner: string; repo: string; prNumber: number; prUrl: string },
+  ): OutboundMessage {
+    const text = clampToMessageBudget(
+      [
+        '이 PR은 이미 머지되어 있어요. (새로 머지하지 않았어요)',
+        `대상: ${input.owner.slice(0, MAX_GIT_REF_DISPLAY)}/${input.repo.slice(0, MAX_GIT_REF_DISPLAY)} #${input.prNumber}`,
+        `- PR: ${input.prUrl.slice(0, MAX_PR_URL_DISPLAY)}`,
+        '머지되어 있다는 것이 배포/릴리즈를 뜻하지는 않아요. 배포/릴리즈는 하지 않았어요.',
+      ].join('\n'),
+    );
+    return { context, text };
+  }
+
+  /** A deploy/release/reviewer/label/assignee/other companion phrase at MERGE_APPROVED or PR_MERGED (Sprint 3g)
+   *  — unsupported future step; no deploy/release, no merge. */
+  composeMergeExecutionUnsupportedCompanion(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '배포/릴리즈/리뷰어/라벨/담당자 변경, 브랜치 삭제 등은 이후 단계예요. 지금은 하지 않았어요.',
     };
   }
 }

@@ -190,6 +190,59 @@ export type PullRequestState = 'open' | 'closed' | 'merged' | 'unknown';
 export type PullRequestChecksState = 'success' | 'failure' | 'pending' | 'neutral' | 'skipped' | 'unknown';
 export type PullRequestReviewState = 'approved' | 'changes_requested' | 'commented' | 'none' | 'unknown';
 
+// ─── Sprint 3g (ADR-0057) — PR MERGE EXECUTION preflight + result types ─────────────────────────────────────
+// The first repository-hosting mutation AFTER PR creation. Merge is performed ONLY from a live MERGE_APPROVED
+// anchor, ONLY after a full live preflight, ONLY via RepositoryHostingManager.mergePullRequest. Never deploy/
+// release/branch-delete/force-merge/auto-merge. The normalized mergeability enum keeps the core provider-
+// independent — raw provider payloads (e.g. GitHub `mergeable_state`) are mapped to it adapter-side only.
+
+/**
+ * Conservative, provider-independent mergeability (ADR-0057). Only `MERGEABLE` may proceed to a merge; every
+ * other value blocks (never merge on uncertainty). The adapter maps raw provider fields to this enum; the core
+ * never sees a GitHub-specific payload. `STALE_HEAD` = the live head differs from the approved head / PR is
+ * behind base; `UNKNOWN` = the provider could not determine mergeability.
+ */
+export type PullRequestMergeability = 'MERGEABLE' | 'BLOCKED' | 'CONFLICTING' | 'UNKNOWN' | 'STALE_HEAD';
+
+/**
+ * A bounded, provider-reported, point-in-time snapshot read IMMEDIATELY before a merge mutation (ADR-0057).
+ * Distinct from the read-only {@link PullRequestStatusPreview} (Sprint 3e) — this carries normalized
+ * `mergeability` and exists only to drive the merge preflight decision. `observedAt` is generated internally by
+ * the adapter at read time (never caller/user-supplied). NOT a durable guarantee.
+ */
+export interface PullRequestMergePreflight {
+  ref: PullRequestRef;
+  state: PullRequestState;
+  headBranch: string;
+  baseBranch: string;
+  headCommitHash: string;
+  mergeability: PullRequestMergeability;
+  /** ISO timestamp generated internally at preflight-read time (adapter/provider clock) — never from user input. */
+  observedAt: string;
+}
+
+/**
+ * PROVIDER-REPORTED merge result — NOT an independent verification beyond what the provider returned (mirrors
+ * {@link PullRequestResult}). The Manager validates its integrity against the request (incl. `mergedHeadSha ===
+ * expectedHeadSha`) and owns the `alreadyMerged` flag. `merged` is always `true` for a returned result (a
+ * failure throws instead). It must not overclaim: merged ≠ deployed/released.
+ */
+export interface PullRequestMergeResult {
+  provider: RepositoryHostingProviderKind;
+  owner: string;
+  repo: string;
+  pullRequestNumber: number;
+  pullRequestUrl: string;
+  merged: true;
+  /** The head SHA that was merged — must equal the approved `expectedHeadSha` (Manager-validated). */
+  mergedHeadSha: string;
+  /** Provider-reported merge commit SHA when the provider returns one; optional. */
+  mergeCommitHash?: string;
+  /** MANAGER-owned: `true` when the live preflight already showed the exact approved head merged (no new call);
+   *  `false` via the single mutating call. The provider-reported value is not trusted (mirrors `reused`). */
+  alreadyMerged: boolean;
+}
+
 /**
  * A bounded, provider-reported, point-in-time PR status observation (Sprint 3e, ADR-0055). `observedAt` is
  * generated internally by the adapter at read time (never caller/user-supplied). All counts are non-negative
