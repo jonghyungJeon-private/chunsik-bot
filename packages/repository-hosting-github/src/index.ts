@@ -1,7 +1,12 @@
 import { isSafeGitHubPullRequestUrl } from '@chunsik/core';
 import type {
+  PullRequestChecksState,
   PullRequestCreationInput,
+  PullRequestRef,
   PullRequestResult,
+  PullRequestReviewState,
+  PullRequestState,
+  PullRequestStatusPreview,
   RepositoryHostingProvider,
   RepositoryIdentity,
 } from '@chunsik/core';
@@ -112,6 +117,104 @@ export class GitHubRepositoryHostingProvider implements RepositoryHostingProvide
     if (res.status !== 201) throw this.statusError('createPullRequest', res.status); // 201 only (CA change 11)
     const obj = await this.json(res, 'createPullRequest');
     return this.mapPull(obj as GitHubPull, input.identity, 'createPullRequest');
+  }
+
+  async getPullRequestStatus(input: {
+    identity: RepositoryIdentity;
+    pullRequestRef: PullRequestRef;
+    expectedHeadBranch: string;
+    expectedBaseBranch: string;
+    expectedCommitHash: string;
+  }): Promise<PullRequestStatusPreview> {
+    // READ-ONLY, bounded GETs (CA changes 4/11): one GET per resource, fixed per_page, NO pagination/retry.
+    const { identity, pullRequestRef } = input;
+    const owner = enc(identity.owner);
+    const repo = enc(identity.repo);
+    const number = pullRequestRef.pullRequestNumber;
+
+    // 1. GET the pull request.
+    const pullRes = await this.request('getPullRequestStatus', 'GET', `/repos/${owner}/${repo}/pulls/${number}`);
+    if (pullRes.status !== 200) throw this.statusError('getPullRequestStatus', pullRes.status);
+    const pull = (await this.json(pullRes, 'getPullRequestStatus')) as GitHubPull & {
+      state?: unknown;
+      merged?: unknown;
+      draft?: unknown;
+    };
+    const headRef = pull?.head?.ref;
+    const baseRef = pull?.base?.ref;
+    const headSha = pull?.head?.sha;
+    if (typeof headRef !== 'string' || typeof baseRef !== 'string' || typeof headSha !== 'string') {
+      throw new Error('github hosting: getPullRequestStatus returned invalid pull fields');
+    }
+    const state: PullRequestState =
+      pull?.merged === true ? 'merged' : pull?.state === 'open' ? 'open' : pull?.state === 'closed' ? 'closed' : 'unknown';
+
+    // 2. GET check-runs for the head sha (check-runs only for 3e; legacy commit statuses may be unrepresented).
+    const checkRes = await this.request(
+      'getPullRequestStatus',
+      'GET',
+      `/repos/${owner}/${repo}/commits/${enc(headSha)}/check-runs?per_page=100`,
+    );
+    if (checkRes.status !== 200) throw this.statusError('getPullRequestStatus', checkRes.status);
+    const checkBody = (await this.json(checkRes, 'getPullRequestStatus')) as {
+      total_count?: unknown;
+      check_runs?: Array<{ status?: unknown; conclusion?: unknown }>;
+    };
+    const runs = Array.isArray(checkBody?.check_runs) ? checkBody.check_runs : [];
+    let successCount = 0;
+    let failureCount = 0;
+    let pendingCount = 0;
+    for (const r of runs) {
+      if (r?.status !== 'completed') pendingCount += 1;
+      else if (r?.conclusion === 'success') successCount += 1;
+      else if (r?.conclusion === 'failure' || r?.conclusion === 'timed_out' || r?.conclusion === 'cancelled' || r?.conclusion === 'action_required')
+        failureCount += 1;
+      // neutral/skipped contribute to totalCount but neither success nor failure.
+    }
+    const totalCount = runs.length;
+    const checksState: PullRequestChecksState =
+      totalCount === 0 ? 'unknown' : failureCount > 0 ? 'failure' : pendingCount > 0 ? 'pending' : successCount > 0 ? 'success' : 'neutral';
+
+    // 3. GET reviews (latest signal per reviewer).
+    const reviewRes = await this.request(
+      'getPullRequestStatus',
+      'GET',
+      `/repos/${owner}/${repo}/pulls/${number}/reviews?per_page=100`,
+    );
+    if (reviewRes.status !== 200) throw this.statusError('getPullRequestStatus', reviewRes.status);
+    const reviewArr = (await this.json(reviewRes, 'getPullRequestStatus')) as Array<{
+      state?: unknown;
+      user?: { login?: unknown };
+    }>;
+    const latestByUser = new Map<string, string>();
+    for (const rv of Array.isArray(reviewArr) ? reviewArr : []) {
+      const login = typeof rv?.user?.login === 'string' ? rv.user.login : '';
+      const s = typeof rv?.state === 'string' ? rv.state : '';
+      if (s === 'APPROVED' || s === 'CHANGES_REQUESTED' || s === 'COMMENTED') latestByUser.set(login, s); // ignore DISMISSED/PENDING
+    }
+    let approvedCount = 0;
+    let changesRequestedCount = 0;
+    let commented = 0;
+    for (const s of latestByUser.values()) {
+      if (s === 'APPROVED') approvedCount += 1;
+      else if (s === 'CHANGES_REQUESTED') changesRequestedCount += 1;
+      else if (s === 'COMMENTED') commented += 1;
+    }
+    const reviewsState: PullRequestReviewState =
+      changesRequestedCount > 0 ? 'changes_requested' : approvedCount > 0 ? 'approved' : commented > 0 ? 'commented' : 'none';
+
+    return {
+      ref: pullRequestRef,
+      state,
+      headBranch: headRef,
+      baseBranch: baseRef,
+      headCommitHash: headSha,
+      isDraft: pull?.draft === true,
+      checks: { state: checksState, totalCount, successCount, failureCount, pendingCount },
+      reviews: { state: reviewsState, approvedCount, changesRequestedCount },
+      // observedAt is generated internally at read time — never caller/user-supplied (CA change 3).
+      observedAt: new Date().toISOString(),
+    };
   }
 
   /** Map a GitHub PR object to a provider-reported PullRequestResult, rejecting fork/invalid results. */

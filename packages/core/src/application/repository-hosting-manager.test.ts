@@ -4,10 +4,28 @@ import { ApprovalStatus } from '../domain';
 import type {
   ApprovalRef,
   PullRequestCreationInput,
+  PullRequestRef,
   PullRequestResult,
+  PullRequestStatusPreview,
   RepositoryIdentity,
 } from '../domain';
 import type { RepositoryHostingProvider } from '../ports';
+
+const PR_REF: PullRequestRef = { provider: 'github', owner: 'acme', repo: 'widgets', pullRequestNumber: 42, pullRequestUrl: 'https://github.com/acme/widgets/pull/42' };
+function validStatus(over: Partial<PullRequestStatusPreview> = {}): PullRequestStatusPreview {
+  return {
+    ref: PR_REF,
+    state: 'open',
+    headBranch: 'feature/x',
+    baseBranch: 'main',
+    headCommitHash: 'abc1234',
+    isDraft: false,
+    checks: { state: 'success', totalCount: 1, successCount: 1, failureCount: 0, pendingCount: 0 },
+    reviews: { state: 'approved', approvedCount: 1, changesRequestedCount: 0 },
+    observedAt: '2026-07-03T00:00:00.000Z',
+    ...over,
+  };
+}
 
 const IDENTITY: RepositoryIdentity = { provider: 'github', owner: 'acme', repo: 'widgets' };
 const HEAD = 'feature/x';
@@ -64,6 +82,25 @@ class FakeProvider implements RepositoryHostingProvider {
     if (this.createThrows) throw new Error('RAW-PROVIDER-SECRET-xyz');
     return this.createResult;
   }
+  // Sprint 3e: read-only status. Configurable result/throw.
+  statusResult: PullRequestStatusPreview = validStatus();
+  statusThrows = false;
+  async getPullRequestStatus(): Promise<PullRequestStatusPreview> {
+    this.calls.push('getPullRequestStatus');
+    if (this.statusThrows) throw new Error('RAW-PROVIDER-SECRET-status');
+    return this.statusResult;
+  }
+}
+
+function runStatus(p: FakeProvider, over: Record<string, unknown> = {}) {
+  return new RepositoryHostingManager(p).getPullRequestStatus({
+    identity: IDENTITY,
+    pullRequestRef: PR_REF,
+    expectedHeadBranch: HEAD,
+    expectedBaseBranch: BASE,
+    expectedCommitHash: COMMIT,
+    ...over,
+  } as Parameters<RepositoryHostingManager['getPullRequestStatus']>[0]);
 }
 
 function run(p: FakeProvider, over: Record<string, unknown> = {}) {
@@ -325,6 +362,64 @@ describe('RepositoryHostingManager (CAP-010 skeleton, ADR-0052, Sprint 3d-B)', (
       await run(p).catch((e: unknown) => {
         expect(String((e as Error).message)).not.toContain('RAW-PROVIDER-SECRET');
       });
+    });
+  });
+
+  describe('getPullRequestStatus (read-only, Sprint 3e, ADR-0055)', () => {
+    it('validates PullRequestRef before the provider call (tests 61–63)', async () => {
+      const mismatchRef = new FakeProvider();
+      await expect(runStatus(mismatchRef, { pullRequestRef: { ...PR_REF, owner: 'evil' } })).rejects.toThrow();
+      expect(mismatchRef.calls).not.toContain('getPullRequestStatus');
+      const badUrl = new FakeProvider();
+      await expect(runStatus(badUrl, { pullRequestRef: { ...PR_REF, pullRequestUrl: 'https://evil.com/x/y/pull/42' } })).rejects.toThrow();
+      expect(badUrl.calls).not.toContain('getPullRequestStatus');
+      const badNum = new FakeProvider();
+      await expect(runStatus(badNum, { pullRequestRef: { ...PR_REF, pullRequestNumber: 0 } })).rejects.toThrow();
+      expect(badNum.calls).not.toContain('getPullRequestStatus');
+    });
+    it('rejects provider.kind mismatch before the provider call', async () => {
+      const p = new FakeProvider();
+      p.kind = 'gitlab';
+      await expect(runStatus(p)).rejects.toThrow();
+      expect(p.calls).not.toContain('getPullRequestStatus');
+    });
+    it('returns the provider-reported status on a matching result', async () => {
+      const p = new FakeProvider();
+      const s = await runStatus(p);
+      expect(p.calls).toContain('getPullRequestStatus');
+      expect(s.state).toBe('open');
+      expect(s.checks.successCount).toBe(1);
+      expect(s.observedAt).toBe('2026-07-03T00:00:00.000Z');
+    });
+    it('fails safe on result ref/head/base/commit mismatch (tests 16–19/81–84)', async () => {
+      for (const bad of [
+        validStatus({ ref: { ...PR_REF, pullRequestNumber: 43, pullRequestUrl: 'https://github.com/acme/widgets/pull/43' } }),
+        validStatus({ headBranch: 'other' }),
+        validStatus({ baseBranch: 'develop' }),
+        validStatus({ headCommitHash: 'def5678' }),
+      ]) {
+        const p = new FakeProvider();
+        p.statusResult = bad;
+        await expect(runStatus(p)).rejects.toThrow();
+      }
+    });
+    it('rejects negative/non-integer check counts', async () => {
+      const p = new FakeProvider();
+      p.statusResult = validStatus({ checks: { state: 'unknown', totalCount: -1, successCount: 0, failureCount: 0, pendingCount: 0 } });
+      await expect(runStatus(p)).rejects.toThrow();
+    });
+    it('does not forward a raw provider error message on read failure', async () => {
+      const p = new FakeProvider();
+      p.statusThrows = true;
+      await runStatus(p).catch((e: unknown) => {
+        expect(String((e as Error).message)).toMatch(/repository hosting/);
+        expect(String((e as Error).message)).not.toContain('RAW-PROVIDER-SECRET');
+      });
+    });
+    it('never mutates — no create/commit/push style calls during a status read', async () => {
+      const p = new FakeProvider();
+      await runStatus(p);
+      expect(p.calls).toEqual(['getPullRequestStatus']);
     });
   });
 });

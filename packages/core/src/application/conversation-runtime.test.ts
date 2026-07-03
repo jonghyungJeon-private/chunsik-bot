@@ -32,7 +32,9 @@ import type {
   PatchSet,
   ProposedChange,
   Project,
+  PullRequestRef,
   PullRequestResult,
+  PullRequestStatusPreview,
   RepositoryIdentity,
   RunCommandInput,
   Session,
@@ -377,6 +379,33 @@ interface Calls {
     expectedCommitHash: string;
     approvalRef: ApprovalRef;
   };
+  hostingGetStatus: number;
+  lastHostingStatusInput?: HostingStatusInput;
+}
+
+/** Shape of the input the runtime passes to `RepositoryHostingManager.getPullRequestStatus` (Sprint 3e). */
+interface HostingStatusInput {
+  identity: RepositoryIdentity;
+  pullRequestRef: PullRequestRef;
+  expectedHeadBranch: string;
+  expectedBaseBranch: string;
+  expectedCommitHash: string;
+}
+
+/** Default fake PullRequestStatusPreview echoing the status input (Sprint 3e) — an integrity-consistent status. */
+function prStatusOf(input: HostingStatusInput, over: Partial<PullRequestStatusPreview> = {}): PullRequestStatusPreview {
+  return {
+    ref: input.pullRequestRef,
+    state: 'open',
+    headBranch: input.expectedHeadBranch,
+    baseBranch: input.expectedBaseBranch,
+    headCommitHash: input.expectedCommitHash,
+    isDraft: false,
+    checks: { state: 'success', totalCount: 2, successCount: 2, failureCount: 0, pendingCount: 0 },
+    reviews: { state: 'approved', approvedCount: 1, changesRequestedCount: 0 },
+    observedAt: '2026-07-03T00:00:00.000Z',
+    ...over,
+  };
 }
 
 interface Opts {
@@ -450,7 +479,13 @@ interface Opts {
   /** Repository Hosting manager (Sprint 3d-D) — defaults to a fake that records the call and returns a valid
    *  echoing PullRequestResult; pass `null` to simulate a missing token (no manager), or a custom fake for
    *  reuse/blocked/unverified paths. */
-  hostingManager?: { createPullRequest(input: HostingCreateInput): Promise<PullRequestResult> } | null;
+  hostingManager?: {
+    createPullRequest(input: HostingCreateInput): Promise<PullRequestResult>;
+    getPullRequestStatus(input: HostingStatusInput): Promise<PullRequestStatusPreview>;
+  } | null;
+  /** Repository Hosting status preview result (Sprint 3e) — defaults to a valid echoing preview; 'throw' to
+   *  simulate a read failure, or a literal preview for a specific state/checks/reviews. */
+  hostingStatus?: PullRequestStatusPreview | 'throw';
 }
 
 /** Shape of the input the runtime passes to `RepositoryHostingManager.createPullRequest` (Sprint 3d-D). */
@@ -516,6 +551,7 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
     commandExecGet: 0,
     loggerWarn: 0,
     hostingCreatePR: 0,
+    hostingGetStatus: 0,
   };
   const composer = new ResponseComposer();
   const intentResolver = new IntentResolver();
@@ -767,6 +803,12 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
                 calls.hostingCreatePR++;
                 calls.lastHostingCreateInput = input;
                 return prResultOf(input);
+              },
+              async getPullRequestStatus(input: HostingStatusInput) {
+                calls.hostingGetStatus++;
+                calls.lastHostingStatusInput = input;
+                if (opts.hostingStatus === 'throw') throw new Error('status boom');
+                return opts.hostingStatus ?? prStatusOf(input);
               },
             }),
     },
@@ -4426,6 +4468,123 @@ describe('Explicit PR Creation Approval — runtime (Sprint 3b, ADR-0049)', () =
     });
     await new ConversationRuntime(deps).handle(messageOf('PR 만들어줘'));
     expect(calls.hostingCreatePR).toBe(1);
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────────────────────
+  // Sprint 3e (ADR-0055): read-only PR status preview (PR_CREATED + status phrase → keep PR_CREATED).
+  // ─────────────────────────────────────────────────────────────────────────────────────────────
+  const STATUS_PHRASES = ['PR 상태 확인해줘', 'PR 상태 어때?', 'CI 상태 확인해줘', '체크 상태 봐줘', 'GitHub checks 봐줘', 'review 상태 알려줘'];
+
+  it('PR_CREATED + status phrase → read-only preview via manager; keeps PR_CREATED; no mutation (CA 1/7/50)', async () => {
+    for (const text of STATUS_PHRASES) {
+      const { deps, calls } = makeDeps({ applyAnchor: PR_CREATED_ANCHOR() });
+      const r = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.hostingGetStatus, text).toBe(1);
+      expect(calls.hostingCreatePR, text).toBe(0);
+      expect(calls.applyAnchorSet, text).toBe(0); // no re-anchor → still PR_CREATED (Q2)
+      expect(r.reply.text, text).toContain('현재 조회 기준으로 PR 상태를 확인했어요');
+    }
+  });
+
+  it('non-PR_CREATED states + status phrase → no status preview (CA 2)', async () => {
+    for (const anchor of [prApprovedAnchor(), prReadyAnchor(), null]) {
+      const { deps, calls } = makeDeps({ applyAnchor: anchor });
+      await new ConversationRuntime(deps).handle(messageOf('PR 상태 확인해줘'));
+      expect(calls.hostingGetStatus, String(anchor?.status)).toBe(0);
+    }
+  });
+
+  it('PR_CREATED + merge/deploy/reviewer phrases are NOT status previews (CA 3/4/5); bare "상태" does not trigger (CA 6)', async () => {
+    for (const text of ['merge 해줘', '배포해줘', '리뷰어 추가해줘', '상태 확인해줘']) {
+      const { deps, calls } = makeDeps({ applyAnchor: PR_CREATED_ANCHOR() });
+      await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.hostingGetStatus, text).toBe(0);
+    }
+  });
+
+  it('status preview passes anchor.pullRequestRef (never a user-supplied PR number/URL) to the manager (CA 64–67)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: PR_CREATED_ANCHOR() });
+    await new ConversationRuntime(deps).handle(messageOf('PR #999 상태 확인해줘 https://github.com/other/repo/pull/999'));
+    expect(calls.hostingGetStatus).toBe(1);
+    const input = calls.lastHostingStatusInput!;
+    expect(input.pullRequestRef).toEqual({ provider: 'github', owner: 'acme', repo: 'widgets', pullRequestNumber: 42, pullRequestUrl: 'https://github.com/acme/widgets/pull/42' });
+    expect(JSON.stringify(input)).not.toContain('999');
+    expect(JSON.stringify(input)).not.toContain('other/repo');
+    expect(input.expectedCommitHash).toBe(HEAD_SHA);
+  });
+
+  it('missing identity or manager (token) → not configured; no call, no state change (CA 10/11)', async () => {
+    for (const opt of [{ hostingIdentity: null as null }, { hostingManager: null as null }]) {
+      const { deps, calls } = makeDeps({ applyAnchor: PR_CREATED_ANCHOR(), ...opt });
+      const r = await new ConversationRuntime(deps).handle(messageOf('PR 상태 확인해줘'));
+      expect(calls.hostingGetStatus).toBe(0);
+      expect(calls.applyAnchorSet).toBe(0);
+      expect(r.reply.text).toBe(composer.composePrStatusNotConfigured(CTX).text);
+    }
+  });
+
+  it('anchor missing pullRequestRef / repositoryIdentity, or identity mismatch → unavailable, no call (CA 12/13/14/15)', async () => {
+    const cases = [
+      PR_CREATED_ANCHOR({ pullRequestRef: undefined }),
+      PR_CREATED_ANCHOR({ repositoryIdentity: undefined }),
+      PR_CREATED_ANCHOR({ repositoryIdentity: { provider: 'github', owner: 'evil', repo: 'widgets' } }),
+    ];
+    for (const anchor of cases) {
+      const { deps, calls } = makeDeps({ applyAnchor: anchor });
+      const r = await new ConversationRuntime(deps).handle(messageOf('PR 상태 확인해줘'));
+      expect(calls.hostingGetStatus).toBe(0);
+      expect(r.reply.text).toBe(composer.composePrStatusUnavailable(CTX).text);
+    }
+  });
+
+  it('read failure / stale result → "could not check current status" (never checks-failed/PR-not-created); keeps PR_CREATED (CA 8/54/81–84)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: PR_CREATED_ANCHOR(), hostingStatus: 'throw' });
+    const r = await new ConversationRuntime(deps).handle(messageOf('PR 상태 확인해줘'));
+    expect(calls.applyAnchorSet).toBe(0);
+    expect(r.reply.text).toBe(composer.composePrStatusCheckFailed(CTX).text);
+    expect(r.reply.text).toContain('확인하지 못했어요');
+    expect(r.reply.text).not.toContain('만들지 않았'); // not "PR was not created"
+    expect(r.reply.text).not.toMatch(/체크가\s*실패했어|checks failed/i); // no positive checks-failed claim
+  });
+
+  it('response is point-in-time + bounded; no safe-to-merge / CI-verified / raw data (CA 22–26/33–37)', async () => {
+    const { deps } = makeDeps({ applyAnchor: PR_CREATED_ANCHOR() });
+    const r = await new ConversationRuntime(deps).handle(messageOf('PR 상태 확인해줘'));
+    const t = r.reply.text;
+    expect(t).toContain('#42');
+    expect(t).toContain('https://github.com/acme/widgets/pull/42');
+    expect(t).toContain('지금 이 시점');
+    expect(t).toContain('머지/배포/릴리즈는 하지 않았어요');
+    expect(t).toContain('안전하게 머지해도 된다는 뜻은 아니에요');
+    expect(t).not.toMatch(/영구|배포 준비|검증 완료|safe to merge|deploy ready/i);
+  });
+
+  it('empty check-runs renders "no checks", not success (CA 88/89); merged/closed reported but keeps PR_CREATED (CA 78/79)', async () => {
+    const noChecks = makeDeps({
+      applyAnchor: PR_CREATED_ANCHOR(),
+      hostingStatus: prStatusOf({ identity: PR_IDENTITY, pullRequestRef: PR_CREATED_ANCHOR().pullRequestRef!, expectedHeadBranch: HEAD, expectedBaseBranch: BASE, expectedCommitHash: HEAD_SHA }, { checks: { state: 'unknown', totalCount: 0, successCount: 0, failureCount: 0, pendingCount: 0 } }),
+    });
+    const rc = await new ConversationRuntime(noChecks.deps).handle(messageOf('PR 상태 확인해줘'));
+    expect(rc.reply.text).toContain('표시할 체크 결과가 없거나');
+    expect(rc.reply.text).not.toMatch(/체크 통과|CI 성공/);
+    for (const state of ['merged', 'closed'] as const) {
+      const { deps, calls } = makeDeps({
+        applyAnchor: PR_CREATED_ANCHOR(),
+        hostingStatus: prStatusOf({ identity: PR_IDENTITY, pullRequestRef: PR_CREATED_ANCHOR().pullRequestRef!, expectedHeadBranch: HEAD, expectedBaseBranch: BASE, expectedCommitHash: HEAD_SHA }, { state }),
+      });
+      const r = await new ConversationRuntime(deps).handle(messageOf('PR 상태 확인해줘'));
+      expect(calls.applyAnchorSet, state).toBe(0); // no PR_MERGED/PR_CLOSED, keep PR_CREATED
+      // reported provider-state must not imply a deployment/release happened or is ready.
+      expect(r.reply.text, state).not.toMatch(/배포했|배포\s*준비|deployed|deploy\s*ready|released|release\s*ready/i);
+    }
+  });
+
+  it('status preview performs NO git/command/create side effects — only the read-only manager call (CA 38–49)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: PR_CREATED_ANCHOR() });
+    await new ConversationRuntime(deps).handle(messageOf('PR 상태 확인해줘'));
+    expect(calls.hostingGetStatus).toBe(1);
+    expect(calls.hostingCreatePR).toBe(0);
+    expect(calls.gitPush + calls.gitCommit + calls.gitStatus + calls.commandRun + calls.workspaceApply + calls.run).toBe(0);
   });
 });
 

@@ -11,7 +11,9 @@ import {
 import type {
   ApprovalRef,
   PullRequestCreationInput,
+  PullRequestRef,
   PullRequestResult,
+  PullRequestStatusPreview,
   RepositoryIdentity,
 } from '../domain';
 import type { RepositoryHostingProvider } from '../ports';
@@ -161,6 +163,81 @@ export class RepositoryHostingManager {
       );
     }
     return { ...created, reused: false }; // manager-owned reused (CA change 3)
+  }
+
+  /**
+   * READ-ONLY point-in-time PR status preview (CAP-010, ADR-0055 — Sprint 3e). No ApprovalRef (read-only). The
+   * Manager validates provider.kind + identity + the caller's `PullRequestRef` (provider/owner/repo == identity,
+   * safe positive PR number, canonical github.com URL) + safe head/base + SHA-shaped commit BEFORE the provider
+   * read, then validates the provider-reported result's integrity against the request. A result whose identity/
+   * ref/head/base/commit does not match is a **stale/unattributable** read → throw (the runtime words this as
+   * "could not check current status", never "checks failed"). Never mutates; keeps no state.
+   */
+  async getPullRequestStatus(input: {
+    identity: RepositoryIdentity;
+    pullRequestRef: PullRequestRef;
+    expectedHeadBranch: string;
+    expectedBaseBranch: string;
+    expectedCommitHash: string;
+  }): Promise<PullRequestStatusPreview> {
+    const { identity, pullRequestRef, expectedHeadBranch, expectedBaseBranch, expectedCommitHash } = input;
+    if (this.provider.kind !== identity.provider) throw new Error('repository hosting: provider kind mismatch');
+    if (!isSupportedHostingProvider(identity.provider)) throw new Error('repository hosting: unsupported provider');
+    if (!isSafeRepoOwner(identity.owner) || !isSafeRepoName(identity.repo)) {
+      throw new Error('repository hosting: unsafe repository identity');
+    }
+    // PullRequestRef must belong to the identity and carry a safe number + canonical URL (CA change 1).
+    if (
+      pullRequestRef.provider !== identity.provider ||
+      pullRequestRef.owner !== identity.owner ||
+      pullRequestRef.repo !== identity.repo
+    ) {
+      throw new Error('repository hosting: pull request ref identity mismatch');
+    }
+    if (!Number.isSafeInteger(pullRequestRef.pullRequestNumber) || pullRequestRef.pullRequestNumber <= 0) {
+      throw new Error('repository hosting: invalid pull request number');
+    }
+    if (!isSafeGitHubPullRequestUrl(pullRequestRef.pullRequestUrl, identity, pullRequestRef.pullRequestNumber)) {
+      throw new Error('repository hosting: invalid pull request URL');
+    }
+    if (!isSafePushBranch(expectedHeadBranch)) throw new Error('repository hosting: unsafe head branch');
+    if (!isSafePushBranch(expectedBaseBranch)) throw new Error('repository hosting: unsafe base branch');
+    if (!SHA_SHAPED.test(expectedCommitHash)) throw new Error('repository hosting: invalid expectedCommitHash');
+
+    let preview: PullRequestStatusPreview;
+    try {
+      preview = await this.provider.getPullRequestStatus({
+        identity,
+        pullRequestRef,
+        expectedHeadBranch,
+        expectedBaseBranch,
+        expectedCommitHash,
+      });
+    } catch {
+      throw new Error('repository hosting: could not read pull request status');
+    }
+    // Result integrity — the provider-reported status must be attributable to THIS approved PR context.
+    if (
+      preview.ref.provider !== identity.provider ||
+      preview.ref.owner !== identity.owner ||
+      preview.ref.repo !== identity.repo ||
+      preview.ref.pullRequestNumber !== pullRequestRef.pullRequestNumber ||
+      preview.ref.pullRequestUrl !== pullRequestRef.pullRequestUrl
+    ) {
+      throw new Error('repository hosting: status result ref mismatch (stale/unattributable)');
+    }
+    if (preview.headBranch !== expectedHeadBranch) throw new Error('repository hosting: status head mismatch (stale)');
+    if (preview.baseBranch !== expectedBaseBranch) throw new Error('repository hosting: status base mismatch (stale)');
+    if (preview.headCommitHash !== expectedCommitHash) throw new Error('repository hosting: status commit mismatch (stale)');
+    for (const n of [
+      preview.checks.totalCount,
+      preview.checks.successCount,
+      preview.checks.failureCount,
+      preview.checks.pendingCount,
+    ]) {
+      if (!Number.isInteger(n) || n < 0) throw new Error('repository hosting: invalid status check counts');
+    }
+    return preview;
   }
 
   private async repositoryExists(identity: RepositoryIdentity): Promise<boolean> {
