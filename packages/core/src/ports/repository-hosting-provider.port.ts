@@ -5,6 +5,7 @@ import type {
   PullRequestRef,
   PullRequestResult,
   PullRequestStatusPreview,
+  RemoteBranchCleanupResult,
   RepositoryIdentity,
 } from '../domain';
 
@@ -75,4 +76,21 @@ export interface RepositoryHostingProvider {
     pullRequestRef: PullRequestRef;
     expectedHeadSha: string;
   }): Promise<PullRequestMergeResult>;
+
+  /** READ-ONLY (CAP-010, ADR-0060 — Sprint 3j-B) — the remote branch head commit for `identity`, or `null` when the
+   *  branch is absent (404). Single bounded GET (`GET /git/ref/heads/<branch>`); sanitized errors (no token/raw
+   *  payload); no pagination/retry. Used by the Manager's remote-cleanup preflight. */
+  getRemoteBranchCommit(identity: RepositoryIdentity, branch: string): Promise<{ commitHash: string } | null>;
+
+  /** The ONLY new mutating method (CAP-010, ADR-0060 — Sprint 3j-B) — deletes EXACTLY one remote branch. Takes **no**
+   *  `ApprovalRef` (consumed by the Manager). Reads the ref IMMEDIATELY before delete and verifies `object.sha ===
+   *  expectedCommitHash` (GitHub has no atomic SHA-conditional delete), then issues a single `DELETE /git/refs/heads/
+   *  <branch>`. NEVER the default branch, a wildcard/pattern, a force flag, or `git push`. PHASE-AWARE: a pre-DELETE
+   *  SHA mismatch / known failure throws `RemoteBranchCleanupBlockedError`; a failure AT/AFTER the DELETE throws
+   *  `RemoteBranchCleanupUnverifiedError`. An already-absent branch returns `{ deleted:false, alreadyAbsent:true }`. */
+  deleteRemoteBranch(input: {
+    identity: RepositoryIdentity;
+    branch: string;
+    expectedCommitHash: string;
+  }): Promise<RemoteBranchCleanupResult>;
 }

@@ -2,6 +2,8 @@ import { ApprovalStatus } from '../domain';
 import {
   MAX_PR_BODY,
   MAX_PR_TITLE,
+  RemoteBranchCleanupBlockedError,
+  RemoteBranchCleanupUnverifiedError,
   isSafeGitHubPullRequestUrl,
   isSafeRepoName,
   isSafeRepoOwner,
@@ -16,6 +18,7 @@ import type {
   PullRequestRef,
   PullRequestResult,
   PullRequestStatusPreview,
+  RemoteBranchCleanupResult,
   RepositoryIdentity,
 } from '../domain';
 import type { RepositoryHostingProvider } from '../ports';
@@ -381,6 +384,131 @@ export class RepositoryHostingManager {
       throw new RepositoryHostingUnverifiedError('repository hosting: PR merge result could not be verified');
     }
     return { ...result, alreadyMerged: false }; // manager-owned alreadyMerged
+  }
+
+  /**
+   * Execute a REMOTE branch cleanup (CAP-010, ADR-0060 — Sprint 3j-B). Deletes EXACTLY one remote branch — the
+   * anchored, already-merged PR head branch — via the RepositoryHosting provider, ONLY after re-consuming the 3j-A
+   * CRITICAL approval + a full live preflight. The Manager consumes/validates the `ApprovalRef` (never forwarded to
+   * the provider) and makes at most ONE mutating call. Ordering mirrors `mergePullRequest`:
+   *   1. backstop validation                       → BlockedError (no read, no mutation)
+   *   2. getMergePreflight (live read)              → throws → BlockedError; not 'merged' / mismatch → BlockedError
+   *   3. getRemoteBranchCommit (live read)          → throws → BlockedError; null → idempotent alreadyAbsent (NO delete);
+   *                                                    commit != expected → BlockedError (moved; a moved branch is never deleted)
+   *   4. single provider.deleteRemoteBranch         → provider Blocked → Blocked; Unverified → Unverified; any OTHER
+   *                                                    throw → Unverified (NO blanket-convert). result-integrity → Unverified.
+   * A KNOWN pre-DELETE failure is `RemoteBranchCleanupBlockedError` ("not deleted"); any failure at/after the DELETE
+   * is `RemoteBranchCleanupUnverifiedError` ("could not verify" — never "not deleted"). GitHub has no atomic
+   * SHA-conditional delete, so the provider re-reads the ref immediately before the DELETE and verifies the SHA.
+   */
+  async deleteRemoteBranch(input: {
+    identity: RepositoryIdentity;
+    pullRequestRef: PullRequestRef;
+    expectedHeadBranch: string;
+    expectedBaseBranch: string;
+    branch: string;
+    expectedCommitHash: string;
+    approvalRef: ApprovalRef;
+  }): Promise<RemoteBranchCleanupResult> {
+    const { identity, pullRequestRef, expectedHeadBranch, expectedBaseBranch, branch, expectedCommitHash, approvalRef } = input;
+
+    // ── 1. Backstop validation BEFORE any provider call. All → BlockedError (definitively no delete). ──────────
+    if (approvalRef.status !== ApprovalStatus.APPROVED) {
+      throw new RemoteBranchCleanupBlockedError(
+        `repository hosting: remote branch cleanup requires an APPROVED approval (got ${approvalRef.status})`,
+      );
+    }
+    if (this.provider.kind !== identity.provider) {
+      throw new RemoteBranchCleanupBlockedError('repository hosting: provider kind does not match identity provider');
+    }
+    if (!isSupportedHostingProvider(identity.provider)) {
+      throw new RemoteBranchCleanupBlockedError('repository hosting: unsupported hosting provider');
+    }
+    if (!isSafeRepoOwner(identity.owner) || !isSafeRepoName(identity.repo)) {
+      throw new RemoteBranchCleanupBlockedError('repository hosting: unsafe repository identity');
+    }
+    if (
+      pullRequestRef.provider !== identity.provider ||
+      pullRequestRef.owner !== identity.owner ||
+      pullRequestRef.repo !== identity.repo
+    ) {
+      throw new RemoteBranchCleanupBlockedError('repository hosting: pull request ref identity mismatch');
+    }
+    if (!Number.isSafeInteger(pullRequestRef.pullRequestNumber) || pullRequestRef.pullRequestNumber <= 0) {
+      throw new RemoteBranchCleanupBlockedError('repository hosting: invalid pull request number');
+    }
+    if (!isSafeGitHubPullRequestUrl(pullRequestRef.pullRequestUrl, identity, pullRequestRef.pullRequestNumber)) {
+      throw new RemoteBranchCleanupBlockedError('repository hosting: invalid pull request URL');
+    }
+    if (!isSafePushBranch(expectedHeadBranch)) throw new RemoteBranchCleanupBlockedError('repository hosting: unsafe head branch');
+    if (!isSafePushBranch(expectedBaseBranch)) throw new RemoteBranchCleanupBlockedError('repository hosting: unsafe base branch');
+    if (!isSafePushBranch(branch)) throw new RemoteBranchCleanupBlockedError('repository hosting: unsafe target branch');
+    // Target must be the anchored PR head branch, never the base/default branch.
+    if (branch !== expectedHeadBranch) throw new RemoteBranchCleanupBlockedError('repository hosting: target is not the PR head branch');
+    if (branch === expectedBaseBranch || branch === 'main') {
+      throw new RemoteBranchCleanupBlockedError('repository hosting: never deletes the base/default branch');
+    }
+    if (!SHA_SHAPED.test(expectedCommitHash)) throw new RemoteBranchCleanupBlockedError('repository hosting: invalid expectedCommitHash');
+
+    // ── 2. Live PR-still-merged/attributable read. Any read failure / mismatch / non-merged → BlockedError. ────
+    let preflight: PullRequestMergePreflight;
+    try {
+      preflight = await this.provider.getMergePreflight({
+        identity,
+        pullRequestRef,
+        expectedHeadBranch,
+        expectedBaseBranch,
+        expectedCommitHash,
+      });
+    } catch {
+      throw new RemoteBranchCleanupBlockedError('repository hosting: could not read live PR state; remote branch not deleted');
+    }
+    if (
+      preflight.ref.provider !== identity.provider ||
+      preflight.ref.owner !== identity.owner ||
+      preflight.ref.repo !== identity.repo ||
+      preflight.ref.pullRequestNumber !== pullRequestRef.pullRequestNumber ||
+      preflight.ref.pullRequestUrl !== pullRequestRef.pullRequestUrl ||
+      preflight.headBranch !== expectedHeadBranch ||
+      preflight.headCommitHash !== expectedCommitHash
+    ) {
+      throw new RemoteBranchCleanupBlockedError('repository hosting: PR state not attributable to the approved context; remote branch not deleted');
+    }
+    if (preflight.state !== 'merged') {
+      throw new RemoteBranchCleanupBlockedError(`repository hosting: PR is not merged (state ${preflight.state}); remote branch not deleted`);
+    }
+
+    // ── 3. Live remote branch read: absent → idempotent success; SHA mismatch → Blocked (moved). ──────────────
+    let remote: { commitHash: string } | null;
+    try {
+      remote = await this.provider.getRemoteBranchCommit(identity, branch);
+    } catch {
+      throw new RemoteBranchCleanupBlockedError('repository hosting: could not read remote branch; remote branch not deleted');
+    }
+    if (!remote) {
+      return { provider: identity.provider, owner: identity.owner, repo: identity.repo, branch, deleted: false, alreadyAbsent: true };
+    }
+    if (remote.commitHash !== expectedCommitHash) {
+      throw new RemoteBranchCleanupBlockedError('repository hosting: remote branch moved off the expected commit; remote branch not deleted');
+    }
+
+    // ── 4. SINGLE mutating DELETE. Phase-aware: Blocked → Blocked; Unverified/other → Unverified (no blanket-convert). ─
+    let result: RemoteBranchCleanupResult;
+    try {
+      result = await this.provider.deleteRemoteBranch({ identity, branch, expectedCommitHash });
+    } catch (err) {
+      if (err instanceof RemoteBranchCleanupBlockedError) throw err; // pre-DELETE (provider re-read) — definitively not deleted
+      if (err instanceof RemoteBranchCleanupUnverifiedError) throw err; // at/after DELETE — unknown
+      throw new RemoteBranchCleanupUnverifiedError('repository hosting: remote branch deletion could not be completed/verified');
+    }
+    // Result-integrity — a returned-but-inconsistent result is ambiguous → Unverified (never "not deleted").
+    const identityOk = result.provider === identity.provider && result.owner === identity.owner && result.repo === identity.repo && result.branch === branch;
+    const deletedOk = result.deleted === true && result.alreadyAbsent === false && result.deletedCommitHash === expectedCommitHash;
+    const absentOk = result.deleted === false && result.alreadyAbsent === true;
+    if (!identityOk || (!deletedOk && !absentOk)) {
+      throw new RemoteBranchCleanupUnverifiedError('repository hosting: remote branch deletion result could not be verified');
+    }
+    return result;
   }
 
   private async repositoryExists(identity: RepositoryIdentity): Promise<boolean> {

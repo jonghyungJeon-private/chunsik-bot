@@ -4,7 +4,7 @@ import {
   RepositoryHostingManager,
   RepositoryHostingUnverifiedError,
 } from './repository-hosting-manager';
-import { ApprovalStatus } from '../domain';
+import { ApprovalStatus, RemoteBranchCleanupBlockedError, RemoteBranchCleanupUnverifiedError } from '../domain';
 import type {
   ApprovalRef,
   PullRequestCreationInput,
@@ -13,6 +13,7 @@ import type {
   PullRequestRef,
   PullRequestResult,
   PullRequestStatusPreview,
+  RemoteBranchCleanupResult,
   RepositoryIdentity,
 } from '../domain';
 import type { RepositoryHostingProvider } from '../ports';
@@ -114,6 +115,46 @@ class FakeProvider implements RepositoryHostingProvider {
     if (this.mergeThrows) throw new Error('RAW-PROVIDER-SECRET-merge');
     return this.mergeResult;
   }
+  // Sprint 3j-B: remote branch cleanup read + delete. Configurable result/throw. deleteInputs captures what the
+  // provider received — used to prove the provider never sees an ApprovalRef.
+  remoteBranchCommit: { commitHash: string } | null = { commitHash: COMMIT };
+  getRemoteThrows = false;
+  deleteResult: RemoteBranchCleanupResult = validRemoteCleanup();
+  deleteThrowsBlocked = false;
+  deleteThrowsUnverified = false;
+  deleteThrowsGeneric = false;
+  deleteInputs: Array<{ identity: RepositoryIdentity; branch: string; expectedCommitHash: string }> = [];
+  async getRemoteBranchCommit(_id: RepositoryIdentity, branch: string): Promise<{ commitHash: string } | null> {
+    this.calls.push(`getRemoteBranchCommit:${branch}`);
+    if (this.getRemoteThrows) throw new Error('RAW-PROVIDER-SECRET-getref');
+    return this.remoteBranchCommit;
+  }
+  async deleteRemoteBranch(input: { identity: RepositoryIdentity; branch: string; expectedCommitHash: string }): Promise<RemoteBranchCleanupResult> {
+    this.calls.push('deleteRemoteBranch');
+    this.deleteInputs.push(input);
+    if (this.deleteThrowsBlocked) throw new RemoteBranchCleanupBlockedError('blocked');
+    if (this.deleteThrowsUnverified) throw new RemoteBranchCleanupUnverifiedError('unverified');
+    if (this.deleteThrowsGeneric) throw new Error('RAW-PROVIDER-SECRET-del');
+    return this.deleteResult;
+  }
+}
+
+function validRemoteCleanup(over: Partial<RemoteBranchCleanupResult> = {}): RemoteBranchCleanupResult {
+  return { provider: 'github', owner: 'acme', repo: 'widgets', branch: HEAD, deleted: true, alreadyAbsent: false, deletedCommitHash: COMMIT, ...over };
+}
+
+/** Standard input for RepositoryHostingManager.deleteRemoteBranch (Sprint 3j-B). */
+function deleteInput(over: Partial<Parameters<RepositoryHostingManager['deleteRemoteBranch']>[0]> = {}) {
+  return {
+    identity: IDENTITY,
+    pullRequestRef: PR_REF,
+    expectedHeadBranch: HEAD,
+    expectedBaseBranch: BASE,
+    branch: HEAD,
+    expectedCommitHash: COMMIT,
+    approvalRef: approved(),
+    ...over,
+  };
 }
 
 function validPreflight(over: Partial<PullRequestMergePreflight> = {}): PullRequestMergePreflight {
@@ -608,6 +649,105 @@ describe('RepositoryHostingManager (CAP-010 skeleton, ADR-0052, Sprint 3d-B)', (
         await expect(runMerge(p, over)).rejects.toBeInstanceOf(RepositoryHostingBlockedError);
         expect(p.calls).toEqual([]);
       }
+    });
+  });
+
+  // ── Sprint 3j-B (ADR-0060): remote branch cleanup EXECUTION — preflight + single DELETE, phase-aware. ──
+  describe('deleteRemoteBranch (Sprint 3j-B, tests 10–17)', () => {
+    /** A provider set up so the merged-PR + remote-branch preflight passes (state 'merged', remote SHA == COMMIT). */
+    function mergedProvider(): FakeProvider {
+      const p = new FakeProvider();
+      p.preflightResult = validPreflight({ state: 'merged' });
+      p.remoteBranchCommit = { commitHash: COMMIT };
+      return p;
+    }
+
+    it('non-APPROVED approval → Blocked before any provider call (backstop)', async () => {
+      const p = new FakeProvider();
+      await expect(
+        new RepositoryHostingManager(p).deleteRemoteBranch(deleteInput({ approvalRef: { id: 'a1', status: ApprovalStatus.PENDING, executionPlanRef: { id: 'p1', goal: 'g' } } })),
+      ).rejects.toBeInstanceOf(RemoteBranchCleanupBlockedError);
+      expect(p.calls).toEqual([]);
+    });
+
+    it('backstop blocks: target != head, target main/base, unsafe name, bad SHA, ref mismatch (no provider call)', async () => {
+      const bad: Array<Partial<Parameters<RepositoryHostingManager['deleteRemoteBranch']>[0]>> = [
+        { branch: 'other' }, // != expectedHeadBranch
+        { branch: 'main', expectedHeadBranch: 'main' }, // base/default
+        { branch: 'bad branch', expectedHeadBranch: 'bad branch' }, // unsafe
+        { expectedCommitHash: 'nope' }, // not SHA-shaped
+        { pullRequestRef: { ...PR_REF, owner: 'evil' } }, // ref identity mismatch
+      ];
+      for (const over of bad) {
+        const p = mergedProvider();
+        await expect(new RepositoryHostingManager(p).deleteRemoteBranch(deleteInput(over))).rejects.toBeInstanceOf(RemoteBranchCleanupBlockedError);
+        expect(p.calls, JSON.stringify(over)).toEqual([]);
+      }
+    });
+
+    it('test 10: PR not confirmably merged (state != merged / mismatch) → Blocked, no delete', async () => {
+      for (const pf of [validPreflight({ state: 'open' }), validPreflight({ state: 'merged', headBranch: 'other' }), validPreflight({ state: 'merged', headCommitHash: 'fff0000' })]) {
+        const p = new FakeProvider();
+        p.preflightResult = pf;
+        await expect(new RepositoryHostingManager(p).deleteRemoteBranch(deleteInput())).rejects.toBeInstanceOf(RemoteBranchCleanupBlockedError);
+        expect(p.calls).not.toContain('deleteRemoteBranch');
+      }
+    });
+
+    it('test 11: remote branch absent (404) → idempotent alreadyAbsent, NO delete call', async () => {
+      const p = mergedProvider();
+      p.remoteBranchCommit = null;
+      const r = await new RepositoryHostingManager(p).deleteRemoteBranch(deleteInput());
+      expect(r).toEqual({ provider: 'github', owner: 'acme', repo: 'widgets', branch: HEAD, deleted: false, alreadyAbsent: true });
+      expect(p.calls).not.toContain('deleteRemoteBranch');
+    });
+
+    it('test 12: remote branch SHA mismatch → Blocked, no delete', async () => {
+      const p = mergedProvider();
+      p.remoteBranchCommit = { commitHash: 'deadbeef' };
+      await expect(new RepositoryHostingManager(p).deleteRemoteBranch(deleteInput())).rejects.toBeInstanceOf(RemoteBranchCleanupBlockedError);
+      expect(p.calls).not.toContain('deleteRemoteBranch');
+    });
+
+    it('test 13: SHA match → exactly ONE delete; provider never sees the ApprovalRef', async () => {
+      const p = mergedProvider();
+      const r = await new RepositoryHostingManager(p).deleteRemoteBranch(deleteInput());
+      expect(r.deleted).toBe(true);
+      expect(r.deletedCommitHash).toBe(COMMIT);
+      expect(p.calls.filter((c) => c === 'deleteRemoteBranch')).toHaveLength(1);
+      expect(p.deleteInputs).toEqual([{ identity: IDENTITY, branch: HEAD, expectedCommitHash: COMMIT }]); // NO approvalRef
+    });
+
+    it('test 14: provider Blocked stays Blocked (no blanket-convert)', async () => {
+      const p = mergedProvider();
+      p.deleteThrowsBlocked = true;
+      await expect(new RepositoryHostingManager(p).deleteRemoteBranch(deleteInput())).rejects.toBeInstanceOf(RemoteBranchCleanupBlockedError);
+    });
+
+    it('test 15/16: provider Unverified — and an unknown throw — become Unverified', async () => {
+      const unv = mergedProvider();
+      unv.deleteThrowsUnverified = true;
+      await expect(new RepositoryHostingManager(unv).deleteRemoteBranch(deleteInput())).rejects.toBeInstanceOf(RemoteBranchCleanupUnverifiedError);
+      const gen = mergedProvider();
+      gen.deleteThrowsGeneric = true;
+      await expect(new RepositoryHostingManager(gen).deleteRemoteBranch(deleteInput())).rejects.toBeInstanceOf(RemoteBranchCleanupUnverifiedError);
+    });
+
+    it('test 17: result-integrity mismatch → Unverified', async () => {
+      for (const bad of [validRemoteCleanup({ branch: 'other' }), validRemoteCleanup({ deleted: true, deletedCommitHash: 'fff0000' }), validRemoteCleanup({ deleted: false, alreadyAbsent: false }), validRemoteCleanup({ owner: 'evil' })]) {
+        const p = mergedProvider();
+        p.deleteResult = bad;
+        await expect(new RepositoryHostingManager(p).deleteRemoteBranch(deleteInput())).rejects.toBeInstanceOf(RemoteBranchCleanupUnverifiedError);
+      }
+    });
+
+    it('a live read failure (preflight / getRemoteBranchCommit throws) → Blocked (never Unverified)', async () => {
+      const pf = mergedProvider();
+      pf.preflightThrows = true;
+      await expect(new RepositoryHostingManager(pf).deleteRemoteBranch(deleteInput())).rejects.toBeInstanceOf(RemoteBranchCleanupBlockedError);
+      const gr = mergedProvider();
+      gr.getRemoteThrows = true;
+      await expect(new RepositoryHostingManager(gr).deleteRemoteBranch(deleteInput())).rejects.toBeInstanceOf(RemoteBranchCleanupBlockedError);
     });
   });
 });

@@ -1,5 +1,6 @@
 import { describeAiFailure } from './ai-failure';
 import { RepositoryHostingBlockedError } from './repository-hosting-manager';
+import { RemoteBranchCleanupBlockedError, RemoteBranchCleanupUnverifiedError } from '../domain';
 import {
   BranchCleanupBlockedError,
   BranchCleanupUnverifiedError,
@@ -63,6 +64,7 @@ import type {
   PullRequestRef,
   PullRequestResult,
   PullRequestStatusPreview,
+  RemoteBranchCleanupResult,
   RepositoryIdentity,
   RunCommandInput,
   Session,
@@ -287,10 +289,16 @@ export type ApplyPreviewAnchorStatus =
   /**
    * The remote-branch-cleanup approval was granted (Sprint 3j-A, ADR-0060) — records permission to delete the
    * anchored completed PR's REMOTE head branch, for this PR context only. NOT deleted, NOT deployed, NOT released,
-   * NOT tagged, NOT safe-to-delete-verified. The actual remote branch deletion (→ `REMOTE_BRANCH_CLEANED`) is
-   * performed by a separate execution step in Sprint 3j-B; 3j-A never deletes.
+   * NOT tagged, NOT safe-to-delete-verified. From Sprint 3j-B, an explicit execution command here deletes the remote
+   * branch (after a full live preflight + read-immediately-before-delete SHA verification).
    */
-  | 'REMOTE_BRANCH_CLEANUP_APPROVED';
+  | 'REMOTE_BRANCH_CLEANUP_APPROVED'
+  /**
+   * The completed PR's REMOTE head branch was deleted — or was already absent — DURING THIS RUN (Sprint 3j-B,
+   * ADR-0060). Terminal. NOT deployed, NOT released, NOT tagged, NOT production-ready, NOT local-branch-deleted-this-
+   * run, NOT all-branches-cleaned, NOT repository-fully-cleaned.
+   */
+  | 'REMOTE_BRANCH_CLEANED';
 
 /**
  * Anchored fact set for "a diff preview was shown; the user may explicitly ask to apply it" (Sprint 2s,
@@ -461,6 +469,18 @@ export interface ApplyPreviewAnchor {
   /** The actor who decided the remote-branch-cleanup approval (Sprint 3j-A) — REQUIRED at
    *  REMOTE_BRANCH_CLEANUP_APPROVED; cleared on deny/cancel. */
   remoteBranchCleanupApprovalDecisionBy?: Id;
+  /** Which remote cleanup scope ran (Sprint 3j-B, ADR-0060) — REQUIRED at REMOTE_BRANCH_CLEANED; always 'remote'. */
+  remoteBranchCleanupMode?: 'remote';
+  /** The remote branch deleted/targeted (Sprint 3j-B) — REQUIRED at REMOTE_BRANCH_CLEANED; == the anchored PR head branch. */
+  cleanedRemoteBranchName?: string;
+  /** The RUNTIME record timestamp of the remote cleanup (Sprint 3j-B) — REQUIRED at REMOTE_BRANCH_CLEANED (now()). */
+  remoteBranchCleanedAt?: IsoTimestamp;
+  /** The actor who executed the remote cleanup (Sprint 3j-B) — REQUIRED at REMOTE_BRANCH_CLEANED. */
+  remoteBranchCleanedBy?: Id;
+  /** The hosting provider the remote branch was deleted from (Sprint 3j-B) — REQUIRED at REMOTE_BRANCH_CLEANED. */
+  remoteBranchCleanupProvider?: RepositoryIdentity['provider'];
+  /** The commit the deleted remote branch pointed at (Sprint 3j-B) — set when a delete happened (== expected head commit). */
+  remoteBranchDeletedCommit?: string;
 }
 
 /**
@@ -645,6 +665,18 @@ export interface ConversationRuntimeDeps {
         expectedHeadSha: string;
         approvalRef: ApprovalRef;
       }): Promise<PullRequestMergeResult>;
+      /** Remote branch cleanup execution (Sprint 3j-B, ADR-0060) — the Manager consumes the ApprovalRef + runs the
+       *  live preflight + the single GitHub refs DELETE; the runtime calls this ONLY (never the provider), passes NO
+       *  token. */
+      deleteRemoteBranch(input: {
+        identity: RepositoryIdentity;
+        pullRequestRef: PullRequestRef;
+        expectedHeadBranch: string;
+        expectedBaseBranch: string;
+        branch: string;
+        expectedCommitHash: string;
+        approvalRef: ApprovalRef;
+      }): Promise<RemoteBranchCleanupResult>;
     };
   };
   readonly logger: Logger;
@@ -1414,14 +1446,16 @@ export class ConversationRuntime {
   }
 
   /**
-   * An explicit remote-branch-cleanup EXECUTION intent (Sprint 3j-A, ADR-0060) — only consulted at
-   * REMOTE_BRANCH_CLEANUP_APPROVED, AFTER `interpretRemoteBranchCleanupIntent` (so a re-request like "원격 브랜치
-   * 삭제해줘" is handled as "already approved", not as execution). A pure execute verb (실행/진행/지금/execute/proceed/
-   * now) → `'execute'`. In Sprint 3j-A this only routes to the "execution is a future step (3j-B)" reply — 3j-A
-   * never deletes.
+   * An explicit remote-branch-cleanup EXECUTION intent (Sprint 3j-A, HARDENED in Sprint 3j-B, ADR-0060) — only
+   * consulted at REMOTE_BRANCH_CLEANUP_APPROVED, checked FIRST (Sprint 3j-B, CA change 1) so an execution phrase
+   * ("원격 브랜치 삭제 실행해줘" / "지금 원격 브랜치 삭제해줘" / "execute remote branch cleanup" / "proceed") is never swallowed
+   * by the re-request ("already approved") route. A pure execute verb (실행/진행/지금/execute/proceed/now) → `'execute'`.
+   * **3j-B hardening (CA change 1):** bulk/wildcard/main/default phrases are rejected here too so they can never
+   * execute a delete. A bare re-request ("원격 브랜치 삭제해줘", no execute verb) → null → "already approved".
    */
   static interpretRemoteBranchCleanupExecutionIntent(text: string): 'execute' | null {
     const t = text.trim().toLowerCase();
+    if (CLEANUP_BULK.test(t) || CLEANUP_MAIN_TARGET.test(t)) return null; // bulk/wildcard/main·default → never execute (CA change 1)
     if (REMOTE_CLEANUP_EXECUTE_VERB.test(t)) return 'execute';
     return null;
   }
@@ -1705,16 +1739,48 @@ export class ConversationRuntime {
         return this.handleMergeExecutionUnsupportedCompanionTurn(message, session);
       }
     }
-    // (Sprint 3j-A, ADR-0060) REMOTE_BRANCH_CLEANUP_APPROVED — PERMISSION-ONLY. A re-request → already approved; an
-    // explicit execute phrase → execution is a future step (3j-B; NOT implemented in 3j-A); a status/check phrase →
-    // read-only preview (keeps the state); a merge phrase → already merged; deploy/release/companion → unsupported.
-    // NO remote deletion, NO RepositoryHosting mutation on any path.
+    // (Sprint 3j-B, ADR-0060) REMOTE_BRANCH_CLEANUP_APPROVED — an explicit EXECUTION command is checked FIRST (CA
+    // change 1) so it is never swallowed by the re-request route → live preflight → single GitHub refs DELETE →
+    // REMOTE_BRANCH_CLEANED; a re-request (no execute verb) → already approved (no re-approval); a status/check phrase
+    // → read-only preview (keeps the state); a merge phrase → already merged; deploy/release/companion → unsupported.
     if (applyAnchor?.status === 'REMOTE_BRANCH_CLEANUP_APPROVED') {
+      if (ConversationRuntime.interpretRemoteBranchCleanupExecutionIntent(message.text) === 'execute') {
+        return this.handleRemoteBranchCleanupExecutionTurn(message, session, actor, applyAnchor);
+      }
       if (ConversationRuntime.interpretRemoteBranchCleanupIntent(message.text) === 'remote') {
         return this.handleRemoteBranchCleanupAlreadyApprovedTurn(message, session);
       }
-      if (ConversationRuntime.interpretRemoteBranchCleanupExecutionIntent(message.text) === 'execute') {
-        return this.handleRemoteBranchCleanupExecutionUnavailableTurn(message, session);
+      if (
+        ConversationRuntime.interpretPrStatusIntent(message.text) ||
+        ConversationRuntime.interpretMergeStatusIntent(message.text)
+      ) {
+        return this.handlePrStatusPreviewTurn(message, session, applyAnchor);
+      }
+      if (
+        ConversationRuntime.interpretMergeExecutionIntent(message.text) === 'execute' ||
+        MERGE_WORD.test(message.text)
+      ) {
+        return this.handleMergeAlreadyMergedTurn(message, session, applyAnchor);
+      }
+      if (DEPLOY_ONLY_WORDS.test(message.text) || PR_CREATED_COMPANION_WORDS.test(message.text)) {
+        return this.handleMergeExecutionUnsupportedCompanionTurn(message, session);
+      }
+    }
+    // (Sprint 3j-B, ADR-0060) Terminal REMOTE_BRANCH_CLEANED: a remote cleanup phrase → already cleaned (no second
+    // DELETE); a local cleanup phrase → already cleaned; a sync command → still synced; a status/check phrase →
+    // read-only preview (keeps the state); a merge phrase → already merged; deploy/release/companion → unsupported.
+    if (applyAnchor?.status === 'REMOTE_BRANCH_CLEANED') {
+      if (
+        ConversationRuntime.interpretRemoteBranchCleanupExecutionIntent(message.text) === 'execute' ||
+        ConversationRuntime.interpretRemoteBranchCleanupIntent(message.text) === 'remote'
+      ) {
+        return this.handleRemoteBranchAlreadyCleanedTurn(message, session, applyAnchor);
+      }
+      if (ConversationRuntime.interpretBranchCleanupIntent(message.text) === 'local') {
+        return this.handleBranchAlreadyCleanedTurn(message, session, applyAnchor);
+      }
+      if (ConversationRuntime.interpretMainSyncIntent(message.text) === 'sync') {
+        return this.handleMainAlreadySyncedTurn(message, session, applyAnchor);
       }
       if (
         ConversationRuntime.interpretPrStatusIntent(message.text) ||
@@ -3620,7 +3686,8 @@ export class ConversationRuntime {
         anchor.status !== 'PR_MERGED' &&
         anchor.status !== 'MAIN_SYNCED' &&
         anchor.status !== 'BRANCH_CLEANED' &&
-        anchor.status !== 'REMOTE_BRANCH_CLEANUP_APPROVED') ||
+        anchor.status !== 'REMOTE_BRANCH_CLEANUP_APPROVED' &&
+        anchor.status !== 'REMOTE_BRANCH_CLEANED') ||
       !ref ||
       !anchor.repositoryIdentity ||
       !anchor.pullRequestHeadBranch ||
@@ -4267,10 +4334,126 @@ export class ConversationRuntime {
     return this.respondComposed(message, session, reply);
   }
 
-  /** An explicit execute phrase while REMOTE_BRANCH_CLEANUP_APPROVED (Sprint 3j-A) — remote branch deletion execution
-   *  is NOT implemented in 3j-A (deferred to 3j-B). Approval stays recorded; NO mutation. */
-  private async handleRemoteBranchCleanupExecutionUnavailableTurn(message: InboundMessage, session: Session): Promise<TurnResult> {
-    const reply = this.deps.composer.composeRemoteBranchCleanupExecutionUnavailable(message.context);
+  /**
+   * Execute a REMOTE branch cleanup from REMOTE_BRANCH_CLEANUP_APPROVED (Sprint 3j-B, ADR-0060) — the execution half.
+   * Re-reads the 3j-A CRITICAL approval + re-validates the full anchored remote target + the local-cleanup chain, then
+   * calls the Manager, which runs the live preflight and makes at most ONE GitHub refs DELETE (read-immediately-before-
+   * delete SHA verify). Calls the manager only (never the provider), passes NO token. Failure is SAFE and PHASE-AWARE:
+   * a KNOWN pre-DELETE RemoteBranchCleanupBlockedError may say "not deleted"; a RemoteBranchCleanupUnverifiedError AND
+   * any unknown throw are UNVERIFIED (never "not deleted"). Keeps REMOTE_BRANCH_CLEANUP_APPROVED on every failure path.
+   */
+  private async handleRemoteBranchCleanupExecutionTurn(
+    message: InboundMessage,
+    session: Session,
+    actor: Actor,
+    anchor: ApplyPreviewAnchor,
+  ): Promise<TurnResult> {
+    const identity = this.deps.repositoryHosting?.identity;
+    const manager = this.deps.repositoryHosting?.manager;
+    // Check 1 — not configured (no identity / no manager / no token): safe not-configured, no call, anchor unchanged.
+    if (!identity || !manager) {
+      return this.respondComposed(message, session, this.deps.composer.composeRemoteBranchCleanupExecutionUnavailable(message.context));
+    }
+    const ref = anchor.pullRequestRef;
+    const target = anchor.pullRequestHeadBranch;
+    const expectedHeadCommit = anchor.mergedHeadSha; // CA change 2 — NO fallback to pullRequestCommitHash
+    // Checks 2–14 (approval evidence, identity/ref, target, expected commit, local-cleanup chain) → Blocked.
+    if (
+      anchor.status !== 'REMOTE_BRANCH_CLEANUP_APPROVED' ||
+      !anchor.executionPlanRef ||
+      !anchor.remoteBranchCleanupApprovalId ||
+      !anchor.remoteBranchCleanupApprovalRequestedAt ||
+      !anchor.remoteBranchCleanupApprovedAt ||
+      !anchor.remoteBranchCleanupApprovalDecisionBy ||
+      !anchor.repositoryIdentity ||
+      !ref ||
+      !anchor.pullRequestNumber ||
+      !anchor.pullRequestUrl ||
+      !anchor.pullRequestBaseBranch ||
+      !target ||
+      target !== anchor.pushedBranch ||
+      target === PR_BASE_BRANCH_POLICY ||
+      !isSafePushBranch(target) ||
+      !expectedHeadCommit ||
+      !/^[0-9a-f]{7,40}$/i.test(expectedHeadCommit) ||
+      anchor.branchCleanupMode !== 'local' ||
+      anchor.cleanedBranch !== target ||
+      anchor.cleanedRemoteBranch !== false ||
+      typeof anchor.cleanedLocalBranch !== 'boolean'
+    ) {
+      this.logPrApprovalFailed(session, anchor, 'remote branch cleanup execution context incomplete');
+      return this.failComposed(message, session, this.deps.composer.composeRemoteBranchCleanupExecutionBlocked(message.context));
+    }
+    // Resolved identity must match the approved anchor identity AND the durable ref (never a fresh/user id).
+    if (
+      anchor.repositoryIdentity.provider !== identity.provider ||
+      anchor.repositoryIdentity.owner !== identity.owner ||
+      anchor.repositoryIdentity.repo !== identity.repo ||
+      ref.provider !== identity.provider ||
+      ref.owner !== identity.owner ||
+      ref.repo !== identity.repo
+    ) {
+      this.logPrApprovalFailed(session, anchor, 'remote branch cleanup execution identity mismatch');
+      return this.failComposed(message, session, this.deps.composer.composeRemoteBranchCleanupExecutionBlocked(message.context));
+    }
+    // Re-read the 3j-A approval evidence via STRUCTURED fields + ApprovalRef only — never parse reason. No new request.
+    const request = await this.deps.approvals.get(anchor.remoteBranchCleanupApprovalId);
+    if (
+      !request ||
+      request.status !== ApprovalStatus.APPROVED ||
+      request.executionPlanRef.id !== anchor.executionPlanRef.id
+    ) {
+      this.logPrApprovalFailed(session, anchor, 'remote branch cleanup approval missing/not-approved/plan-mismatch');
+      return this.failComposed(message, session, this.deps.composer.composeRemoteBranchCleanupExecutionBlocked(message.context));
+    }
+    let result: RemoteBranchCleanupResult;
+    try {
+      result = await manager.deleteRemoteBranch({
+        identity,
+        pullRequestRef: ref,
+        expectedHeadBranch: target,
+        expectedBaseBranch: anchor.pullRequestBaseBranch,
+        branch: target,
+        expectedCommitHash: expectedHeadCommit,
+        approvalRef: approvalRef(request),
+      });
+    } catch (err) {
+      // Fail SAFE. Only a KNOWN pre-DELETE BlockedError may say "not deleted"; a post-attempt UnverifiedError AND any
+      // unknown throw are UNVERIFIED (the DELETE may have happened). Keep REMOTE_BRANCH_CLEANUP_APPROVED on every path.
+      if (err instanceof RemoteBranchCleanupBlockedError) {
+        this.logPrApprovalFailed(session, anchor, 'remote branch cleanup blocked before delete');
+        return this.failComposed(message, session, this.deps.composer.composeRemoteBranchCleanupExecutionBlocked(message.context));
+      }
+      void (err instanceof RemoteBranchCleanupUnverifiedError);
+      this.logPrApprovalFailed(session, anchor, 'remote branch cleanup unverified (delete ambiguity)');
+      return this.failComposed(message, session, this.deps.composer.composeRemoteBranchCleanupUnverified(message.context));
+    }
+    // Success (freshly deleted OR already-absent) → anchor REMOTE_BRANCH_CLEANED, preserving the full chain + approval.
+    await this.deps.applyPreviewFlow.anchor(session, {
+      ...anchor,
+      status: 'REMOTE_BRANCH_CLEANED',
+      remoteBranchCleanupMode: 'remote',
+      cleanedRemoteBranchName: result.branch,
+      remoteBranchCleanedAt: now(),
+      remoteBranchCleanedBy: actor.id,
+      remoteBranchCleanupProvider: identity.provider,
+      remoteBranchDeletedCommit: result.deletedCommitHash,
+      cleanedRemoteBranch: result.deleted,
+    });
+    const reply = this.deps.composer.composeRemoteBranchCleanupSucceeded(message.context, {
+      branch: result.branch,
+      cleanedRemoteBranch: result.deleted,
+      alreadyAbsent: result.alreadyAbsent,
+    });
+    return this.respondComposed(message, session, reply);
+  }
+
+  /** A remote cleanup / execute phrase at terminal REMOTE_BRANCH_CLEANED (Sprint 3j-B) — already cleaned; no second
+   *  DELETE, no mutation. */
+  private async handleRemoteBranchAlreadyCleanedTurn(message: InboundMessage, session: Session, anchor: ApplyPreviewAnchor): Promise<TurnResult> {
+    const reply = this.deps.composer.composeRemoteBranchAlreadyCleaned(message.context, {
+      branch: anchor.cleanedRemoteBranchName ?? anchor.pullRequestHeadBranch ?? '',
+    });
     return this.respondComposed(message, session, reply);
   }
 
