@@ -1750,4 +1750,64 @@ export class ResponseComposer {
       text: '로컬 main을 동기화할 수 없어요. 저장소 또는 설정을 확인해 주세요. (아무것도 변경하지 않았어요)',
     };
   }
+
+  // ── Sprint 3i (ADR-0059): post-merge LOCAL branch cleanup. Never "deployed/released/tagged/remote-deleted". ──
+
+  /** LOCAL branch cleanup SUCCEEDED / already-absent (Sprint 3i). Distinguishes local-deleted vs already-absent; always
+   *  states remote + main were not touched (CA change 5 / Q7). Never claims remote deletion. */
+  composeBranchCleanupSucceeded(
+    context: ConversationContext,
+    input: { cleanedBranch: string; cleanedLocalBranch: boolean; alreadyAbsent: boolean },
+  ): OutboundMessage {
+    const name = input.cleanedBranch.slice(0, MAX_GIT_REF_DISPLAY);
+    const text = input.alreadyAbsent
+      ? clampToMessageBudget(
+          [
+            `로컬 브랜치 '${name}'은 이미 없어요.`,
+            '이번엔 삭제한 브랜치가 없어요. 원격 브랜치는 삭제하지 않았어요. main은 변경하지 않았어요.',
+            '배포/릴리즈/태그도 하지 않았어요.',
+          ].join('\n'),
+        )
+      : clampToMessageBudget(
+          [
+            `로컬 브랜치 '${name}'을 삭제했어요 (이미 main에 병합된 브랜치예요).`,
+            '원격 브랜치와 main은 건드리지 않았어요. 배포/릴리즈/태그도 하지 않았어요.',
+          ].join('\n'),
+        );
+    return { context, text };
+  }
+
+  /** A KNOWN pre-delete block (target is main / unsafe name / not merged / checked out / main moved / context
+   *  incomplete). Definitively NOT deleted. Never claims deleted. (Sprint 3i) */
+  composeBranchCleanupBlocked(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '브랜치를 삭제하지 않았어요. 대상이 main이거나, 아직 병합되지 않았거나, 현재 체크아웃 중이거나, 이름이 안전하지 않거나, 로컬 main이 동기화 시점과 달라서 안전을 위해 진행하지 않았어요. git branch로 확인해 주세요. (원격 브랜치·배포·릴리즈도 하지 않았어요)',
+    };
+  }
+
+  /** LOCAL branch cleanup UNVERIFIED (Sprint 3i) — the delete was attempted but could not be confirmed. MUST NOT say
+   *  "not deleted" and MUST NOT say "deleted" — ask the user to check git branch. */
+  composeBranchCleanupUnverified(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '브랜치 삭제를 시도했지만 결과를 확인하지 못했어요. 삭제됐을 수도, 아닐 수도 있어요 — git branch로 확인해 주세요. (원격 브랜치·배포·릴리즈는 하지 않았어요)',
+    };
+  }
+
+  /** LOCAL branch cleanup not available — repository/identity not configured (Sprint 3i). No state change. */
+  composeBranchCleanupUnavailable(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '브랜치를 정리할 수 없어요. 저장소 또는 설정을 확인해 주세요. (아무것도 변경하지 않았어요)',
+    };
+  }
+
+  /** A REMOTE branch cleanup phrase (Sprint 3i, CA change 1) — remote deletion is deferred; NO local delete. */
+  composeRemoteBranchCleanupUnsupported(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '원격 브랜치 삭제는 아직 지원하지 않아요 (이후 별도 승인 단계예요). 로컬 브랜치만 정리할 수 있어요. 지금은 아무것도 삭제하지 않았어요.',
+    };
+  }
 }

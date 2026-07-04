@@ -32,6 +32,7 @@ import type {
   PatchSet,
   ProposedChange,
   Project,
+  GitBranchCleanupResult,
   GitMainSyncResult,
   PullRequestMergeResult,
   PullRequestRef,
@@ -64,7 +65,7 @@ import type {
 } from './conversation-runtime';
 import { StatelessApprovalFlow } from './stateless-approval-flow';
 import { RepositoryHostingBlockedError, RepositoryHostingUnverifiedError } from './repository-hosting-manager';
-import { GitMainSyncBlockedError, GitMainSyncUnverifiedError } from './git-manager';
+import { BranchCleanupBlockedError, BranchCleanupUnverifiedError, GitMainSyncBlockedError, GitMainSyncUnverifiedError } from './git-manager';
 
 const TS = '2026-07-01T00:00:00.000Z';
 const CTX: ConversationContext = { platform: 'test', channelId: 'c1', userId: 'u1' };
@@ -200,6 +201,18 @@ const gitMainSyncResultOf = (
   syncedCommitHash: input.expectedRemoteCommit,
   previousMainCommit: 'aaaaaaa',
   alreadyUpToDate: false,
+  ...o,
+});
+
+/** Default fake GitBranchCleanupResult (Sprint 3i) — a valid local delete of the target branch. */
+const gitBranchCleanupResultOf = (
+  input: { branch: string },
+  o: Partial<GitBranchCleanupResult> = {},
+): GitBranchCleanupResult => ({
+  branch: input.branch,
+  deleted: true,
+  alreadyAbsent: false,
+  deletedCommitHash: 'bbbbbbb',
   ...o,
 });
 
@@ -380,6 +393,8 @@ interface Calls {
   gitInfo: number;
   gitPush: number;
   gitSyncMain: number;
+  gitDeleteBranch: number;
+  lastGitDeleteBranchInput?: { rootPath: string; branch: string; expectedMainCommit: string };
   lastGitStatusRoot?: string;
   lastGitDiffRoot?: string;
   lastGitCommitInput?: { rootPath: string; files: string[]; message: string; approvalRef: ApprovalRef };
@@ -522,6 +537,10 @@ interface Opts {
    *  'throw-blocked' → GitMainSyncBlockedError, 'throw-unverified' → GitMainSyncUnverifiedError, 'throw-generic'
    *  → a plain Error, or a literal GitMainSyncResult (e.g. ref-only / already-up-to-date). */
   gitSyncMain?: GitMainSyncResult | 'throw-blocked' | 'throw-unverified' | 'throw-generic';
+  /** `git.deleteMergedLocalBranch` result (Sprint 3i) — defaults to a valid deleted result; 'throw-blocked' →
+   *  BranchCleanupBlockedError, 'throw-unverified' → BranchCleanupUnverifiedError, 'throw-generic' → a plain Error,
+   *  or a literal GitBranchCleanupResult (e.g. alreadyAbsent). */
+  gitDeleteBranch?: GitBranchCleanupResult | 'throw-blocked' | 'throw-unverified' | 'throw-generic';
   /** When true, `commandExecutions.get` throws (Sprint 2w — validation-lookup failure must not fail preview). */
   commandExecGetThrows?: boolean;
   /** Repository Hosting identity (Sprint 3d-D) — defaults to a valid github identity so PR approval works; pass
@@ -601,6 +620,7 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
     commandRun: 0,
     gitStatus: 0,
     gitSyncMain: 0,
+    gitDeleteBranch: 0,
     gitDiff: 0,
     gitCommit: 0,
     gitInfo: 0,
@@ -852,6 +872,14 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
         if (opts.gitSyncMain === 'throw-unverified') throw new GitMainSyncUnverifiedError('sync unverified');
         if (opts.gitSyncMain === 'throw-generic') throw new Error('sync boom');
         return opts.gitSyncMain ?? gitMainSyncResultOf(input);
+      },
+      async deleteMergedLocalBranch(input) {
+        calls.gitDeleteBranch++;
+        calls.lastGitDeleteBranchInput = input;
+        if (opts.gitDeleteBranch === 'throw-blocked') throw new BranchCleanupBlockedError('cleanup blocked');
+        if (opts.gitDeleteBranch === 'throw-unverified') throw new BranchCleanupUnverifiedError('cleanup unverified');
+        if (opts.gitDeleteBranch === 'throw-generic') throw new Error('cleanup boom');
+        return opts.gitDeleteBranch ?? gitBranchCleanupResultOf(input);
       },
     },
     // Sprint 3d-D: Repository Hosting. Default = configured (valid identity + a fake manager echoing a valid
@@ -5148,6 +5176,145 @@ describe('Explicit PR Creation Approval — runtime (Sprint 3b, ADR-0049)', () =
       expect(calls.gitPush + calls.gitCommit + calls.hostingCreatePR + calls.hostingMergePR + calls.commandRun + calls.run, String(mode)).toBe(0);
       // no POSITIVE deploy/release/branch-deletion claim (the success reply may say these were NOT done).
       expect(r.reply.text, String(mode)).not.toMatch(/deployed|released|배포했|릴리즈했|삭제했|브랜치를 삭제/i);
+    }
+  });
+
+  // ── Sprint 3i (ADR-0059): post-merge LOCAL branch cleanup — safe CAS delete, remote deferred, phase-aware. ──
+  const BRANCH_CLEANED_ANCHOR = (o: Partial<ApplyPreviewAnchor> = {}): ApplyPreviewAnchor =>
+    MAIN_SYNCED_ANCHOR({ status: 'BRANCH_CLEANED', branchCleanupMode: 'local', cleanedBranch: HEAD, branchCleanedAt: TS, branchCleanedBy: 'actor-1', cleanedLocalBranch: true, cleanedRemoteBranch: false, ...o });
+
+  it('MAIN_SYNCED + explicit local cleanup command → cleanup preflight runs, anchors BRANCH_CLEANED (CA 1/11/21/28)', async () => {
+    for (const text of ['로컬 브랜치 정리해줘', 'merged branch 정리해줘', 'feature branch 삭제해줘', 'cleanup local branch', 'delete local merged branch']) {
+      const { deps, calls } = makeDeps({ applyAnchor: MAIN_SYNCED_ANCHOR() });
+      const r = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.gitDeleteBranch, text).toBe(1);
+      expect(calls.lastGitDeleteBranchInput?.branch, text).toBe(HEAD); // anchored PR head branch only (CA 21/23)
+      expect(calls.lastGitDeleteBranchInput?.expectedMainCommit, text).toBe(MERGE_COMMIT);
+      const a = calls.lastApplyAnchor!;
+      expect(a.status, text).toBe('BRANCH_CLEANED');
+      expect(a.branchCleanupMode, text).toBe('local');
+      expect(a.cleanedLocalBranch, text).toBe(true);
+      expect(a.cleanedRemoteBranch, text).toBe(false);
+      expect(a.cleanedBranch, text).toBe(HEAD);
+      // preserves the MAIN_SYNCED chain + merge/sync evidence (CA 28)
+      expect(a.pullRequestRef, text).toBeTruthy();
+      expect(a.mergeCommitHash, text).toBe(MERGE_COMMIT);
+      expect(a.syncedMainCommit, text).toBe(MERGE_COMMIT);
+      expect(r.reply.text, text).not.toMatch(/deployed|released|배포했|릴리즈했/i);
+    }
+  });
+
+  it('non-MAIN_SYNCED + cleanup command → no cleanup (CA 2)', async () => {
+    for (const anchor of [PR_CREATED_ANCHOR(), MERGE_APPROVED_ANCHOR(), PR_MERGED_ANCHOR(), null]) {
+      const { deps, calls } = makeDeps({ applyAnchor: anchor });
+      await new ConversationRuntime(deps).handle(messageOf('로컬 브랜치 정리해줘'));
+      expect(calls.gitDeleteBranch, String(anchor?.status)).toBe(0);
+    }
+  });
+
+  it('remote cleanup phrase → unsupported, NO local delete (CA 1/17/19/20)', async () => {
+    for (const text of ['원격 브랜치 삭제해줘', 'delete remote branch', 'remote branch cleanup', 'origin 브랜치 삭제해줘', 'GitHub branch delete']) {
+      const { deps, calls } = makeDeps({ applyAnchor: MAIN_SYNCED_ANCHOR() });
+      const r = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.gitDeleteBranch, text).toBe(0); // never a local delete side effect
+      expect(calls.applyAnchorSet, text).toBe(0);
+      expect(r.reply.text, text).toContain('원격 브랜치 삭제는 아직 지원하지 않아요');
+    }
+  });
+
+  it('bulk/wildcard/"main 삭제" phrases never trigger cleanup (CA 15)', async () => {
+    for (const text of ['브랜치 다 삭제해줘', '브랜치 전부 삭제해줘', 'main 삭제해줘', '정리해줘', '다음 단계 진행해줘', '배포해줘']) {
+      const { deps, calls } = makeDeps({ applyAnchor: MAIN_SYNCED_ANCHOR() });
+      await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.gitDeleteBranch, text).toBe(0);
+    }
+  });
+
+  it('missing syncedMainCommit / base!=main → Blocked, no delete (CA 3/5)', async () => {
+    const noSync = makeDeps({ applyAnchor: MAIN_SYNCED_ANCHOR({ syncedMainCommit: undefined }) });
+    await new ConversationRuntime(noSync.deps).handle(messageOf('로컬 브랜치 정리해줘'));
+    expect(noSync.calls.gitDeleteBranch).toBe(0);
+    // target === main (anchored head is main) → Blocked (CA 5)
+    const headMain = makeDeps({ applyAnchor: MAIN_SYNCED_ANCHOR({ pullRequestHeadBranch: 'main', pushedBranch: 'main' }) });
+    await new ConversationRuntime(headMain.deps).handle(messageOf('로컬 브랜치 정리해줘'));
+    expect(headMain.calls.gitDeleteBranch).toBe(0);
+  });
+
+  it('target differs from anchored PR head / unsafe name → Blocked, no delete (CA 6/7)', async () => {
+    const mismatch = makeDeps({ applyAnchor: MAIN_SYNCED_ANCHOR({ pushedBranch: 'other-branch' }) });
+    await new ConversationRuntime(mismatch.deps).handle(messageOf('로컬 브랜치 정리해줘'));
+    expect(mismatch.calls.gitDeleteBranch).toBe(0);
+    const unsafe = makeDeps({ applyAnchor: MAIN_SYNCED_ANCHOR({ pullRequestHeadBranch: 'bad branch', pushedBranch: 'bad branch' }) });
+    await new ConversationRuntime(unsafe.deps).handle(messageOf('로컬 브랜치 정리해줘'));
+    expect(unsafe.calls.gitDeleteBranch).toBe(0);
+  });
+
+  it('not configured (no identity) → unavailable, no delete', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: MAIN_SYNCED_ANCHOR(), hostingIdentity: null });
+    const r = await new ConversationRuntime(deps).handle(messageOf('로컬 브랜치 정리해줘'));
+    expect(calls.gitDeleteBranch).toBe(0);
+    expect(r.reply.text).toContain('정리할 수 없어요');
+  });
+
+  it('successful delete → BRANCH_CLEANED (local flag); already-absent → idempotent, no local branch deleted (CA 10/11/27)', async () => {
+    const del = makeDeps({ applyAnchor: MAIN_SYNCED_ANCHOR() });
+    await new ConversationRuntime(del.deps).handle(messageOf('로컬 브랜치 정리해줘'));
+    expect(del.calls.lastApplyAnchor?.cleanedLocalBranch).toBe(true);
+
+    const absent = makeDeps({ applyAnchor: MAIN_SYNCED_ANCHOR(), gitDeleteBranch: gitBranchCleanupResultOf({ branch: HEAD }, { deleted: false, alreadyAbsent: true }) });
+    const r = await new ConversationRuntime(absent.deps).handle(messageOf('로컬 브랜치 정리해줘'));
+    expect(absent.calls.gitDeleteBranch).toBe(1);
+    expect(absent.calls.lastApplyAnchor?.status).toBe('BRANCH_CLEANED');
+    expect(absent.calls.lastApplyAnchor?.cleanedLocalBranch).toBe(false);
+    expect(r.reply.text).toContain('이미 없어요');
+    expect(r.reply.text).toMatch(/원격 브랜치는 삭제하지 않았어요/);
+    expect(r.reply.text).toMatch(/main은 변경하지 않았어요/);
+  });
+
+  it('KNOWN pre-delete Blocked → "not deleted", stays MAIN_SYNCED (CA 12)', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: MAIN_SYNCED_ANCHOR(), gitDeleteBranch: 'throw-blocked' });
+    const r = await new ConversationRuntime(deps).handle(messageOf('로컬 브랜치 정리해줘'));
+    expect(calls.gitDeleteBranch).toBe(1);
+    expect(calls.applyAnchorSet).toBe(0); // NOT anchored BRANCH_CLEANED
+    expect(r.reply.text).toContain('삭제하지 않았어요');
+    expect(r.reply.text).not.toMatch(/삭제했어요|deleted\b/i);
+  });
+
+  it('UNVERIFIED after delete (and unknown throw) → never "not deleted", stays MAIN_SYNCED (CA 13)', async () => {
+    for (const mode of ['throw-unverified', 'throw-generic'] as const) {
+      const { deps, calls } = makeDeps({ applyAnchor: MAIN_SYNCED_ANCHOR(), gitDeleteBranch: mode });
+      const r = await new ConversationRuntime(deps).handle(messageOf('로컬 브랜치 정리해줘'));
+      expect(calls.gitDeleteBranch, mode).toBe(1);
+      expect(calls.applyAnchorSet, mode).toBe(0); // NOT BRANCH_CLEANED
+      expect(r.reply.text, mode).toContain('확인하지 못했어요');
+      expect(r.reply.text, mode).not.toMatch(/삭제하지 않았|not deleted/i);
+    }
+  });
+
+  it('BRANCH_CLEANED terminal: cleanup → already cleaned; remote phrase → unsupported; status → read-only preview; deploy → companion', async () => {
+    const c1 = makeDeps({ applyAnchor: BRANCH_CLEANED_ANCHOR() });
+    const r1 = await new ConversationRuntime(c1.deps).handle(messageOf('로컬 브랜치 정리해줘'));
+    expect(c1.calls.gitDeleteBranch).toBe(0);
+    expect(c1.calls.applyAnchorSet).toBe(0);
+    expect(r1.reply.text).toMatch(/이미 없어요|삭제한 브랜치가 없어요/);
+
+    const c2 = makeDeps({ applyAnchor: BRANCH_CLEANED_ANCHOR() });
+    const r2 = await new ConversationRuntime(c2.deps).handle(messageOf('원격 브랜치 삭제해줘'));
+    expect(c2.calls.gitDeleteBranch).toBe(0);
+    expect(r2.reply.text).toContain('원격 브랜치 삭제는 아직 지원하지 않아요');
+
+    const c3 = makeDeps({ applyAnchor: BRANCH_CLEANED_ANCHOR() });
+    await new ConversationRuntime(c3.deps).handle(messageOf('PR 상태 확인해줘'));
+    expect(c3.calls.hostingGetStatus).toBe(1);
+    expect(c3.calls.applyAnchorSet).toBe(0); // keeps BRANCH_CLEANED
+  });
+
+  it('cleanup path touches NO push/commit/merge/sync and no deploy/release (CA 14/16)', async () => {
+    for (const mode of [undefined, 'throw-blocked', 'throw-unverified'] as const) {
+      const { deps, calls } = makeDeps({ applyAnchor: MAIN_SYNCED_ANCHOR(), gitDeleteBranch: mode });
+      const r = await new ConversationRuntime(deps).handle(messageOf('feature branch 삭제해줘'));
+      expect(calls.gitPush + calls.gitCommit + calls.gitSyncMain + calls.hostingMergePR + calls.commandRun + calls.run, String(mode)).toBe(0);
+      expect(r.reply.text, String(mode)).not.toMatch(/deployed|released|배포했|릴리즈했/i);
     }
   });
 });

@@ -3801,3 +3801,73 @@ Blocked-vs-Unverified rule; the third Git mutation, single bounded argv, adapter
 the point-in-time read shape; the read-only status preview also serves `MAIN_SYNCED`), ADR-0023/0047 (Git =
 local-only repository capability; `GitStatus` fields reused). Plan:
 `docs/plans/sprint-3h-post-merge-local-main-sync-plan.md`.
+
+## ADR-0059 — Post-Merge Branch Cleanup (safe LOCAL merged-branch delete from MAIN_SYNCED; remote deletion deferred)
+
+- **Status:** ✅ Accepted (v2, Phase 3, Sprint 3i — Product Construction), Chief Architect plan review:
+  APPROVED WITH CHANGES (all 6 required changes applied) → implemented.
+- **Date:** 2026-07-04
+- **Scope:** From a live `MAIN_SYNCED` anchor, an explicit **local** cleanup command deletes the already-merged
+  feature branch (the anchored PR head branch) — via the **Git** capability (CAP-002), **CAS delete only**
+  (`git update-ref -d refs/heads/<t> <expected>`, never `-D`/force), never a shell. **Remote branch deletion is
+  DEFERRED** to a future, separately-gated sprint. Mirrors the ADR-0058 local-Git safety model, applied to deletion.
+
+### Most important rule
+> **A branch cleanup deletes exactly ONE already-merged LOCAL branch — the anchored PR head branch — and nothing
+> else.** `BRANCH_CLEANED` means the completed feature branch's LOCAL ref was deleted (or was already absent) this
+> run; it does **NOT** mean deployed / released / tagged / production-ready / remote-branch-deleted /
+> all-branches-cleaned / repository-fully-cleaned. No remote deletion (deferred), no `-D`/force delete, no deleting
+> `main`, no bulk/wildcard, no deleting an unmerged or checked-out branch, no `reset --hard`/force push, no PR
+> mutation, no deploy/release/tag, no `CommandExecution`/shell, no `ExecutionOrchestrator`/`WorkspaceWrite`/`Patch`/
+> `CodeGeneration` change. If not fully merged / checked out / `main` / unsafe → **block, never force**. Unknown
+> failure after the ref-delete attempt is **unverified**, never "not deleted".
+
+### Decision
+- **State (Q1).** Add `BRANCH_CLEANED` only (terminal). Fields (required on `BRANCH_CLEANED`): `branchCleanupMode`
+  (**'local' in 3i**; 'remote'/'local-and-remote' reserved for a future gated sprint), `cleanedBranch`,
+  `branchCleanedAt` (runtime ts), `branchCleanedBy`, `cleanedLocalBranch`, `cleanedRemoteBranch` (**always false in
+  3i**). Preserves the full `MAIN_SYNCED` chain + merge/sync evidence.
+- **Trigger (Q3, CA change 1).** Only at `MAIN_SYNCED`/`BRANCH_CLEANED`. A REMOTE-cleanup phrase
+  (`interpretRemoteBranchCleanupIntent`: cleanup verb + branch word + 원격/remote/origin/github) is checked FIRST →
+  `composeRemoteBranchCleanupUnsupported` (NEVER a local delete side effect). A LOCAL phrase
+  (`interpretBranchCleanupIntent`: cleanup verb + branch word; rejects bulk/wildcard, `main`-target, and any remote
+  qualifier) → local cleanup. The deletion TARGET is always the **anchored PR head branch** — never a user-named
+  branch. Bare `정리해줘`/`배포해줘`/`main 삭제해줘`/`브랜치 다 삭제해줘` never trigger.
+- **Ownership (Q2) + strategy (CA change 3).** Local deletion → the Git capability via
+  `git update-ref -d refs/heads/<target> <expectedBranchCommit>` — a git-native CAS delete that does **not** depend
+  on the current `HEAD`/checkout (Sprint 3h ref-only mode may leave a non-main checkout); no `git branch -d`.
+  **Remote deletion → DEFERRED** (a remote mutation needing its own explicit gate). New `GitProvider.isAncestor`
+  (read) + `GitProvider.deleteMergedLocalBranch(rootPath, branch, expectedBranchCommit)` (CAS delete);
+  `GitManager.deleteMergedLocalBranch` orchestrates the preflight + single delete; **no ApprovalRef** (local,
+  recoverable, gated by `MAIN_SYNCED` + explicit command + preflight).
+- **Preflight (Q4) + CAS (CA change 2/4).** Runtime: `MAIN_SYNCED` + `syncedMainCommit` + `mainSyncBranch=='main'`
+  + target==`pullRequestHeadBranch`==`pushedBranch` + target!='main' + safe name + identity match. Manager:
+  isRepository + status(no mid-op) + info(target not checked out) + **local main exists AND == `syncedMainCommit`
+  (CA change 4)** + target branch exists (absent → idempotent) + `isAncestor(targetCommit, syncedMainCommit)`
+  (fully merged). The provider CAS-deletes against the observed `targetCommit` (moved-before → Blocked).
+- **Failure semantics (Q5, CA change 5).** Phase-aware: pre-ref-delete → `BranchCleanupBlockedError` ("not
+  deleted"); at/after the ref-delete → `BranchCleanupUnverifiedError` (never "not deleted"); target already absent
+  → idempotent `BRANCH_CLEANED` (cleanedLocalBranch=false, "already absent; nothing deleted; remote not deleted;
+  main not changed"). Manager does not blanket-convert provider throws. Every failure keeps `MAIN_SYNCED`.
+- **Approval (Q6).** Local cleanup: **no new CRITICAL approval**. Remote cleanup: **deferred** — a future sprint
+  must add an explicit approval gate before any remote deletion.
+- **Response (Q7).** Mode-aware: local-deleted vs already-absent; every path states main + remote were not touched;
+  never implies deploy/release/tag/all-cleaned/repo-cleaned/remote-deleted. Composers:
+  `composeBranchCleanupSucceeded`/`Blocked`/`Unverified`/`Unavailable` + `composeRemoteBranchCleanupUnsupported`.
+- **Out of scope (Q8).** No remote deletion (deferred), no `-D`/force, no `main`/arbitrary/bulk/wildcard, no
+  reset/force-push, no PR mutation, no deploy/release/tag, no shell, no `ExecutionOrchestrator`/`WorkspaceWrite`/
+  `Patch`/`CodeGeneration`/`RepositoryHosting` change.
+
+### Consequences
+- + The product can now clean up the completed local feature branch safely (CAS delete, deterministic, tied to the
+  exact synchronized main), completing the local post-merge lifecycle without any destructive/remote operation.
+- − `domain`/`GitProvider`/`GitManager`/`ConversationRuntime`/`ResponseComposer`/`git-local` gain the cleanup
+  surface (one new terminal state, two provider methods, one manager method + two typed errors, three runtime
+  handlers, five composers). Nothing deploys/releases; remote branches are untouched; `main` is never deleted.
+
+### Relations
+ADR-0058 (consumes the `MAIN_SYNCED` anchor + `syncedMainCommit`/`mainSyncBranch` as the sole trigger source +
+cleanup evidence), ADR-0057/0054 (the `pullRequestHeadBranch`/`pushedBranch` deletion target + the remote-mutation
+Blocked-vs-Unverified rule, applied to local deletion), ADR-0046/0048/0023 (Git mutation discipline: single bounded
+argv, adapter-side, no shell; Git = local repository capability). Plan:
+`docs/plans/sprint-3i-post-merge-branch-cleanup-plan.md`.

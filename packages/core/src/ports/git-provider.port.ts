@@ -1,4 +1,4 @@
-import type { GitCommitResult, GitDiff, GitMainSyncResult, GitPushResult, GitStatus, RepositoryInfo } from '../domain';
+import type { GitBranchCleanupResult, GitCommitResult, GitDiff, GitMainSyncResult, GitPushResult, GitStatus, RepositoryInfo } from '../domain';
 
 /**
  * PORT: read-only git **repository** inspection (CAP-002, ADR-0023).
@@ -88,4 +88,19 @@ export interface GitProvider {
     expectedRemoteCommit: string,
     expectedPreviousCommit: string,
   ): Promise<GitMainSyncResult>;
+
+  /** READ-ONLY (CAP-002, ADR-0059 — Sprint 3i): is `ancestor` an ancestor of `descendant`? (`git merge-base
+   *  --is-ancestor`). Used by the Manager for the "fully merged into main" check. No mutation. Argv-only. */
+  isAncestor(rootPath: string, ancestor: string, descendant: string): Promise<boolean>;
+
+  /**
+   * The FOURTH mutating method (CAP-002, ADR-0059 — Sprint 3i) — a compare-and-swap delete of a fully-merged LOCAL
+   * branch via `git update-ref -d refs/heads/<branch> <expectedBranchCommit>` (deterministic; NOT `git branch -d`,
+   * so it does not depend on the current `HEAD`/checkout — CA change 3). NEVER `-D`/`--force`, NEVER 'main', NEVER a
+   * remote ref, NEVER a wildcard/pattern, NEVER a checkout switch. Validates the branch name + SHA defensively
+   * first. PHASE-AWARE: a pre-ref-delete failure (branch moved/absent vs `expectedBranchCommit`) throws
+   * `BranchCleanupBlockedError`; a failure AT/AFTER the ref-delete attempt throws `BranchCleanupUnverifiedError`.
+   * Takes no ApprovalRef (mirrors commitFiles/pushApprovedCommit/syncMainFastForward).
+   */
+  deleteMergedLocalBranch(rootPath: string, branch: string, expectedBranchCommit: string): Promise<GitBranchCleanupResult>;
 }

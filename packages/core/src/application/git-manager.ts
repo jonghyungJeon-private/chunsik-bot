@@ -1,6 +1,6 @@
 import { WorkspaceNotSafeError } from '../errors';
 import { ApprovalStatus } from '../domain';
-import type { ApprovalRef, GitCommitResult, GitDiff, GitMainSyncResult, GitPushResult, GitStatus, RepositoryInfo } from '../domain';
+import type { ApprovalRef, GitBranchCleanupResult, GitCommitResult, GitDiff, GitMainSyncResult, GitPushResult, GitStatus, RepositoryInfo } from '../domain';
 import type { GitProvider } from '../ports';
 import { isValidCommitMessage } from './commit-message';
 import { isSafePushBranch, isSafePushRemote } from './push-target';
@@ -30,6 +30,31 @@ export class GitMainSyncUnverifiedError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'GitMainSyncUnverifiedError';
+  }
+}
+
+/**
+ * A post-merge LOCAL branch cleanup failed **before the branch ref-delete was attempted** (invalid input, dirty/
+ * mid-op tree, branch is main / checked out / unsafe / not merged, local main moved, or the branch moved vs the
+ * expected commit). Definitively **no** ref was deleted — a caller may safely say "브랜치를 삭제하지 않았어요"
+ * (CAP-002, ADR-0059, Sprint 3i — mirrors GitMainSyncBlockedError).
+ */
+export class BranchCleanupBlockedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'BranchCleanupBlockedError';
+  }
+}
+
+/**
+ * The branch ref-delete was **attempted** but could not be completed/verified. The ref **may** be gone — a caller
+ * must **not** claim it was not deleted; say "삭제 결과를 확인하지 못했어요" instead (CAP-002, ADR-0059, Sprint 3i —
+ * mirrors GitMainSyncUnverifiedError).
+ */
+export class BranchCleanupUnverifiedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'BranchCleanupUnverifiedError';
   }
 }
 
@@ -201,6 +226,92 @@ export class GitManager {
     }
     if (result.syncedCommitHash !== expectedRemoteCommit) {
       throw new GitMainSyncUnverifiedError('git main sync: local main sync result could not be verified');
+    }
+    return result;
+  }
+
+  /**
+   * Post-merge LOCAL branch cleanup (CAP-002, ADR-0059 — Sprint 3i). Safe CAS delete of the already-merged feature
+   * branch; no ApprovalRef (a local, recoverable ref delete gated by MAIN_SYNCED + explicit command + this
+   * preflight). Runs the preflight, then makes at most ONE mutating call (`deleteMergedLocalBranch`). **Phase-aware
+   * (CA change 2): the Manager does NOT blanket-convert every provider throw to Unverified.**
+   *   1. defensive validation → BranchCleanupBlockedError.
+   *   2. isRepository + status (mid-op) + info (current branch != target) → Blocked.
+   *   3. getLocalRefCommit('main') → null / != expectedMainCommit → Blocked (main moved after MAIN_SYNCED, CA change 4).
+   *   4. getLocalRefCommit(target) → null → idempotent { deleted:false, alreadyAbsent:true }; else record targetCommit.
+   *   5. isAncestor(targetCommit, expectedMainCommit) false → Blocked (not merged; never force-delete).
+   *   6. SINGLE deleteMergedLocalBranch(target, targetCommit): provider Blocked → Blocked; Unverified → Unverified;
+   *      any OTHER throw → Unverified. Result-integrity (branch === target, deleted true) mismatch → Unverified.
+   */
+  async deleteMergedLocalBranch(input: {
+    rootPath: string;
+    branch: string;
+    expectedMainCommit: string;
+  }): Promise<GitBranchCleanupResult> {
+    const { rootPath, branch, expectedMainCommit } = input;
+    // ── 1. Defensive validation. All → Blocked (no read, no delete). ────────────────────────────────────────
+    if (!rootPath.trim()) throw new BranchCleanupBlockedError('git branch cleanup requires a rootPath');
+    if (!isSafePushBranch(branch)) throw new BranchCleanupBlockedError('git branch cleanup rejects an unsafe branch');
+    if (branch === 'main') throw new BranchCleanupBlockedError('git branch cleanup never deletes main');
+    if (!/^[0-9a-f]{7,40}$/i.test(expectedMainCommit)) throw new BranchCleanupBlockedError('git branch cleanup rejects an invalid expected main commit');
+
+    // ── 2. Local repository safety. ─────────────────────────────────────────────────────────────────────────
+    if (!(await this.provider.isRepository(rootPath))) {
+      throw new BranchCleanupBlockedError('git branch cleanup: not a git repository');
+    }
+    let status: GitStatus;
+    let info: RepositoryInfo;
+    try {
+      status = await this.provider.status(rootPath);
+      info = await this.provider.info(rootPath);
+    } catch {
+      throw new BranchCleanupBlockedError('git branch cleanup: could not read local repository state');
+    }
+    if (status.hasUnmergedPaths) throw new BranchCleanupBlockedError('git branch cleanup: unmerged paths present');
+    if (info.branch === branch) throw new BranchCleanupBlockedError('git branch cleanup: target branch is currently checked out');
+
+    // ── 3. Local main must still equal the synchronized commit (CA change 4). ──────────────────────────────
+    let localMain: { commitHash: string } | null;
+    try {
+      localMain = await this.provider.getLocalRefCommit(rootPath, 'main');
+    } catch {
+      throw new BranchCleanupBlockedError('git branch cleanup: could not read local main');
+    }
+    if (!localMain) throw new BranchCleanupBlockedError('git branch cleanup: local main does not exist');
+    if (localMain.commitHash !== expectedMainCommit) {
+      throw new BranchCleanupBlockedError('git branch cleanup: local main moved since sync; not deleted');
+    }
+
+    // ── 4. Target branch: absent → idempotent success; else record the CAS base. ───────────────────────────
+    let target: { commitHash: string } | null;
+    try {
+      target = await this.provider.getLocalRefCommit(rootPath, branch);
+    } catch {
+      throw new BranchCleanupBlockedError('git branch cleanup: could not read target branch');
+    }
+    if (!target) return { branch, deleted: false, alreadyAbsent: true };
+    const targetCommit = target.commitHash;
+
+    // ── 5. Fully merged into main (never force-delete an unmerged branch). ─────────────────────────────────
+    let merged: boolean;
+    try {
+      merged = await this.provider.isAncestor(rootPath, targetCommit, expectedMainCommit);
+    } catch {
+      throw new BranchCleanupBlockedError('git branch cleanup: could not determine merge status; not deleted');
+    }
+    if (!merged) throw new BranchCleanupBlockedError('git branch cleanup: target branch is not merged into main; not deleted');
+
+    // ── 6. SINGLE CAS delete. Phase-aware: Blocked → Blocked; Unverified/other → Unverified. ───────────────
+    let result: GitBranchCleanupResult;
+    try {
+      result = await this.provider.deleteMergedLocalBranch(rootPath, branch, targetCommit);
+    } catch (err) {
+      if (err instanceof BranchCleanupBlockedError) throw err; // pre-ref-delete — definitively not deleted
+      if (err instanceof BranchCleanupUnverifiedError) throw err; // at/after — unknown
+      throw new BranchCleanupUnverifiedError('git branch cleanup: could not verify the branch deletion');
+    }
+    if (result.branch !== branch || result.deleted !== true) {
+      throw new BranchCleanupUnverifiedError('git branch cleanup: branch deletion result could not be verified');
     }
     return result;
   }
