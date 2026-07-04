@@ -1,4 +1,4 @@
-import { isSafeGitHubPullRequestUrl } from '@chunsik/core';
+import { RemoteBranchCleanupBlockedError, RemoteBranchCleanupUnverifiedError, isSafeGitHubPullRequestUrl } from '@chunsik/core';
 import type {
   PullRequestChecksState,
   PullRequestCreationInput,
@@ -10,6 +10,7 @@ import type {
   PullRequestReviewState,
   PullRequestState,
   PullRequestStatusPreview,
+  RemoteBranchCleanupResult,
   RepositoryHostingProvider,
   RepositoryIdentity,
 } from '@chunsik/core';
@@ -294,6 +295,60 @@ export class GitHubRepositoryHostingProvider implements RepositoryHostingProvide
     };
   }
 
+  async getRemoteBranchCommit(identity: RepositoryIdentity, branch: string): Promise<{ commitHash: string } | null> {
+    // READ-ONLY single GET. The ref is addressed as heads/<branch> where <branch> is a PATH (slashes preserved,
+    // per-segment encoded — CA change 5); NEVER a single %2F-escaped segment (that would address the wrong ref).
+    const res = await this.request(
+      'getRemoteBranchCommit',
+      'GET',
+      `/repos/${enc(identity.owner)}/${enc(identity.repo)}/git/ref/${encRefPath(branch)}`,
+    );
+    if (res.status === 404) return null;
+    if (res.status !== 200) throw this.statusError('getRemoteBranchCommit', res.status);
+    const body = (await this.json(res, 'getRemoteBranchCommit')) as { object?: { sha?: unknown; type?: unknown } };
+    const sha = body?.object?.sha;
+    if (typeof sha !== 'string' || !SHA_SHAPED.test(sha)) throw new Error('github hosting: getRemoteBranchCommit returned an invalid ref object');
+    if (body?.object?.type !== undefined && body.object.type !== 'commit') {
+      throw new Error('github hosting: getRemoteBranchCommit ref does not point at a commit');
+    }
+    return { commitHash: sha };
+  }
+
+  async deleteRemoteBranch(input: {
+    identity: RepositoryIdentity;
+    branch: string;
+    expectedCommitHash: string;
+  }): Promise<RemoteBranchCleanupResult> {
+    // Read-IMMEDIATELY-before-delete (GitHub refs DELETE has NO atomic SHA-conditional delete — ADR-0060). GET the ref,
+    // verify object.sha === expectedCommitHash, then a SINGLE DELETE of the exact refs/heads/<branch> path. NEVER the
+    // default branch / a wildcard-pattern / a force flag / git push. Phase-aware: pre-DELETE mismatch → Blocked;
+    // a failure AT/AFTER the DELETE → Unverified.
+    const { identity, branch, expectedCommitHash } = input;
+    const current = await this.getRemoteBranchCommit(identity, branch); // 404 → null (pre-DELETE read)
+    if (!current) {
+      return { provider: 'github', owner: identity.owner, repo: identity.repo, branch, deleted: false, alreadyAbsent: true };
+    }
+    if (current.commitHash !== expectedCommitHash) {
+      throw new RemoteBranchCleanupBlockedError('github hosting: remote branch moved off the expected commit; not deleted');
+    }
+    let res: Response;
+    try {
+      res = await this.request(
+        'deleteRemoteBranch',
+        'DELETE',
+        `/repos/${enc(identity.owner)}/${enc(identity.repo)}/git/refs/${encRefPath(branch)}`,
+      );
+    } catch {
+      // The DELETE may have reached GitHub — never claim "not deleted".
+      throw new RemoteBranchCleanupUnverifiedError('github hosting: remote branch deletion could not be completed/verified');
+    }
+    if (res.status !== 204) {
+      // Ambiguous at/after the mutation attempt — the ref may be gone.
+      throw new RemoteBranchCleanupUnverifiedError(`github hosting: remote branch deletion could not be verified (status ${res.status})`);
+    }
+    return { provider: 'github', owner: identity.owner, repo: identity.repo, branch, deleted: true, alreadyAbsent: false, deletedCommitHash: expectedCommitHash };
+  }
+
   /** Map a GitHub PR object to a provider-reported PullRequestResult, rejecting fork/invalid results. */
   private mapPull(item: GitHubPull, identity: RepositoryIdentity, op: string): PullRequestResult {
     // Same-repository only — fork PRs rejected (CA change 7).
@@ -333,7 +388,7 @@ export class GitHubRepositoryHostingProvider implements RepositoryHostingProvide
   /** Single `fetch` per call (no retry — CA change 13). Sanitized failures (no token/body/headers). */
   private async request(
     op: string,
-    method: 'GET' | 'POST' | 'PUT',
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     path: string,
     jsonBody?: unknown,
   ): Promise<Response> {
@@ -376,9 +431,19 @@ export class GitHubRepositoryHostingProvider implements RepositoryHostingProvide
   }
 }
 
-/** Encode a single REST path segment (owner/repo/branch); encodes `/` in branch names too (CA change 5). */
+/** Encode a single REST path segment (owner/repo/branch as one segment); encodes `/` too. */
 function enc(segment: string): string {
   return encodeURIComponent(segment);
+}
+
+/**
+ * Encode a Git-refs PATH `heads/<branch>` (Sprint 3j-B, ADR-0060, CA change 5). The GitHub refs endpoints address the
+ * ref as a PATH, not a single segment: `refs/heads/feature/login`. So each slash-segment is percent-encoded and the
+ * `/` separators are PRESERVED — `heads/feature/login` → "heads/feature/login" (never "heads%2Ffeature%2Flogin",
+ * which would address the wrong ref). Do NOT use `enc()` (single-segment) on a slash-containing branch here.
+ */
+function encRefPath(branch: string): string {
+  return `heads/${branch.split('/').map(encodeURIComponent).join('/')}`;
 }
 
 /**

@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { GitHubRepositoryHostingProvider } from './index';
 import type { GitHubHostingConfig } from './index';
+import { RemoteBranchCleanupBlockedError, RemoteBranchCleanupUnverifiedError } from '@chunsik/core';
 import type { PullRequestCreationInput, PullRequestRef, RepositoryIdentity } from '@chunsik/core';
 
 const IDENTITY: RepositoryIdentity = { provider: 'github', owner: 'acme', repo: 'widgets' };
@@ -341,17 +342,24 @@ describe('Sprint 3d-C absence guards (adapter-only; no octokit / shell / wiring 
     expect(adapterSrc.includes('process.env')).toBe(false);
     expect(adapterSrc.includes('CHUNSIK_GITHUB_TOKEN')).toBe(false);
   });
-  // (Sprint 3g, ADR-0057 supersedes) The adapter now uses the PR `/merge` endpoint (PUT) by CA-approved design.
-  // ENDURING invariant: still NO deploy/release/reviewer/label/assignee/branch-deletion surface.
-  it('adapter adds only the /merge endpoint — no deploy/release/reviewer/label/assignee/branch-delete (test 51; 3g)', () => {
-    for (const forbidden of ['requested_reviewers', 'labels', 'assignees', '/deployments', '/releases', 'reviewer', 'DELETE']) {
+  // (Sprint 3g, ADR-0057 + Sprint 3j-B, ADR-0060 supersede) The adapter now uses the PR `/merge` endpoint (PUT) and
+  // the Git-refs `DELETE` endpoint (remote branch cleanup) by CA-approved design.
+  // ENDURING invariant: still NO deploy/release/reviewer/label/assignee surface, and DELETE is scoped to git/refs.
+  it('adapter adds only /merge (PUT) + git-refs DELETE — no deploy/release/reviewer/label/assignee (test 51; 3g/3j-B)', () => {
+    for (const forbidden of ['requested_reviewers', 'labels', 'assignees', '/deployments', '/releases', 'reviewer']) {
       expect(adapterSrc.includes(forbidden)).toBe(false);
     }
-    // the merge endpoint IS present now, and merge_method is 'merge' only (no squash/rebase, no force).
+    // the merge endpoint IS present, and merge_method is 'merge' only (no squash/rebase, no force).
     expect(adapterSrc.includes('/merge')).toBe(true);
     expect(adapterSrc.includes("merge_method: 'merge'")).toBe(true);
     expect(adapterSrc.includes('squash')).toBe(false);
     expect(adapterSrc.includes('rebase')).toBe(false);
+    // Sprint 3j-B: DELETE is present and scoped to git/refs/heads (remote branch cleanup) — never push/force/wildcard.
+    expect(adapterSrc.includes("'DELETE'")).toBe(true);
+    expect(adapterSrc.includes('git/refs/')).toBe(true);
+    expect(adapterSrc.includes('push')).toBe(false);
+    expect(adapterSrc.includes('--delete')).toBe(false);
+    expect(adapterSrc.includes('--force')).toBe(false);
   });
   // (Sprint 3d-D, ADR-0054 supersedes) The adapter is now wired into app.module and the runtime has PR
   // creation execution + PR_CREATED. The ENDURING invariant kept here: the runtime/composer never IMPORT the
@@ -459,6 +467,110 @@ describe('GitHubRepositoryHostingProvider — merge preflight + execution (CAP-0
     it('200 but merged=false → throws (does not claim merged)', async () => {
       const { fn } = fakeFetch(() => ({ status: 200, body: { merged: false, message: 'not mergeable' } }));
       await expect(provider(fn).mergePullRequest(mergeInput)).rejects.toThrow();
+    });
+  });
+
+  // ── Sprint 3j-B (ADR-0060): remote branch cleanup — getRemoteBranchCommit + deleteRemoteBranch (read-before-delete). ──
+  describe('getRemoteBranchCommit (Sprint 3j-B)', () => {
+    it('200 → returns the ref object sha; exact GET url /git/ref/heads/<branch>', async () => {
+      const { fn, calls } = fakeFetch(() => ({ status: 200, body: { object: { sha: 'abc1234def', type: 'commit' } } }));
+      const r = await provider(fn).getRemoteBranchCommit(IDENTITY, 'feature/x');
+      expect(r).toEqual({ commitHash: 'abc1234def' });
+      expect(calls[0]!.url).toBe('https://api.github.com/repos/acme/widgets/git/ref/heads/feature/x');
+      expect(calls[0]!.init.method).toBe('GET');
+    });
+
+    it('404 → null (branch absent)', async () => {
+      const { fn } = fakeFetch(() => ({ status: 404 }));
+      expect(await provider(fn).getRemoteBranchCommit(IDENTITY, 'feature/x')).toBeNull();
+    });
+
+    it('a non-commit ref object → throws', async () => {
+      const { fn } = fakeFetch(() => ({ status: 200, body: { object: { sha: 'abc1234def', type: 'tag' } } }));
+      await expect(provider(fn).getRemoteBranchCommit(IDENTITY, 'feature/x')).rejects.toThrow();
+    });
+
+    it('an auth-error status is sanitized (never leaks the token)', async () => {
+      const { fn } = fakeFetch(() => ({ status: 403 }));
+      await expect(provider(fn).getRemoteBranchCommit(IDENTITY, 'feature/x')).rejects.toThrow(/authorization failed/);
+      await provider(fn).getRemoteBranchCommit(IDENTITY, 'feature/x').catch((e: Error) => {
+        expect(e.message).not.toContain(TOKEN);
+      });
+    });
+  });
+
+  describe('deleteRemoteBranch (Sprint 3j-B, tests 21/22/24/32/33)', () => {
+    // A fetch that answers the pre-delete GET with the expected sha, and the DELETE with 204.
+    function readThenDelete(sha: string) {
+      return fakeFetch((url, init) => {
+        if (init.method === 'DELETE') return { status: 204 };
+        return { status: 200, body: { object: { sha, type: 'commit' } } }; // the GET
+      });
+    }
+
+    it('SHA match → GET-then-DELETE (exactly one DELETE); exact refs url; returns deleted result', async () => {
+      const { fn, calls } = readThenDelete('abc1234');
+      const r = await provider(fn).deleteRemoteBranch({ identity: IDENTITY, branch: 'feature/x', expectedCommitHash: 'abc1234' });
+      expect(r).toEqual({ provider: 'github', owner: 'acme', repo: 'widgets', branch: 'feature/x', deleted: true, alreadyAbsent: false, deletedCommitHash: 'abc1234' });
+      expect(calls.map((c) => c.init.method)).toEqual(['GET', 'DELETE']);
+      expect(calls[0]!.url).toBe('https://api.github.com/repos/acme/widgets/git/ref/heads/feature/x');
+      expect(calls[1]!.url).toBe('https://api.github.com/repos/acme/widgets/git/refs/heads/feature/x');
+    });
+
+    it('test 32: slash-containing branch names produce the EXACT refs URL (slashes preserved, not %2F), one ref only', async () => {
+      for (const branch of ['feature/login', 'v2/remote-branch-cleanup-approval']) {
+        const { fn, calls } = readThenDelete('abc1234');
+        await provider(fn).deleteRemoteBranch({ identity: IDENTITY, branch, expectedCommitHash: 'abc1234' });
+        expect(calls[0]!.url).toBe(`https://api.github.com/repos/acme/widgets/git/ref/heads/${branch}`);
+        expect(calls[1]!.url).toBe(`https://api.github.com/repos/acme/widgets/git/refs/heads/${branch}`);
+        expect(calls[1]!.url).not.toContain('%2F'); // slashes preserved
+        expect(calls.every((c) => !c.url.includes('*') && !c.url.includes('...') && !/\/branches\b/.test(c.url))).toBe(true); // no wildcard/bulk/branches-list endpoint
+      }
+    });
+
+    it('test 21/22: uses fetch only — never git/push/--delete/-r/shell (no such argv in the adapter)', async () => {
+      const { fn, calls } = readThenDelete('abc1234');
+      await provider(fn).deleteRemoteBranch({ identity: IDENTITY, branch: 'feature/x', expectedCommitHash: 'abc1234' });
+      for (const c of calls) {
+        expect(c.url).not.toMatch(/push|--delete|\s-r\b/);
+        expect(['GET', 'DELETE']).toContain(c.init.method);
+      }
+    });
+
+    it('remote SHA mismatch → Blocked BEFORE any DELETE (read-immediately-before-delete)', async () => {
+      const { fn, calls } = fakeFetch((_u, init) => {
+        if (init.method === 'DELETE') return { status: 204 };
+        return { status: 200, body: { object: { sha: 'deadbeef', type: 'commit' } } };
+      });
+      await expect(provider(fn).deleteRemoteBranch({ identity: IDENTITY, branch: 'feature/x', expectedCommitHash: 'abc1234' })).rejects.toBeInstanceOf(RemoteBranchCleanupBlockedError);
+      expect(calls.map((c) => c.init.method)).toEqual(['GET']); // no DELETE was issued
+    });
+
+    it('test 33: pre-delete GET 404 (absent) → alreadyAbsent, no DELETE', async () => {
+      const { fn, calls } = fakeFetch(() => ({ status: 404 }));
+      const r = await provider(fn).deleteRemoteBranch({ identity: IDENTITY, branch: 'feature/x', expectedCommitHash: 'abc1234' });
+      expect(r).toMatchObject({ deleted: false, alreadyAbsent: true, branch: 'feature/x' });
+      expect(calls.map((c) => c.init.method)).toEqual(['GET']);
+    });
+
+    it('DELETE non-204 → Unverified (never "not deleted")', async () => {
+      const { fn } = fakeFetch((_u, init) => {
+        if (init.method === 'DELETE') return { status: 422 };
+        return { status: 200, body: { object: { sha: 'abc1234', type: 'commit' } } };
+      });
+      await expect(provider(fn).deleteRemoteBranch({ identity: IDENTITY, branch: 'feature/x', expectedCommitHash: 'abc1234' })).rejects.toBeInstanceOf(RemoteBranchCleanupUnverifiedError);
+    });
+
+    it('test 24: a DELETE network throw → Unverified; token never leaks in the message', async () => {
+      const fn = (async (url: unknown, init?: unknown) => {
+        const i = (init ?? {}) as RequestInit;
+        if (i.method === 'DELETE') throw new Error('network down');
+        return { status: 200, json: async () => ({ object: { sha: 'abc1234', type: 'commit' } }) } as unknown as Response;
+      }) as unknown as typeof fetch;
+      await provider(fn).deleteRemoteBranch({ identity: IDENTITY, branch: 'feature/x', expectedCommitHash: 'abc1234' }).catch((e: Error) => {
+        expect(e).toBeInstanceOf(RemoteBranchCleanupUnverifiedError);
+        expect(e.message).not.toContain(TOKEN);
+      });
     });
   });
 });

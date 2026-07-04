@@ -38,6 +38,7 @@ import type {
   PullRequestRef,
   PullRequestResult,
   PullRequestStatusPreview,
+  RemoteBranchCleanupResult,
   RepositoryIdentity,
   RunCommandInput,
   Session,
@@ -65,6 +66,7 @@ import type {
 } from './conversation-runtime';
 import { StatelessApprovalFlow } from './stateless-approval-flow';
 import { RepositoryHostingBlockedError, RepositoryHostingUnverifiedError } from './repository-hosting-manager';
+import { RemoteBranchCleanupBlockedError, RemoteBranchCleanupUnverifiedError } from '../domain';
 import { BranchCleanupBlockedError, BranchCleanupUnverifiedError, GitMainSyncBlockedError, GitMainSyncUnverifiedError } from './git-manager';
 
 const TS = '2026-07-01T00:00:00.000Z';
@@ -417,6 +419,8 @@ interface Calls {
   lastHostingStatusInput?: HostingStatusInput;
   hostingMergePR: number;
   lastHostingMergeInput?: HostingMergeInput;
+  hostingDeleteRemoteBranch: number;
+  lastHostingDeleteRemoteInput?: HostingDeleteRemoteInput;
 }
 
 /** Shape of the input the runtime passes to `RepositoryHostingManager.getPullRequestStatus` (Sprint 3e). */
@@ -436,6 +440,31 @@ interface HostingMergeInput {
   expectedBaseBranch: string;
   expectedHeadSha: string;
   approvalRef: ApprovalRef;
+}
+
+/** Shape of the input the runtime passes to `RepositoryHostingManager.deleteRemoteBranch` (Sprint 3j-B). */
+interface HostingDeleteRemoteInput {
+  identity: RepositoryIdentity;
+  pullRequestRef: PullRequestRef;
+  expectedHeadBranch: string;
+  expectedBaseBranch: string;
+  branch: string;
+  expectedCommitHash: string;
+  approvalRef: ApprovalRef;
+}
+
+/** Default fake RemoteBranchCleanupResult echoing the delete input (Sprint 3j-B) — a valid, deleted result. */
+function remoteCleanupResultOf(input: HostingDeleteRemoteInput, over: Partial<RemoteBranchCleanupResult> = {}): RemoteBranchCleanupResult {
+  return {
+    provider: 'github',
+    owner: input.identity.owner,
+    repo: input.identity.repo,
+    branch: input.branch,
+    deleted: true,
+    alreadyAbsent: false,
+    deletedCommitHash: input.expectedCommitHash,
+    ...over,
+  };
 }
 
 /** Default fake PullRequestMergeResult echoing the merge input (Sprint 3g) — a valid, merged result. */
@@ -553,6 +582,7 @@ interface Opts {
     createPullRequest(input: HostingCreateInput): Promise<PullRequestResult>;
     getPullRequestStatus(input: HostingStatusInput): Promise<PullRequestStatusPreview>;
     mergePullRequest?(input: HostingMergeInput): Promise<PullRequestMergeResult>;
+    deleteRemoteBranch?(input: HostingDeleteRemoteInput): Promise<RemoteBranchCleanupResult>;
   } | null;
   /** Repository Hosting status preview result (Sprint 3e) — defaults to a valid echoing preview; 'throw' to
    *  simulate a read failure, or a literal preview for a specific state/checks/reviews. */
@@ -561,6 +591,10 @@ interface Opts {
    *  RepositoryHostingBlockedError, 'throw-unverified' → RepositoryHostingUnverifiedError, 'throw-generic' → a
    *  plain Error, or a literal PullRequestMergeResult (e.g. alreadyMerged). */
   hostingMerge?: PullRequestMergeResult | 'throw-blocked' | 'throw-unverified' | 'throw-generic';
+  /** Repository Hosting remote-branch-cleanup result (Sprint 3j-B) — defaults to a valid deleted result;
+   *  'throw-blocked' → RemoteBranchCleanupBlockedError, 'throw-unverified' → RemoteBranchCleanupUnverifiedError,
+   *  'throw-generic' → a plain Error, or a literal RemoteBranchCleanupResult (e.g. alreadyAbsent). */
+  hostingDeleteRemote?: RemoteBranchCleanupResult | 'throw-blocked' | 'throw-unverified' | 'throw-generic';
 }
 
 /** Shape of the input the runtime passes to `RepositoryHostingManager.createPullRequest` (Sprint 3d-D). */
@@ -630,6 +664,7 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
     hostingCreatePR: 0,
     hostingGetStatus: 0,
     hostingMergePR: 0,
+    hostingDeleteRemoteBranch: 0,
   };
   const composer = new ResponseComposer();
   const intentResolver = new IntentResolver();
@@ -911,6 +946,14 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
                 if (opts.hostingMerge === 'throw-unverified') throw new RepositoryHostingUnverifiedError('merge unverified');
                 if (opts.hostingMerge === 'throw-generic') throw new Error('merge boom');
                 return opts.hostingMerge ?? prMergeResultOf(input);
+              },
+              async deleteRemoteBranch(input: HostingDeleteRemoteInput) {
+                calls.hostingDeleteRemoteBranch++;
+                calls.lastHostingDeleteRemoteInput = input;
+                if (opts.hostingDeleteRemote === 'throw-blocked') throw new RemoteBranchCleanupBlockedError('remote cleanup blocked');
+                if (opts.hostingDeleteRemote === 'throw-unverified') throw new RemoteBranchCleanupUnverifiedError('remote cleanup unverified');
+                if (opts.hostingDeleteRemote === 'throw-generic') throw new Error('remote cleanup boom');
+                return opts.hostingDeleteRemote ?? remoteCleanupResultOf(input);
               },
             }),
     },
@@ -5459,24 +5502,17 @@ describe('Explicit PR Creation Approval — runtime (Sprint 3b, ADR-0049)', () =
     expect(missing.calls.lastApplyAnchor).toBeUndefined();
   });
 
-  it('3j-A test 11/12/13: approved state is permission-only — re-request → already approved; execute → future-step; NO mutation', async () => {
-    // test 12: a remote cleanup re-request → already approved
+  it('3j-A test 11/12: approved state — a re-request (no execute verb) → already approved; NO re-approval, NO mutation', async () => {
+    // test 12: a remote cleanup re-request ("원격 브랜치 삭제해줘", no execute verb) → already approved (3j-B routes execute
+    // verbs to the execution turn; a bare re-request stays "already approved").
     const req = makeDeps({ applyAnchor: REMOTE_CLEANUP_APPROVED_ANCHOR() });
     const r12 = await new ConversationRuntime(req.deps).handle(messageOf('원격 브랜치 삭제해줘'));
     expect(req.calls.requestForRisk).toBe(0);
+    expect(req.calls.hostingDeleteRemoteBranch).toBe(0);
     expect(req.calls.applyAnchorSet).toBe(0);
     expect(r12.reply.text).toMatch(/이미 기록/);
     expect(r12.reply.text).toMatch(/아직 아무것도 삭제하지 않았어요/);
-    // test 13: an execute phrase → execution is a future step (3j-A does not delete)
-    for (const text of ['실행해줘', '진행해줘', '지금 실행해줘', 'execute', 'proceed']) {
-      const { deps, calls } = makeDeps({ applyAnchor: REMOTE_CLEANUP_APPROVED_ANCHOR() });
-      const r13 = await new ConversationRuntime(deps).handle(messageOf(text));
-      expect(calls.gitDeleteBranch + calls.hostingMergePR + calls.gitPush + calls.gitCommit, text).toBe(0); // test 11
-      expect(calls.applyAnchorSet, text).toBe(0);
-      expect(r13.reply.text, text).toMatch(/아직 준비되지 않았|이후 별도 실행 단계/);
-      expect(r13.reply.text, text).toMatch(/아직 아무것도 삭제하지 않았어요/);
-      expect(calls.lastApplyAnchor?.status ?? 'REMOTE_BRANCH_CLEANUP_APPROVED', text).not.toBe('REMOTE_BRANCH_CLEANED');
-    }
+    // (execution — an execute verb at APPROVED — is implemented in Sprint 3j-B; see the 3j-B execution tests.)
   });
 
   it('3j-A test 14/15: approved + status/check → read-only preview, keeps state; deploy/release → unsupported', async () => {
@@ -5492,14 +5528,13 @@ describe('Explicit PR Creation Approval — runtime (Sprint 3b, ADR-0049)', () =
     }
   });
 
-  it('3j-A test 16/17/18: no RepositoryHosting delete method, no Git/CommandExecution/ExecutionOrchestrator touch on any 3j-A path', async () => {
-    for (const text of ['원격 브랜치 삭제해줘', '승인', '실행해줘']) {
-      const anchor = text === '원격 브랜치 삭제해줘' ? BRANCH_CLEANED_ANCHOR() : text === '승인' ? REMOTE_CLEANUP_PENDING_ANCHOR() : REMOTE_CLEANUP_APPROVED_ANCHOR();
+  it('3j-A test 17/18: the approval-stage paths (BRANCH_CLEANED remote phrase, PENDING approve) delete nothing and touch no Git/CommandExecution/ExecutionOrchestrator', async () => {
+    for (const [text, anchor] of [['원격 브랜치 삭제해줘', BRANCH_CLEANED_ANCHOR()], ['승인', REMOTE_CLEANUP_PENDING_ANCHOR()]] as const) {
       const { deps, calls } = makeDeps({ applyAnchor: anchor });
       await new ConversationRuntime(deps).handle(messageOf(text));
-      // test 16: the manager exposes no remote-branch delete method (approval-only in 3j-A)
-      expect(typeof (deps.repositoryHosting?.manager as unknown as { deleteRemoteBranch?: unknown })?.deleteRemoteBranch, text).toBe('undefined');
-      // test 17/18: Git capability, CommandExecution/shell, ExecutionOrchestrator all untouched
+      // no remote branch deletion on the approval-stage paths (delete is a 3j-B execution-path concern)
+      expect(calls.hostingDeleteRemoteBranch, text).toBe(0);
+      // Git capability, CommandExecution/shell, ExecutionOrchestrator all untouched
       expect(calls.gitDeleteBranch + calls.gitPush + calls.gitCommit + calls.gitSyncMain + calls.gitStatus, text).toBe(0);
       expect(calls.commandRun + calls.run, text).toBe(0);
       expect(calls.hostingCreatePR + calls.hostingMergePR, text).toBe(0);
@@ -5525,6 +5560,207 @@ describe('Explicit PR Creation Approval — runtime (Sprint 3b, ADR-0049)', () =
     expect(calls.requestForRisk).toBe(0); // no remote approval
     expect(calls.gitDeleteBranch).toBe(0);
     expect(r.reply.text).toMatch(/이미 없어요|삭제한 브랜치가 없어요/);
+  });
+
+  // ── Sprint 3j-B (ADR-0060): remote-branch-cleanup EXECUTION — single GitHub refs DELETE from APPROVED, phase-aware. ──
+  const REMOTE_CLEANED_ANCHOR = (o: Partial<ApplyPreviewAnchor> = {}): ApplyPreviewAnchor =>
+    REMOTE_CLEANUP_APPROVED_ANCHOR({ status: 'REMOTE_BRANCH_CLEANED', remoteBranchCleanupMode: 'remote', cleanedRemoteBranchName: HEAD, remoteBranchCleanedAt: TS, remoteBranchCleanedBy: 'actor-1', remoteBranchCleanupProvider: 'github', remoteBranchDeletedCommit: HEAD_SHA, cleanedRemoteBranch: true, ...o });
+
+  it('3j-B test 1/26/27: APPROVED + execute phrase → execution path, exactly ONE delete, anchors REMOTE_BRANCH_CLEANED', async () => {
+    for (const text of ['원격 브랜치 삭제 실행해줘', '지금 원격 브랜치 삭제해줘', 'execute remote branch cleanup', 'proceed']) {
+      const { deps, calls } = makeDeps({ applyAnchor: REMOTE_CLEANUP_APPROVED_ANCHOR(), approvalsGetResult: approvedApprovalOf() });
+      const r = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.hostingDeleteRemoteBranch, text).toBe(1); // exactly one delete
+      expect(calls.lastHostingDeleteRemoteInput?.branch, text).toBe(HEAD); // anchored PR head branch only
+      expect(calls.lastHostingDeleteRemoteInput?.expectedCommitHash, text).toBe(HEAD_SHA); // mergedHeadSha
+      const a = calls.lastApplyAnchor!;
+      expect(a.status, text).toBe('REMOTE_BRANCH_CLEANED');
+      expect(a.remoteBranchCleanupMode, text).toBe('remote');
+      expect(a.cleanedRemoteBranch, text).toBe(true);
+      expect(a.cleanedRemoteBranchName, text).toBe(HEAD);
+      expect(a.remoteBranchDeletedCommit, text).toBe(HEAD_SHA);
+      expect(r.reply.text, text).not.toMatch(/deployed|released|배포했|릴리즈했/i);
+    }
+  });
+
+  it('3j-B test 25: APPROVED + "원격 브랜치 삭제해줘" (no execute verb) → already approved, no delete', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: REMOTE_CLEANUP_APPROVED_ANCHOR(), approvalsGetResult: approvedApprovalOf() });
+    const r = await new ConversationRuntime(deps).handle(messageOf('원격 브랜치 삭제해줘'));
+    expect(calls.hostingDeleteRemoteBranch).toBe(0);
+    expect(calls.applyAnchorSet).toBe(0);
+    expect(r.reply.text).toMatch(/이미 기록/);
+  });
+
+  it('3j-B test 28: APPROVED + execute phrase with bulk/wildcard/main/default → no delete', async () => {
+    for (const text of ['원격 브랜치 다 삭제 실행해줘', '원격 브랜치 전부 삭제 지금', 'execute delete all remote branches', 'remote main 삭제 실행해줘', 'origin default branch 삭제 실행']) {
+      const { deps, calls } = makeDeps({ applyAnchor: REMOTE_CLEANUP_APPROVED_ANCHOR(), approvalsGetResult: approvedApprovalOf() });
+      await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.hostingDeleteRemoteBranch, text).toBe(0);
+    }
+  });
+
+  it('3j-B test 2/3: approval not APPROVED / executionPlanRef mismatch → Blocked, no delete', async () => {
+    const notApproved = makeDeps({ applyAnchor: REMOTE_CLEANUP_APPROVED_ANCHOR(), approvalsGetResult: pendingApprovalOf() });
+    const r1 = await new ConversationRuntime(notApproved.deps).handle(messageOf('원격 브랜치 삭제 실행해줘'));
+    expect(notApproved.calls.hostingDeleteRemoteBranch).toBe(0);
+    expect(r1.reply.text).toContain('삭제하지 않았어요');
+    const planMismatch = makeDeps({ applyAnchor: REMOTE_CLEANUP_APPROVED_ANCHOR(), approvalsGetResult: { ...approvedApprovalOf(), executionPlanRef: { id: 'other', goal: 'g' } } });
+    await new ConversationRuntime(planMismatch.deps).handle(messageOf('원격 브랜치 삭제 실행해줘'));
+    expect(planMismatch.calls.hostingDeleteRemoteBranch).toBe(0);
+  });
+
+  it('3j-B test 4/31: missing/incomplete approval evidence → Blocked, no delete', async () => {
+    // missing approval id entirely
+    const noId = makeDeps({ applyAnchor: REMOTE_CLEANUP_APPROVED_ANCHOR({ remoteBranchCleanupApprovalId: undefined }), approvalsGetResult: approvedApprovalOf() });
+    await new ConversationRuntime(noId.deps).handle(messageOf('원격 브랜치 삭제 실행해줘'));
+    expect(noId.calls.hostingDeleteRemoteBranch).toBe(0);
+    // incomplete evidence: approvedAt / decisionBy / requestedAt missing (CA change 4)
+    for (const missing of [{ remoteBranchCleanupApprovedAt: undefined }, { remoteBranchCleanupApprovalDecisionBy: undefined }, { remoteBranchCleanupApprovalRequestedAt: undefined }] as Partial<ApplyPreviewAnchor>[]) {
+      const { deps, calls } = makeDeps({ applyAnchor: REMOTE_CLEANUP_APPROVED_ANCHOR(missing), approvalsGetResult: approvedApprovalOf() });
+      await new ConversationRuntime(deps).handle(messageOf('원격 브랜치 삭제 실행해줘'));
+      expect(calls.hostingDeleteRemoteBranch, JSON.stringify(missing)).toBe(0);
+    }
+  });
+
+  it('3j-B test 5/6: identity / pullRequestRef mismatch → Blocked, no delete', async () => {
+    const idMismatch = makeDeps({ applyAnchor: REMOTE_CLEANUP_APPROVED_ANCHOR(), approvalsGetResult: approvedApprovalOf(), hostingIdentity: { provider: 'github', owner: 'evil', repo: 'widgets' } });
+    await new ConversationRuntime(idMismatch.deps).handle(messageOf('원격 브랜치 삭제 실행해줘'));
+    expect(idMismatch.calls.hostingDeleteRemoteBranch).toBe(0);
+    const refMismatch = makeDeps({ applyAnchor: REMOTE_CLEANUP_APPROVED_ANCHOR({ pullRequestRef: { provider: 'github', owner: 'acme', repo: 'other', pullRequestNumber: 42, pullRequestUrl: 'https://github.com/acme/other/pull/42' } }), approvalsGetResult: approvedApprovalOf() });
+    await new ConversationRuntime(refMismatch.deps).handle(messageOf('원격 브랜치 삭제 실행해줘'));
+    expect(refMismatch.calls.hostingDeleteRemoteBranch).toBe(0);
+  });
+
+  it('3j-B test 7/8/9: target != pushedBranch / target main / unsafe name → Blocked, no delete', async () => {
+    const mismatch = makeDeps({ applyAnchor: REMOTE_CLEANUP_APPROVED_ANCHOR({ pushedBranch: 'other-branch' }), approvalsGetResult: approvedApprovalOf() });
+    await new ConversationRuntime(mismatch.deps).handle(messageOf('원격 브랜치 삭제 실행해줘'));
+    expect(mismatch.calls.hostingDeleteRemoteBranch).toBe(0);
+    const mainTarget = makeDeps({ applyAnchor: REMOTE_CLEANUP_APPROVED_ANCHOR({ pullRequestHeadBranch: 'main', pushedBranch: 'main', cleanedBranch: 'main' }), approvalsGetResult: approvedApprovalOf() });
+    await new ConversationRuntime(mainTarget.deps).handle(messageOf('원격 브랜치 삭제 실행해줘'));
+    expect(mainTarget.calls.hostingDeleteRemoteBranch).toBe(0);
+    const unsafe = makeDeps({ applyAnchor: REMOTE_CLEANUP_APPROVED_ANCHOR({ pullRequestHeadBranch: 'bad branch', pushedBranch: 'bad branch', cleanedBranch: 'bad branch' }), approvalsGetResult: approvedApprovalOf() });
+    await new ConversationRuntime(unsafe.deps).handle(messageOf('원격 브랜치 삭제 실행해줘'));
+    expect(unsafe.calls.hostingDeleteRemoteBranch).toBe(0);
+  });
+
+  it('3j-B test 29: missing/non-SHA mergedHeadSha → Blocked, no delete; NO pullRequestCommitHash fallback', async () => {
+    // mergedHeadSha absent but pullRequestCommitHash present → must NOT fall back → Blocked
+    const noMerged = makeDeps({ applyAnchor: REMOTE_CLEANUP_APPROVED_ANCHOR({ mergedHeadSha: undefined }), approvalsGetResult: approvedApprovalOf() });
+    await new ConversationRuntime(noMerged.deps).handle(messageOf('원격 브랜치 삭제 실행해줘'));
+    expect(noMerged.calls.hostingDeleteRemoteBranch).toBe(0);
+    const badSha = makeDeps({ applyAnchor: REMOTE_CLEANUP_APPROVED_ANCHOR({ mergedHeadSha: 'not-a-sha' }), approvalsGetResult: approvedApprovalOf() });
+    await new ConversationRuntime(badSha.deps).handle(messageOf('원격 브랜치 삭제 실행해줘'));
+    expect(badSha.calls.hostingDeleteRemoteBranch).toBe(0);
+  });
+
+  it('3j-B test 30: local-cleanup evidence missing/inconsistent → Blocked, no delete', async () => {
+    for (const bad of [
+      { branchCleanupMode: undefined },
+      { cleanedBranch: 'different-branch' },
+      { cleanedRemoteBranch: true },
+      { cleanedLocalBranch: undefined },
+    ] as Partial<ApplyPreviewAnchor>[]) {
+      const { deps, calls } = makeDeps({ applyAnchor: REMOTE_CLEANUP_APPROVED_ANCHOR(bad), approvalsGetResult: approvedApprovalOf() });
+      await new ConversationRuntime(deps).handle(messageOf('원격 브랜치 삭제 실행해줘'));
+      expect(calls.hostingDeleteRemoteBranch, JSON.stringify(bad)).toBe(0);
+    }
+  });
+
+  it('3j-B test 11/20/33: manager already-absent → REMOTE_BRANCH_CLEANED, cleanedRemoteBranch=false, response avoids overclaim', async () => {
+    const { deps, calls } = makeDeps({
+      applyAnchor: REMOTE_CLEANUP_APPROVED_ANCHOR(),
+      approvalsGetResult: approvedApprovalOf(),
+      hostingDeleteRemote: { provider: 'github', owner: 'acme', repo: 'widgets', branch: HEAD, deleted: false, alreadyAbsent: true },
+    });
+    const r = await new ConversationRuntime(deps).handle(messageOf('원격 브랜치 삭제 실행해줘'));
+    expect(calls.hostingDeleteRemoteBranch).toBe(1);
+    const a = calls.lastApplyAnchor!;
+    expect(a.status).toBe('REMOTE_BRANCH_CLEANED');
+    expect(a.cleanedRemoteBranch).toBe(false);
+    expect(r.reply.text).toContain('이미 없어요');
+    expect(r.reply.text).toMatch(/로컬 브랜치·main은 변경하지 않았어요/);
+    expect(r.reply.text).not.toMatch(/deployed|released|배포했|릴리즈했/i);
+  });
+
+  it('3j-B test 14: manager Blocked → "not deleted", stays REMOTE_BRANCH_CLEANUP_APPROVED', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: REMOTE_CLEANUP_APPROVED_ANCHOR(), approvalsGetResult: approvedApprovalOf(), hostingDeleteRemote: 'throw-blocked' });
+    const r = await new ConversationRuntime(deps).handle(messageOf('원격 브랜치 삭제 실행해줘'));
+    expect(calls.hostingDeleteRemoteBranch).toBe(1);
+    expect(calls.applyAnchorSet).toBe(0); // NOT anchored REMOTE_BRANCH_CLEANED
+    expect(r.reply.text).toContain('삭제하지 않았어요');
+    expect(r.reply.text).not.toMatch(/삭제했어요|deleted\b/i);
+  });
+
+  it('3j-B test 15/16: manager Unverified (and unknown throw) → never "not deleted", stays APPROVED', async () => {
+    for (const mode of ['throw-unverified', 'throw-generic'] as const) {
+      const { deps, calls } = makeDeps({ applyAnchor: REMOTE_CLEANUP_APPROVED_ANCHOR(), approvalsGetResult: approvedApprovalOf(), hostingDeleteRemote: mode });
+      const r = await new ConversationRuntime(deps).handle(messageOf('원격 브랜치 삭제 실행해줘'));
+      expect(calls.hostingDeleteRemoteBranch, mode).toBe(1);
+      expect(calls.applyAnchorSet, mode).toBe(0); // NOT REMOTE_BRANCH_CLEANED
+      expect(r.reply.text, mode).toContain('확인하지 못했어요');
+      expect(r.reply.text, mode).not.toMatch(/삭제하지 않았|not deleted/i);
+    }
+  });
+
+  it('3j-B test 18/19: success anchors REMOTE_BRANCH_CLEANED preserving the full chain + approval evidence; response wording', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: REMOTE_CLEANUP_APPROVED_ANCHOR(), approvalsGetResult: approvedApprovalOf() });
+    const r = await new ConversationRuntime(deps).handle(messageOf('원격 브랜치 삭제 실행해줘'));
+    const a = calls.lastApplyAnchor!;
+    // full prior chain preserved (CA test 18)
+    expect(a.repositoryIdentity).toBeTruthy();
+    expect(a.pullRequestRef).toBeTruthy();
+    expect(a.pullRequestHeadBranch).toBe(HEAD);
+    expect(a.pushedBranch).toBe(HEAD);
+    expect(a.mergedHeadSha).toBe(HEAD_SHA);
+    expect(a.mergeCommitHash).toBe(MERGE_COMMIT);
+    expect(a.syncedMainCommit).toBe(MERGE_COMMIT);
+    expect(a.mainSyncBranch).toBe('main');
+    expect(a.branchCleanupMode).toBe('local');
+    expect(a.cleanedBranch).toBe(HEAD);
+    expect(a.cleanedLocalBranch).toBe(true);
+    // 3j-A approval evidence preserved
+    expect(a.remoteBranchCleanupApprovalId).toBe('apply-appr-1');
+    expect(a.remoteBranchCleanupApprovedAt).toBeTruthy();
+    expect(a.remoteBranchCleanupApprovalDecisionBy).toBe('actor-1');
+    // response says remote deleted; local/main/deploy/release/tag untouched (CA test 19)
+    expect(r.reply.text).toMatch(new RegExp(`원격 브랜치 '${HEAD}'을 삭제했어요`));
+    expect(r.reply.text).toMatch(/로컬 브랜치·main은 건드리지 않았어요/);
+    expect(r.reply.text).toMatch(/배포\/릴리즈\/태그도 하지 않았어요/);
+  });
+
+  it('3j-B test 23: execution path touches NO push/commit/merge/sync/create and no deploy/release', async () => {
+    for (const mode of [undefined, 'throw-blocked', 'throw-unverified'] as const) {
+      const { deps, calls } = makeDeps({ applyAnchor: REMOTE_CLEANUP_APPROVED_ANCHOR(), approvalsGetResult: approvedApprovalOf(), hostingDeleteRemote: mode });
+      const r = await new ConversationRuntime(deps).handle(messageOf('원격 브랜치 삭제 실행해줘'));
+      expect(calls.gitPush + calls.gitCommit + calls.gitSyncMain + calls.gitDeleteBranch + calls.hostingMergePR + calls.hostingCreatePR + calls.commandRun + calls.run, String(mode)).toBe(0);
+      expect(r.reply.text, String(mode)).not.toMatch(/deployed|released|배포했|릴리즈했/i);
+    }
+  });
+
+  it('3j-B test 34: REMOTE_BRANCH_CLEANED + remote cleanup/execute phrase → already cleaned, no second DELETE', async () => {
+    for (const text of ['원격 브랜치 삭제해줘', '원격 브랜치 삭제 실행해줘']) {
+      const { deps, calls } = makeDeps({ applyAnchor: REMOTE_CLEANED_ANCHOR(), approvalsGetResult: approvedApprovalOf() });
+      const r = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.hostingDeleteRemoteBranch, text).toBe(0);
+      expect(calls.applyAnchorSet, text).toBe(0);
+      expect(r.reply.text, text).toMatch(/이미 정리/);
+    }
+  });
+
+  it('3j-B: non-APPROVED states + execute phrase → no delete (execution intent only at APPROVED)', async () => {
+    for (const anchor of [BRANCH_CLEANED_ANCHOR(), REMOTE_CLEANUP_PENDING_ANCHOR(), MAIN_SYNCED_ANCHOR(), PR_MERGED_ANCHOR(), null]) {
+      const { deps, calls } = makeDeps({ applyAnchor: anchor, approvalsGetResult: approvedApprovalOf() });
+      await new ConversationRuntime(deps).handle(messageOf('원격 브랜치 삭제 실행해줘'));
+      expect(calls.hostingDeleteRemoteBranch, String(anchor?.status)).toBe(0);
+    }
+  });
+
+  it('3j-B: not configured (no manager) → execution unavailable, anchor unchanged, no delete', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: REMOTE_CLEANUP_APPROVED_ANCHOR(), approvalsGetResult: approvedApprovalOf(), hostingManager: null });
+    const r = await new ConversationRuntime(deps).handle(messageOf('원격 브랜치 삭제 실행해줘'));
+    expect(calls.hostingDeleteRemoteBranch).toBe(0);
+    expect(calls.applyAnchorSet).toBe(0);
+    expect(r.reply.text).toContain('실행할 수 없어요');
   });
 });
 

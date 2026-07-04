@@ -1868,12 +1868,66 @@ export class ResponseComposer {
     };
   }
 
-  /** An explicit execute phrase while REMOTE_BRANCH_CLEANUP_APPROVED (Sprint 3j-A) — remote deletion execution is not
-   *  implemented yet (deferred to a later step). Approval stays recorded; no mutation. */
+  /** Remote branch cleanup execution not available — repository/GitHub token not configured (Sprint 3j-B, repurposed
+   *  from 3j-A). No state change; the approval stays recorded; nothing deleted. */
   composeRemoteBranchCleanupExecutionUnavailable(context: ConversationContext): OutboundMessage {
     return {
       context,
-      text: '원격 브랜치 삭제 실행은 아직 준비되지 않았어요 (이후 별도 실행 단계에서 진행돼요). 승인은 기록되어 있고, 아직 아무것도 삭제하지 않았어요.',
+      text: '지금은 원격 브랜치 삭제를 실행할 수 없어요. 저장소 또는 설정을 확인해 주세요. (승인은 기록되어 있고, 아직 아무것도 삭제하지 않았어요)',
+    };
+  }
+
+  // ── Sprint 3j-B (ADR-0060): remote-branch-cleanup EXECUTION replies. Never claim deploy/release/tag/local delete. ──
+
+  /** Remote branch cleanup SUCCEEDED / already-absent (Sprint 3j-B). Distinguishes remote-deleted vs already-absent;
+   *  every path states the local branch + main were NOT touched. Never claims deploy/release/tag. */
+  composeRemoteBranchCleanupSucceeded(
+    context: ConversationContext,
+    input: { branch: string; cleanedRemoteBranch: boolean; alreadyAbsent: boolean },
+  ): OutboundMessage {
+    const name = input.branch.slice(0, MAX_GIT_REF_DISPLAY);
+    const text = input.alreadyAbsent
+      ? clampToMessageBudget(
+          [
+            `원격 브랜치 '${name}'은 이미 없어요.`,
+            '이번엔 삭제한 원격 브랜치가 없어요. 로컬 브랜치·main은 변경하지 않았어요.',
+            '배포/릴리즈/태그도 하지 않았어요.',
+          ].join('\n'),
+        )
+      : clampToMessageBudget(
+          [
+            `원격 브랜치 '${name}'을 삭제했어요 (병합 완료된 PR의 브랜치예요).`,
+            '로컬 브랜치·main은 건드리지 않았어요. 배포/릴리즈/태그도 하지 않았어요.',
+          ].join('\n'),
+        );
+    return { context, text };
+  }
+
+  /** A KNOWN pre-DELETE block (approval/preflight invalid, PR not merged, remote SHA moved, …) — definitively NOT
+   *  deleted. Never claims deleted. (Sprint 3j-B) */
+  composeRemoteBranchCleanupExecutionBlocked(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '원격 브랜치를 삭제하지 않았어요. 승인/대상 컨텍스트가 불완전하거나, PR이 병합 상태로 확인되지 않거나, 원격 브랜치가 예상 커밋과 달라서 안전을 위해 진행하지 않았어요. GitHub에서 확인해 주세요. (로컬 브랜치·main·배포·릴리즈도 하지 않았어요)',
+    };
+  }
+
+  /** Remote branch cleanup UNVERIFIED (Sprint 3j-B) — the DELETE was attempted but could not be confirmed. MUST NOT
+   *  say "not deleted" and MUST NOT say "deleted" — ask the user to check GitHub. */
+  composeRemoteBranchCleanupUnverified(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '원격 브랜치 삭제를 시도했지만 결과를 확인하지 못했어요. 삭제됐을 수도, 아닐 수도 있어요 — GitHub에서 확인해 주세요. (로컬 브랜치·main·배포·릴리즈는 하지 않았어요)',
+    };
+  }
+
+  /** A remote cleanup / execute phrase at terminal REMOTE_BRANCH_CLEANED (Sprint 3j-B) — already cleaned; nothing
+   *  newly deleted. No second DELETE. */
+  composeRemoteBranchAlreadyCleaned(context: ConversationContext, input: { branch: string }): OutboundMessage {
+    const name = input.branch.slice(0, MAX_GIT_REF_DISPLAY);
+    return {
+      context,
+      text: `원격 브랜치 '${name}'는 이미 정리됐어요.\n이번엔 새로 삭제한 게 없어요. 로컬 브랜치·main은 변경하지 않았어요. 배포/릴리즈/태그도 하지 않았어요.`,
     };
   }
 }

@@ -243,6 +243,58 @@ export interface PullRequestMergeResult {
   alreadyMerged: boolean;
 }
 
+// ─── Sprint 3j-B (ADR-0060) — REMOTE branch cleanup EXECUTION result + phase-aware errors ───────────────────
+// The execution half of ADR-0060: from a live REMOTE_BRANCH_CLEANUP_APPROVED anchor, delete EXACTLY one remote
+// branch (the anchored merged PR head branch) via the RepositoryHosting capability. GitHub's refs API has NO
+// atomic SHA-conditional delete, so the provider reads the ref immediately before the DELETE and verifies the SHA.
+// The typed errors live HERE (domain) — Option B (ADR-0060, CA change 6) — so the adapter (which throws them), the
+// manager (which instanceof-branches Blocked-vs-Unverified without blanket-converting), and the runtime (which picks
+// the composer) all share one location via the core public API, with no provider payload leaking into runtime logic.
+
+/**
+ * PROVIDER-REPORTED remote branch cleanup result (Sprint 3j-B, ADR-0060) — NOT an independent verification beyond
+ * what the provider did this run. `deleted` is true when a remote ref was deleted; `alreadyAbsent` is true when the
+ * branch did not exist (404) — an idempotent no-op. `REMOTE_BRANCH_CLEANED` means the completed PR's REMOTE head ref
+ * was deleted (or was already absent) this run — never deployed/released/tagged/local-branch-deleted-this-run.
+ */
+export interface RemoteBranchCleanupResult {
+  provider: RepositoryHostingProviderKind; // 'github'
+  owner: string;
+  repo: string;
+  /** The deleted (or already-absent) remote branch — always the anchored PR head branch, never user-supplied. */
+  branch: string;
+  /** True when this run deleted a remote ref; false when it was already absent. */
+  deleted: boolean;
+  /** True when the remote branch did not exist (404) — idempotent no-op. */
+  alreadyAbsent: boolean;
+  /** The commit the deleted branch pointed at (== the verified expectedCommitHash), when a delete happened. */
+  deletedCommitHash?: string;
+}
+
+/**
+ * Remote branch cleanup failed **before any DELETE was attempted** (approval/preflight invalid, PR not confirmably
+ * merged, remote branch moved off the expected SHA). Definitively **no** remote branch was deleted — a caller may
+ * safely say "원격 브랜치를 삭제하지 않았어요" (Sprint 3j-B, ADR-0060; mirrors `RepositoryHostingBlockedError`).
+ */
+export class RemoteBranchCleanupBlockedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RemoteBranchCleanupBlockedError';
+  }
+}
+
+/**
+ * The remote branch `DELETE` was **attempted** but could not be completed/verified (the DELETE returned a non-204
+ * ambiguously, threw, or the result failed integrity). The ref **may** be gone — a caller must **not** claim it was
+ * not deleted; say "확인하지 못했어요" instead (Sprint 3j-B, ADR-0060; mirrors `RepositoryHostingUnverifiedError`).
+ */
+export class RemoteBranchCleanupUnverifiedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RemoteBranchCleanupUnverifiedError';
+  }
+}
+
 /**
  * A bounded, provider-reported, point-in-time PR status observation (Sprint 3e, ADR-0055). `observedAt` is
  * generated internally by the adapter at read time (never caller/user-supplied). All counts are non-negative
