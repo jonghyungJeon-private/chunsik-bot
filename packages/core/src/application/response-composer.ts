@@ -1803,11 +1803,77 @@ export class ResponseComposer {
     };
   }
 
-  /** A REMOTE branch cleanup phrase (Sprint 3i, CA change 1) — remote deletion is deferred; NO local delete. */
+  /** A REMOTE branch cleanup phrase BEFORE the local branch is cleaned (at MAIN_SYNCED) — remote cleanup is available
+   *  only after the local branch is cleaned (from BRANCH_CLEANED). NO mutation (Sprint 3i → reworded Sprint 3j-A). */
   composeRemoteBranchCleanupUnsupported(context: ConversationContext): OutboundMessage {
     return {
       context,
-      text: '원격 브랜치 삭제는 아직 지원하지 않아요 (이후 별도 승인 단계예요). 로컬 브랜치만 정리할 수 있어요. 지금은 아무것도 삭제하지 않았어요.',
+      text: '원격 브랜치 정리는 로컬 브랜치를 먼저 정리한 뒤에 요청할 수 있어요. 지금은 아무것도 삭제하지 않았어요.',
+    };
+  }
+
+  // ── Sprint 3j-A (ADR-0060): CRITICAL remote-branch-cleanup APPROVAL gate. Permission only — NEVER deletes a remote
+  //    branch (execution is Sprint 3j-B). No message claims a branch was/​will be deleted or that deletion is safe. ──
+
+  /** Remote-branch-cleanup approval REQUESTED (Sprint 3j-A) — states the permission target ONLY; never claims the
+   *  branch exists / its SHA is current / the PR is still merged / deletion is safe (CA change 4). */
+  composeRemoteBranchCleanupRequested(
+    context: ConversationContext,
+    input: { owner: string; repo: string; prNumber: number; prUrl: string; branch: string; expectedHeadCommit: string },
+  ): OutboundMessage {
+    const branch = input.branch.slice(0, MAX_GIT_REF_DISPLAY);
+    const text = clampToMessageBudget(
+      [
+        '원격 브랜치 정리(삭제) 승인을 요청했어요.',
+        `대상: ${input.owner.slice(0, MAX_GIT_REF_DISPLAY)}/${input.repo.slice(0, MAX_GIT_REF_DISPLAY)} #${input.prNumber} 원격 브랜치 '${branch}' (예상 커밋 ${input.expectedHeadCommit.slice(0, 7)})`,
+        `- PR: ${input.prUrl.slice(0, MAX_PR_URL_DISPLAY)}`,
+        '아직 아무것도 삭제하지 않았어요. 이 승인은 권한만 기록해요 — 실제 삭제는 이후 별도 실행 단계에서 진행돼요.',
+        '승인 시점에 원격 브랜치가 존재하는지·커밋이 그대로인지·PR이 여전히 병합 상태인지·삭제가 안전한지는 이 승인으로 보장하지 않아요 (실행 시 확인해요).',
+        '진행하려면 "승인", 원치 않으면 "거절"이라고 알려 주세요.',
+      ].join('\n'),
+    );
+    return { context, text };
+  }
+
+  /** Remote-branch-cleanup approval RECORDED after "승인" (Sprint 3j-A) — permission only; never says deleted. */
+  composeRemoteBranchCleanupRecorded(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '원격 브랜치 정리 승인이 기록됐어요.\n아직 아무것도 삭제하지 않았어요. 실제 원격 브랜치 삭제는 이후 실행 단계에서 진행돼요. 배포/릴리즈/태그도 하지 않았어요.',
+    };
+  }
+
+  /** Remote-branch-cleanup approval DENIED (Sprint 3j-A) — nothing deleted; the branch/main are untouched. */
+  composeRemoteBranchCleanupDenied(context: ConversationContext): OutboundMessage {
+    return { context, text: '원격 브랜치 정리 승인을 거절했어요.\n원격 브랜치는 그대로 있고 아무것도 삭제하지 않았어요.' };
+  }
+
+  /** Remote-branch-cleanup approval CANCELLED (Sprint 3j-A) — nothing deleted; the branch/main are untouched. */
+  composeRemoteBranchCleanupCancelled(context: ConversationContext): OutboundMessage {
+    return { context, text: '원격 브랜치 정리 승인을 취소했어요.\n원격 브랜치는 그대로 있고 아무것도 삭제하지 않았어요.' };
+  }
+
+  /** Remote-branch-cleanup approval not available — wrong state / incomplete or stale pending context (Sprint 3j-A).
+   *  No deletion. */
+  composeRemoteBranchCleanupApprovalUnavailable(context: ConversationContext): OutboundMessage {
+    return { context, text: '지금은 원격 브랜치 정리 승인을 준비할 수 없어요. (아무것도 삭제하지 않았어요)' };
+  }
+
+  /** A remote cleanup phrase while already REMOTE_BRANCH_CLEANUP_APPROVED (Sprint 3j-A) — approval is recorded; the
+   *  actual deletion is a future step. No mutation. */
+  composeRemoteBranchCleanupAlreadyApproved(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '원격 브랜치 정리 승인은 이미 기록되어 있어요.\n실제 원격 브랜치 삭제는 이후 실행 단계에서 진행돼요. (아직 아무것도 삭제하지 않았어요)',
+    };
+  }
+
+  /** An explicit execute phrase while REMOTE_BRANCH_CLEANUP_APPROVED (Sprint 3j-A) — remote deletion execution is not
+   *  implemented yet (deferred to a later step). Approval stays recorded; no mutation. */
+  composeRemoteBranchCleanupExecutionUnavailable(context: ConversationContext): OutboundMessage {
+    return {
+      context,
+      text: '원격 브랜치 삭제 실행은 아직 준비되지 않았어요 (이후 별도 실행 단계에서 진행돼요). 승인은 기록되어 있고, 아직 아무것도 삭제하지 않았어요.',
     };
   }
 }

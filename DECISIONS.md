@@ -3871,3 +3871,83 @@ cleanup evidence), ADR-0057/0054 (the `pullRequestHeadBranch`/`pushedBranch` del
 Blocked-vs-Unverified rule, applied to local deletion), ADR-0046/0048/0023 (Git mutation discipline: single bounded
 argv, adapter-side, no shell; Git = local repository capability). Plan:
 `docs/plans/sprint-3i-post-merge-branch-cleanup-plan.md`.
+
+## ADR-0060 — Remote Branch Cleanup (RepositoryHosting-owned, CRITICAL-approval-gated delete of exactly ONE merged PR head branch; split 3j-A approval / 3j-B execution)
+
+- **Status:** ✅ Accepted (v2, Phase 3 — Product Construction), Chief Architect plan review: APPROVED WITH CHANGES
+  → **split into two implementation sprints under this single ADR.** **Sprint 3j-A (approval gate) is implemented
+  here.** Sprint 3j-B (execution/delete) is a separately-reviewed later sprint.
+- **Date:** 2026-07-04
+- **Scope (whole design):** From a live `BRANCH_CLEANED` anchor, an explicit **remote** branch-cleanup command
+  deletes the completed PR's **remote head branch** from the hosting provider — via the **RepositoryHosting**
+  capability (CAP-010), through a **new CRITICAL ApprovalRequest**, **exactly ONE remote ref**, only after a strict
+  live revalidation. **3j-A = the approval gate only (no deletion). 3j-B = the execution/delete.**
+
+### Most important rule
+> **A remote branch cleanup deletes exactly ONE remote branch — the anchored, already-merged PR head branch — and
+> nothing else.** `REMOTE_BRANCH_CLEANED` (3j-B) means the completed PR's REMOTE head ref was deleted (or was already
+> absent) this run; it does **NOT** mean deployed / released / tagged / production-ready / local-branch-deleted-this-
+> run / all-branches-cleaned / repository-fully-cleaned. No deletion of the default/`main` branch, no bulk/wildcard/
+> pattern, no force, no `git push --delete` (Git stays local-only, ADR-0023), no LOCAL deletion (that was 3i), no
+> deploy/release/tag, no PR/reviewer/label/assignee mutation, no shell. **Deletion happens ONLY from a recorded
+> CRITICAL approval + an explicit execute command + a full live preflight (3j-B).**
+
+### Decision
+- **State (Q1).** The full design adds `REMOTE_BRANCH_CLEANUP_PENDING` → `REMOTE_BRANCH_CLEANUP_APPROVED` →
+  `REMOTE_BRANCH_CLEANED` (terminal). **3j-A adds ONLY the two approval states** + the four approval-tracking fields
+  (`remoteBranchCleanupApprovalId`/`…RequestedAt`/`…ApprovedAt`/`…ApprovalDecisionBy`). **`REMOTE_BRANCH_CLEANED`,
+  the descriptive remote fields (`remoteBranchCleanupMode`/`cleanedRemoteBranchName`/`remoteBranchCleanedAt`/`…By`/
+  `remoteBranchCleanupProvider`/`remoteBranchDeletedCommit`), and `cleanedRemoteBranch=true` are 3j-B.** The
+  `cleanedRemoteBranch` boolean is **reused** for "a remote branch was deleted this run" (stays `false` through 3j-A);
+  distinct descriptive fields preserve the 3i LOCAL cleanup evidence unoverloaded. The chain is always preserved.
+- **Ownership (Q2).** **RepositoryHosting** owns remote branch deletion (GitHub Git-refs REST, keyed by provider
+  identity). **Git `push --delete` is REJECTED** — Git is a local-repository capability that must never handle a
+  remote URL/credentials (ADR-0023); routing a remote mutation through it would smuggle blast radius behind a "local"
+  capability. So local (Git, ADR-0059) and remote (RepositoryHosting, this ADR) deletion are different capabilities.
+  *(The provider/manager delete methods are 3j-B; 3j-A adds no RepositoryHosting read/write method.)*
+- **Approval (Q3).** A **new `RiskLevel.CRITICAL` ApprovalRequest**, tracked by a **distinct**
+  `remoteBranchCleanupApprovalId` (never reusing commit/push/PR/merge ids). Approval happens **before** deletion,
+  always; **two separate turns** (approval then execution), mirroring every prior gated mutation (2x/2y, 2z/3a,
+  3f/3g). `BRANCH_CLEANED → (remote phrase) → REMOTE_BRANCH_CLEANUP_PENDING → (approve) → REMOTE_BRANCH_CLEANUP_
+  APPROVED → (execute) → REMOTE_BRANCH_CLEANED`. The `ApprovalRef` is consumed by the Manager, never forwarded to the
+  provider. **Approval reason (CA change 4)** states ONLY the permission target (repository/PR/anchored remote head
+  branch/expected head commit) + risk + permission-only disclaimers; it must NOT claim the branch exists, its SHA is
+  current, the PR is still merged, or that deletion is safe/will-succeed — those are live 3j-B checks.
+- **Trigger (Q4, CA change 8).** `interpretRemoteBranchCleanupIntent` (cleanup verb + branch word + remote
+  qualifier) is **hardened** to reject bulk/wildcard/all/`main`·default-branch phrases (load-bearing now that a
+  remote phrase starts a real CRITICAL delete-approval, not the 3i no-op). Only at `BRANCH_CLEANED` (→ approval) /
+  `REMOTE_BRANCH_CLEANUP_APPROVED` (→ already-approved). At `MAIN_SYNCED` a remote phrase → "clean local first" (no
+  approval). The delete TARGET is always the **anchored PR head branch** — never a user-named branch.
+- **Preflight + CAS (Q5/Q6, 3j-B).** 15-check live preflight; **GitHub has no atomic SHA-conditional ref delete**, so
+  the mitigation is read-immediately-before-delete + explicit SHA verify + DELETE, with an explicitly-accepted bounded
+  residual race and Unverified-on-ambiguity. Already-absent → idempotent `REMOTE_BRANCH_CLEANED`
+  (`cleanedRemoteBranch=false`). **All of this is 3j-B.**
+- **Failure semantics (Q7, 3j-B).** Phase-aware: pre-delete → `RemoteBranchCleanupBlockedError` ("not deleted");
+  at/after delete → `RemoteBranchCleanupUnverifiedError` (never "not deleted"); already-absent → idempotent.
+- **3j-A behavior (implemented here).** BRANCH_CLEANED + remote phrase → CRITICAL approval → PENDING (permission
+  only, NO delete). PENDING intercepts every turn (approve → APPROVED; deny/cancel → BRANCH_CLEANED clearing ONLY the
+  four approval fields, chain preserved; a remote/execute/status/deploy phrase → ambiguous re-prompt, never
+  auto-approves/deletes). APPROVED is permission-only: re-request → already-approved; execute phrase →
+  "execution is a future step (3j-B)"; status/check → read-only preview (keeps state); deploy/release → unsupported.
+  No RepositoryHosting mutation, no Git/CommandExecution/ExecutionOrchestrator touch on any 3j-A path.
+- **Out of scope (Q8).** deploy · release · tag · delete default/`main` · arbitrary/user-named/bulk/wildcard delete ·
+  force · `git push --delete` · LOCAL deletion · reset/force-push · PR/reviewer/label/assignee mutation · workflow
+  dispatch · check rerun · shell/CommandExecution · ExecutionOrchestrator/WorkspaceWrite/Patch/CodeGeneration/Git
+  changes. **3j-A additionally excludes** all remote deletion, the GitHub DELETE, the RepositoryHosting read/delete
+  methods, and the `REMOTE_BRANCH_CLEANED` active state (all 3j-B).
+
+### Consequences
+- + The product can now record an explicit, CRITICAL-gated **permission** to clean up the completed PR's remote
+  branch — the final safe step before the (separately-gated) remote deletion — without any remote mutation in 3j-A.
+- − `ConversationRuntime` (two states, four fields, one hardened + one new classifier, one reason builder, four
+  handlers) and `ResponseComposer` (seven composers; one reworded) gain the remote-cleanup approval surface. Nothing
+  is deleted; no RepositoryHosting/Git/CommandExecution surface changes; `cleanedRemoteBranch` stays false.
+
+### Relations
+ADR-0059 (consumes the `BRANCH_CLEANED` anchor + the `interpretRemoteBranchCleanupIntent` classifier +
+`cleanedRemoteBranch`; extends the local-vs-remote wording split), ADR-0057/0056 (the CRITICAL
+merge-approval→execution two-turn pattern mirrored here + the RepositoryHosting Blocked-vs-Unverified rule for 3j-B),
+ADR-0054/0053/0052/0051 (the RepositoryHosting capability: manager owns approval/ordering/integrity; provider owns
+bounded GitHub REST, adapter-local token, no shell; `RepositoryIdentity`/`pullRequestRef` as the only target),
+ADR-0023 (Git = local repository capability, never a remote URL — why remote deletion is RepositoryHosting-owned).
+Plan: `docs/plans/sprint-3j-remote-branch-cleanup-plan.md`.

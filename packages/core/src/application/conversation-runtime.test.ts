@@ -5212,13 +5212,14 @@ describe('Explicit PR Creation Approval — runtime (Sprint 3b, ADR-0049)', () =
     }
   });
 
-  it('remote cleanup phrase → unsupported, NO local delete (CA 1/17/19/20)', async () => {
+  it('remote cleanup phrase at MAIN_SYNCED → clean-local-first (no approval, no delete); Sprint 3j-A reworded (CA 1/17/19/20)', async () => {
     for (const text of ['원격 브랜치 삭제해줘', 'delete remote branch', 'remote branch cleanup', 'origin 브랜치 삭제해줘', 'GitHub branch delete']) {
       const { deps, calls } = makeDeps({ applyAnchor: MAIN_SYNCED_ANCHOR() });
       const r = await new ConversationRuntime(deps).handle(messageOf(text));
       expect(calls.gitDeleteBranch, text).toBe(0); // never a local delete side effect
+      expect(calls.requestForRisk, text).toBe(0); // remote cleanup approval is only offered from BRANCH_CLEANED
       expect(calls.applyAnchorSet, text).toBe(0);
-      expect(r.reply.text, text).toContain('원격 브랜치 삭제는 아직 지원하지 않아요');
+      expect(r.reply.text, text).toMatch(/로컬 브랜치를 먼저 정리/);
     }
   });
 
@@ -5291,17 +5292,20 @@ describe('Explicit PR Creation Approval — runtime (Sprint 3b, ADR-0049)', () =
     }
   });
 
-  it('BRANCH_CLEANED terminal: cleanup → already cleaned; remote phrase → unsupported; status → read-only preview; deploy → companion', async () => {
+  it('BRANCH_CLEANED terminal: local cleanup → already cleaned; remote phrase → CRITICAL approval (Sprint 3j-A); status → read-only preview; deploy → companion', async () => {
     const c1 = makeDeps({ applyAnchor: BRANCH_CLEANED_ANCHOR() });
     const r1 = await new ConversationRuntime(c1.deps).handle(messageOf('로컬 브랜치 정리해줘'));
     expect(c1.calls.gitDeleteBranch).toBe(0);
     expect(c1.calls.applyAnchorSet).toBe(0);
     expect(r1.reply.text).toMatch(/이미 없어요|삭제한 브랜치가 없어요/);
 
+    // Sprint 3j-A: a remote cleanup phrase at BRANCH_CLEANED now records a CRITICAL approval (permission only, no delete).
     const c2 = makeDeps({ applyAnchor: BRANCH_CLEANED_ANCHOR() });
     const r2 = await new ConversationRuntime(c2.deps).handle(messageOf('원격 브랜치 삭제해줘'));
     expect(c2.calls.gitDeleteBranch).toBe(0);
-    expect(r2.reply.text).toContain('원격 브랜치 삭제는 아직 지원하지 않아요');
+    expect(c2.calls.requestForRisk).toBe(1);
+    expect(c2.calls.lastApplyAnchor?.status).toBe('REMOTE_BRANCH_CLEANUP_PENDING');
+    expect(r2.reply.text).toMatch(/아직 아무것도 삭제하지 않았어요/);
 
     const c3 = makeDeps({ applyAnchor: BRANCH_CLEANED_ANCHOR() });
     await new ConversationRuntime(c3.deps).handle(messageOf('PR 상태 확인해줘'));
@@ -5316,6 +5320,211 @@ describe('Explicit PR Creation Approval — runtime (Sprint 3b, ADR-0049)', () =
       expect(calls.gitPush + calls.gitCommit + calls.gitSyncMain + calls.hostingMergePR + calls.commandRun + calls.run, String(mode)).toBe(0);
       expect(r.reply.text, String(mode)).not.toMatch(/deployed|released|배포했|릴리즈했/i);
     }
+  });
+
+  // ── Sprint 3j-A (ADR-0060): CRITICAL remote-branch-cleanup APPROVAL gate — permission only; NEVER deletes. ──
+  const REMOTE_CLEANUP_PENDING_ANCHOR = (o: Partial<ApplyPreviewAnchor> = {}): ApplyPreviewAnchor =>
+    BRANCH_CLEANED_ANCHOR({ status: 'REMOTE_BRANCH_CLEANUP_PENDING', remoteBranchCleanupApprovalId: 'apply-appr-1', remoteBranchCleanupApprovalRequestedAt: TS, ...o });
+  const REMOTE_CLEANUP_APPROVED_ANCHOR = (o: Partial<ApplyPreviewAnchor> = {}): ApplyPreviewAnchor =>
+    BRANCH_CLEANED_ANCHOR({ status: 'REMOTE_BRANCH_CLEANUP_APPROVED', remoteBranchCleanupApprovalId: 'apply-appr-1', remoteBranchCleanupApprovalRequestedAt: TS, remoteBranchCleanupApprovedAt: TS, remoteBranchCleanupApprovalDecisionBy: 'actor-1', ...o });
+  const REMOTE_CLEANUP_PHRASES = ['원격 브랜치 삭제해줘', 'remote branch cleanup 해줘', 'delete remote branch', 'origin 브랜치 삭제해줘', 'GitHub branch delete'];
+
+  it('3j-A test 1/2: BRANCH_CLEANED + remote cleanup phrase → REMOTE_BRANCH_CLEANUP_PENDING, CRITICAL, no delete', async () => {
+    for (const text of REMOTE_CLEANUP_PHRASES) {
+      const { deps, calls } = makeDeps({ applyAnchor: BRANCH_CLEANED_ANCHOR() });
+      const r = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.requestForRisk, text).toBe(1); // test 1
+      expect(calls.lastRequestForRiskInput?.riskLevel, text).toBe(RiskLevel.CRITICAL); // test 2
+      const a = calls.lastApplyAnchor!;
+      expect(a.status, text).toBe('REMOTE_BRANCH_CLEANUP_PENDING');
+      expect(a.remoteBranchCleanupApprovalId, text).toBeTruthy();
+      expect(a.remoteBranchCleanupApprovalRequestedAt, text).toBeTruthy();
+      expect(r.status, text).toBe('AWAITING_APPROVAL');
+      // no deletion of any kind
+      expect(calls.gitDeleteBranch + calls.hostingMergePR + calls.gitPush + calls.gitCommit, text).toBe(0);
+      expect(r.reply.text, text).toMatch(/아직 아무것도 삭제하지 않았어요/);
+    }
+  });
+
+  it('3j-A test 3/4: reason states repository/PR/branch/expected-commit + permission-only; does NOT claim exists/SHA-current/merged/safe', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: BRANCH_CLEANED_ANCHOR() });
+    await new ConversationRuntime(deps).handle(messageOf('원격 브랜치 삭제해줘'));
+    const reason = calls.lastRequestForRiskInput!.reason;
+    expect(calls.lastRequestForRiskInput!.executionPlanRef).toEqual({ id: 'plan-1', goal: 'g' });
+    expect(reason).toContain('acme/widgets'); // repository
+    expect(reason).toContain('#42'); // PR number
+    expect(reason).toContain('feature/login'); // anchored remote head branch
+    expect(reason).toContain(HEAD_SHA.slice(0, 7)); // expected head commit
+    expect(reason).toContain('risk: CRITICAL');
+    expect(reason).toContain('no remote branch has been deleted');
+    expect(reason).toContain('this approval records permission only');
+    expect(reason).toContain('are verified live at execution');
+    // must NOT claim (CA change 4): branch exists / SHA is current / PR still merged / delete safe/will-succeed
+    expect(reason).not.toMatch(/branch (currently )?exists\b/i);
+    expect(reason).not.toContain('deletion is safe now');
+    expect(reason).not.toMatch(/delete will succeed|will be deleted/i);
+    expect(reason).not.toMatch(/is still merged|still merged\b/i);
+    expect(reason).not.toMatch(/token|ghp_|github_pat_/i);
+  });
+
+  it('3j-A test 5: cleanup target is the anchored PR head branch only, never user-supplied', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: BRANCH_CLEANED_ANCHOR() });
+    // a user-named branch in the phrase is ignored — the reason target is always the anchored head (feature/login)
+    await new ConversationRuntime(deps).handle(messageOf('원격 브랜치 evil-branch 삭제해줘'));
+    const reason = calls.lastRequestForRiskInput?.reason ?? '';
+    expect(reason).toContain('feature/login');
+    expect(reason).not.toContain('evil-branch');
+  });
+
+  it('3j-A test 6: bulk/wildcard/all/main/default-branch remote phrases → NO approval, NO mutation', async () => {
+    for (const text of ['원격 브랜치 다 삭제해줘', '원격 브랜치 전부 삭제해줘', '원격 브랜치 모두 삭제해줘', 'delete all remote branches', 'remote main 삭제해줘', 'origin default branch 삭제해줘', 'remote 브랜치 wildcard 삭제']) {
+      const { deps, calls } = makeDeps({ applyAnchor: BRANCH_CLEANED_ANCHOR() });
+      await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.requestForRisk, text).toBe(0);
+      expect(calls.applyAnchorSet, text).toBe(0);
+      expect(calls.gitDeleteBranch, text).toBe(0);
+    }
+  });
+
+  it('3j-A test 7: non-BRANCH_CLEANED states + remote cleanup phrase → no approval request', async () => {
+    for (const anchor of [PR_CREATED_ANCHOR(), MERGE_APPROVED_ANCHOR(), PR_MERGED_ANCHOR(), null]) {
+      const { deps, calls } = makeDeps({ applyAnchor: anchor });
+      await new ConversationRuntime(deps).handle(messageOf('원격 브랜치 삭제해줘'));
+      expect(calls.requestForRisk, String(anchor?.status)).toBe(0);
+    }
+    // at MAIN_SYNCED a remote phrase is "clean local first" (no approval, no delete)
+    const ms = makeDeps({ applyAnchor: MAIN_SYNCED_ANCHOR() });
+    const r = await new ConversationRuntime(ms.deps).handle(messageOf('원격 브랜치 삭제해줘'));
+    expect(ms.calls.requestForRisk).toBe(0);
+    expect(ms.calls.gitDeleteBranch).toBe(0);
+    expect(r.reply.text).toMatch(/로컬 브랜치를 먼저 정리/);
+  });
+
+  it('3j-A test 8/9: pending + approve → APPROVED; deny/cancel → BRANCH_CLEANED clearing ONLY the 4 approval fields', async () => {
+    // approve
+    const ap = makeDeps({ applyAnchor: REMOTE_CLEANUP_PENDING_ANCHOR() });
+    const ra = await new ConversationRuntime(ap.deps).handle(messageOf('승인'));
+    expect(ap.calls.decide).toBe(1);
+    const a = ap.calls.lastApplyAnchor!;
+    expect(a.status).toBe('REMOTE_BRANCH_CLEANUP_APPROVED');
+    expect(a.remoteBranchCleanupApprovedAt).toBeTruthy();
+    expect(a.remoteBranchCleanupApprovalDecisionBy).toBe('actor-1');
+    expect(ra.status).toBe('RESPONDED');
+    // deny/cancel → BRANCH_CLEANED, clears only the 4 remote-cleanup approval fields, preserves the chain
+    for (const [text, expected] of [['거절', 'DENIED'], ['취소', 'CANCELLED']] as const) {
+      const { deps, calls } = makeDeps({ applyAnchor: REMOTE_CLEANUP_PENDING_ANCHOR() });
+      const r = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.decide, text).toBe(1);
+      const d = calls.lastApplyAnchor!;
+      expect(d.status, text).toBe('BRANCH_CLEANED');
+      expect(d.remoteBranchCleanupApprovalId, text).toBeUndefined();
+      expect(d.remoteBranchCleanupApprovalRequestedAt, text).toBeUndefined();
+      expect(d.remoteBranchCleanupApprovedAt, text).toBeUndefined();
+      expect(d.remoteBranchCleanupApprovalDecisionBy, text).toBeUndefined();
+      // chain + local-cleanup evidence preserved (CA change 7)
+      expect(d.repositoryIdentity, text).toBeTruthy();
+      expect(d.pullRequestRef, text).toBeTruthy();
+      expect(d.pullRequestHeadBranch, text).toBe(HEAD);
+      expect(d.pushedBranch, text).toBe(HEAD);
+      expect(d.mergedHeadSha, text).toBe(HEAD_SHA);
+      expect(d.mergeCommitHash, text).toBe(MERGE_COMMIT);
+      expect(d.syncedMainCommit, text).toBe(MERGE_COMMIT);
+      expect(d.mainSyncBranch, text).toBe('main');
+      expect(d.branchCleanupMode, text).toBe('local');
+      expect(d.cleanedBranch, text).toBe(HEAD);
+      expect(d.cleanedLocalBranch, text).toBe(true);
+      expect(d.cleanedRemoteBranch, text).toBe(false);
+      expect(r.status, text).toBe(expected);
+    }
+  });
+
+  it('3j-A test 10: pending + execute/delete phrase → NO decide, NO auto-approve (ambiguous re-prompt)', async () => {
+    for (const text of ['원격 브랜치 삭제해줘', '실행해줘', '지금 삭제해줘', '배포해줘', 'PR 상태 봐줘']) {
+      const { deps, calls } = makeDeps({ applyAnchor: REMOTE_CLEANUP_PENDING_ANCHOR() });
+      const r = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.decide, text).toBe(0);
+      expect(calls.gitDeleteBranch + calls.hostingMergePR, text).toBe(0);
+      expect(calls.hostingGetStatus, text).toBe(0);
+      expect(r.status, text).toBe('AWAITING_APPROVAL');
+    }
+  });
+
+  it('3j-A test 9b: approval decision uses structured fields only (plan mismatch / missing → unavailable)', async () => {
+    const bad = makeDeps({ applyAnchor: REMOTE_CLEANUP_PENDING_ANCHOR(), approvalsGetResult: { ...pendingApprovalOf(), id: 'apply-appr-1', executionPlanRef: { id: 'other', goal: 'g' } } });
+    const r = await new ConversationRuntime(bad.deps).handle(messageOf('승인'));
+    expect(bad.calls.lastApplyAnchor?.status).not.toBe('REMOTE_BRANCH_CLEANUP_APPROVED');
+    expect(r.reply.text).toBe(composer.composeRemoteBranchCleanupApprovalUnavailable(CTX).text);
+    const missing = makeDeps({ applyAnchor: REMOTE_CLEANUP_PENDING_ANCHOR(), approvalsGetResult: null });
+    await new ConversationRuntime(missing.deps).handle(messageOf('승인'));
+    expect(missing.calls.lastApplyAnchor).toBeUndefined();
+  });
+
+  it('3j-A test 11/12/13: approved state is permission-only — re-request → already approved; execute → future-step; NO mutation', async () => {
+    // test 12: a remote cleanup re-request → already approved
+    const req = makeDeps({ applyAnchor: REMOTE_CLEANUP_APPROVED_ANCHOR() });
+    const r12 = await new ConversationRuntime(req.deps).handle(messageOf('원격 브랜치 삭제해줘'));
+    expect(req.calls.requestForRisk).toBe(0);
+    expect(req.calls.applyAnchorSet).toBe(0);
+    expect(r12.reply.text).toMatch(/이미 기록/);
+    expect(r12.reply.text).toMatch(/아직 아무것도 삭제하지 않았어요/);
+    // test 13: an execute phrase → execution is a future step (3j-A does not delete)
+    for (const text of ['실행해줘', '진행해줘', '지금 실행해줘', 'execute', 'proceed']) {
+      const { deps, calls } = makeDeps({ applyAnchor: REMOTE_CLEANUP_APPROVED_ANCHOR() });
+      const r13 = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.gitDeleteBranch + calls.hostingMergePR + calls.gitPush + calls.gitCommit, text).toBe(0); // test 11
+      expect(calls.applyAnchorSet, text).toBe(0);
+      expect(r13.reply.text, text).toMatch(/아직 준비되지 않았|이후 별도 실행 단계/);
+      expect(r13.reply.text, text).toMatch(/아직 아무것도 삭제하지 않았어요/);
+      expect(calls.lastApplyAnchor?.status ?? 'REMOTE_BRANCH_CLEANUP_APPROVED', text).not.toBe('REMOTE_BRANCH_CLEANED');
+    }
+  });
+
+  it('3j-A test 14/15: approved + status/check → read-only preview, keeps state; deploy/release → unsupported', async () => {
+    const st = makeDeps({ applyAnchor: REMOTE_CLEANUP_APPROVED_ANCHOR() });
+    await new ConversationRuntime(st.deps).handle(messageOf('PR 상태 확인해줘'));
+    expect(st.calls.hostingGetStatus).toBe(1);
+    expect(st.calls.applyAnchorSet).toBe(0); // keeps REMOTE_BRANCH_CLEANUP_APPROVED
+    for (const text of ['배포해줘', '릴리즈해줘']) {
+      const { deps, calls } = makeDeps({ applyAnchor: REMOTE_CLEANUP_APPROVED_ANCHOR() });
+      const r = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.applyAnchorSet, text).toBe(0);
+      expect(r.reply.text, text).not.toMatch(/deployed|배포했|released|릴리즈했/i);
+    }
+  });
+
+  it('3j-A test 16/17/18: no RepositoryHosting delete method, no Git/CommandExecution/ExecutionOrchestrator touch on any 3j-A path', async () => {
+    for (const text of ['원격 브랜치 삭제해줘', '승인', '실행해줘']) {
+      const anchor = text === '원격 브랜치 삭제해줘' ? BRANCH_CLEANED_ANCHOR() : text === '승인' ? REMOTE_CLEANUP_PENDING_ANCHOR() : REMOTE_CLEANUP_APPROVED_ANCHOR();
+      const { deps, calls } = makeDeps({ applyAnchor: anchor });
+      await new ConversationRuntime(deps).handle(messageOf(text));
+      // test 16: the manager exposes no remote-branch delete method (approval-only in 3j-A)
+      expect(typeof (deps.repositoryHosting?.manager as unknown as { deleteRemoteBranch?: unknown })?.deleteRemoteBranch, text).toBe('undefined');
+      // test 17/18: Git capability, CommandExecution/shell, ExecutionOrchestrator all untouched
+      expect(calls.gitDeleteBranch + calls.gitPush + calls.gitCommit + calls.gitSyncMain + calls.gitStatus, text).toBe(0);
+      expect(calls.commandRun + calls.run, text).toBe(0);
+      expect(calls.hostingCreatePR + calls.hostingMergePR, text).toBe(0);
+    }
+  });
+
+  it('3j-A guard: no anchor ever reaches REMOTE_BRANCH_CLEANED in 3j-A; remote-cleanup approval is a DISTINCT field from mergeApprovalId', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: BRANCH_CLEANED_ANCHOR() });
+    await new ConversationRuntime(deps).handle(messageOf('원격 브랜치 삭제해줘'));
+    const a = calls.lastApplyAnchor!;
+    expect(a.status).not.toBe('REMOTE_BRANCH_CLEANED' as unknown);
+    // Distinct field namespace: the remote-cleanup approval id is stored in its OWN field and the preserved
+    // mergeApprovalId still coexists (the mock reuses one id value, so distinctness is structural, not by value).
+    expect(a.remoteBranchCleanupApprovalId).toBeTruthy();
+    expect(a.mergeApprovalId).toBe('apply-appr-1'); // the earlier merge approval id is preserved, not overwritten
+    expect(Object.prototype.hasOwnProperty.call(a, 'remoteBranchCleanupApprovalId')).toBe(true);
+    expect(a.cleanedRemoteBranch).toBe(false); // stays false through 3j-A
+  });
+
+  it('3j-A guard: local cleanup phrase at BRANCH_CLEANED still routes local (already cleaned), NOT remote approval', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: BRANCH_CLEANED_ANCHOR() });
+    const r = await new ConversationRuntime(deps).handle(messageOf('로컬 브랜치 정리해줘'));
+    expect(calls.requestForRisk).toBe(0); // no remote approval
+    expect(calls.gitDeleteBranch).toBe(0);
+    expect(r.reply.text).toMatch(/이미 없어요|삭제한 브랜치가 없어요/);
   });
 });
 
