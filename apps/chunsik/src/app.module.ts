@@ -75,31 +75,96 @@ import { LocalVectorProvider } from '@chunsik/vector-local';
 import { LocalCloneWorkspaceProvider, LocalWorkspaceWriter } from '@chunsik/workspace-local';
 import { LocalGitProvider } from '@chunsik/git-local';
 import { GitHubRepositoryHostingProvider } from '@chunsik/repository-hosting-github';
+import { GitHubAppAuth } from '@quoky/github-app-auth';
 import { LocalCommandRunner } from '@chunsik/command-local';
 import { ClaudeCliProvider, CodexCliProvider, OllamaCliProvider } from '@chunsik/ai-cli';
 import { V1_CONNECTORS } from '@chunsik/connectors';
 
 import { loadConfig } from './config';
 import { ConsoleLogger } from './console-logger';
+import { GitHubAppGitProvider } from './github-app-git-provider';
 
 const config = loadConfig();
 const coreLogger = new ConsoleLogger('chunsik');
 
-// Sprint 3d-D (ADR-0054): Repository Hosting composition — actual PR creation execution.
-// Resolve the target identity from reviewed config (independent of token). Construct the GitHub adapter +
-// RepositoryHostingManager ONLY when a non-blank token is present; otherwise PR creation is "not configured"
-// and fails safe at runtime (NO adapter constructed — a blank token never reaches the adapter constructor, and
-// unrelated flows are unaffected). The token is ADAPTER-LOCAL: it is passed ONLY to the adapter constructor
-// here and never reaches @chunsik/core / ConversationRuntime / anchors / ApprovalRequest.reason / logs.
+// Sprint 4b (ADR-0061): GitHub App authentication for RepositoryHosting (CAP-010) + git push/clone (CAP-002).
+// Resolve the reviewed identity (independent of credentials), then select the auth mode and construct the hosting
+// adapter + the App-auth git decorator ONLY when auth is fully configured; otherwise the capability is
+// "not configured" and fails safe. The App private key / minted token are ADAPTER-LOCAL: passed ONLY into
+// @quoky/github-app-auth here; never into @chunsik/core, ConversationRuntime, anchors, ApprovalRequest.reason,
+// logs, or Discord. `manager` reaches ConversationRuntime as `RepositoryHostingManager | undefined` — never a token.
 const repositoryIdentityResolution = new RepositoryIdentityResolver().resolve(config.repositoryHosting);
 const repositoryIdentity =
   repositoryIdentityResolution.status === 'resolved' ? repositoryIdentityResolution.identity : undefined;
-const githubToken = (config.githubToken ?? '').trim();
-const repositoryHostingManager =
-  githubToken.length > 0
-    ? new RepositoryHostingManager(new GitHubRepositoryHostingProvider({ token: githubToken }))
-    : undefined;
-// Passed to ConversationRuntime as `RepositoryHostingManager | undefined` — never the token itself.
+
+const appConfigured = config.githubApp !== undefined;
+const devPatToken = (config.githubToken ?? '').trim();
+const patConfigured = devPatToken.length > 0;
+const isDevRuntime = config.runtimeEnv === 'dev';
+
+// Auth-mode selection (ADR-0061 §10.2). prod: App-only; PAT-only rejected; App+PAT rejected as ambiguous.
+// dev: App precedence; PAT fallback allowed. "Rejected" → not configured (fail-safe; a sanitized warning, no secret).
+let hostingAuthMode: 'github-app' | 'pat' | 'none';
+if (appConfigured && patConfigured) {
+  if (isDevRuntime) {
+    hostingAuthMode = 'github-app';
+  } else {
+    hostingAuthMode = 'none';
+    coreLogger.warn(
+      'repository hosting: both GitHub App and PAT are configured in a non-dev runtime — rejected as ambiguous; capability not configured',
+    );
+  }
+} else if (appConfigured) {
+  hostingAuthMode = 'github-app';
+} else if (patConfigured) {
+  if (isDevRuntime) {
+    hostingAuthMode = 'pat';
+  } else {
+    hostingAuthMode = 'none';
+    coreLogger.warn(
+      'repository hosting: PAT auth is not allowed in a non-dev runtime (GitHub App required) — capability not configured',
+    );
+  }
+} else {
+  hostingAuthMode = 'none';
+}
+
+let repositoryHostingManager: RepositoryHostingManager | undefined;
+// GIT_PROVIDER default: the plain LocalGitProvider (local ops + dev-PAT/ambient-credential git). Replaced by the
+// App-auth decorator only in github-app mode, so git push/clone uses a minted installation token via GIT_ASKPASS.
+let gitProvider: GitProvider = new LocalGitProvider();
+
+if (hostingAuthMode === 'github-app' && repositoryIdentity && config.githubApp) {
+  const identity = repositoryIdentity;
+  const appAuth = new GitHubAppAuth({ appId: config.githubApp.appId, privateKeyPem: config.githubApp.privateKeyPem });
+  // Lazily resolve + cache the installation id (explicit env id, else the reviewed owner/repo). The token source
+  // mints/caches a short-lived installation token DOWN-SCOPED to the single target repo (numeric repository_ids +
+  // minimal contents/pull_requests write; ADR-0061 §8.4) — the SINGLE source shared by REST (CAP-010) and git
+  // (CAP-002). "Not installed" or "repo not accessible" throws → surfaced pre-mutation upstream (Blocked /
+  // not-configured); there is no broad-token fallback.
+  let cachedInstallationId: number | undefined = config.githubAppInstallationId;
+  const tokenSource = async (): Promise<string> => {
+    if (cachedInstallationId === undefined) {
+      const resolved = await appAuth.resolveInstallationId(identity.owner, identity.repo);
+      if (resolved === null) throw new Error('github app: not installed on the configured repository');
+      cachedInstallationId = resolved;
+    }
+    return appAuth.tokenForRepository(cachedInstallationId, identity.owner, identity.repo, {
+      contents: 'write',
+      pull_requests: 'write',
+    });
+  };
+  repositoryHostingManager = new RepositoryHostingManager(
+    new GitHubRepositoryHostingProvider({ auth: { kind: 'github-app', tokenSource } }),
+  );
+  gitProvider = new GitHubAppGitProvider({ makeLocalGit: (runner) => new LocalGitProvider(runner), tokenSource });
+} else if (hostingAuthMode === 'pat' && repositoryIdentity) {
+  repositoryHostingManager = new RepositoryHostingManager(
+    new GitHubRepositoryHostingProvider({ auth: { kind: 'pat', token: devPatToken } }),
+  );
+  // Dev PAT is a REST-only convenience (ADR-0061 §11.3): local git push uses the developer's own git credential,
+  // so GIT_PROVIDER stays the plain LocalGitProvider.
+}
 const repositoryHosting = { identity: repositoryIdentity, manager: repositoryHostingManager };
 
 /**
@@ -114,8 +179,10 @@ const infrastructure: Provider[] = [
     provide: WORKSPACE_PROVIDER,
     useFactory: () => new LocalCloneWorkspaceProvider({ workspaceRoot: config.workspace.workspaceRoot }),
   },
-  // CAP-002 Git (read-only). Separate port from Workspace — Workspace ≠ Git.
-  { provide: GIT_PROVIDER, useFactory: () => new LocalGitProvider() },
+  // CAP-002 Git. Separate port from Workspace — Workspace ≠ Git. In github-app auth mode this is the
+  // GitHubAppGitProvider decorator (App-token push/clone via one-shot GIT_ASKPASS; ADR-0061); otherwise the plain
+  // LocalGitProvider. LocalGitProvider itself is unchanged.
+  { provide: GIT_PROVIDER, useFactory: () => gitProvider },
   // CAP-006 Workspace Write — applies PatchSet operations to the filesystem (node:fs only).
   { provide: WORKSPACE_WRITER, useFactory: () => new LocalWorkspaceWriter() },
   // CAP-007 Command Execution — runs commands via argv-array spawn, no shell (child_process).

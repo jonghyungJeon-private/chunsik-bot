@@ -19,12 +19,21 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   no new capability/aggregate/repository/migration/port; no Core/Orchestrator contract change.**
   Implemented on a branch — **awaiting CA implementation review, no merge.**
 - **Next:** Chief Architect implementation review of Sprint 2m; no merge until approved.
-- **Build/Test (validation runtime: Node 22):** `pnpm typecheck` PASS (exit 0); `pnpm test` 38 files /
-  270 tests PASS. (Under the `.nvmrc`-pinned Node 18, SQLite repo tests fail on a better-sqlite3 ABI
+- **Build/Test (validation runtime: Node 22):** `pnpm typecheck` PASS (exit 0); `pnpm test` 49 files /
+  1098 tests PASS. (Under the `.nvmrc`-pinned Node 18, SQLite repo tests fail on a better-sqlite3 ABI
   mismatch — a Deferred (Environment) item; the suite is green on Node 22.)
 
 ## Implemented
 
+- **GitHub App Authentication (Sprint 4b, ADR-0061)** — repository auth for RepositoryHosting REST (CAP-010) and
+  local `git push`/`clone` (CAP-002) uses short-lived GitHub App installation tokens minted at execution from an
+  adapter-local App private key. New `@quoky/github-app-auth` (App JWT via `node:crypto`, installation resolution,
+  token mint + in-memory cache); the RepositoryHosting adapter takes an `auth` source (github-app | dev-only PAT);
+  a composition-root `GitHubAppGitProvider` decorator feeds the token to git via a one-shot `GIT_ASKPASS` (token
+  only in the child env; never in argv/URL/.git/config/logs/anchors/Discord). `LocalGitProvider` + the `GitProvider`
+  port are unchanged; no new capability. New env `QUOKY_GITHUB_APP_*` / `QUOKY_GITHUB_OWNER` / `QUOKY_GITHUB_REPO` /
+  `QUOKY_RUNTIME_ENV`; legacy `CHUNSIK_GITHUB_OWNER`/`_REPO` fallback; `CHUNSIK_GITHUB_TOKEN` dev-only PAT. Awaiting
+  CA implementation review (PR).
 - **Discord** — gateway adapter (`PlatformAdapter`): receive, typing indicator,
   chunked delivery of long replies (ADR-0016).
 - **Claude CLI** — `ClaudeCliProvider` via `claude -p` (non-interactive, neutral cwd,

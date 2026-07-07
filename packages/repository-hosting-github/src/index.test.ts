@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { GitHubRepositoryHostingProvider } from './index';
-import type { GitHubHostingConfig } from './index';
+import type { GitHubHostingAuth, GitHubHostingConfig } from './index';
 import { RemoteBranchCleanupBlockedError, RemoteBranchCleanupUnverifiedError } from '@chunsik/core';
 import type { PullRequestCreationInput, PullRequestRef, RepositoryIdentity } from '@chunsik/core';
 
@@ -38,7 +38,7 @@ function ghPull(over: Record<string, unknown> = {}) {
 }
 
 function provider(fn: typeof fetch, extra: Partial<GitHubHostingConfig> = {}) {
-  return new GitHubRepositoryHostingProvider({ token: TOKEN, fetchImpl: fn, ...extra });
+  return new GitHubRepositoryHostingProvider({ auth: { kind: 'pat', token: TOKEN }, fetchImpl: fn, ...extra });
 }
 
 const createInput: PullRequestCreationInput = {
@@ -51,15 +51,43 @@ const createInput: PullRequestCreationInput = {
 };
 
 describe('GitHubRepositoryHostingProvider (CAP-010 adapter, ADR-0053, Sprint 3d-C)', () => {
-  describe('construction (tests 1/2)', () => {
-    it('rejects a blank/whitespace token (no fetch)', () => {
+  describe('construction (tests 1/2 + Sprint 4b auth swap, ADR-0061)', () => {
+    it('rejects a blank/whitespace PAT (no fetch)', () => {
       const { fn } = fakeFetch(() => ({ status: 200 }));
-      expect(() => provider(fn, { token: '' } as Partial<GitHubHostingConfig>)).toThrow();
-      expect(() => new GitHubRepositoryHostingProvider({ token: '   ', fetchImpl: fn })).toThrow();
+      expect(() => new GitHubRepositoryHostingProvider({ auth: { kind: 'pat', token: '' }, fetchImpl: fn })).toThrow();
+      expect(() => new GitHubRepositoryHostingProvider({ auth: { kind: 'pat', token: '   ' }, fetchImpl: fn })).toThrow();
     });
-    it('accepts a non-blank token', () => {
+    it('rejects a github-app auth without a token source (no fetch)', () => {
+      const { fn } = fakeFetch(() => ({ status: 200 }));
+      expect(
+        () =>
+          new GitHubRepositoryHostingProvider({
+            auth: { kind: 'github-app' } as unknown as GitHubHostingAuth,
+            fetchImpl: fn,
+          }),
+      ).toThrow();
+    });
+    it('accepts a non-blank PAT', () => {
       const { fn } = fakeFetch(() => ({ status: 200 }));
       expect(() => provider(fn)).not.toThrow();
+    });
+    it('uses the minted installation token from a github-app token source as the Bearer header', async () => {
+      const { fn, calls } = fakeFetch(() => ({ status: 200 }));
+      const p = new GitHubRepositoryHostingProvider({
+        auth: { kind: 'github-app', tokenSource: async () => 'ghs_installationToken' },
+        fetchImpl: fn,
+      });
+      await p.repositoryExists(IDENTITY);
+      const h = calls[0]!.init.headers as Record<string, string>;
+      expect(h.Authorization).toBe('Bearer ghs_installationToken');
+    });
+    it('throws when the github-app token source returns an empty token', async () => {
+      const { fn } = fakeFetch(() => ({ status: 200 }));
+      const p = new GitHubRepositoryHostingProvider({
+        auth: { kind: 'github-app', tokenSource: async () => '' },
+        fetchImpl: fn,
+      });
+      await expect(p.repositoryExists(IDENTITY)).rejects.toThrow();
     });
   });
 

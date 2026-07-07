@@ -18,6 +18,7 @@
     "@chunsik/workspace-local": "workspace:*",
     "@chunsik/git-local": "workspace:*",
     "@chunsik/repository-hosting-github": "workspace:*",
+    "@quoky/github-app-auth": "workspace:*",
     "@chunsik/command-local": "workspace:*",
     "@chunsik/ai-cli": "workspace:*",
     "@chunsik/connectors": "workspace:*",

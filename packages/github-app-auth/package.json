@@ -1,0 +1,21 @@
+{
+  "name": "@quoky/github-app-auth",
+  "version": "0.1.0",
+  "private": true,
+  "description": "GitHubAppAuth — adapter-local GitHub App authentication (installation access token minting) for Quoky (ADR-0061). Built-in crypto + fetch only.",
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b"
+  }
+}

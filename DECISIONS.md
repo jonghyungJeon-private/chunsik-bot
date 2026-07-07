@@ -3969,3 +3969,121 @@ bounded GitHub REST, adapter-local token, no shell; `RepositoryIdentity`/`pullRe
 ADR-0023 (Git = local repository capability, never a remote URL — why remote deletion is RepositoryHosting-owned).
 Plans: `docs/plans/sprint-3j-remote-branch-cleanup-plan.md` (3j-A approval),
 `docs/plans/sprint-3j-b-remote-branch-cleanup-execution-plan.md` (3j-B execution).
+
+## ADR-0061 — GitHub App Authentication (dev/PAT → GitHub App installation; adapter-local App key, short-lived installation tokens minted at execution; CAP-010 REST + CAP-002 push/clone; zero Core-contract change)
+
+- **Status:** ✅ **Accepted** (v2 — GitHub App Authentication; Sprint 4a design ACCEPTED → this ADR gates Sprint 4b
+  implementation). **Ratified by the Chief Architect / Product Owner on 2026-07-07** under the ratification
+  conditions below (Sprint 4a/4b baseline; no new capability; `GitProvider` port + `LocalGitProvider` unchanged; no
+  credential on `RepositoryInfo`/`RepositoryIdentity`; the secret boundary; one-shot `GIT_ASKPASS` only; HTTPS
+  remote preflight required; SSH blocked for App-auth push; Discord credential-free; PAT dev-only; new artifacts use
+  Quoky naming; no rename of existing identifiers; UAT + production secret creation NOT yet approved; no broad
+  naming migration; Sprint 4c not started). Sprint 4b implementation is approved to proceed.
+- **Date:** 2026-07-07
+- **Scope:** Replace the developer/PAT repository-auth model with a **GitHub App installation** model for BOTH
+  GitHub auth surfaces — **RepositoryHosting REST (CAP-010)** and **local `git push`/`clone` (CAP-002)**. The App
+  private key is the only new durable secret and is **adapter-local**; a **short-lived installation access token**
+  is minted **at execution time**, used as the Bearer for REST and as the git credential for push/clone, and never
+  exposed. The change is **adapter-local + composition-root only** — **no `@chunsik/core` contract changes, no new
+  capability.** Authoritative design: `docs/plans/sprint-4a-…-plan.md` (baseline, §11/§15/§18) and
+  `docs/plans/sprint-4b-…-implementation-plan.md` (concrete implementation, both CA-accepted).
+
+### Most important rule
+> **The App private key and every minted installation token are adapter-local / composition-owned and NEVER appear
+> in process argv, a git remote URL, `.git/config`, logs, anchors, an `ApprovalRequest.reason`, a Discord message,
+> UAT evidence, or anywhere in `@chunsik/core`.** `LocalGitProvider` and the `GitProvider` **port are unchanged**;
+> `RepositoryInfo`/`RepositoryIdentity` gain **no** credential field; there is **no new capability**. Authentication
+> is orthogonal to governance — the existing HIGH/CRITICAL approval gates in front of push/PR/merge/cleanup are
+> untouched. A pre-mutation auth/mint failure is **Blocked** ("did not happen"); a failure at/after a mutation is
+> **Unverified** (never "did not happen").
+
+### Decision
+- **Q1 — New adapter-local auth component (`@quoky/github-app-auth`).** A new package (new `@quoky` npm scope,
+  coexisting with `@chunsik/*`; directory `packages/github-app-auth/`) holds the App private key and mints tokens:
+  `GitHubAppAuth.resolveInstallationId(owner,repo)` + `tokenForInstallation(installationId, scope?)`. App JWT is
+  **RS256 via built-in `node:crypto`**; bounded single-request `fetch`; **no octokit/gh/curl/extra SDK** (ADR-0053
+  preserved). It depends only on Node built-ins + `@chunsik/core` types. Function-neutral class names carry no
+  product name and are kept as chosen.
+- **Q2 — CAP-010 auth-source swap (the only RepositoryHosting-adapter edit).** `GitHubHostingConfig.token` becomes
+  `auth: { kind:'github-app'; tokenSource: () => Promise<string> } | { kind:'pat'; token }`; `request()` reads the
+  Bearer value from `await currentToken()`. **Everything else in `GitHubRepositoryHostingProvider` is unchanged**
+  (fixed `https://api.github.com`, bounded fetch, sanitized `statusError` — no token/body echo, the exact
+  POST-pulls / PUT-merge / DELETE-git-refs mutation set, reads, path-safety). The adapter never sees a JWT or
+  installation — it receives an opaque bearer string.
+- **Q3 — CAP-002 git credential (composition-root decorator + one-shot GIT_ASKPASS).** A composition-root
+  `GitHubAppGitProvider` **decorator** implements the `GitProvider` port by wrapping an **unchanged**
+  `LocalGitProvider`. Local ops delegate directly; the three remote-touching ops (`pushApprovedCommit` /
+  `getRemoteRefCommit` (`ls-remote`) / `syncMainFastForward` (`fetch`)) **mint the token async first**, then build a
+  **one-shot `GIT_ASKPASS`** runner: a unique per-invocation temp helper (`mkdtemp`, mode 0700, containing **no
+  token literal** — it echoes `$GIT_APP_TOKEN` from the **child** process env), a fresh `childEnv`
+  (`GIT_ASKPASS`, `GIT_APP_TOKEN`, `GIT_TERMINAL_PROMPT=0`) passed to a single `spawnSync`, with the temp helper
+  removed in a `finally`. **PROHIBITED as defaults (RC1):** token in argv, `git -c http.extraHeader=…`,
+  `https://x-access-token:<token>@…` remote URL, `.git/config` write, any persistent credential-helper write.
+- **Q4 — Boundary (RC2).** The `GitProvider` port is **not** amended; `LocalGitProvider` is **byte-for-byte
+  unchanged** (the async mint happens in the decorator before the sync spawn, so git-local never mints/reads/
+  forwards a token or a remote URL); core never sees a credential; `RepositoryInfo`/`RepositoryIdentity` get no
+  credential field.
+- **Q5 — Concurrency + leakage (RC3).** Credential state is per-invocation: a fresh `childEnv` (the parent
+  `process.env` is **never** mutated) + a unique temp helper dir → concurrent GitHub-mutating executions are
+  isolated; cleanup is guaranteed in a `finally` on success, Blocked, and thrown exception; child-env/token are
+  never logged (`sanitizeGitStderr` remains the stderr backstop). v1 need not block concurrency; if per-invocation
+  isolation cannot be guaranteed on the target platform, v1 MAY serialize GitHub-mutating executions — stated
+  explicitly, without overclaiming product-wide concurrency.
+- **Q6 — installation_id resolution.** `GET /repos/{owner}/{repo}/installation` (App JWT); `200`→`id`, `404`→`null`
+  ("not installed" fail-safe), else sanitized error. In-memory cache keyed by `owner/repo`; **no persisted mapping**
+  (deferred to multi-project/team). `owner`/`repo` are the reviewed identity (ADR-0051), never a chat-supplied id.
+- **Q7 — Token minting + in-memory cache.** `POST /app/installations/{installationId}/access_tokens` (App JWT);
+  parse `token`+`expires_at` only; **short-lived (~1h)**; in-memory cache with a refresh buffer; minted **lazily at
+  execution** (never eagerly at boot); **never persisted/logged/returned**. Per-execution **down-scoping**
+  (`repository_ids` + minimal `permissions: contents:write, pull_requests:write`) where GitHub allows. One mint
+  serves both surfaces (REST + git) within its life.
+- **Q8 — Config + fail-safe + auth-mode selection.** New env (read only in `apps/chunsik/src/config.ts`):
+  `QUOKY_GITHUB_APP_ID` / `QUOKY_GITHUB_APP_PRIVATE_KEY(_PATH)` / `QUOKY_GITHUB_APP_INSTALLATION_ID` (optional) /
+  `QUOKY_GITHUB_OWNER` / `QUOKY_GITHUB_REPO` / `QUOKY_RUNTIME_ENV`. **prod:** App-only; **PAT-only rejected**;
+  **App+PAT rejected as ambiguous** → not-configured (fail-safe, sanitized warning). **dev:** App precedence, PAT
+  fallback. Not-configured / incomplete App config / not-installed / **pre-mutation mint failure → Blocked**; a
+  mint/refresh failure at/after a call → **Unverified**. The private key enters only the App-auth config at the
+  composition root — never core/runtime/anchor/logs. `ConversationRuntime` still receives `manager | undefined`,
+  never a token.
+- **Q9 — Naming boundary (CA correction).** New artifacts use **Quoky** (`@quoky/github-app-auth`,
+  `QUOKY_GITHUB_APP_*`, `QUOKY_GITHUB_OWNER/REPO`, `QUOKY_RUNTIME_ENV`). Existing legacy identifiers are **kept**:
+  `@chunsik/*` packages, `apps/chunsik`, `CHUNSIK_*` env (`CHUNSIK_GITHUB_OWNER/REPO` = legacy owner/repo fallback;
+  **`CHUNSIK_GITHUB_TOKEN` = dev-only PAT fallback**), `ChunsikConfig`, class/type/state/CAP/ADR identifiers. No
+  repo-wide `ChunsikBot → Quoky` doc substitution. **Bulk migration is deferred to Sprint 4c — Quoky Naming
+  Migration Plan** (plan-only, not started).
+- **Q10 — HTTPS precondition.** App-token git auth requires the target remote to resolve to an
+  `https://github.com/…` URL (so git prompts via askpass); **SSH remotes are blocked for App-auth push** (they would
+  use ambient keys). A required UAT preflight verifies HTTPS.
+- **Q11 — Discord boundary.** Discord stays a **credential-free transport** — never receives/stores/logs the App
+  private key, an installation token, a PAT, or an App JWT; never accepts a secret pasted into chat; never selects
+  repositories as an API permission boundary. It may only carry intent, show approval / not-configured / not-
+  installed messages, and optionally provide a GitHub App install link.
+- **Q12 — UAT re-entry (gated; not executed).** UAT re-enters on the GitHub App model (Sprint 4a §14: `quoky-dev`
+  App on `jonghyungJeon-private/quoky-uat-sandbox` only, least-privilege set, secret-free evidence, App-token git
+  push preflight). It runs **only after** this ADR is ratified, Sprint 4b is implemented + typecheck-clean + green
+  on Node 22 + PR'd + CA-implementation-reviewed + merged, **and** CA explicitly says "App-auth UAT approved,
+  proceed." The PAT-based Sprint 3o smoke test does **not** resume as-is.
+
+### Consequences
+- **+** Product-representative auth: short-lived, per-repo-scoped installation tokens instead of a hand-injected,
+  terminal-ambient PAT; both GitHub surfaces (REST + git) authenticate from one adapter-local minting source.
+- **+** Tiny blast radius — the adapter-local credential boundary (ADR-0051/0053/0054) means the swap is invisible
+  to `@chunsik/core`: the `GitProvider`/`RepositoryHostingProvider` ports, the managers, the runtime, the domain,
+  and `LocalGitProvider` are all unchanged. Establishes the Team-Edition multi-installation seam.
+- **−** One new durable secret (the App private key) to manage; a new adapter package + an adapter-local minting
+  component (JWT sign + token exchange + in-memory cache) + a composition-root git-credential decorator; the UAT
+  must re-provision on the App model; concurrency may be conservatively bounded in v1 if isolation is unattainable.
+- **Out of scope:** no new capability; no `GitProvider`/`RepositoryHostingProvider` port change; no domain/manager/
+  runtime contract change; no production GitHub App secret creation/configuration without explicit CA approval; no
+  broad naming migration and no Sprint 4c start; no UAT execution; no deploy/release/tag; GitHub Enterprise deferred
+  (github.com only, ADR-0053).
+
+### Relations
+Extends **ADR-0051** (reviewed `RepositoryIdentity`, no token/URL — kept pure; adds a non-secret installation
+resolution alongside), **ADR-0053/0054** (adapter-local credential boundary + built-in `fetch`/sanitized errors —
+the reason the swap needs no Core change), and reuses **ADR-0057/0060** (the REST mutations now Bearer'd by the
+minted token). Documents the **ADR-0023/0048** git boundary (git push/clone credential supplied ephemerally
+*outside* git-local; the port is **not** amended, `RepositoryInfo` still exposes no remote URL). Naming boundary per
+the CA Sprint 4b correction; bulk rename deferred to a future **Sprint 4c**. Plans:
+`docs/plans/sprint-4a-github-app-authentication-architecture-plan.md` (accepted baseline),
+`docs/plans/sprint-4b-github-app-authentication-implementation-plan.md` (accepted implementation plan).

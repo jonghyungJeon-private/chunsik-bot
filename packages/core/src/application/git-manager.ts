@@ -58,6 +58,20 @@ export class BranchCleanupUnverifiedError extends Error {
   }
 }
 
+/**
+ * An approved git push failed **before the push was attempted** — specifically an App-auth credential/preflight
+ * failure (installation-token mint, one-shot `GIT_ASKPASS` creation, or the required HTTPS github.com remote
+ * preflight; ADR-0061, Sprint 4b). Definitively **no** push happened — a caller may safely say the push was not
+ * performed. Distinct from a throw AT/AFTER the push attempt, which stays the conservative "could-not-complete /
+ * check the remote" reply (never "not pushed"). Mirrors {@link GitMainSyncBlockedError}.
+ */
+export class GitPushBlockedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'GitPushBlockedError';
+  }
+}
+
 /** Reject an absolute / `..` traversal / empty commit pathspec (ADR-0046 defensive gate). */
 function isUnsafeCommitPath(p: string): boolean {
   const t = typeof p === 'string' ? p.trim() : '';
