@@ -14,6 +14,7 @@
     { "path": "../../packages/workspace-local" },
     { "path": "../../packages/git-local" },
     { "path": "../../packages/repository-hosting-github" },
+    { "path": "../../packages/github-app-auth" },
     { "path": "../../packages/command-local" },
     { "path": "../../packages/ai-cli" },
     { "path": "../../packages/connectors" }

@@ -34,10 +34,18 @@ const GITHUB_API_VERSION = '2022-11-28';
 const USER_AGENT = 'chunsik-bot';
 const SHA_SHAPED = /^[0-9a-f]{7,40}$/i;
 
+/**
+ * Auth source for the RepositoryHosting adapter (Sprint 4b, ADR-0061). Either a GitHub App installation-token
+ * source (minted adapter-local by `@quoky/github-app-auth`) or a dev-only PAT. The resolved token value is used
+ * ONLY as an `Authorization: Bearer` header — never logged, returned, or placed in an error.
+ */
+export type GitHubHostingAuth =
+  | { kind: 'github-app'; tokenSource: () => Promise<string> }
+  | { kind: 'pat'; token: string };
+
 export interface GitHubHostingConfig {
-  /** GitHub token — adapter-local ONLY (used solely as an `Authorization: Bearer` value). Never logged,
-   *  never returned, never placed in an error. */
-  token: string;
+  /** Auth source (ADR-0061). Adapter-local — the token value never leaves the adapter except as a Bearer header. */
+  auth: GitHubHostingAuth;
   /** Injectable `fetch` for testability (default: global `fetch`). Unit tests pass a fake — no live network. */
   fetchImpl?: typeof fetch;
   /** Optional per-request timeout (ms) via `AbortSignal.timeout`. Omitted in tests so they never wait. */
@@ -54,16 +62,41 @@ interface GitHubPull {
 
 export class GitHubRepositoryHostingProvider implements RepositoryHostingProvider {
   readonly kind = 'github';
-  private readonly token: string;
+  private readonly auth: GitHubHostingAuth;
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs?: number;
 
   constructor(config: GitHubHostingConfig) {
-    const token = typeof config?.token === 'string' ? config.token.trim() : '';
-    if (token.length === 0) throw new Error('github hosting: a non-empty token is required');
-    this.token = token;
+    const auth = config?.auth;
+    if (!auth || (auth.kind !== 'github-app' && auth.kind !== 'pat')) {
+      throw new Error('github hosting: a valid auth config is required');
+    }
+    if (auth.kind === 'pat') {
+      const token = typeof auth.token === 'string' ? auth.token.trim() : '';
+      if (token.length === 0) throw new Error('github hosting: a non-empty token is required');
+      this.auth = { kind: 'pat', token };
+    } else {
+      if (typeof auth.tokenSource !== 'function') {
+        throw new Error('github hosting: a github-app token source is required');
+      }
+      this.auth = auth;
+    }
     this.fetchImpl = config.fetchImpl ?? fetch;
     this.timeoutMs = config.timeoutMs;
+  }
+
+  /**
+   * Resolve the current Bearer value: the static dev PAT, or a freshly-minted/cached installation access token
+   * from the App token source. The value is used ONLY for the `Authorization` header — never logged, returned, or
+   * placed in an error. A mint failure here surfaces during the manager's read-first phase → pre-mutation Blocked.
+   */
+  private async currentToken(): Promise<string> {
+    if (this.auth.kind === 'pat') return this.auth.token;
+    const token = await this.auth.tokenSource();
+    if (typeof token !== 'string' || token.length === 0) {
+      throw new Error('github hosting: the app token source returned an empty token');
+    }
+    return token;
   }
 
   async repositoryExists(identity: RepositoryIdentity): Promise<boolean> {
@@ -392,8 +425,9 @@ export class GitHubRepositoryHostingProvider implements RepositoryHostingProvide
     path: string,
     jsonBody?: unknown,
   ): Promise<Response> {
+    const token = await this.currentToken();
     const headers: Record<string, string> = {
-      Authorization: `Bearer ${this.token}`,
+      Authorization: `Bearer ${token}`,
       Accept: 'application/vnd.github+json',
       'X-GitHub-Api-Version': GITHUB_API_VERSION,
       'User-Agent': USER_AGENT,

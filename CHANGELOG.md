@@ -7,6 +7,45 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Sprint 4b · GitHub App Authentication (dev/PAT → GitHub App; ADR-0061)
+
+- **Auth-model pivot implemented** (ADR-0061, ratified 2026-07-07). Repository auth for both surfaces —
+  RepositoryHosting REST (CAP-010) and local `git push`/`clone` (CAP-002) — now uses **short-lived GitHub App
+  installation access tokens minted at execution time** from an adapter-local App private key, instead of a
+  hand-injected PAT. **Zero `@chunsik/core` contract change; no new capability.**
+- **New package `@quoky/github-app-auth`** (new `@quoky` scope, coexisting with `@chunsik/*`). `GitHubAppAuth`
+  signs an App JWT (RS256 via built-in `node:crypto`), resolves `installation_id`
+  (`GET /repos/{owner}/{repo}/installation`; 404 → not installed), and mints/caches installation tokens
+  (`POST …/access_tokens`) with an in-memory refresh buffer + per-execution down-scoping (repository ids +
+  minimal `contents`/`pull_requests` write). Built-in `fetch` only — no octokit/gh/curl/SDK. The private key and
+  minted tokens are adapter-local: never logged/returned/persisted; `AppAuthError` is sanitized (401/403 →
+  "authorization failed").
+- **RepositoryHosting adapter auth swap** — `GitHubHostingConfig.token` → `auth` (`{ kind:'github-app';
+  tokenSource } | { kind:'pat'; token }`); the Bearer value is resolved per request via `currentToken()`.
+  Everything else in `GitHubRepositoryHostingProvider` (base URL, bounded fetch, sanitized errors, mutation/read
+  sets, path safety) is unchanged.
+- **Composition-root `GitHubAppGitProvider` decorator** wraps an **unchanged** `LocalGitProvider`. Local ops
+  delegate directly; the three remote-touching ops (`pushApprovedCommit` / `getRemoteRefCommit` /
+  `syncMainFastForward`) mint a token **first**, then run through a **one-shot `GIT_ASKPASS`** whose token lives
+  ONLY in the child process env — never in argv, a remote URL, `.git/config`, logs, anchors, approval reasons,
+  Discord, or evidence. The per-invocation temp helper (unique dir, mode 0700, no token literal) is removed in a
+  `finally`; `process.env` is never mutated (concurrency-safe). A credential/mint failure before the inner git
+  run maps to Blocked ("not synced"); a typed `GitMainSync*` error from the inner provider is preserved.
+- **Config + fail-safe** — new env `QUOKY_GITHUB_APP_ID` / `QUOKY_GITHUB_APP_PRIVATE_KEY(_PATH)` /
+  `QUOKY_GITHUB_APP_INSTALLATION_ID`; owner/repo prefer `QUOKY_GITHUB_OWNER`/`QUOKY_GITHUB_REPO`, falling back to
+  legacy `CHUNSIK_GITHUB_OWNER`/`CHUNSIK_GITHUB_REPO`; `QUOKY_RUNTIME_ENV` gates the **dev-only** PAT fallback
+  (legacy `CHUNSIK_GITHUB_TOKEN`). In a non-dev runtime, PAT-only and App+PAT are rejected (→ not configured,
+  fail-safe). Not-configured / not-installed / mint-failure fail safe without crashing unrelated flows.
+- **RC2 invariants preserved** — the `GitProvider` and `RepositoryHostingProvider` ports, `LocalGitProvider`,
+  `RepositoryInfo`/`RepositoryIdentity`, `RepositoryHostingManager`, `GitManager`, and `ConversationRuntime` are
+  **unchanged**. Naming per the CA correction: new artifacts use Quoky; existing `@chunsik/*`/`CHUNSIK_*`/classes
+  are kept (bulk migration deferred to Sprint 4c).
+- **Tests** — new/updated unit tests for App-auth token minting + sanitized failures, the adapter auth swap,
+  git-credential isolation (no token in argv/env-leak, temp-dir cleanup on success + throw), config precedence +
+  runtime-mode derivation. Suite: **49 files / 1084 tests** green on Node 22; `pnpm typecheck` exit 0.
+- **Not in this sprint** — no GitHub App created, no secrets configured, no UAT run, no GitHub API mutation, no
+  broad naming migration, no Sprint 4c. UAT re-entry (GitHub App model) remains separately CA-gated.
+
 ### Added — Sprint 2m · Test Result Detail UX (CommandExecution facts → useful reply)
 
 - **Test/typecheck replies now carry detail, not just pass/fail** (ADR-0034). `CommandExecution`

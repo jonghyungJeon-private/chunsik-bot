@@ -59,6 +59,9 @@ importers:
       '@nestjs/core':
         specifier: ^10.4.4
         version: 10.4.22(@nestjs/common@10.4.22(reflect-metadata@0.2.2)(rxjs@7.8.2))(reflect-metadata@0.2.2)(rxjs@7.8.2)
+      '@quoky/github-app-auth':
+        specifier: workspace:*
+        version: link:../../packages/github-app-auth
       reflect-metadata:
         specifier: ^0.2.2
         version: 0.2.2
@@ -100,6 +103,8 @@ importers:
       '@chunsik/core':
         specifier: workspace:*
         version: link:../core
+
+  packages/github-app-auth: {}
 
   packages/queue-local:
     dependencies:
