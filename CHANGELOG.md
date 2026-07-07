@@ -40,9 +40,28 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
   `RepositoryInfo`/`RepositoryIdentity`, `RepositoryHostingManager`, `GitManager`, and `ConversationRuntime` are
   **unchanged**. Naming per the CA correction: new artifacts use Quoky; existing `@chunsik/*`/`CHUNSIK_*`/classes
   are kept (bulk migration deferred to Sprint 4c).
-- **Tests** — new/updated unit tests for App-auth token minting + sanitized failures, the adapter auth swap,
-  git-credential isolation (no token in argv/env-leak, temp-dir cleanup on success + throw), config precedence +
-  runtime-mode derivation. Suite: **49 files / 1084 tests** green on Node 22; `pnpm typecheck` exit 0.
+- **CA review hardening (PR #39 REQUEST CHANGES → addressed):**
+  - **HTTPS github.com remote preflight (RC1)** — before any App-auth remote git op, `GitHubAppGitProvider` reads
+    the configured remote URL (credential-free local `git remote get-url`) and requires an HTTPS github.com remote;
+    **scp-like SSH (`git@github.com:…`), `ssh://`, non-GitHub HTTPS, credential-embedding, and unreadable remotes
+    are Blocked before any git spawn** — preventing an ambient SSH/keychain/OAuth/PAT fallback. The remote URL is
+    read transiently and never stored in `RepositoryInfo`/`RepositoryIdentity`/an anchor/a reason.
+  - **Numeric `repository_ids` down-scoping (RC2)** — `GitHubAppAuth.resolveRepositoryId` (name-scoped bootstrap
+    token → `GET /repos/{owner}/{repo}` → numeric id, cached) + `tokenForRepository` mint the token with
+    `repository_ids: [id]` + minimal permissions. A repo not accessible to the installation throws pre-mutation
+    (no broad-token fallback).
+  - **Remote-git credential-failure taxonomy (RC3)** — a new typed `GitPushBlockedError` (pre-mutation: token mint
+    / askpass creation / HTTPS preflight) routes to the runtime's Blocked "not-pushed" reply
+    (`composePushExecutionUnavailable`); `getRemoteRefCommit` failures throw (manager → Blocked); `syncMain`
+    pre-mutation → `GitMainSyncBlockedError`; an inner `GitMainSync{Blocked,Unverified}Error` is preserved
+    (at/after-mutation ambiguity stays Unverified). `GitProvider`/`RepositoryHostingProvider` ports and
+    `LocalGitProvider` remain unchanged.
+  - **Stronger tests (RC4)** — an injectable recording `spawn` verifies the token is in the child env only (never
+    in argv), the askpass file has no token literal, and blocked/SSH/unreadable remotes never spawn git or invoke
+    the inner op; plus the numeric-`repository_ids` flow and the push-Blocked → not-pushed runtime mapping.
+- **Tests** — App-auth token minting + repo-id resolution/down-scoping + sanitized failures, the adapter auth
+  swap, git-credential isolation + HTTPS preflight matrix, the push-Blocked taxonomy, config precedence +
+  runtime-mode derivation. Suite: **49 files / 1098 tests** green on Node 22; `pnpm typecheck` exit 0.
 - **Not in this sprint** — no GitHub App created, no secrets configured, no UAT run, no GitHub API mutation, no
   broad naming migration, no Sprint 4c. UAT re-entry (GitHub App model) remains separately CA-gated.
 

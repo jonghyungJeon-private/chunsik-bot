@@ -20,7 +20,7 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   Implemented on a branch — **awaiting CA implementation review, no merge.**
 - **Next:** Chief Architect implementation review of Sprint 2m; no merge until approved.
 - **Build/Test (validation runtime: Node 22):** `pnpm typecheck` PASS (exit 0); `pnpm test` 49 files /
-  1084 tests PASS. (Under the `.nvmrc`-pinned Node 18, SQLite repo tests fail on a better-sqlite3 ABI
+  1098 tests PASS. (Under the `.nvmrc`-pinned Node 18, SQLite repo tests fail on a better-sqlite3 ABI
   mismatch — a Deferred (Environment) item; the suite is green on Node 22.)
 
 ## Implemented

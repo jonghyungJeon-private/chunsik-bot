@@ -137,11 +137,11 @@ let gitProvider: GitProvider = new LocalGitProvider();
 if (hostingAuthMode === 'github-app' && repositoryIdentity && config.githubApp) {
   const identity = repositoryIdentity;
   const appAuth = new GitHubAppAuth({ appId: config.githubApp.appId, privateKeyPem: config.githubApp.privateKeyPem });
-  // Minimal per-execution down-scoping (ADR-0061 §8.4): contents + pull_requests write only.
-  const appScope = { permissions: { contents: 'write', pull_requests: 'write' } as Record<string, 'read' | 'write'> };
   // Lazily resolve + cache the installation id (explicit env id, else the reviewed owner/repo). The token source
-  // mints/caches a short-lived installation token — the SINGLE source shared by REST (CAP-010) and git (CAP-002).
-  // A "not installed" result throws → surfaced pre-mutation upstream (Blocked / not-configured).
+  // mints/caches a short-lived installation token DOWN-SCOPED to the single target repo (numeric repository_ids +
+  // minimal contents/pull_requests write; ADR-0061 §8.4) — the SINGLE source shared by REST (CAP-010) and git
+  // (CAP-002). "Not installed" or "repo not accessible" throws → surfaced pre-mutation upstream (Blocked /
+  // not-configured); there is no broad-token fallback.
   let cachedInstallationId: number | undefined = config.githubAppInstallationId;
   const tokenSource = async (): Promise<string> => {
     if (cachedInstallationId === undefined) {
@@ -149,7 +149,10 @@ if (hostingAuthMode === 'github-app' && repositoryIdentity && config.githubApp) 
       if (resolved === null) throw new Error('github app: not installed on the configured repository');
       cachedInstallationId = resolved;
     }
-    return appAuth.tokenForInstallation(cachedInstallationId, appScope);
+    return appAuth.tokenForRepository(cachedInstallationId, identity.owner, identity.repo, {
+      contents: 'write',
+      pull_requests: 'write',
+    });
   };
   repositoryHostingManager = new RepositoryHostingManager(
     new GitHubRepositoryHostingProvider({ auth: { kind: 'github-app', tokenSource } }),

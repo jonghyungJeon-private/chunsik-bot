@@ -6,6 +6,7 @@ import {
   BranchCleanupUnverifiedError,
   GitMainSyncBlockedError,
   GitMainSyncUnverifiedError,
+  GitPushBlockedError,
 } from './git-manager';
 import {
   ApprovalStatus,
@@ -3270,7 +3271,15 @@ export class ConversationRuntime {
         commitHash: anchor.pushCommitHash,
         approvalRef: gitApprovalRef,
       });
-    } catch {
+    } catch (err) {
+      // (ADR-0061, Sprint 4b) A GitPushBlockedError is an App-auth PRE-mutation failure (token mint / one-shot
+      // GIT_ASKPASS creation / HTTPS github.com remote preflight): the push was never attempted → "not pushed"
+      // (composePushExecutionUnavailable). Any OTHER throw stays the conservative could-not-complete / check-remote
+      // reply (never claims "not pushed"). Both keep PUSH_APPROVED and never set GIT_PUSHED (CA #2/#11).
+      if (err instanceof GitPushBlockedError) {
+        this.logPushExecutionFailed(session, anchor, 'git push blocked pre-mutation (App-auth credential/remote preflight)');
+        return this.failComposed(message, session, this.deps.composer.composePushExecutionUnavailable(message.context));
+      }
       this.logPushExecutionFailed(session, anchor, 'git push failed');
       return this.failComposed(message, session, this.deps.composer.composePushExecutionFailed(message.context));
     }

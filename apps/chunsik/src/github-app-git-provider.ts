@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { GitMainSyncBlockedError, GitMainSyncUnverifiedError } from '@chunsik/core';
+import { GitMainSyncBlockedError, GitPushBlockedError } from '@chunsik/core';
 import type {
   GitBranchCleanupResult,
   GitCommitResult,
@@ -27,6 +27,16 @@ case "$1" in
 esac
 `;
 
+/** Timeout for the local `git remote get-url` read used by the HTTPS preflight. */
+const REMOTE_URL_READ_TIMEOUT_MS = 5000;
+
+/** A git spawn that mirrors git-local's `defaultGitRunner` but takes an explicit child env (carries the credential). */
+export type CredentialedSpawn = (
+  args: string[],
+  opts: { cwd: string; timeoutMs: number },
+  env: NodeJS.ProcessEnv,
+) => GitRunResult;
+
 export interface GitHubAppGitProviderDeps {
   /**
    * Build a `LocalGitProvider` bound to a specific `GitRunner`. The composition root supplies
@@ -36,33 +46,49 @@ export interface GitHubAppGitProviderDeps {
   makeLocalGit: (runner?: GitRunner) => GitProvider;
   /** Mint (or return a cached) short-lived installation token for the target repo. Adapter-local; never stored here. */
   tokenSource: () => Promise<string>;
+  /**
+   * Read the configured remote URL for the HTTPS-github.com preflight (RC1). Injectable for tests; the default
+   * runs a credential-free local `git remote get-url <remote>` (no network, no askpass). Throws when unreadable.
+   */
+  readRemoteUrl?: (rootPath: string, remote: string) => string;
+  /** Spawn git with an explicit child env. Injectable for tests; the default mirrors git-local's `defaultGitRunner`. */
+  spawn?: CredentialedSpawn;
 }
 
 /**
- * **Composition-root `GitProvider` decorator (CAP-002 App-auth git credentialing; ADR-0061 Q3/Q4/Q5).**
+ * **Composition-root `GitProvider` decorator (CAP-002 App-auth git credentialing; ADR-0061 Q3/Q4/Q5 + Sprint 4b
+ * review RC1/RC3).**
  *
  * Wraps an **unchanged** `LocalGitProvider`. Local operations delegate directly. The three remote-touching
- * operations (`pushApprovedCommit` / `getRemoteRefCommit` / `syncMainFastForward`) mint a short-lived installation
- * token **first (async)**, then run the inner op through a **one-shot `GIT_ASKPASS`** runner whose token lives ONLY
- * in the child process env — so the token never enters argv, a remote URL, `.git/config`, `.git`, logs, or this
- * object's persistent state. `process.env` is never mutated (a fresh child env per invocation), the per-invocation
- * temp helper is removed in a `finally`, and two concurrent invocations use distinct temp dirs + envs (RC3).
- *
- * This preserves ADR-0023/RC2: `LocalGitProvider` and the `GitProvider` port are unchanged — the credential is
- * supplied by this wrapper, outside git-local.
+ * operations (`pushApprovedCommit` / `getRemoteRefCommit` / `syncMainFastForward`) run a strict **pre-mutation**
+ * sequence BEFORE any git spawn:
+ *   1. read the configured remote URL and require an **HTTPS github.com** remote — SSH (scp-like or `ssh://`),
+ *      non-GitHub HTTPS, credential-embedding, and unreadable remotes are **Blocked** (RC1); this prevents any
+ *      ambient SSH/keychain/OAuth/PAT fallback;
+ *   2. mint a short-lived installation token;
+ *   3. materialize a **one-shot `GIT_ASKPASS`** whose token lives ONLY in the child env.
+ * Any pre-mutation failure is mapped to the operation's **typed Blocked error** ("did not happen"). The inner git
+ * op runs at the mutation boundary; its throw (including a typed `GitMainSync{Blocked,Unverified}Error`) propagates
+ * unchanged, so an at/after-mutation ambiguity stays **Unverified**. The token never enters argv, a remote URL,
+ * `.git/config`, logs, anchors, approval reasons, Discord, or evidence; the per-invocation temp helper is removed
+ * in a `finally`; `process.env` is never mutated (concurrency-safe).
  */
 export class GitHubAppGitProvider implements GitProvider {
   private readonly localGit: GitProvider;
+  private readonly readRemoteUrl: (rootPath: string, remote: string) => string;
+  private readonly spawn: CredentialedSpawn;
 
   constructor(private readonly deps: GitHubAppGitProviderDeps) {
     this.localGit = deps.makeLocalGit();
+    this.readRemoteUrl = deps.readRemoteUrl ?? defaultReadRemoteUrl;
+    this.spawn = deps.spawn ?? defaultCredentialedSpawn;
   }
 
   get kind(): string {
     return this.localGit.kind;
   }
 
-  // ── Local operations — delegated unchanged (no credential needed) ─────────────────────────────────────────
+  // ── Local operations — delegated unchanged (no credential, no remote) ─────────────────────────────────────
   isRepository(rootPath: string): Promise<boolean> {
     return this.localGit.isRepository(rootPath);
   }
@@ -99,44 +125,69 @@ export class GitHubAppGitProvider implements GitProvider {
     return this.localGit.deleteMergedLocalBranch(rootPath, branch, expectedBranchCommit);
   }
 
-  // ── Remote-touching operations — App token supplied ephemerally via one-shot GIT_ASKPASS ─────────────────
+  // ── Remote-touching operations — HTTPS preflight + App token via one-shot GIT_ASKPASS ────────────────────
   pushApprovedCommit(rootPath: string, remote: string, branch: string, commitHash: string): Promise<GitPushResult> {
-    return this.withAppCredential((git) => git.pushApprovedCommit(rootPath, remote, branch, commitHash));
+    // Pre-mutation credential/preflight failure → GitPushBlockedError ("not pushed"); the runtime maps it to the
+    // Blocked "not attempted" reply. An inner push throw (at/after the attempt) propagates → Unverified upstream.
+    return this.withRemoteCredential(
+      rootPath,
+      remote,
+      (err) => new GitPushBlockedError(preMutationMessage('git push', err)),
+      (git) => git.pushApprovedCommit(rootPath, remote, branch, commitHash),
+    );
   }
 
   getRemoteRefCommit(rootPath: string, remote: string, branch: string): Promise<{ commitHash: string }> {
-    return this.withAppCredential((git) => git.getRemoteRefCommit(rootPath, remote, branch));
+    // getRemoteRefCommit's contract is to throw on failure; the GitManager maps a read throw to a pre-mutation
+    // Blocked. A pre-mutation credential/preflight failure therefore stays a (sanitized) throw — consistent taxonomy.
+    return this.withRemoteCredential(
+      rootPath,
+      remote,
+      (err) =>
+        err instanceof Error
+          ? err
+          : new Error('git ls-remote: could not obtain App credentials or the remote is not HTTPS github.com'),
+      (git) => git.getRemoteRefCommit(rootPath, remote, branch),
+    );
   }
 
-  async syncMainFastForward(
+  syncMainFastForward(
     rootPath: string,
     remote: string,
     branch: string,
     expectedRemoteCommit: string,
     expectedPreviousCommit: string,
   ): Promise<GitMainSyncResult> {
-    try {
-      return await this.withAppCredential((git) =>
-        git.syncMainFastForward(rootPath, remote, branch, expectedRemoteCommit, expectedPreviousCommit),
-      );
-    } catch (err) {
-      // A typed error from the inner LocalGitProvider (Blocked/Unverified) is preserved as-is. Any other failure
-      // (credential mint / askpass setup) happened BEFORE the inner git ran → pre-mutation → Blocked ("not synced").
-      if (err instanceof GitMainSyncBlockedError || err instanceof GitMainSyncUnverifiedError) throw err;
-      throw new GitMainSyncBlockedError('git main sync: could not obtain App credentials; not synchronized');
-    }
+    // Pre-mutation credential/preflight failure → GitMainSyncBlockedError ("not synchronized"). An inner typed
+    // GitMainSync{Blocked,Unverified}Error propagates unchanged (Blocked/Unverified preserved).
+    return this.withRemoteCredential(
+      rootPath,
+      remote,
+      (err) => new GitMainSyncBlockedError(`${preMutationMessage('git main sync', err)}; not synchronized`),
+      (git) => git.syncMainFastForward(rootPath, remote, branch, expectedRemoteCommit, expectedPreviousCommit),
+    );
   }
 
   /**
-   * Mint the token (async, BEFORE any git spawn), materialize a one-shot `GIT_ASKPASS` in a unique temp dir, run the
-   * inner op through a `LocalGitProvider` whose `GitRunner` spawns git with the token in the **child** env only, then
-   * remove the temp dir in a `finally` (best-effort — never masks the op's result). `process.env` is not mutated.
+   * PRE-MUTATION: HTTPS-github.com remote preflight → token mint → one-shot `GIT_ASKPASS`. Any failure here is
+   * mapped by `mapPreMutationError` to the operation's typed Blocked error (the remote git op was never attempted).
+   * MUTATION BOUNDARY: the inner `op` runs git through a runner whose token lives only in the child env; its throw
+   * (including typed Blocked/Unverified) propagates unchanged. The temp helper is removed in a `finally`.
    */
-  private async withAppCredential<T>(op: (git: GitProvider) => Promise<T>): Promise<T> {
-    const token = await this.deps.tokenSource(); // may throw (pre-op) — propagated to the caller
-    const dir = mkdtempSync(join(tmpdir(), 'quoky-askpass-'));
-    const askpassPath = join(dir, 'askpass.sh');
+  private async withRemoteCredential<T>(
+    rootPath: string,
+    remote: string,
+    mapPreMutationError: (err: unknown) => Error,
+    op: (git: GitProvider) => Promise<T>,
+  ): Promise<T> {
+    let dir: string | undefined;
+    let runner: GitRunner;
     try {
+      const remoteUrl = this.readRemoteUrl(rootPath, remote); // unreadable → throws
+      assertHttpsGithubRemote(remoteUrl); // ssh / non-github / embedded-credential → throws
+      const token = await this.deps.tokenSource(); // mint failure → throws
+      dir = mkdtempSync(join(tmpdir(), 'quoky-askpass-'));
+      const askpassPath = join(dir, 'askpass.sh');
       writeFileSync(askpassPath, ASKPASS_SCRIPT, { mode: 0o700 });
       const childEnv: NodeJS.ProcessEnv = {
         ...process.env,
@@ -144,23 +195,79 @@ export class GitHubAppGitProvider implements GitProvider {
         GIT_APP_TOKEN: token,
         GIT_TERMINAL_PROMPT: '0',
       };
-      const runner: GitRunner = (args, opts) => credentialedRun(args, opts, childEnv);
-      return await op(this.deps.makeLocalGit(runner));
+      const spawn = this.spawn;
+      runner = (args, opts) => spawn(args, opts, childEnv);
+    } catch (err) {
+      safeRemove(dir);
+      throw mapPreMutationError(err); // PRE-MUTATION → op-specific typed Blocked
+    }
+    try {
+      return await op(this.deps.makeLocalGit(runner)); // MUTATION BOUNDARY — inner throw propagates unchanged
     } finally {
-      try {
-        rmSync(dir, { recursive: true, force: true });
-      } catch {
-        // best-effort cleanup; never mask the operation's result/error
-      }
+      safeRemove(dir);
     }
   }
 }
 
 /**
- * A `GitRunner` that mirrors git-local's `defaultGitRunner` (argument-array `spawnSync`, no shell, timeout, cwd) but
- * spawns with an explicit **child** env carrying the credential (ADR-0061 Q3). The token is never in argv.
+ * Require an **HTTPS github.com** remote (ADR-0061 RC1). Blocks scp-like SSH (`git@github.com:owner/repo.git`),
+ * `ssh://`, any non-HTTPS scheme, non-github.com hosts, and credential-embedding URLs. Throws (→ pre-mutation
+ * Blocked) so an App-auth remote git op never silently falls back to an ambient SSH/keychain/OAuth/PAT credential.
+ * Exported for direct unit testing.
  */
-function credentialedRun(
+export function assertHttpsGithubRemote(url: string): void {
+  const u = url.trim();
+  // scp-like SSH ([user@]host:path with NO scheme) → block.
+  if (/^[^\s/@]+@[^\s/:]+:/.test(u) && !/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(u)) {
+    throw new Error('App-auth requires an HTTPS github.com remote; an SSH (scp-like) remote is blocked');
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(u);
+  } catch {
+    throw new Error('App-auth remote URL is unreadable/unparseable');
+  }
+  if (parsed.protocol !== 'https:') {
+    throw new Error(`App-auth requires an HTTPS remote; "${parsed.protocol}" is blocked`);
+  }
+  if (parsed.hostname !== 'github.com') {
+    throw new Error(`App-auth requires a github.com remote; "${parsed.hostname}" is blocked`);
+  }
+  if (parsed.username !== '' || parsed.password !== '') {
+    throw new Error('App-auth remote URL must not embed credentials');
+  }
+}
+
+/** Sanitized pre-mutation message. The pre-mutation errors (remote preflight / AppAuthError) never carry a token. */
+function preMutationMessage(op: string, err: unknown): string {
+  const detail = err instanceof Error && err.message ? err.message : 'credential/remote preflight failed';
+  return `${op}: ${detail}`;
+}
+
+/** Best-effort removal of the one-shot askpass dir; never masks the operation's result/error. */
+function safeRemove(dir: string | undefined): void {
+  if (dir === undefined) return;
+  try {
+    rmSync(dir, { recursive: true, force: true });
+  } catch {
+    // best-effort cleanup
+  }
+}
+
+/** Default HTTPS-preflight remote read: a credential-free local `git remote get-url <remote>` (no network). */
+function defaultReadRemoteUrl(rootPath: string, remote: string): string {
+  const res = spawnSync('git', ['remote', 'get-url', remote], {
+    cwd: rootPath,
+    timeout: REMOTE_URL_READ_TIMEOUT_MS,
+    encoding: 'utf8',
+  });
+  const url = typeof res.stdout === 'string' ? res.stdout.trim() : '';
+  if (res.status !== 0 || url.length === 0) throw new Error('git remote url could not be read');
+  return url;
+}
+
+/** Default credentialed spawn: mirrors git-local's `defaultGitRunner` but with an explicit child env. */
+function defaultCredentialedSpawn(
   args: string[],
   opts: { cwd: string; timeoutMs: number },
   env: NodeJS.ProcessEnv,

@@ -1,149 +1,247 @@
-import { readdirSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { describe, expect, it, vi } from 'vitest';
-import { GitMainSyncBlockedError, GitMainSyncUnverifiedError } from '@chunsik/core';
+import { describe, expect, it } from 'vitest';
+import { GitMainSyncBlockedError, GitMainSyncUnverifiedError, GitPushBlockedError } from '@chunsik/core';
 import type { GitProvider } from '@chunsik/core';
-import { GitHubAppGitProvider } from './github-app-git-provider';
+import type { GitRunner } from '@chunsik/git-local';
+import { assertHttpsGithubRemote, GitHubAppGitProvider } from './github-app-git-provider';
+import type { CredentialedSpawn } from './github-app-git-provider';
 
-/** A fake `GitProvider` that records calls and returns canned results (NEVER spawns git). */
-function fakeGit(overrides: Partial<GitProvider> = {}): GitProvider & { calls: string[] } {
-  const calls: string[] = [];
-  const rec = (m: string): void => {
-    calls.push(m);
-  };
-  const base: GitProvider = {
-    kind: 'local-git',
-    isRepository: async () => {
-      rec('isRepository');
-      return true;
-    },
-    info: async (rootPath) => {
-      rec('info');
-      return { isRepository: true, rootPath, branch: 'main', detached: false };
-    },
-    status: async () => {
-      rec('status');
-      return { clean: true, branch: 'main', staged: [], unstaged: [], untracked: [] };
-    },
-    diff: async () => {
-      rec('diff');
-      return { files: [], unified: '', truncated: false };
-    },
-    commitFiles: async (_rootPath, files, message) => {
-      rec('commitFiles');
-      return { commitHash: 'abc1234', committedFiles: files, message };
-    },
-    pushApprovedCommit: async (_rootPath, remote, branch, commitHash) => {
-      rec('pushApprovedCommit');
-      return { remote, branch, upstreamRef: `${remote}/${branch}`, commitHash };
-    },
-    getRemoteRefCommit: async () => {
-      rec('getRemoteRefCommit');
-      return { commitHash: 'abc1234' };
-    },
-    getLocalRefCommit: async () => {
-      rec('getLocalRefCommit');
-      return { commitHash: 'abc1234' };
-    },
-    syncMainFastForward: async () => {
-      rec('syncMainFastForward');
-      return {
-        branch: 'main',
-        syncMode: 'ref-only',
-        workingTreeUpdated: false,
-        syncedCommitHash: 'abc1234',
-        previousMainCommit: 'def5678',
-        alreadyUpToDate: false,
-      };
-    },
-    isAncestor: async () => {
-      rec('isAncestor');
-      return true;
-    },
-    deleteMergedLocalBranch: async (_rootPath, branch) => {
-      rec('deleteMergedLocalBranch');
-      return { branch, deleted: true, alreadyAbsent: false, deletedCommitHash: 'abc1234' };
-    },
-  };
-  const merged = { ...base, ...overrides } as GitProvider;
-  return Object.assign(merged, { calls });
-}
+const SHA40 = 'a'.repeat(40);
+const SHA40B = 'b'.repeat(40);
 
 function tmpAskpassCount(): number {
   return readdirSync(tmpdir()).filter((n) => n.startsWith('quoky-askpass-')).length;
 }
 
-const SHA40 = 'a'.repeat(40);
-const SHA40B = 'b'.repeat(40);
+/**
+ * Build a decorator over a fake inner GitProvider that (a) records which inner ops were invoked and (b) actually
+ * CALLS the injected runner for remote ops (as LocalGitProvider would), so a recording `spawn` can verify the argv,
+ * child env, and askpass file. Nothing spawns real git.
+ */
+function harness(
+  over: {
+    tokenSource?: () => Promise<string>;
+    readRemoteUrl?: (rootPath: string, remote: string) => string;
+    inner?: Partial<GitProvider>;
+  } = {},
+) {
+  const invoked: string[] = [];
+  const spawns: Array<{ args: string[]; env: NodeJS.ProcessEnv; askpass: string }> = [];
+  const spawn: CredentialedSpawn = (args, _opts, env) => {
+    let askpass = '';
+    const p = env.GIT_ASKPASS;
+    if (typeof p === 'string') {
+      try {
+        askpass = readFileSync(p, 'utf8');
+      } catch {
+        askpass = '';
+      }
+    }
+    spawns.push({ args, env, askpass });
+    return { code: 0, stdout: '', stderr: '', timedOut: false, failed: false };
+  };
+  const makeLocalGit = (runner?: GitRunner): GitProvider =>
+    ({
+      kind: 'local-git',
+      isRepository: async () => {
+        invoked.push('isRepository');
+        return true;
+      },
+      info: async (rootPath: string) => {
+        invoked.push('info');
+        return { isRepository: true, rootPath, branch: 'main', detached: false };
+      },
+      status: async () => {
+        invoked.push('status');
+        return { clean: true, branch: 'main', staged: [], unstaged: [], untracked: [] };
+      },
+      diff: async () => {
+        invoked.push('diff');
+        return { files: [], unified: '', truncated: false };
+      },
+      commitFiles: async (_rootPath: string, files: string[], message: string) => {
+        invoked.push('commitFiles');
+        return { commitHash: 'abc1234', committedFiles: files, message };
+      },
+      pushApprovedCommit: async (rootPath: string, remote: string, branch: string, commitHash: string) => {
+        invoked.push('pushApprovedCommit');
+        runner?.(['--no-pager', 'push', remote, `HEAD:${branch}`], { cwd: rootPath, timeoutMs: 5000 });
+        return { remote, branch, upstreamRef: `${remote}/${branch}`, commitHash };
+      },
+      getRemoteRefCommit: async (rootPath: string, remote: string, branch: string) => {
+        invoked.push('getRemoteRefCommit');
+        runner?.(['--no-pager', 'ls-remote', '--exit-code', remote, `refs/heads/${branch}`], { cwd: rootPath, timeoutMs: 5000 });
+        return { commitHash: 'abc1234' };
+      },
+      getLocalRefCommit: async () => {
+        invoked.push('getLocalRefCommit');
+        return { commitHash: 'abc1234' };
+      },
+      syncMainFastForward: async (rootPath: string, remote: string, branch: string) => {
+        invoked.push('syncMainFastForward');
+        runner?.(['--no-pager', 'fetch', '--no-tags', remote, branch], { cwd: rootPath, timeoutMs: 5000 });
+        return {
+          branch,
+          syncMode: 'ref-only' as const,
+          workingTreeUpdated: false,
+          syncedCommitHash: 'abc1234',
+          previousMainCommit: 'def5678',
+          alreadyUpToDate: false,
+        };
+      },
+      isAncestor: async () => {
+        invoked.push('isAncestor');
+        return true;
+      },
+      deleteMergedLocalBranch: async (_rootPath: string, branch: string) => {
+        invoked.push('deleteMergedLocalBranch');
+        return { branch, deleted: true, alreadyAbsent: false, deletedCommitHash: 'abc1234' };
+      },
+      ...over.inner,
+    }) satisfies GitProvider;
+  const provider = new GitHubAppGitProvider({
+    makeLocalGit,
+    tokenSource: over.tokenSource ?? (async () => 'ghs_SENTINEL'),
+    readRemoteUrl: over.readRemoteUrl ?? (() => 'https://github.com/acme/widgets.git'),
+    spawn,
+  });
+  return { provider, invoked, spawns };
+}
 
-describe('GitHubAppGitProvider (Sprint 4b, ADR-0061)', () => {
-  it('delegates LOCAL operations to LocalGitProvider WITHOUT minting a token', async () => {
-    const fake = fakeGit();
-    const tokenSource = vi.fn(async () => 'ghs_shouldNotBeMinted');
-    const p = new GitHubAppGitProvider({ makeLocalGit: () => fake, tokenSource });
-
-    await p.status('/repo');
-    await p.commitFiles('/repo', ['a.ts'], 'msg');
-    await p.info('/repo');
-    await p.deleteMergedLocalBranch('/repo', 'feature/x', SHA40);
-
-    expect(tokenSource).not.toHaveBeenCalled();
-    expect(fake.calls).toEqual(['status', 'commitFiles', 'info', 'deleteMergedLocalBranch']);
+describe('GitHubAppGitProvider (Sprint 4b, ADR-0061 + review RC1/RC3/RC4)', () => {
+  it('HTTPS github.com remote → push proceeds; token ONLY in child env, never in argv; askpass has no token literal', async () => {
+    const { provider, invoked, spawns } = harness({ tokenSource: async () => 'ghs_SENTINEL' });
+    const res = await provider.pushApprovedCommit('/repo', 'origin', 'uat/x', 'abc1234');
+    expect(res.branch).toBe('uat/x');
+    expect(invoked).toContain('pushApprovedCommit');
+    expect(spawns.length).toBe(1);
+    const s = spawns[0]!;
+    expect(s.env.GIT_APP_TOKEN).toBe('ghs_SENTINEL');
+    expect(s.env.GIT_ASKPASS).toBeTruthy();
+    // token is NOT in argv
+    expect(s.args).not.toContain('ghs_SENTINEL');
+    expect(JSON.stringify(s.args)).not.toContain('ghs_SENTINEL');
+    // askpass helper references the env var, contains NO token literal
+    expect(s.askpass).toContain('$GIT_APP_TOKEN');
+    expect(s.askpass).not.toContain('ghs_SENTINEL');
   });
 
-  it('mints a token for a REMOTE op and delegates, without mutating process.env or leaving temp dirs', async () => {
-    const fake = fakeGit();
-    const tokenSource = vi.fn(async () => 'ghs_sentinelToken');
-    const p = new GitHubAppGitProvider({ makeLocalGit: () => fake, tokenSource });
-
-    const envBefore = JSON.stringify(process.env);
+  it('does not mutate process.env and leaves no temp askpass dir after a remote op', async () => {
+    const before = JSON.stringify(process.env);
     const dirsBefore = tmpAskpassCount();
-    const res = await p.pushApprovedCommit('/repo', 'origin', 'uat/x', 'abc1234');
-
-    expect(res.branch).toBe('uat/x');
-    expect(tokenSource).toHaveBeenCalledTimes(1);
-    expect(fake.calls).toContain('pushApprovedCommit');
-    // Secret boundary: the token never leaks into the parent process env, and the one-shot dir is cleaned up.
-    expect(JSON.stringify(process.env)).toBe(envBefore);
+    const { provider } = harness();
+    await provider.pushApprovedCommit('/repo', 'origin', 'uat/x', 'abc1234');
+    expect(JSON.stringify(process.env)).toBe(before);
     expect(process.env.GIT_APP_TOKEN).toBeUndefined();
     expect(process.env.GIT_ASKPASS).toBeUndefined();
     expect(tmpAskpassCount()).toBe(dirsBefore);
   });
 
-  it('cleans up the one-shot askpass dir even when the inner git op throws', async () => {
-    const fake = fakeGit({
-      pushApprovedCommit: async () => {
-        throw new Error('push exploded');
+  const blockedRemotes: Array<[string, string]> = [
+    ['scp-like SSH', 'git@github.com:acme/widgets.git'],
+    ['ssh:// URL', 'ssh://git@github.com/acme/widgets.git'],
+    ['non-GitHub HTTPS', 'https://gitlab.com/acme/widgets.git'],
+    ['credential-embedding HTTPS', 'https://x-access-token:tok@github.com/acme/widgets.git'],
+  ];
+  for (const [label, url] of blockedRemotes) {
+    it(`blocks a ${label} remote before any git spawn (push → GitPushBlockedError; not attempted)`, async () => {
+      const { provider, invoked, spawns } = harness({ readRemoteUrl: () => url });
+      await expect(provider.pushApprovedCommit('/repo', 'origin', 'uat/x', 'abc1234')).rejects.toBeInstanceOf(
+        GitPushBlockedError,
+      );
+      expect(invoked).not.toContain('pushApprovedCommit');
+      expect(spawns.length).toBe(0);
+    });
+  }
+
+  it('blocks an unreadable remote (readRemoteUrl throws) before any git spawn (push → GitPushBlockedError)', async () => {
+    const { provider, invoked, spawns } = harness({
+      readRemoteUrl: () => {
+        throw new Error('remote unreadable');
       },
     });
-    const p = new GitHubAppGitProvider({ makeLocalGit: () => fake, tokenSource: async () => 'ghs_tok' });
-
-    const dirsBefore = tmpAskpassCount();
-    await expect(p.pushApprovedCommit('/repo', 'origin', 'uat/x', 'abc1234')).rejects.toThrow('push exploded');
-    expect(tmpAskpassCount()).toBe(dirsBefore);
-    expect(process.env.GIT_APP_TOKEN).toBeUndefined();
+    await expect(provider.pushApprovedCommit('/repo', 'origin', 'uat/x', 'abc1234')).rejects.toBeInstanceOf(
+      GitPushBlockedError,
+    );
+    expect(invoked).not.toContain('pushApprovedCommit');
+    expect(spawns.length).toBe(0);
   });
 
-  it('maps a credential-acquisition failure on syncMainFastForward to Blocked (not synced)', async () => {
-    const fake = fakeGit();
-    const tokenSource = async (): Promise<string> => {
-      throw new Error('mint failed');
-    };
-    const p = new GitHubAppGitProvider({ makeLocalGit: () => fake, tokenSource });
-    await expect(p.syncMainFastForward('/repo', 'origin', 'main', SHA40, SHA40B)).rejects.toBeInstanceOf(
+  it('getRemoteRefCommit blocked on an SSH remote → throws (read throw the manager maps to Blocked); not attempted', async () => {
+    const { provider, invoked, spawns } = harness({ readRemoteUrl: () => 'git@github.com:acme/widgets.git' });
+    await expect(provider.getRemoteRefCommit('/repo', 'origin', 'main')).rejects.toThrow();
+    expect(invoked).not.toContain('getRemoteRefCommit');
+    expect(spawns.length).toBe(0);
+  });
+
+  it('syncMainFastForward blocked on an SSH remote → GitMainSyncBlockedError (not synchronized); not attempted', async () => {
+    const { provider, invoked, spawns } = harness({ readRemoteUrl: () => 'ssh://git@github.com/acme/widgets.git' });
+    await expect(provider.syncMainFastForward('/repo', 'origin', 'main', SHA40, SHA40B)).rejects.toBeInstanceOf(
       GitMainSyncBlockedError,
     );
+    expect(invoked).not.toContain('syncMainFastForward');
+    expect(spawns.length).toBe(0);
   });
 
-  it('preserves a typed GitMainSyncUnverifiedError raised by the inner provider', async () => {
-    const fake = fakeGit({
-      syncMainFastForward: async () => {
-        throw new GitMainSyncUnverifiedError('boom');
+  it('preserves a typed GitMainSyncUnverifiedError raised by the inner provider (at/after mutation stays Unverified)', async () => {
+    const { provider } = harness({
+      inner: {
+        syncMainFastForward: async () => {
+          throw new GitMainSyncUnverifiedError('boom');
+        },
       },
     });
-    const p = new GitHubAppGitProvider({ makeLocalGit: () => fake, tokenSource: async () => 'ghs_tok' });
-    await expect(p.syncMainFastForward('/repo', 'origin', 'main', SHA40, SHA40B)).rejects.toBeInstanceOf(
+    await expect(provider.syncMainFastForward('/repo', 'origin', 'main', SHA40, SHA40B)).rejects.toBeInstanceOf(
       GitMainSyncUnverifiedError,
     );
+  });
+
+  it('token mint failure → push GitPushBlockedError; inner push not attempted; no spawn', async () => {
+    const { provider, invoked, spawns } = harness({
+      tokenSource: async () => {
+        throw new Error('mint failed');
+      },
+    });
+    await expect(provider.pushApprovedCommit('/repo', 'origin', 'uat/x', 'abc1234')).rejects.toBeInstanceOf(
+      GitPushBlockedError,
+    );
+    expect(invoked).not.toContain('pushApprovedCommit');
+    expect(spawns.length).toBe(0);
+  });
+
+  it('LOCAL ops delegate without minting a token, reading the remote, or spawning', async () => {
+    let minted = 0;
+    let readUrl = 0;
+    const { provider, spawns } = harness({
+      tokenSource: async () => {
+        minted += 1;
+        return 'ghs_x';
+      },
+      readRemoteUrl: () => {
+        readUrl += 1;
+        return 'https://github.com/acme/widgets.git';
+      },
+    });
+    await provider.status('/repo');
+    await provider.commitFiles('/repo', ['a.ts'], 'msg');
+    await provider.deleteMergedLocalBranch('/repo', 'feature/x', SHA40);
+    expect(minted).toBe(0);
+    expect(readUrl).toBe(0);
+    expect(spawns.length).toBe(0);
+  });
+
+  describe('assertHttpsGithubRemote', () => {
+    it('accepts an HTTPS github.com remote (with or without .git)', () => {
+      expect(() => assertHttpsGithubRemote('https://github.com/acme/widgets.git')).not.toThrow();
+      expect(() => assertHttpsGithubRemote('https://github.com/acme/widgets')).not.toThrow();
+    });
+    it('blocks scp-like SSH, ssh://, non-github host, non-https scheme, and credential-embedding URLs', () => {
+      expect(() => assertHttpsGithubRemote('git@github.com:acme/widgets.git')).toThrow();
+      expect(() => assertHttpsGithubRemote('ssh://git@github.com/acme/widgets.git')).toThrow();
+      expect(() => assertHttpsGithubRemote('https://gitlab.com/acme/widgets.git')).toThrow();
+      expect(() => assertHttpsGithubRemote('http://github.com/acme/widgets.git')).toThrow();
+      expect(() => assertHttpsGithubRemote('https://x-access-token:tok@github.com/acme/widgets.git')).toThrow();
+    });
   });
 });

@@ -118,4 +118,68 @@ describe('GitHubAppAuth (Sprint 4b, ADR-0061)', () => {
       expect(String((err as Error).message)).not.toMatch(/ghs_/);
     });
   });
+
+  describe('resolveRepositoryId + tokenForRepository — numeric repository_ids down-scoping (Sprint 4b review, RC2)', () => {
+    // Fake: POST /access_tokens returns a token (final iff repository_ids present); GET /repos/{o}/{r} returns {id}.
+    function repoAwareFetch(repoStatus: number, repoId = 555) {
+      return fakeFetch((url, init) => {
+        const method = init.method ?? 'GET';
+        if (url.endsWith('/access_tokens') && method === 'POST') {
+          const body = init.body ? (JSON.parse(String(init.body)) as { repository_ids?: number[] }) : {};
+          return {
+            status: 201,
+            body: {
+              token: body.repository_ids ? 'ghs_final' : 'ghs_bootstrap',
+              expires_at: new Date(9_000_000).toISOString(),
+            },
+          };
+        }
+        if (/\/repos\/acme\/widgets$/.test(url) && method === 'GET') return { status: repoStatus, body: { id: repoId } };
+        return { status: 500 };
+      });
+    }
+
+    it('resolveRepositoryId reads the repo id via a repository-NAME-scoped bootstrap token (200 → id, cached)', async () => {
+      const { fn, calls } = repoAwareFetch(200, 777);
+      const a = auth(fn);
+      expect(await a.resolveRepositoryId(123, 'acme', 'widgets')).toBe(777);
+      // the bootstrap access_tokens POST scoped by repository NAME (never an installation-wide broad token)
+      const boot = calls.find((c) => c.url.endsWith('/access_tokens'));
+      expect((JSON.parse(String(boot!.init.body)) as { repositories?: string[] }).repositories).toEqual(['widgets']);
+      // cached — no second repo GET
+      await a.resolveRepositoryId(123, 'acme', 'widgets');
+      expect(calls.filter((c) => /\/repos\/acme\/widgets$/.test(c.url)).length).toBe(1);
+    });
+
+    it('resolveRepositoryId returns null when the repo is not accessible (404)', async () => {
+      const { fn } = repoAwareFetch(404);
+      expect(await auth(fn).resolveRepositoryId(123, 'acme', 'widgets')).toBeNull();
+    });
+
+    it('tokenForRepository mints the final token with numeric repository_ids + minimal permissions', async () => {
+      const { fn, calls } = repoAwareFetch(200, 555);
+      const t = await auth(fn).tokenForRepository(123, 'acme', 'widgets', { contents: 'write', pull_requests: 'write' });
+      expect(t).toBe('ghs_final');
+      const finalPost = calls.find(
+        (c) =>
+          c.url.endsWith('/access_tokens') &&
+          !!(JSON.parse(String(c.init.body)) as { repository_ids?: number[] }).repository_ids,
+      );
+      const body = JSON.parse(String(finalPost!.init.body)) as { repository_ids: number[]; permissions: unknown };
+      expect(body.repository_ids).toEqual([555]);
+      expect(body.permissions).toEqual({ contents: 'write', pull_requests: 'write' });
+    });
+
+    it('tokenForRepository throws (AppAuthError) and does NOT mint a repository_ids token when the repo lookup 404s', async () => {
+      const { fn, calls } = repoAwareFetch(404);
+      await expect(auth(fn).tokenForRepository(123, 'acme', 'widgets')).rejects.toBeInstanceOf(AppAuthError);
+      const finalMint = calls.find(
+        (c) =>
+          c.url.endsWith('/access_tokens') &&
+          !!c.init.body &&
+          !!(JSON.parse(String(c.init.body)) as { repository_ids?: number[] }).repository_ids,
+      );
+      expect(finalMint).toBeUndefined();
+    });
+  });
 });

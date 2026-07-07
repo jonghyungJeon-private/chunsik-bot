@@ -39,8 +39,10 @@ export interface AppAuthConfig {
 
 /** Optional per-execution down-scoping of a minted installation token (ADR-0061 Q7 / §17.4). */
 export interface TokenScope {
-  /** Restrict the token to these repository ids (numeric). */
+  /** Restrict the token to these repository ids (numeric) — the down-scoped mint (ADR-0061 §8.4). */
   repositoryIds?: number[];
+  /** Restrict the token to these repository NAMES — used by the bootstrap token that resolves a numeric repo id. */
+  repositories?: string[];
   /** Restrict the token to a permission subset, e.g. `{ contents: 'write', pull_requests: 'write' }`. */
   permissions?: Record<string, 'read' | 'write'>;
 }
@@ -68,6 +70,8 @@ export class GitHubAppAuth {
   private readonly tokenCache = new Map<string, CachedToken>();
   /** "owner/repo" → resolved installation id (stable; cached for the process lifetime). */
   private readonly installationCache = new Map<string, number>();
+  /** "owner/repo" → resolved numeric repository id (stable; cached for the process lifetime). */
+  private readonly repoIdCache = new Map<string, number>();
 
   constructor(config: AppAuthConfig) {
     const appId = typeof config?.appId === 'string' ? config.appId.trim() : '';
@@ -91,7 +95,12 @@ export class GitHubAppAuth {
     const cacheKey = `${owner}/${repo}`;
     const cached = this.installationCache.get(cacheKey);
     if (cached !== undefined) return cached;
-    const res = await this.request('resolveInstallationId', 'GET', `/repos/${enc(owner)}/${enc(repo)}/installation`);
+    const res = await this.request(
+      'resolveInstallationId',
+      'GET',
+      `/repos/${enc(owner)}/${enc(repo)}/installation`,
+      this.signAppJwt(),
+    );
     if (res.status === 404) return null;
     if (res.status !== 200) throw this.statusError('resolveInstallationId', res.status);
     const body = (await this.json(res, 'resolveInstallationId')) as { id?: unknown };
@@ -101,6 +110,52 @@ export class GitHubAppAuth {
     }
     this.installationCache.set(cacheKey, id);
     return id;
+  }
+
+  /**
+   * Resolve the **numeric** repository id for `owner/repo` (ADR-0061 §8.4 down-scoping), or `null` when the repo is
+   * not accessible to the installation (404). An App JWT cannot read repo metadata, so this uses a repository-NAME-
+   * scoped installation token to read `GET /repos/{owner}/{repo}` — no installation-wide token is minted. Cached.
+   */
+  async resolveRepositoryId(installationId: number, owner: string, repo: string): Promise<number | null> {
+    if (!Number.isSafeInteger(installationId) || installationId <= 0) {
+      throw new AppAuthError('github app: resolveRepositoryId requires a valid installation id');
+    }
+    const cacheKey = `${owner}/${repo}`;
+    const cached = this.repoIdCache.get(cacheKey);
+    if (cached !== undefined) return cached;
+    // A repository-NAME-scoped token authorizes the single metadata read without an installation-wide token.
+    const bootstrapToken = await this.tokenForInstallation(installationId, { repositories: [repo] });
+    const res = await this.request('resolveRepositoryId', 'GET', `/repos/${enc(owner)}/${enc(repo)}`, bootstrapToken);
+    if (res.status === 404) return null;
+    if (res.status !== 200) throw this.statusError('resolveRepositoryId', res.status);
+    const body = (await this.json(res, 'resolveRepositoryId')) as { id?: unknown };
+    const id = body?.id;
+    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0) {
+      throw new AppAuthError('github app: resolveRepositoryId returned an invalid repository id');
+    }
+    this.repoIdCache.set(cacheKey, id);
+    return id;
+  }
+
+  /**
+   * Mint a short-lived installation token **down-scoped to the single target repository** (ADR-0061 §8.4): resolve
+   * the numeric repo id (cached), then mint with `repository_ids: [id]` + `permissions`. A repo not accessible to
+   * the installation (id → null) throws — the caller (a pre-mutation step) surfaces it as Blocked / not configured;
+   * there is **no** broad-token fallback.
+   */
+  async tokenForRepository(
+    installationId: number,
+    owner: string,
+    repo: string,
+    permissions?: Record<string, 'read' | 'write'>,
+  ): Promise<string> {
+    const repoId = await this.resolveRepositoryId(installationId, owner, repo);
+    if (repoId === null) throw new AppAuthError('github app: repository is not accessible to the installation');
+    return this.tokenForInstallation(installationId, {
+      repositoryIds: [repoId],
+      ...(permissions ? { permissions } : {}),
+    });
   }
 
   /**
@@ -118,6 +173,7 @@ export class GitHubAppAuth {
 
     const body: Record<string, unknown> = {};
     if (scope?.repositoryIds && scope.repositoryIds.length > 0) body.repository_ids = scope.repositoryIds;
+    if (scope?.repositories && scope.repositories.length > 0) body.repositories = scope.repositories;
     if (scope?.permissions && Object.keys(scope.permissions).length > 0) body.permissions = scope.permissions;
     const hasBody = Object.keys(body).length > 0;
 
@@ -125,6 +181,7 @@ export class GitHubAppAuth {
       'tokenForInstallation',
       'POST',
       `/app/installations/${installationId}/access_tokens`,
+      this.signAppJwt(),
       hasBody ? body : undefined,
     );
     if (res.status !== 201) throw this.statusError('tokenForInstallation', res.status);
@@ -165,11 +222,11 @@ export class GitHubAppAuth {
     op: string,
     method: 'GET' | 'POST',
     path: string,
+    bearer: string,
     jsonBody?: unknown,
   ): Promise<Response> {
-    const appJwt = this.signAppJwt();
     const headers: Record<string, string> = {
-      Authorization: `Bearer ${appJwt}`,
+      Authorization: `Bearer ${bearer}`,
       Accept: 'application/vnd.github+json',
       'X-GitHub-Api-Version': GITHUB_API_VERSION,
       'User-Agent': USER_AGENT,
@@ -216,11 +273,12 @@ function enc(segment: string): string {
 function scopeKey(scope?: TokenScope): string {
   if (!scope) return '';
   const ids = scope.repositoryIds ? [...scope.repositoryIds].sort((a, b) => a - b).join(',') : '';
+  const names = scope.repositories ? [...scope.repositories].sort((a, b) => a.localeCompare(b)).join(',') : '';
   const perms = scope.permissions
     ? Object.entries(scope.permissions)
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([k, v]) => `${k}=${v}`)
         .join(',')
     : '';
-  return `${ids}|${perms}`;
+  return `${ids}|${names}|${perms}`;
 }

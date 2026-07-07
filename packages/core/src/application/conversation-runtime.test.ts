@@ -67,7 +67,7 @@ import type {
 import { StatelessApprovalFlow } from './stateless-approval-flow';
 import { RepositoryHostingBlockedError, RepositoryHostingUnverifiedError } from './repository-hosting-manager';
 import { RemoteBranchCleanupBlockedError, RemoteBranchCleanupUnverifiedError } from '../domain';
-import { BranchCleanupBlockedError, BranchCleanupUnverifiedError, GitMainSyncBlockedError, GitMainSyncUnverifiedError } from './git-manager';
+import { BranchCleanupBlockedError, BranchCleanupUnverifiedError, GitMainSyncBlockedError, GitMainSyncUnverifiedError, GitPushBlockedError } from './git-manager';
 
 const TS = '2026-07-01T00:00:00.000Z';
 const CTX: ConversationContext = { platform: 'test', channelId: 'c1', userId: 'u1' };
@@ -560,8 +560,9 @@ interface Opts {
    *  a read error, or a literal RepositoryInfo to force detached / moved-HEAD. */
   gitInfo?: RepositoryInfo | 'throw';
   /** `git.pushApprovedCommit` result (Sprint 3a) — defaults to a valid `gitPushResultOf` echoing the input;
-   *  pass 'throw' to simulate a push failure, or a literal GitPushResult to force an integrity mismatch. */
-  gitPush?: GitPushResult | 'throw';
+   *  pass 'throw' to simulate a push failure, 'throw-blocked' → GitPushBlockedError (App-auth pre-mutation;
+   *  ADR-0061, Sprint 4b), or a literal GitPushResult to force an integrity mismatch. */
+  gitPush?: GitPushResult | 'throw' | 'throw-blocked';
   /** `git.syncMain` result (Sprint 3h) — defaults to a valid `gitMainSyncResultOf` echoing the input;
    *  'throw-blocked' → GitMainSyncBlockedError, 'throw-unverified' → GitMainSyncUnverifiedError, 'throw-generic'
    *  → a plain Error, or a literal GitMainSyncResult (e.g. ref-only / already-up-to-date). */
@@ -897,6 +898,7 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
       async pushApprovedCommit(input) {
         calls.gitPush++;
         calls.lastGitPushInput = input;
+        if (opts.gitPush === 'throw-blocked') throw new GitPushBlockedError('push blocked pre-mutation (App-auth)');
         if (opts.gitPush === 'throw') throw new Error('git push boom');
         return opts.gitPush ?? gitPushResultOf(input);
       },
@@ -3980,6 +3982,16 @@ describe('Approved Git Push Execution — runtime (Sprint 3a, ADR-0048)', () => 
     expect(result.reply.text).toBe(composer.composePushExecutionFailed(CTX).text);
     expect(result.reply.text).not.toContain('원격 변경 없음');
     expect(result.reply.text).toContain('rollback은 하지 않았어요');
+  });
+
+  it('provider push GitPushBlockedError (App-auth pre-mutation) → composePushExecutionUnavailable, keep PUSH_APPROVED, no GIT_PUSHED (ADR-0061, Sprint 4b)', async () => {
+    const { deps, calls } = execDeps({ gitPush: 'throw-blocked' });
+    const result = await new ConversationRuntime(deps).handle(messageOf('승인된 push 실행해줘'));
+    expect(calls.lastApplyAnchor?.status).not.toBe('GIT_PUSHED');
+    expect(result.status).toBe('FAILED');
+    // A pre-mutation credential/preflight block is reported as "not pushed" (not the check-the-remote wording).
+    expect(result.reply.text).toBe(composer.composePushExecutionUnavailable(CTX).text);
+    expect(result.reply.text).not.toBe(composer.composePushExecutionFailed(CTX).text);
   });
 
   it('GIT_PUSHED + execution/push phrase again → already pushed, no new push (CA 101–103)', async () => {
