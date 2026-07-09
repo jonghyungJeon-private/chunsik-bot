@@ -1,4 +1,5 @@
 import { describeAiFailure } from './ai-failure';
+import { unnegatedMatch } from './intent-negation';
 import { RepositoryHostingBlockedError } from './repository-hosting-manager';
 import { RemoteBranchCleanupBlockedError, RemoteBranchCleanupUnverifiedError } from '../domain';
 import {
@@ -1216,23 +1217,20 @@ export class ConversationRuntime {
   /** Explicit apply intent only (Sprint 2s, ADR-0040) — deliberately NOT interpretDecision/APPROVE_WORDS;
    *  "좋아"/"오케이"/"확인"/"괜찮네" must never authorize file modification (Critical Product Rule). */
   static interpretApplyIntent(text: string): boolean {
-    const t = text.trim().toLowerCase();
-    return APPLY_WORDS.some((w) => t.includes(w));
+    return unnegatedMatch(text, APPLY_WORDS); // negation-aware (ADR-0062 draft): "적용하지 마" is not an apply
   }
 
   /** Explicit patch-generation intent only (Sprint 2t, ADR-0041) — the ambiguous standalone "계속 진행"
    *  is excluded; combined with routing, generation only fires on an APPROVED anchor. */
   static interpretPatchIntent(text: string): boolean {
-    const t = text.trim().toLowerCase();
-    return PATCH_WORDS.some((w) => t.includes(w));
+    return unnegatedMatch(text, PATCH_WORDS); // negation-aware (ADR-0062 draft)
   }
 
   /** Explicit final workspace-apply intent only (Sprint 2u, ADR-0042) — qualified phrases only; a bare
    *  "적용"/"다음 단계 진행"/"좋아" never triggers a file write. Combined with routing, a write only fires
    *  on a PATCH_READY anchor. Checked before apply-intent so "패치 적용해줘" is a file-apply. */
   static interpretFinalApplyIntent(text: string): boolean {
-    const t = text.trim().toLowerCase();
-    return FINAL_APPLY_WORDS.some((w) => t.includes(w));
+    return unnegatedMatch(text, FINAL_APPLY_WORDS); // negation-aware (ADR-0062 draft)
   }
 
   /**
@@ -1251,11 +1249,12 @@ export class ConversationRuntime {
     text: string,
   ): 'test' | 'typecheck' | 'ambiguous' | 'unsupported' | null {
     const t = text.trim().toLowerCase();
-    const mentionsTypecheck = /(typecheck|타입\s*체크|type\s*check)/i.test(t);
-    const mentionsTest = /(테스트|\btest\b)/i.test(t);
+    // Negation-aware (ADR-0062 draft): a NEGATED test/typecheck/validate token ("테스트 실행하지 마") is not a run.
+    const mentionsTypecheck = unnegatedMatch(text, [/typecheck|타입\s*체크|type\s*check/i]);
+    const mentionsTest = unnegatedMatch(text, [/테스트|\btest\b/i]);
     const actionVerb = /(돌려|실행|run|해줘|해\s*줘)/i.test(t);
-    const wantsTest = (mentionsTest && actionVerb) || /\bpnpm\s+test\b/i.test(t);
-    const wantsValidate = /(검증|validate)/i.test(t);
+    const wantsTest = (mentionsTest && actionVerb) || unnegatedMatch(text, [/\bpnpm\s+test\b/i]);
+    const wantsValidate = unnegatedMatch(text, [/검증|validate/i]);
     // Gate first: with no validation token this is NOT our branch — a pure "git status 해줘" falls through
     // untouched (CA Round 1 #7), never a validation "unsupported" reply.
     if (!mentionsTypecheck && !wantsTest && !wantsValidate) return null;
@@ -1295,13 +1294,13 @@ export class ConversationRuntime {
    *    커밋) stays a 2w status phrase. A bare 좋아/오케이/확인/다음 단계/진행해/이대로 해 → null.
    */
   static interpretCommitIntent(text: string): 'commit' | 'commit-with-forbidden' | null {
-    const t = text.trim().toLowerCase();
     // Liberal commit-token detection is used ONLY for the forbidden-combo guard, so a bundled request like
     // "commit and push" / "커밋하고 push" is rejected as unsupported (never routed to a plain commit or the
-    // 2w mutating reply). The plain-commit trigger stays conservative via COMMIT_WORDS.
-    const hasCommitToken = /(커밋|\bcommit\b)/i.test(t);
-    if (hasCommitToken && COMMIT_FORBIDDEN_COMPANION.test(t)) return 'commit-with-forbidden';
-    if (!COMMIT_WORDS.test(t)) return null; // "커밋 전"/push-only/etc. → not a commit request
+    // 2w mutating reply). The plain-commit trigger stays conservative via COMMIT_WORDS. Negation-aware
+    // (ADR-0062 draft): a NEGATED commit/companion token ("커밋하지 마", "do not commit/push") is NOT a request.
+    const hasCommitToken = unnegatedMatch(text, [/커밋|\bcommit\b/i]);
+    if (hasCommitToken && unnegatedMatch(text, [COMMIT_FORBIDDEN_COMPANION])) return 'commit-with-forbidden';
+    if (!unnegatedMatch(text, [COMMIT_WORDS])) return null; // "커밋 전"/push-only/negated/etc. → not a commit request
     return 'commit';
   }
 
@@ -1314,9 +1313,8 @@ export class ConversationRuntime {
    *  - `null` → not an execution request (bare 좋아/오케이/확인/진행해/다음 단계 → null).
    */
   static interpretCommitExecutionIntent(text: string): 'execute' | 'push-unsupported' | null {
-    const t = text.trim().toLowerCase();
-    if (COMMIT_EXECUTION_FORBIDDEN.test(t)) return 'push-unsupported'; // push/reset/… incl. "commit and push"
-    if (COMMIT_EXECUTION_WORDS.test(t)) return 'execute';
+    if (unnegatedMatch(text, [COMMIT_EXECUTION_FORBIDDEN])) return 'push-unsupported'; // push/reset/… incl. "commit and push"
+    if (unnegatedMatch(text, [COMMIT_EXECUTION_WORDS])) return 'execute';
     return null;
   }
 
@@ -1329,9 +1327,8 @@ export class ConversationRuntime {
    *  - `'push'` → a plain push request ("푸시해줘"/"git push 해줘"/"원격에 올려줘"/"push this commit"/…).
    */
   static interpretPushIntent(text: string): 'push' | 'push-unsupported' | null {
-    const t = text.trim().toLowerCase();
-    if (!PUSH_WORDS.test(t)) return null; // (CA #2) no push word → not push handling
-    if (PUSH_FORBIDDEN_COMPANION.test(t)) return 'push-unsupported'; // push + force/PR/deploy/tag/branch/…
+    if (!unnegatedMatch(text, [PUSH_WORDS])) return null; // (CA #2) no (non-negated) push word → not push handling
+    if (unnegatedMatch(text, [PUSH_FORBIDDEN_COMPANION])) return 'push-unsupported'; // push + force/PR/deploy/tag/branch/…
     return 'push';
   }
 
@@ -1345,10 +1342,9 @@ export class ConversationRuntime {
    *    "execute approved push"/"push approved commit"/…).
    */
   static interpretPushExecutionIntent(text: string): 'execute' | 'push-unsupported' | null {
-    const t = text.trim().toLowerCase();
-    if (!PUSH_EXECUTION_WORDS.test(t) && !PUSH_WORDS.test(t)) return null; // no push/exec word → not push handling
-    if (PUSH_FORBIDDEN_COMPANION.test(t)) return 'push-unsupported'; // push + force/PR/deploy/tag/branch/…
-    if (PUSH_EXECUTION_WORDS.test(t)) return 'execute';
+    if (!unnegatedMatch(text, [PUSH_EXECUTION_WORDS]) && !unnegatedMatch(text, [PUSH_WORDS])) return null; // no (non-negated) push/exec word
+    if (unnegatedMatch(text, [PUSH_FORBIDDEN_COMPANION])) return 'push-unsupported'; // push + force/PR/deploy/tag/branch/…
+    if (unnegatedMatch(text, [PUSH_EXECUTION_WORDS])) return 'execute';
     return null; // a bare push word (no exec word) → leave to the 2z already-approved reply at PUSH_APPROVED
   }
 
@@ -1361,10 +1357,9 @@ export class ConversationRuntime {
    *  - 'create' → an explicit PR-creation phrase ("PR 만들어줘"/"open a PR"/"merge request 만들어줘"/…).
    */
   static interpretPrIntent(text: string): 'create' | 'pr-unsupported' | null {
-    const t = text.trim().toLowerCase();
-    if (!PR_WORD.test(t)) return null; // no PR word → not PR handling
-    if (PR_FORBIDDEN_COMPANION.test(t)) return 'pr-unsupported'; // PR + deploy/merge/release/force/…
-    if (PR_CREATION_WORDS.test(t)) return 'create';
+    if (!unnegatedMatch(text, [PR_WORD])) return null; // no (non-negated) PR word → not PR handling
+    if (unnegatedMatch(text, [PR_FORBIDDEN_COMPANION])) return 'pr-unsupported'; // PR + deploy/merge/release/force/…
+    if (unnegatedMatch(text, [PR_CREATION_WORDS])) return 'create';
     return null; // a bare PR noun without a create/open verb → not PR handling (CA #1)
   }
 
