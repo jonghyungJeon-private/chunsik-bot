@@ -432,26 +432,21 @@ const application: Provider[] = [
       // ADR-0032: production ApprovalFlow — stateless, derived from existing aggregates
       // (Session.activeTaskId → Task.planId → approvals.findByExecutionPlan → PENDING); anchors the
       // in-flight {request, prior} on the in-focus Task so a later turn can resume. No new store.
-      const approvalFlow = new StatelessApprovalFlow({
-        sessions: storage.sessions,
-        tasks: storage.tasks,
-        approvals: storage.approvals,
-      });
-      // ADR-0037: production ScopeClarificationFlow — same shape as StatelessApprovalFlow, one step
-      // earlier (before any ExecutionPlan exists). The anchored Task is an inert conversation
-      // anchor, distinguished from an approval anchor by planId absence + a metadata discriminator.
-      const scopeClarificationFlow = new StatelessScopeClarificationFlow({
-        sessions: storage.sessions,
-        tasks: storage.tasks,
-      });
-      // ADR-0040: production ApplyPreviewFlow — same shape as StatelessScopeClarificationFlow. The
-      // anchored Task is a plan-less inert conversation anchor, so it is never discoverable by
-      // StatelessApprovalFlow's plan-scoped lookup, even though the second (apply) ApprovalRequest it
-      // eventually creates references the same executionPlanRef as the first.
-      const applyPreviewFlow = new StatelessApplyPreviewFlow({
-        sessions: storage.sessions,
-        tasks: storage.tasks,
-      });
+      // Track A / ADR-0062 (Sprint 4c-Follow-up-2) — pass the LIVE storage seam to the stateless flows, never an
+      // eager { sessions: storage.sessions, tasks: storage.tasks } snapshot. This factory runs during
+      // NestFactory.createApplicationContext (main.ts) BEFORE `await storage.init()`, and the sqlite
+      // StorageProvider's repositories (`sessions!`/`tasks!`/`approvals!`) are undefined until init() assigns them.
+      // Capturing the values here froze `undefined` into the flow, so a later `.save()` threw
+      // "Cannot read properties of undefined (reading 'save')". The flows already dereference `store.sessions`/
+      // `store.tasks` at CALL time (post-init) — mirroring SessionManager — so holding the live `storage` object
+      // resolves the initialized repos. `StorageProvider` structurally satisfies each flow's narrowed store.
+      const approvalFlow = new StatelessApprovalFlow(storage);
+      // ADR-0037: production ScopeClarificationFlow — one step earlier (before any ExecutionPlan exists). The
+      // anchored Task is an inert conversation anchor, distinguished from an approval anchor by planId absence.
+      const scopeClarificationFlow = new StatelessScopeClarificationFlow(storage);
+      // ADR-0040: production ApplyPreviewFlow — a plan-less inert conversation anchor, never discoverable by
+      // StatelessApprovalFlow's plan-scoped lookup.
+      const applyPreviewFlow = new StatelessApplyPreviewFlow(storage);
       return new ConversationRuntime({
         actors,
         sessions,
