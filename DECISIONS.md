@@ -4087,3 +4087,61 @@ minted token). Documents the **ADR-0023/0048** git boundary (git push/clone cred
 the CA Sprint 4b correction; bulk rename deferred to a future **Sprint 4c**. Plans:
 `docs/plans/sprint-4a-github-app-authentication-architecture-plan.md` (accepted baseline),
 `docs/plans/sprint-4b-github-app-authentication-implementation-plan.md` (accepted implementation plan).
+
+## ADR-0062 — Preview Intent Routing Fix (deterministic preview intent into the existing CodeChangePreview pipeline; negation-aware pre-classification gates)
+
+- **Status:** ✅ **Accepted** (Sprint 4c-Follow-up). Ratified by the Chief Architect via the follow-up plan
+  approval (APPROVED 2026-07-09) and the implementation-plan approval (APPROVED 2026-07-09) under the approved
+  scope below; subject to the standard CA implementation-PR review before merge.
+- **Date:** 2026-07-09
+- **Scope:** Fix the product/runtime command-UX / intent-routing gap that BLOCKED Gate 4B Scenario C. It is **not** a
+  GitHub App auth failure — the App happy path (installation resolution / token mint / push / PR) was never reached.
+  Two confirmed root causes: (A) the pre-classification mutation gates matched commit/push/apply/PR/**test** tokens
+  regardless of **negation**, so "do not commit / do not push / 테스트 실행하지 마" hijacked routing; (B) there was
+  **no preview entry point** — a preview is only a byproduct of `IMPLEMENT_CODE`. Authoritative design:
+  `docs/plans/sprint-4c-followup-preview-intent-routing-fix-plan.md` and `…-implementation-plan.md` (both CA-approved).
+
+### Most important rule
+> The fix changes **only** intent RECOGNITION/ROUTING. It **relaxes no approval boundary** and adds **no
+> automation**: the shipped lifecycle `CodeChangePreview → WORKSPACE_APPLIED → COMMIT_APPROVAL → GIT_COMMITTED →
+> PUSH_APPROVAL_PENDING → PUSH_APPROVED → GIT_PUSHED → PR_CREATED` is unchanged, each remote step still separately
+> approved. A preview-only request KEEPS the existing HIGH-risk plan approval before AI patch generation (7a); it
+> never applies/commits/pushes/PRs. **No GitHub App auth / token-flow code is touched (ADR-0061 preserved).**
+
+### Decision
+- **FIX-1 (deterministic PREVIEW intent).** `IntentClassifier` recognizes an explicit preview request (KO+EN
+  `PREVIEW_WORDS` — "변경 미리보기", "코드 변경 미리보기", "patch/diff preview", "preview only", "파일 변경안", … —
+  plus an explicit `/preview <request>` command) and routes it to `IntentType.IMPLEMENT_CODE` /
+  `Capability.CODE_IMPLEMENTATION` with `raw.kind:'preview'`. This reuses the EXISTING `planningOnly` → HIGH-risk
+  plan approval → `runCodeGenerationPreview` pipeline and stops at the read-only `ELIGIBLE` diff preview. No new
+  anchor status, no new lifecycle state. **7a selected; 7b (AI generation without the plan approval) is DEFERRED /
+  NOT APPROVED.**
+- **FIX-2 (negation-aware gates).** A shared, deterministic, clause-scoped `isNegated()` / `unnegatedMatch()`
+  (new module `packages/core/src/application/intent-negation.ts`) makes the pre-classification gates count a token
+  only when it is NOT under an explicit negation in the same clause. Applied to `interpretCommitIntent`,
+  `interpretCommitExecutionIntent`, `interpretPushIntent`, `interpretPushExecutionIntent`, `interpretApplyIntent`,
+  `interpretPatchIntent`, `interpretFinalApplyIntent`, `interpretPrIntent`, `interpretPostApplyValidationIntent`,
+  **and `IntentClassifier.detectTestRun`** (the last was directly implicated — the bot ran `pnpm test` despite
+  "테스트 실행하지 마"). Negation only REMOVES a trigger; it never creates a positive intent. Non-negated behavior
+  is unchanged (ADR-0033 test execution, the commit/push/apply/PR gates all behave exactly as before).
+- **FIX-3 (anchor-independent commit-gate precedence).** OPTIONAL / constrained — not required after FIX-1+FIX-2;
+  the full test matrix passes without it, so it was NOT implemented this slice. (Any future change here must not
+  weaken a boundary or remove the safe "no applied change to commit" reply.)
+
+### Consequences
+- **+** A "patch/diff preview only" request now reaches preview generation; negated prohibitions no longer hijack
+  routing; the exact Gate 4B failure is fixed at both root causes.
+- **+** Tiny, contained blast radius: one new pure util module + recognition-only edits to `intent-classifier.ts`
+  and the static matchers in `conversation-runtime.ts`. No port/domain/manager/lifecycle/App-auth change.
+- **−** One more deterministic layer to maintain (KO/EN negation markers + clause splitting); it deliberately does
+  NOT resolve contrastive "A 말고 B" forms (out of scope). Routing stays deterministic (no AI in routing).
+- **Validation:** Node 22 `typecheck` exit 0; `pnpm test` 51 files / 1131 tests green (49/1098 baseline preserved +
+  33 new covering preview routing, negated commit/push/apply/PR, negated TEST_EXECUTION, and unchanged genuine paths).
+
+### Relations
+Extends **ADR-0038** (AI Code Generation Preview) / **ADR-0040** (Explicit Preview Apply Approval); makes the
+**ADR-0045** (commit) / **ADR-0047** (push) approval-word matchers and **ADR-0033** (Live Test Execution,
+`detectTestRun`) / **ADR-0043** (Post-Apply Validation) negation-aware. Does **NOT** touch **ADR-0061** (GitHub App
+Authentication) — no App-auth/token-flow change. Plans:
+`docs/plans/sprint-4c-followup-preview-intent-routing-fix-plan.md` (investigation + approved scope),
+`docs/plans/sprint-4c-followup-preview-intent-routing-fix-implementation-plan.md` (implementation design).

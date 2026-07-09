@@ -1,6 +1,7 @@
 import { Capability, IntentType } from '../domain';
 import type { InboundMessage, Intent } from '../domain';
 import type { CapabilityRouter } from './capability-router';
+import { isNegated } from './intent-negation';
 
 /**
  * Classifies a natural-language message into an Intent. v1 is MINIMAL and
@@ -16,6 +17,21 @@ export class IntentClassifier {
   async classify(message: InboundMessage): Promise<Intent> {
     void this.router;
     const text = message.text.trim();
+
+    // Explicit preview command (Sprint 4c-Follow-up, ADR-0062 draft) — an unambiguous entry into the code-change
+    // preview pipeline (IMPLEMENT_CODE → planningOnly → HIGH-risk plan approval → CodeGeneration preview),
+    // independent of NL phrasing. It never applies/commits/pushes — it stops at the read-only diff preview.
+    if (/^\/preview\b/i.test(text)) {
+      const rest = text.replace(/^\/preview\b\s*/i, '').trim();
+      return {
+        type: IntentType.IMPLEMENT_CODE,
+        capability: Capability.CODE_IMPLEMENTATION,
+        confidence: 1,
+        requiresWork: true,
+        summary: (rest || 'Preview a code change').slice(0, 200),
+        raw: { kind: 'preview' },
+      };
+    }
 
     const path = IntentClassifier.extractLocalPath(text);
     if (path && /등록|register/i.test(text)) {
@@ -81,10 +97,17 @@ export class IntentClassifier {
    * kind is a classification tag only; the resolver maps it to a fixed allow-listed command (ADR-0033).
    */
   private static detectTestRun(text: string): 'typecheck' | 'test' | undefined {
-    if (/(typecheck|타입\s*체크|type\s*check)/i.test(text)) return 'typecheck';
-    const mentionsTest = /(테스트|\btest\b)/i.test(text);
+    // Negation-aware (Sprint 4c-Follow-up, ADR-0062 draft): a NEGATED test/typecheck phrase ("테스트 실행하지 마",
+    // "pnpm test 실행하지 마", "do not run tests") must NOT be read as a RUN_TESTS request — otherwise a
+    // preview-only request that prohibits tests would run `pnpm test` (the Gate 4B observation). Each matched
+    // token is guarded with isNegated(); a non-negated test request behaves exactly as before (ADR-0033).
+    const typecheck = text.match(/(typecheck|타입\s*체크|type\s*check)/i);
+    if (typecheck && !isNegated(text, typecheck.index ?? 0, typecheck[0].length)) return 'typecheck';
+    const pnpmTest = text.match(/\bpnpm\s+test\b/i);
+    if (pnpmTest && !isNegated(text, pnpmTest.index ?? 0, pnpmTest[0].length)) return 'test';
+    const testNoun = text.match(/(테스트|\btest\b)/i);
     const actionVerb = /(돌려|실행|run|해줘|해 줘)/i.test(text);
-    if ((mentionsTest && actionVerb) || /\bpnpm\s+test\b/i.test(text)) return 'test';
+    if (testNoun && actionVerb && !isNegated(text, testNoun.index ?? 0, testNoun[0].length)) return 'test';
     return undefined;
   }
 
@@ -92,7 +115,13 @@ export class IntentClassifier {
    * Detect a code-change request → its kind, or undefined. Deterministic, conservative (KO + EN).
    * Kind is a classification tag only — never an implementation instruction (ADR-0035).
    */
-  private static detectCodeChange(text: string): 'fix' | 'change' | 'refactor' | undefined {
+  private static detectCodeChange(text: string): 'fix' | 'change' | 'refactor' | 'preview' | undefined {
+    // Preview-only requests (Sprint 4c-Follow-up, ADR-0062 draft) — a preview phrase needs NO change verb; it is
+    // still a CODE_IMPLEMENTATION intent that reuses the planningOnly → plan-approval → CodeGeneration-preview
+    // pipeline and stops at the read-only diff preview (ELIGIBLE). Checked first so a preview phrasing wins.
+    const previewWords =
+      /(변경\s*미리\s*보기|코드\s*변경\s*미리\s*보기|패치\s*미리\s*보기|diff\s*미리\s*보기|미리\s*보기만|미리\s*보기\s*(?:생성|만들|보여)|코드\s*변경\s*초안|파일\s*변경안|patch\s+preview|diff\s+preview|preview\s+only|preview\s+the\s+change|(?:generate|show|make|create)\s+(?:me\s+)?(?:a\s+)?(?:code\s+|patch\s+|diff\s+)?preview)/i;
+    if (previewWords.test(text)) return 'preview';
     if (/(리팩터|리팩토링|refactor)/i.test(text)) return 'refactor';
     const bugish = /(버그|bug|에러|오류|error)/i;
     const fixVerb = /(고쳐|고치|수정|fix)/i;

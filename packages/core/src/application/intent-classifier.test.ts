@@ -76,3 +76,62 @@ describe('IntentClassifier.classify (v1 deterministic)', () => {
     expect(intent.capability).toBe(Capability.PROJECT_ANALYSIS);
   });
 });
+
+// Sprint 4c-Follow-up (ADR-0062 draft) — deterministic PREVIEW intent + negation-aware TEST_EXECUTION detection.
+describe('IntentClassifier — preview intent + negated test handling', () => {
+  it('routes a Korean "미리보기" request to IMPLEMENT_CODE with raw.kind "preview"', async () => {
+    for (const text of [
+      '변경 미리보기 만들어줘',
+      '코드 변경 미리보기 보여줘',
+      '패치 미리보기만 보여줘',
+      '파일 변경안 보여줘',
+    ]) {
+      const intent = await classifier.classify(msg(text));
+      expect(intent.type).toBe(IntentType.IMPLEMENT_CODE);
+      expect(intent.capability).toBe(Capability.CODE_IMPLEMENTATION);
+      expect(intent.raw).toEqual({ kind: 'preview' });
+    }
+  });
+
+  it('routes an English "diff/patch preview only" request to IMPLEMENT_CODE (preview)', async () => {
+    for (const text of ['diff preview only, please', 'show me a patch preview', 'preview the change only']) {
+      const intent = await classifier.classify(msg(text));
+      expect(intent.type).toBe(IntentType.IMPLEMENT_CODE);
+      expect(intent.raw).toEqual({ kind: 'preview' });
+    }
+  });
+
+  it('routes the explicit /preview command to IMPLEMENT_CODE (preview)', async () => {
+    const intent = await classifier.classify(msg('/preview 이 함수 리팩터링 초안 보여줘'));
+    expect(intent.type).toBe(IntentType.IMPLEMENT_CODE);
+    expect(intent.capability).toBe(Capability.CODE_IMPLEMENTATION);
+    expect(intent.raw).toEqual({ kind: 'preview' });
+    expect(intent.summary).toBe('이 함수 리팩터링 초안 보여줘');
+  });
+
+  it('P7/P8: a preview-only request that prohibits tests/commit/push routes to preview (never RUN_TESTS)', async () => {
+    for (const text of [
+      'diff preview only. do not run pnpm test. do not commit. do not push.',
+      '변경 미리보기만 보여줘. pnpm test 실행하지 마. 커밋하지 마.',
+    ]) {
+      const intent = await classifier.classify(msg(text));
+      expect(intent.type).toBe(IntentType.IMPLEMENT_CODE);
+      expect(intent.raw).toEqual({ kind: 'preview' });
+    }
+  });
+
+  it('N6/N7: a NEGATED test request is NOT classified as RUN_TESTS', async () => {
+    for (const text of ['테스트 실행하지 마', 'pnpm test 실행하지 마', 'do not run pnpm test']) {
+      const intent = await classifier.classify(msg(text));
+      expect(intent.type).not.toBe(IntentType.RUN_TESTS);
+    }
+  });
+
+  it('R9/R10: a genuine (non-negated) test request still classifies as RUN_TESTS (ADR-0033 unchanged)', async () => {
+    for (const text of ['테스트 실행해줘', 'pnpm test 실행해줘', '이 프로젝트 테스트 돌려줘']) {
+      const intent = await classifier.classify(msg(text));
+      expect(intent.type).toBe(IntentType.RUN_TESTS);
+      expect(intent.capability).toBe(Capability.TEST_EXECUTION);
+    }
+  });
+});
