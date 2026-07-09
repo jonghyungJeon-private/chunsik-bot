@@ -4506,6 +4506,16 @@ export class ConversationRuntime {
         }
       }
       if (!targetFiles) {
+        // A2 (Sprint 4c-Follow-up-2, ADR-0062): an EXPLICIT new-file request — a create-file marker plus EXACTLY
+        // ONE safe candidate path that does not exist yet — is a valid planning/preview target, not a reason to
+        // ask "which file?". `candidates` are already absolute/traversal/dot-filtered by extractTargetPathCandidates.
+        // This changes ROUTING only: preview stays non-mutating and the apply/commit/push/PR approval gates are
+        // untouched (planningOnly → PLANNING + APPROVAL, no code-gen/diff/write). Ambiguous/missing/unsafe paths
+        // still fall through to scope clarification below.
+        const newFileTarget = ConversationRuntime.explicitNewFileTarget(message.text, candidates);
+        if (newFileTarget) targetFiles = [newFileTarget];
+      }
+      if (!targetFiles) {
         // ADR-0037: anchor so the user's very next reply (even a bare path) can recover this
         // request. Reached only for a fresh CODE_IMPLEMENTATION request with an active project and
         // an opened workspace (both already required to reach this line) and no validated target.
@@ -4525,6 +4535,26 @@ export class ConversationRuntime {
     }
 
     return this.runResolvedExecution(message, session, actor, intent, workspaceRef, targetFiles);
+  }
+
+  /** Explicit create-file markers (Sprint 4c-Follow-up-2, A2) — KO + EN. Conservative: only unambiguous
+   *  file-creation wording, so an ordinary code-change request never trips it. */
+  private static readonly NEW_FILE_MARKER =
+    /(파일\s*생성|파일\s*추가|새\s*파일(?:\s*(?:생성|추가))?|create\s+(?:a\s+)?(?:new\s+)?file|new\s+file|add\s+(?:a\s+)?(?:new\s+)?file)/i;
+
+  /**
+   * An explicitly-requested single new-file target (Sprint 4c-Follow-up-2, A2). Returns the normalized path ONLY
+   * when the request is an UNAMBIGUOUS explicit new-file creation: a create-file marker is present AND there is
+   * exactly ONE candidate path. `candidates` are already absolute/traversal/dot-filtered by
+   * extractTargetPathCandidates, so a returned path is a safe project-relative path. Returns null otherwise
+   * (no marker, or 0 / >1 candidates) so the caller falls back to scope clarification. Pure/synchronous; no I/O,
+   * no workspace mutation — it only lets a new-file path be a valid planning/preview TARGET.
+   */
+  static explicitNewFileTarget(text: string, candidates: readonly string[]): string | null {
+    if (!ConversationRuntime.NEW_FILE_MARKER.test(text)) return null;
+    if (candidates.length !== 1) return null; // 0 → nothing to target; >1 → ambiguous → clarify
+    const only = candidates[0];
+    return only ? normalizeRelativePath(only) : null;
   }
 
   /** Resolve the active project's workspace for a needsWorkspace capability, or an early-return reply. */

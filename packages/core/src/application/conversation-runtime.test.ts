@@ -1364,6 +1364,64 @@ describe('Code Change Scope Collection — runtime', () => {
   });
 });
 
+// ── Sprint 4c-Follow-up-2 (Track A / ADR-0062) — explicit new-file preview target (A2) ────────────
+describe('Explicit new-file preview target (A2)', () => {
+  it('create-file marker + one non-existent path → planning/preview (orchestrator.run), not scope clarification', async () => {
+    const { deps, calls } = makeDeps({
+      intent: codeIntent,
+      runOutcome: outcomeOf(ExecutionOutcomeStatus.AWAITING_APPROVAL),
+      workspaceList: () => [], // the file does not exist yet
+    });
+    const result = await new ConversationRuntime(deps).handle(
+      messageOf('파일 생성: docs/uat/github-app-auth-smoke.md 미리보기만 만들어줘'),
+    );
+    expect(calls.run).toBe(1); // reached planning/approval, NOT scope clarification
+    expect(calls.scopeAnchor).toBe(0);
+    expect(calls.lastRunRequest?.targetFiles).toEqual(['docs/uat/github-app-auth-smoke.md']);
+    expect(calls.workspaceApply).toBe(0); // preview/planning stays non-mutating
+    expect(calls.gitCommit).toBe(0);
+    expect(result.status).toBe('AWAITING_APPROVAL');
+  });
+
+  it('English "create file:" marker also routes an explicit new-file path to planning/preview', async () => {
+    const { deps, calls } = makeDeps({
+      intent: codeIntent,
+      runOutcome: outcomeOf(ExecutionOutcomeStatus.AWAITING_APPROVAL),
+      workspaceList: () => [],
+    });
+    await new ConversationRuntime(deps).handle(messageOf('preview only — create file: docs/uat/smoke.md'));
+    expect(calls.run).toBe(1);
+    expect(calls.scopeAnchor).toBe(0);
+    expect(calls.lastRunRequest?.targetFiles).toEqual(['docs/uat/smoke.md']);
+  });
+
+  it('ambiguous (two candidate paths) with a marker still routes to scope clarification', async () => {
+    const { deps, calls } = makeDeps({ intent: codeIntent, workspaceList: () => [] });
+    const result = await new ConversationRuntime(deps).handle(
+      messageOf('파일 생성: docs/a.md 그리고 docs/b.md 미리보기'),
+    );
+    expect(calls.run).toBe(0);
+    expect(calls.scopeAnchor).toBe(1);
+    expect(result.reply.text).toBe(new ResponseComposer().composeTargetScopeClarification(CTX).text);
+  });
+
+  it('a non-existent path WITHOUT a create-file marker still routes to scope clarification (unchanged)', async () => {
+    const { deps, calls } = makeDeps({ intent: codeIntent, workspaceList: () => [] });
+    const result = await new ConversationRuntime(deps).handle(messageOf('docs/uat/x.md 내용 미리보기 보여줘'));
+    expect(calls.run).toBe(0);
+    expect(calls.scopeAnchor).toBe(1);
+    expect(result.reply.text).toBe(new ResponseComposer().composeTargetScopeClarification(CTX).text);
+  });
+
+  it('an unsafe (traversal) path with a create-file marker is rejected → scope clarification, no run', async () => {
+    const { deps, calls } = makeDeps({ intent: codeIntent });
+    const result = await new ConversationRuntime(deps).handle(messageOf('파일 생성: ../escape.md 미리보기'));
+    expect(calls.workspaceList).toBe(0); // rejected at extraction — never a candidate
+    expect(calls.run).toBe(0);
+    expect(result.reply.text).toBe(new ResponseComposer().composeTargetScopeClarification(CTX).text);
+  });
+});
+
 // ── Sprint 2p — Multi-turn Code Scope Clarification (ADR-0037) ─────────────────────────────────
 
 describe('Multi-turn Code Scope Clarification — runtime', () => {
