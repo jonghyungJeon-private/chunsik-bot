@@ -17,6 +17,7 @@ import type {
 
 import { AppModule } from './app.module';
 import { ConsoleLogger } from './console-logger';
+import { serializeError } from './error-diagnostics';
 
 const log = new ConsoleLogger('chunsik');
 
@@ -42,18 +43,33 @@ async function bootstrap(): Promise<void> {
   const platform = app.get<PlatformAdapter>(PLATFORM_ADAPTER);
   const core = app.get(ChunsikCore);
 
+  // Track B (Sprint 4c-Follow-up-2): secret-free structured diagnostics — name/message/redacted stack/cause plus
+  // non-secret correlation context (stage + message/channel/user ids). The raw message text is deliberately NOT
+  // logged (a user could paste a secret into chat); only non-secret identifiers are.
   platform.onMessage((message) =>
     core.handleInboundMessage(message).catch((err) =>
-      log.error('inbound handling failed', {
-        error: err instanceof Error ? err.message : String(err),
-      }),
+      log.error(
+        'inbound handling failed',
+        serializeError(err, {
+          stage: 'inbound',
+          messageId: message.id,
+          platform: message.context.platform,
+          channelId: message.context.channelId,
+          userId: message.context.userId,
+        }),
+      ),
     ),
   );
   platform.onApprovalDecision((decision) =>
     core.handleApprovalDecision(decision).catch((err) =>
-      log.error('approval handling failed', {
-        error: err instanceof Error ? err.message : String(err),
-      }),
+      log.error(
+        'approval handling failed',
+        serializeError(err, {
+          stage: 'approval-decision',
+          approvalId: decision.approvalId,
+          approved: decision.approved,
+        }),
+      ),
     ),
   );
 
