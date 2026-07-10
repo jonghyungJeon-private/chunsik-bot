@@ -88,6 +88,15 @@ export interface ExecutionRequest {
   /** Resolved working directory for FS/command stages (read-only context for codegen). */
   workspaceRef?: WorkspaceRef;
   targetFiles?: string[];
+  /**
+   * The subset of `targetFiles` that originated from the EXPLICIT new-file flow (Sprint 4c-Follow-up-3,
+   * F3-A). Set ONLY by `ConversationRuntime.handleExecutionIntent` via `explicitNewFileTarget` (A2) and
+   * threaded through `IntentResolver.resolve`; never from user text, never by `IntentClassifier`, never
+   * from the scope-clarification recovery (which only ever routes existing files). It is the positive
+   * ORIGIN signal that lets `runCodeGenerationPreview` accept a `changeKind='add'` diff — and only for a
+   * path that is also re-verified as non-existent by a read-only existence check at diff time.
+   */
+  newFileTargets?: string[];
   /** Optional command to run (e.g. tests) when COMMAND_EXECUTION is selected. */
   command?: { command: string; args: string[] };
   /**

@@ -18,6 +18,9 @@ export interface IntentResolutionContext {
   projectId?: Id;
   workspaceRef?: WorkspaceRef;
   targetFiles?: string[];
+  /** Subset of `targetFiles` that came from the explicit new-file flow (F3-A). Passed straight through
+   *  to `ExecutionRequest.newFileTargets` — the resolver neither classifies nor derives it. */
+  newFileTargets?: string[];
   command?: { command: string; args: string[] };
 }
 
@@ -52,6 +55,7 @@ export class IntentResolver {
       ...(context.projectId ? { projectId: context.projectId } : {}),
       ...(context.workspaceRef ? { workspaceRef: context.workspaceRef } : {}),
       ...(context.targetFiles ? { targetFiles: context.targetFiles } : {}),
+      ...(context.newFileTargets ? { newFileTargets: context.newFileTargets } : {}),
       ...(command ? { command } : {}),
       // ADR-0035: planningOnly is set ONLY here, ONLY for CODE_IMPLEMENTATION — the first live
       // code-change product slice stops at Planning + Approval; no AI generation/patch/write yet.

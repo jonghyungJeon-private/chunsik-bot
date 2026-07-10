@@ -77,7 +77,7 @@ import type {
   WorkspaceDiff,
   WorkspaceRef,
 } from '../domain';
-import type { AiProvider, AiRequest, Logger, ProjectReadout } from '../ports';
+import type { AiProvider, AiRequest, Logger, LogFields, ProjectReadout } from '../ports';
 import { now } from '../util/clock';
 import type {
   ResponseComposer,
@@ -1182,13 +1182,15 @@ export function toCodeChangePreview(proposal: ProposedChange[], targetFiles: str
 /**
  * Shape an already-guarded `WorkspaceManager.diff()` result into the composer-facing DTO (Sprint 2r,
  * ADR-0039). Pure data reshaping — no bounding/truncation-notice text here; `ResponseComposer` owns
- * that (ADR-0032). Callers must have already rejected an empty `diff.files` and any `changeKind: 'add'`
- * entry before calling this (see `runCodeGenerationPreview`).
+ * that (ADR-0032). Callers must have already rejected an empty `diff.files` before calling this, and any
+ * `changeKind: 'add'` entry must already have passed the explicit-new-file + non-existence guard (F3-A,
+ * Sprint 4c-Follow-up-3) — an `add` here is a confirmed new-file preview, rendered against empty content.
  */
 export function toCodeDiffPreview(diff: WorkspaceDiff, outOfScopeWarnings: string[]): CodeDiffPreview {
   const changes: CodeDiffPreview['changes'] = diff.files.map((f) => ({
     path: f.path, // already the validated targetFiles value passed into workspace.diff
-    kind: f.changeKind === 'delete' ? 'delete' : 'update', // 'modify' -> 'update' ('add' rejected earlier)
+    // 'modify' -> 'update'; 'add' is a guarded new-file preview (F3-A); 'delete' unchanged.
+    kind: f.changeKind === 'delete' ? 'delete' : f.changeKind === 'add' ? 'add' : 'update',
     unified: f.unified, // '' when binary or size-skipped by the provider
     binary: f.binary,
   }));
@@ -2002,6 +2004,7 @@ export class ConversationRuntime {
     const planRef = outcome.refs.executionPlanRef;
     const targetFiles = request.targetFiles;
     if (!planRef || !request.workspaceRef || !targetFiles?.length) {
+      this.logPreviewFailure('missing-refs-or-targets', message, session, request);
       return this.failComposed(
         message, session, this.deps.composer.composeCodeGenerationPreviewFailed(message.context), outcome,
       );
@@ -2017,11 +2020,16 @@ export class ConversationRuntime {
         targetFiles,
       });
     } catch {
+      this.logPreviewFailure('code-generation-exception', message, session, request);
       return this.failComposed(
         message, session, this.deps.composer.composeCodeGenerationPreviewFailed(message.context), outcome,
       );
     }
     if (generation.status !== CodeGenerationStatus.SUCCEEDED) {
+      this.logPreviewFailure('code-generation-not-succeeded', message, session, request, {
+        codeGenerationId: generation.id,
+        ...(generation.failureKind ? { failureKind: String(generation.failureKind) } : {}),
+      });
       return this.failComposed(
         message, session, this.deps.composer.composeCodeGenerationPreviewFailed(message.context), outcome,
       );
@@ -2029,6 +2037,7 @@ export class ConversationRuntime {
 
     const proposal = await this.deps.codeGeneration.getProposal(generation);
     if (!proposal) {
+      this.logPreviewFailure('missing-proposal', message, session, request, { codeGenerationId: generation.id });
       return this.failComposed(
         message, session, this.deps.composer.composeCodeGenerationPreviewFailed(message.context), outcome,
       );
@@ -2038,6 +2047,11 @@ export class ConversationRuntime {
     if (inScope.length === 0) {
       // Every proposed path was outside the validated targetFiles — never present this as a
       // successful code-change proposal.
+      this.logPreviewFailure('out-of-scope-proposal', message, session, request, {
+        codeGenerationId: generation.id,
+        proposalId: proposal.id,
+        outOfScopeCount: outOfScopeWarnings.length,
+      });
       return this.failComposed(
         message,
         session,
@@ -2052,6 +2066,10 @@ export class ConversationRuntime {
     } catch {
       // Read-only failure (e.g. current file unreadable) — same guaranteed non-mutation as every
       // other preview failure (ADR-0039, CA Round 1 Required Change #8).
+      this.logPreviewFailure('workspace-diff-throw', message, session, request, {
+        codeGenerationId: generation.id,
+        proposalId: proposal.id,
+      });
       return this.failComposed(
         message, session, this.deps.composer.composeCodeGenerationPreviewFailed(message.context), outcome,
       );
@@ -2059,18 +2077,64 @@ export class ConversationRuntime {
 
     // An empty diff result cannot be a successful preview (ADR-0039, CA Round 1 Required Change #3).
     if (diff.files.length === 0) {
+      this.logPreviewFailure('empty-diff', message, session, request, {
+        codeGenerationId: generation.id,
+        proposalId: proposal.id,
+      });
       return this.failComposed(
         message, session, this.deps.composer.composeCodeGenerationPreviewFailed(message.context), outcome,
       );
     }
 
-    // targetFiles are Workspace-validated existing files (ADR-0036) — changeKind 'add' means the
-    // current content could not be found/read at diff time. Failed preview, not a "new file" success
-    // (ADR-0039, CA Round 1 Required Change #1).
-    if (diff.files.some((f) => f.changeKind === 'add')) {
-      return this.failComposed(
-        message, session, this.deps.composer.composeCodeGenerationPreviewFailed(message.context), outcome,
-      );
+    // F3-A (Sprint 4c-Follow-up-3, CA APPROVED_WITH_CHANGES §3.1/§3.2): a `changeKind='add'` diff is a
+    // valid NEW-FILE preview ONLY for a path that (a) originated from the EXPLICIT new-file flow
+    // (`request.newFileTargets`, set by A2 — never inferred from arbitrary targetFiles), (b) is in
+    // targetFiles, (c) normalizes to a safe relative path (already guaranteed by
+    // extractTargetPathCandidates + normalizeRelativePath), and (d) a read-only existence check
+    // confirms does NOT currently exist. Any other `add` — an existing/unreadable file, an
+    // extra/unexpected path, or a path not from the explicit new-file flow — stays a FAILED preview
+    // (preserves the ADR-0039/ADR-0036 safety the old unconditional gate provided). Every rejection is
+    // non-mutating (no file is created — the existence check only lists) and emits an F3-B branch log.
+    const normalizedTargets = new Set(targetFiles.map((p) => normalizeRelativePath(p)));
+    const newFileTargets = new Set((request.newFileTargets ?? []).map((p) => normalizeRelativePath(p)));
+    for (const file of diff.files) {
+      if (file.changeKind !== 'add') continue;
+      const norm = normalizeRelativePath(file.path);
+      if (!newFileTargets.has(norm) || !normalizedTargets.has(norm)) {
+        // 'add' for a non-explicit / unexpected / not-a-new-file target — the original failure.
+        this.logPreviewFailure('unexpected-add-diff', message, session, request, {
+          codeGenerationId: generation.id,
+          proposalId: proposal.id,
+        });
+        return this.failComposed(
+          message, session, this.deps.composer.composeCodeGenerationPreviewFailed(message.context), outcome,
+        );
+      }
+      // Read-only existence re-check (only lists; never creates the file): an explicit new-file target
+      // must NOT already exist. If it exists — or we cannot confirm non-existence — reject; this keeps
+      // the "existing file, content unreadable at diff time" case the old gate caught.
+      let exists: boolean;
+      try {
+        const hits = await this.deps.workspace.list(request.workspaceRef, file.path);
+        exists = hits.some((hit) => normalizeRelativePath(hit) === norm);
+      } catch {
+        this.logPreviewFailure('add-existence-check-failed', message, session, request, {
+          codeGenerationId: generation.id,
+          proposalId: proposal.id,
+        });
+        return this.failComposed(
+          message, session, this.deps.composer.composeCodeGenerationPreviewFailed(message.context), outcome,
+        );
+      }
+      if (exists) {
+        this.logPreviewFailure('add-diff-for-existing-file', message, session, request, {
+          codeGenerationId: generation.id,
+          proposalId: proposal.id,
+        });
+        return this.failComposed(
+          message, session, this.deps.composer.composeCodeGenerationPreviewFailed(message.context), outcome,
+        );
+      }
     }
 
     const diffPreview = toCodeDiffPreview(diff, outOfScopeWarnings);
@@ -2090,6 +2154,33 @@ export class ConversationRuntime {
       createdAt: now(),
     });
     return this.respondComposed(message, session, reply, outcome);
+  }
+
+  /**
+   * F3-B (Sprint 4c-Follow-up-3): secret-free branch log for an internally-caught preview failure. The
+   * `runCodeGenerationPreview` failure branches are NOT covered by the inbound catch (Track B), so
+   * without this the branch was only diagnosable by inspecting the sqlite aggregate (as the last
+   * disambiguation required). Emits ONLY safe metadata — a branch identifier + non-secret ids/counts.
+   * NEVER proposal content, file contents, rendered diff text, tokens, or secrets (the `Logger` port's
+   * `LogFields` is primitive-only by contract, and callers pass only ids/counts).
+   */
+  private logPreviewFailure(
+    branch: string,
+    message: InboundMessage,
+    session: Session,
+    request: ExecutionRequest,
+    extra: LogFields = {},
+  ): void {
+    this.deps.logger.warn('code preview failed', {
+      stage: 'code-generation-preview',
+      branch,
+      capability: 'CODE_IMPLEMENTATION',
+      sessionId: session.id,
+      messageId: message.id,
+      ...(request.targetFiles ? { targetPathCount: request.targetFiles.length } : {}),
+      ...(request.newFileTargets ? { newFileTargetCount: request.newFileTargets.length } : {}),
+      ...extra,
+    }); // deliberately NO proposal content / file contents / diff text / tokens / secrets
   }
 
   /** No eligible apply-preview anchor exists at all (Sprint 2s, ADR-0040) — an explicit apply phrase is
@@ -4493,6 +4584,9 @@ export class ConversationRuntime {
 
     // ADR-0036: a code-change request needs a validated target before it may reach Planning/Approval.
     let targetFiles: string[] | undefined;
+    // F3-A (Sprint 4c-Follow-up-3): the positive origin signal for the new-file add-diff preview guard.
+    // Set ONLY when A2's explicit new-file flow fires below — never for an ordinary existing-file target.
+    let newFileTargets: string[] | undefined;
     if (intent.capability === Capability.CODE_IMPLEMENTATION) {
       const candidates = extractTargetPathCandidates(message.text).slice(0, MAX_TARGET_CANDIDATES);
       for (const candidate of candidates) {
@@ -4513,7 +4607,12 @@ export class ConversationRuntime {
         // untouched (planningOnly → PLANNING + APPROVAL, no code-gen/diff/write). Ambiguous/missing/unsafe paths
         // still fall through to scope clarification below.
         const newFileTarget = ConversationRuntime.explicitNewFileTarget(message.text, candidates);
-        if (newFileTarget) targetFiles = [newFileTarget];
+        if (newFileTarget) {
+          targetFiles = [newFileTarget];
+          // F3-A: mark this target as an explicit new-file origin so runCodeGenerationPreview may accept
+          // its `changeKind='add'` diff (still gated by a read-only non-existence re-check at diff time).
+          newFileTargets = [newFileTarget];
+        }
       }
       if (!targetFiles) {
         // ADR-0037: anchor so the user's very next reply (even a bare path) can recover this
@@ -4534,7 +4633,7 @@ export class ConversationRuntime {
       }
     }
 
-    return this.runResolvedExecution(message, session, actor, intent, workspaceRef, targetFiles);
+    return this.runResolvedExecution(message, session, actor, intent, workspaceRef, targetFiles, newFileTargets);
   }
 
   /** Explicit create-file markers (Sprint 4c-Follow-up-2, A2) — KO + EN. Conservative: only unambiguous
@@ -4587,12 +4686,14 @@ export class ConversationRuntime {
     intent: Intent,
     workspaceRef: WorkspaceRef | undefined,
     targetFiles: string[] | undefined,
+    newFileTargets?: string[],
   ): Promise<TurnResult> {
     const request = this.deps.intentResolver.resolve(intent, {
       requestedBy: actor.id,
       ...(session.activeProjectId ? { projectId: session.activeProjectId } : {}),
       ...(workspaceRef ? { workspaceRef } : {}),
       ...(targetFiles ? { targetFiles } : {}),
+      ...(newFileTargets ? { newFileTargets } : {}),
     });
     if (!request) {
       // Defensive: isExecution() gated this path, so resolve should not return null.
