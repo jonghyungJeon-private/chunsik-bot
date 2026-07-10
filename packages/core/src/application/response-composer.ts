@@ -9,6 +9,7 @@ import type {
   PullRequestStatusPreview,
 } from '../domain';
 import type { AiExecutionResult } from '../ports';
+import { newId } from '../util/id';
 import { buildCanonicalDiff } from './preview-delivery';
 
 /**
@@ -614,15 +615,19 @@ export class ResponseComposer {
       .filter((c) => !c.binary && c.unified.trim().length > 0)
       .map((c) => ({ path: c.path, changeKind: c.kind, unifiedDiff: c.unified }));
     if (files.length === 0) return { context, text };
+    // F5-E (Sprint 4c-Follow-up-5): one stable, secret-safe correlation id for the whole delivery
+    // lifecycle. `newId()` is a fresh non-content id (never a diff hash), filesystem-safe for the filename.
+    const previewId = newId();
     return {
       context,
       text,
       preview: {
+        previewId,
         header: DIFF_PREVIEW_HEADER,
         footer: DIFF_PREVIEW_FOOTER,
         files,
         canonicalDiff: buildCanonicalDiff(files),
-        attachmentFilename: 'preview.diff',
+        attachmentFilename: `quoky-preview-${previewId}.diff`,
       },
     };
   }

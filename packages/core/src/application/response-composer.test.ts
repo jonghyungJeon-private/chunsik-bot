@@ -429,7 +429,18 @@ describe('ResponseComposer.composeCodeDiffPreview', () => {
     expect(reply.preview!.canonicalDiff).not.toContain('일부만');
     expect(reply.preview!.files).toHaveLength(1);
     expect(reply.preview!.files[0]!.unifiedDiff).toBe(hugeUnified);
-    expect(reply.preview!.attachmentFilename).toBe('preview.diff');
+    // F5-E: a stable, non-empty, secret-safe correlation id + a filesystem-safe non-secret filename.
+    expect(typeof reply.preview!.previewId).toBe('string');
+    expect(reply.preview!.previewId.length).toBeGreaterThan(0);
+    expect(reply.preview!.attachmentFilename).toBe(`quoky-preview-${reply.preview!.previewId}.diff`);
+    expect(reply.preview!.attachmentFilename).not.toContain('line 199'); // filename never carries diff content
+  });
+
+  it('F5-E: each preview gets its own stable previewId (distinct across calls, one per artifact)', () => {
+    const a = composer.composeCodeDiffPreview(CTX, diffPreviewOf());
+    const b = composer.composeCodeDiffPreview(CTX, diffPreviewOf());
+    expect(a.preview!.previewId).not.toBe(b.preview!.previewId); // generated once per preview
+    expect(a.preview!.footer).toContain('적용'); // apply-boundary framing present for the final message
   });
 
   it('F5-A: no PreviewArtifact when there is no renderable diff (binary/empty only)', () => {

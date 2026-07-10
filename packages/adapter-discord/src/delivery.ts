@@ -122,6 +122,8 @@ export type PreviewDeliveryOutcome =
 
 /** Length-only delivery metadata (CA RC8) — carries NO raw diff/proposal/file content. */
 export interface PreviewDeliveryReport {
+  /** The artifact's stable correlation id (F5-E) — same across chunks, fallback, and this report. */
+  previewId: string;
   outcome: PreviewDeliveryOutcome;
   deliveryMode: 'text' | 'attachment';
   partCount: number;
@@ -161,7 +163,11 @@ export function planPreviewDelivery(
   const safeLimit = opts.safeLimit ?? DISCORD_SAFE_LIMIT;
   const partThreshold = opts.partThreshold ?? FILE_ATTACHMENT_CHUNK_THRESHOLD;
   const canonicalDiffLength = artifact.canonicalDiff.length;
-  const payloadBudget = safeLimit - PREVIEW_WRAPPER_RESERVE;
+  // Reserve room for the wrapper AND the apply-boundary footer that deliverPreview appends to the FINAL
+  // part (F5 Finding 1): with the footer reserved on every segment, `finalPart + "\n" + footer` is always
+  // ≤ safeLimit, so the boundary framing is atomic with the last diff message and never overflows.
+  const footerReserve = artifact.footer.length + 1;
+  const payloadBudget = safeLimit - PREVIEW_WRAPPER_RESERVE - footerReserve;
 
   const split = splitCanonicalDiff(artifact.canonicalDiff, payloadBudget);
   if (split.kind === 'attachment-required') {
@@ -171,8 +177,10 @@ export function planPreviewDelivery(
     return { mode: 'attachment', reason: 'part-threshold', canonicalDiffLength };
   }
   const parts = split.segments.map((seg, i) => wrapDiffPart(seg, i + 1, split.segments.length));
-  if (parts.some((p) => p.length > safeLimit)) {
-    return { mode: 'attachment', reason: 'wrapped-overflow', canonicalDiffLength }; // defensive; reserve should prevent this
+  // Defensive: the final part carries the footer, so verify IT (the largest) stays within the limit.
+  const lastWithFooter = parts.length > 0 ? `${parts[parts.length - 1]!}\n${artifact.footer}` : '';
+  if (parts.some((p) => p.length > safeLimit) || lastWithFooter.length > safeLimit) {
+    return { mode: 'attachment', reason: 'wrapped-overflow', canonicalDiffLength }; // reserve should prevent this
   }
   return { mode: 'text', parts, canonicalDiffLength };
 }
@@ -191,6 +199,8 @@ export async function deliverPreview(
 ): Promise<PreviewDeliveryReport> {
   const plan = planPreviewDelivery(artifact, opts);
   const canonicalDiffLength = plan.canonicalDiffLength;
+  const previewId = artifact.previewId;
+  // The attachment caption carries the SAME apply-boundary footer (F5 Finding 1 / CA RC9).
   const attachmentCaption = `${artifact.header}\n(전체 diff는 첨부파일로 보내드려요.)\n${artifact.footer}`;
 
   const sendCompleteAttachment = async (): Promise<boolean> => {
@@ -206,9 +216,9 @@ export async function deliverPreview(
     const ok = await sendCompleteAttachment();
     if (!ok) {
       await senders.notify?.(PARTIAL_FAILURE_NOTICE).catch(() => undefined);
-      return { outcome: 'DELIVERY_FAILED', deliveryMode: 'attachment', partCount: 0, deliveredPartCount: 0, attachmentFallbackUsed: true, canonicalDiffLength };
+      return { previewId, outcome: 'DELIVERY_FAILED', deliveryMode: 'attachment', partCount: 0, deliveredPartCount: 0, attachmentFallbackUsed: true, canonicalDiffLength };
     }
-    return { outcome: 'SUCCESS_ATTACHMENT_COMPLETE', deliveryMode: 'attachment', partCount: 0, deliveredPartCount: 0, attachmentFallbackUsed: true, canonicalDiffLength };
+    return { previewId, outcome: 'SUCCESS_ATTACHMENT_COMPLETE', deliveryMode: 'attachment', partCount: 0, deliveredPartCount: 0, attachmentFallbackUsed: true, canonicalDiffLength };
   }
 
   // Text multipart: header → ordered [n/m] fenced parts → footer. A known failure at any diff part stops
@@ -217,13 +227,13 @@ export async function deliverPreview(
     const ok = await sendCompleteAttachment();
     if (!ok) {
       await senders.notify?.(PARTIAL_FAILURE_NOTICE).catch(() => undefined);
-      return { outcome: 'DELIVERY_FAILED', deliveryMode: 'text', partCount: plan.parts.length, deliveredPartCount: delivered, attachmentFallbackUsed: true, canonicalDiffLength };
+      return { previewId, outcome: 'DELIVERY_FAILED', deliveryMode: 'text', partCount: plan.parts.length, deliveredPartCount: delivered, attachmentFallbackUsed: true, canonicalDiffLength };
     }
     await senders.notify?.(PREVIEW_ATTACHMENT_NOTICE).catch(() => undefined);
     // 0 diff parts delivered as text → the attachment alone carries everything.
     return delivered === 0
-      ? { outcome: 'SUCCESS_ATTACHMENT_COMPLETE', deliveryMode: 'text', partCount: plan.parts.length, deliveredPartCount: 0, attachmentFallbackUsed: true, canonicalDiffLength }
-      : { outcome: 'PARTIAL_TEXT_ATTACHMENT_COMPLETE', deliveryMode: 'text', partCount: plan.parts.length, deliveredPartCount: delivered, attachmentFallbackUsed: true, canonicalDiffLength };
+      ? { previewId, outcome: 'SUCCESS_ATTACHMENT_COMPLETE', deliveryMode: 'text', partCount: plan.parts.length, deliveredPartCount: 0, attachmentFallbackUsed: true, canonicalDiffLength }
+      : { previewId, outcome: 'PARTIAL_TEXT_ATTACHMENT_COMPLETE', deliveryMode: 'text', partCount: plan.parts.length, deliveredPartCount: delivered, attachmentFallbackUsed: true, canonicalDiffLength };
   };
 
   try {
@@ -231,16 +241,20 @@ export async function deliverPreview(
   } catch {
     return attachmentFallback(0);
   }
+  // F5 Finding 1: the apply-boundary footer is appended to the FINAL diff message so it is ATOMIC with the
+  // last part — SUCCESS_TEXT_COMPLETE is returned only after that final (footer-bearing) message is
+  // confirmed sent. A failure delivering it routes to the attachment fallback like any other part failure;
+  // the footer is NEVER swallowed while still claiming success.
   let delivered = 0;
-  for (const part of plan.parts) {
+  for (let i = 0; i < plan.parts.length; i += 1) {
+    const isLast = i === plan.parts.length - 1;
+    const message = isLast ? `${plan.parts[i]!}\n${artifact.footer}` : plan.parts[i]!;
     try {
-      await senders.sendText(part);
+      await senders.sendText(message);
       delivered += 1;
     } catch {
       return attachmentFallback(delivered);
     }
   }
-  // Footer is framing, not canonical content — a footer failure after the full diff is NOT content loss.
-  await senders.sendText(artifact.footer).catch(() => undefined);
-  return { outcome: 'SUCCESS_TEXT_COMPLETE', deliveryMode: 'text', partCount: plan.parts.length, deliveredPartCount: delivered, attachmentFallbackUsed: false, canonicalDiffLength };
+  return { previewId, outcome: 'SUCCESS_TEXT_COMPLETE', deliveryMode: 'text', partCount: plan.parts.length, deliveredPartCount: delivered, attachmentFallbackUsed: false, canonicalDiffLength };
 }

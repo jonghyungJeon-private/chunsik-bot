@@ -132,11 +132,12 @@ describe('deliverWithNotice', () => {
 // ── Sprint 4c-Follow-up-5 (F5-C/D/E) — lossless multipart preview delivery ─────────────────────────
 
 const artifactOf = (canonicalDiff: string): PreviewArtifact => ({
+  previewId: 'pv-test-123',
   header: 'HDR',
   footer: 'FTR',
   files: [{ path: 'x.ts', changeKind: 'add', unifiedDiff: canonicalDiff }],
   canonicalDiff,
-  attachmentFilename: 'preview.diff',
+  attachmentFilename: 'quoky-preview-pv-test-123.diff',
 });
 
 const bigDiff = (lines: number): string =>
@@ -206,14 +207,19 @@ describe('planPreviewDelivery (F5-C/D)', () => {
 });
 
 describe('deliverPreview (F5-C/D/E)', () => {
-  it('text success → SUCCESS_TEXT_COMPLETE; ordered header → parts → footer; no attachment', async () => {
+  it('text success → SUCCESS_TEXT_COMPLETE; header first; footer ATOMIC on the final diff message; report carries previewId', async () => {
     const canonical = buildCanonicalDiff([{ path: 'x.ts', changeKind: 'add', unifiedDiff: '@@ -0,0 +1 @@\n+hi' }]);
     const cap = makeCapture();
     const report = await deliverPreview(artifactOf(canonical), cap.senders);
     expect(report.outcome).toBe('SUCCESS_TEXT_COMPLETE');
     expect(report.attachmentFallbackUsed).toBe(false);
+    expect(report.previewId).toBe('pv-test-123'); // F5-E: report carries the artifact's previewId
     expect(cap.texts[0]).toBe('HDR');
-    expect(cap.texts[cap.texts.length - 1]).toBe('FTR');
+    // F5 Finding 1: the footer is part of the FINAL message (atomic), not a separate trailing send.
+    const last = cap.texts[cap.texts.length - 1]!;
+    expect(last.endsWith('\nFTR')).toBe(true);
+    expect(last).toContain('```diff\n');
+    expect(cap.texts).not.toContain('FTR'); // no standalone footer send
     expect(cap.attachments).toHaveLength(0);
   });
 
@@ -225,7 +231,37 @@ describe('deliverPreview (F5-C/D/E)', () => {
     expect(report.attachmentFallbackUsed).toBe(true);
     expect(cap.attachments).toHaveLength(1);
     expect(cap.attachments[0]!.diff).toBe(oversized); // complete, byte-for-byte
-    expect(cap.attachments[0]!.name).toBe('preview.diff');
+    expect(cap.attachments[0]!.name).toBe('quoky-preview-pv-test-123.diff');
+    expect(cap.attachments[0]!.caption).toContain('FTR'); // caption carries the apply-boundary footer (RC9)
+    expect(report.previewId).toBe('pv-test-123');
+  });
+
+  it('F5 Finding 1: the final text message contains the apply-boundary footer and stays within safeLimit', async () => {
+    const canonical = bigDiff(400);
+    const cap = makeCapture();
+    const report = await deliverPreview(artifactOf(canonical), cap.senders, { safeLimit: 400, partThreshold: 1000 });
+    expect(report.outcome).toBe('SUCCESS_TEXT_COMPLETE');
+    const last = cap.texts[cap.texts.length - 1]!;
+    expect(last.endsWith('\nFTR')).toBe(true); // footer atomic with the final diff part
+    expect(cap.texts.every((m) => m.length <= 400)).toBe(true); // every message (incl. final+footer) within budget
+  });
+
+  it('F5 Finding 1: a failure delivering the FINAL footer-bearing message never returns SUCCESS_TEXT_COMPLETE', async () => {
+    const canonical = buildCanonicalDiff([{ path: 'x.ts', changeKind: 'add', unifiedDiff: '@@ -0,0 +1 @@\n+only' }]);
+    // one diff part → sends: header(1), finalpart+footer(2). Fail the final footer-bearing message.
+    const cap = makeCapture({ failTextAt: 2 });
+    const report = await deliverPreview(artifactOf(canonical), cap.senders);
+    expect(report.outcome).not.toBe('SUCCESS_TEXT_COMPLETE'); // footer failure is NOT swallowed
+    expect(report.attachmentFallbackUsed).toBe(true);
+    expect(cap.attachments[0]!.diff).toBe(canonical); // complete diff still delivered via attachment
+  });
+
+  it('F5 Finding 2: the same previewId is used across a text→attachment fallback', async () => {
+    const canonical = bigDiff(400);
+    const cap = makeCapture({ failTextAt: 3 });
+    const report = await deliverPreview(artifactOf(canonical), cap.senders, { safeLimit: 400, partThreshold: 1000 });
+    expect(report.previewId).toBe('pv-test-123'); // report id == artifact id even on fallback
+    expect(report.attachmentFallbackUsed).toBe(true);
   });
 
   it('known text failure mid-stream → attachment fallback (complete diff), PARTIAL_TEXT_ATTACHMENT_COMPLETE, no resend of remaining parts', async () => {
@@ -270,8 +306,9 @@ describe('deliverPreview (F5-C/D/E)', () => {
     const cap = makeCapture();
     const report = await deliverPreview(artifactOf(canonical), cap.senders, { safeLimit: 600, partThreshold: 1000 });
     expect(report.outcome).toBe('SUCCESS_TEXT_COMPLETE');
-    // drop the header (first) + footer (last); the middle messages are the [n/m] diff parts
-    const diffParts = cap.texts.slice(1, -1);
+    // drop the header (first); the rest are [n/m] diff parts. The LAST message has the footer appended
+    // atomically (F5 Finding 1) — strip the trailing "\nFTR" before unwrapping.
+    const diffParts = cap.texts.slice(1).map((m, i, arr) => (i === arr.length - 1 ? m.replace(/\nFTR$/, '') : m));
     expect(diffParts.length).toBeGreaterThan(1);
     expect(diffParts.map(unwrap).join('')).toBe(canonical); // complete delivery, byte-for-byte
   });

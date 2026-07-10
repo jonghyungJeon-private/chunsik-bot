@@ -127,6 +127,7 @@ export class DiscordPlatformAdapter implements PlatformAdapter {
       });
       this.logger.info('preview delivered', {
         channelId: target,
+        previewId: report.previewId,
         deliveryOutcome: report.outcome,
         deliveryMode: report.deliveryMode,
         partCount: report.partCount,
@@ -135,7 +136,7 @@ export class DiscordPlatformAdapter implements PlatformAdapter {
         canonicalDiffLength: report.canonicalDiffLength,
       });
       if (report.outcome === 'DELIVERY_FAILED') {
-        this.logger.error('preview delivery failed', { channelId: target, deliveryMode: report.deliveryMode });
+        this.logger.error('preview delivery failed', { channelId: target, previewId: report.previewId, deliveryMode: report.deliveryMode });
       }
       return;
     }

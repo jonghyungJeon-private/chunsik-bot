@@ -54,6 +54,10 @@ export interface PreviewFile {
  * source of truth for delivery-equality (CA RC3). Platform-neutral: carries NO Discord specifics.
  */
 export interface PreviewArtifact {
+  /** Stable, secret-safe correlation id for one preview's whole delivery lifecycle (Sprint 4c-Follow-up-5,
+   *  F5-E). Generated once when the artifact is created; shared across every chunk, the attachment
+   *  fallback, the delivery report, and safe logs. Never a content-derived hash. */
+  previewId: string;
   /** Display-neutral header/summary prose (apply-boundary framing) — never the diff body. */
   header: string;
   /** Trailing apply-boundary prose shown on the FINAL delivered message/attachment (CA RC9). */
