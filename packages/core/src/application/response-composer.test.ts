@@ -415,6 +415,31 @@ describe('ResponseComposer.composeCodeDiffPreview', () => {
     expect(reply.text).not.toContain('line 199'); // well past the 40-line cap
   });
 
+  it('F5-A: the attached PreviewArtifact carries the COMPLETE canonical diff even when the text field is clamped (Sprint 4c-Follow-up-5)', () => {
+    const hugeUnified = Array.from({ length: 200 }, (_, i) => `-line ${i}`).join('\n');
+    const reply = composer.composeCodeDiffPreview(
+      CTX,
+      diffPreviewOf({ changes: [{ path: 'foo.ts', kind: 'update', unified: hugeUnified, binary: false }] }),
+    );
+    // the bounded `text` fallback is still clamped…
+    expect(reply.text).not.toContain('line 199');
+    // …but the artifact is COMPLETE — no per-file omission, no truncation note in the canonical payload.
+    expect(reply.preview).toBeDefined();
+    expect(reply.preview!.canonicalDiff).toContain('-line 199');
+    expect(reply.preview!.canonicalDiff).not.toContain('일부만');
+    expect(reply.preview!.files).toHaveLength(1);
+    expect(reply.preview!.files[0]!.unifiedDiff).toBe(hugeUnified);
+    expect(reply.preview!.attachmentFilename).toBe('preview.diff');
+  });
+
+  it('F5-A: no PreviewArtifact when there is no renderable diff (binary/empty only)', () => {
+    const reply = composer.composeCodeDiffPreview(
+      CTX,
+      diffPreviewOf({ changes: [{ path: 'bin', kind: 'update', unified: '', binary: true }] }),
+    );
+    expect(reply.preview).toBeUndefined();
+  });
+
   it('many large diffs together still preserve the not-applied/not-modified wording and stay within the message budget (CA Round 1 Required Change #2)', () => {
     const bigUnified = Array.from({ length: 60 }, (_, i) => `-line ${i}`).join('\n');
     const reply = composer.composeCodeDiffPreview(

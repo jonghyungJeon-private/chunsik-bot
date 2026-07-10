@@ -4,6 +4,8 @@
  * a live gateway. Discord specifics stay in this adapter; the core never sees them.
  */
 
+import { splitCanonicalDiff, type PreviewArtifact } from '@chunsik/core';
+
 /** Safe per-message length (Discord hard limit is 2000; headroom for safety). */
 export const DISCORD_SAFE_LIMIT = 1900;
 
@@ -100,4 +102,145 @@ export async function deliverWithNotice(
     await notify(PARTIAL_FAILURE_NOTICE).catch(() => undefined);
   }
   return report;
+}
+
+// ── Sprint 4c-Follow-up-5 (F5-C/D/E) — lossless multipart preview delivery ─────────────────────────
+
+/**
+ * Upper bound on the per-part wrapper overhead: the `[n/m]\n` prefix + the opening/closing ```diff fences
+ * + newline slack. A conservative fixed reserve is a stable fixed-point (the actual wrapper never exceeds
+ * it), so the payload budget handed to the core splitter guarantees each wrapped part stays ≤ the Discord
+ * message limit (CA RC5). */
+export const PREVIEW_WRAPPER_RESERVE = 40;
+
+/** Explicit delivery outcomes (CA RC7) — never a false "complete" claim when Discord itself fails. */
+export type PreviewDeliveryOutcome =
+  | 'SUCCESS_TEXT_COMPLETE'
+  | 'SUCCESS_ATTACHMENT_COMPLETE'
+  | 'PARTIAL_TEXT_ATTACHMENT_COMPLETE'
+  | 'DELIVERY_FAILED';
+
+/** Length-only delivery metadata (CA RC8) — carries NO raw diff/proposal/file content. */
+export interface PreviewDeliveryReport {
+  outcome: PreviewDeliveryOutcome;
+  deliveryMode: 'text' | 'attachment';
+  partCount: number;
+  deliveredPartCount: number;
+  attachmentFallbackUsed: boolean;
+  canonicalDiffLength: number;
+}
+
+/** Platform send primitives (index.ts binds these to discord.js); kept out of the pure planner. */
+export interface PreviewSenders {
+  sendText: (text: string) => Promise<void>;
+  /** Upload the COMPLETE canonical diff as a `.diff` attachment with a short caption. */
+  sendAttachment: (canonicalDiff: string, filename: string, caption: string) => Promise<void>;
+  notify?: (message: string) => Promise<void>;
+}
+
+/** Wrap one canonical PAYLOAD segment as an independently valid fenced Discord message (CA RC5). Each
+ *  segment already ends with `\n` (canonical newline policy), so the closing fence sits on its own line. */
+export function wrapDiffPart(payloadSegment: string, index: number, total: number): string {
+  const prefix = total > 1 ? `[${index}/${total}]\n` : '';
+  return `${prefix}\`\`\`diff\n${payloadSegment}\`\`\``;
+}
+
+export type PreviewPlan =
+  | { mode: 'text'; parts: string[]; canonicalDiffLength: number }
+  | { mode: 'attachment'; reason: 'oversized-line' | 'part-threshold' | 'wrapped-overflow' | 'empty-budget'; canonicalDiffLength: number };
+
+/**
+ * Decide how to deliver a complete preview under the Discord budget (CA RC1/RC4/RC5/RC6). PURE: no send,
+ * no discord.js. Text multipart when the diff splits within budget and part count ≤ threshold; otherwise a
+ * complete `.diff` attachment. Never omits or splits a canonical diff line.
+ */
+export function planPreviewDelivery(
+  artifact: PreviewArtifact,
+  opts: { safeLimit?: number; partThreshold?: number } = {},
+): PreviewPlan {
+  const safeLimit = opts.safeLimit ?? DISCORD_SAFE_LIMIT;
+  const partThreshold = opts.partThreshold ?? FILE_ATTACHMENT_CHUNK_THRESHOLD;
+  const canonicalDiffLength = artifact.canonicalDiff.length;
+  const payloadBudget = safeLimit - PREVIEW_WRAPPER_RESERVE;
+
+  const split = splitCanonicalDiff(artifact.canonicalDiff, payloadBudget);
+  if (split.kind === 'attachment-required') {
+    return { mode: 'attachment', reason: split.reason === 'line-exceeds-budget' ? 'oversized-line' : 'empty-budget', canonicalDiffLength };
+  }
+  if (split.segments.length > partThreshold) {
+    return { mode: 'attachment', reason: 'part-threshold', canonicalDiffLength };
+  }
+  const parts = split.segments.map((seg, i) => wrapDiffPart(seg, i + 1, split.segments.length));
+  if (parts.some((p) => p.length > safeLimit)) {
+    return { mode: 'attachment', reason: 'wrapped-overflow', canonicalDiffLength }; // defensive; reserve should prevent this
+  }
+  return { mode: 'text', parts, canonicalDiffLength };
+}
+
+const PREVIEW_ATTACHMENT_NOTICE = '전체 diff는 첨부파일로 보내드렸어요.';
+
+/**
+ * Deliver a COMPLETE code-change preview losslessly (CA RC3/RC7). Ordered text multipart when it fits;
+ * otherwise (or on a known text-send failure) a complete `.diff` attachment. Never a blind duplicate
+ * resend; explicit outcome on every path; a best-effort notice on failure.
+ */
+export async function deliverPreview(
+  artifact: PreviewArtifact,
+  senders: PreviewSenders,
+  opts: { safeLimit?: number; partThreshold?: number } = {},
+): Promise<PreviewDeliveryReport> {
+  const plan = planPreviewDelivery(artifact, opts);
+  const canonicalDiffLength = plan.canonicalDiffLength;
+  const attachmentCaption = `${artifact.header}\n(전체 diff는 첨부파일로 보내드려요.)\n${artifact.footer}`;
+
+  const sendCompleteAttachment = async (): Promise<boolean> => {
+    try {
+      await senders.sendAttachment(artifact.canonicalDiff, artifact.attachmentFilename, attachmentCaption);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  if (plan.mode === 'attachment') {
+    const ok = await sendCompleteAttachment();
+    if (!ok) {
+      await senders.notify?.(PARTIAL_FAILURE_NOTICE).catch(() => undefined);
+      return { outcome: 'DELIVERY_FAILED', deliveryMode: 'attachment', partCount: 0, deliveredPartCount: 0, attachmentFallbackUsed: true, canonicalDiffLength };
+    }
+    return { outcome: 'SUCCESS_ATTACHMENT_COMPLETE', deliveryMode: 'attachment', partCount: 0, deliveredPartCount: 0, attachmentFallbackUsed: true, canonicalDiffLength };
+  }
+
+  // Text multipart: header → ordered [n/m] fenced parts → footer. A known failure at any diff part stops
+  // further text sends and attempts ONE complete attachment (CA RC7) — no blind resend of sent parts.
+  const attachmentFallback = async (delivered: number): Promise<PreviewDeliveryReport> => {
+    const ok = await sendCompleteAttachment();
+    if (!ok) {
+      await senders.notify?.(PARTIAL_FAILURE_NOTICE).catch(() => undefined);
+      return { outcome: 'DELIVERY_FAILED', deliveryMode: 'text', partCount: plan.parts.length, deliveredPartCount: delivered, attachmentFallbackUsed: true, canonicalDiffLength };
+    }
+    await senders.notify?.(PREVIEW_ATTACHMENT_NOTICE).catch(() => undefined);
+    // 0 diff parts delivered as text → the attachment alone carries everything.
+    return delivered === 0
+      ? { outcome: 'SUCCESS_ATTACHMENT_COMPLETE', deliveryMode: 'text', partCount: plan.parts.length, deliveredPartCount: 0, attachmentFallbackUsed: true, canonicalDiffLength }
+      : { outcome: 'PARTIAL_TEXT_ATTACHMENT_COMPLETE', deliveryMode: 'text', partCount: plan.parts.length, deliveredPartCount: delivered, attachmentFallbackUsed: true, canonicalDiffLength };
+  };
+
+  try {
+    await senders.sendText(artifact.header);
+  } catch {
+    return attachmentFallback(0);
+  }
+  let delivered = 0;
+  for (const part of plan.parts) {
+    try {
+      await senders.sendText(part);
+      delivered += 1;
+    } catch {
+      return attachmentFallback(delivered);
+    }
+  }
+  // Footer is framing, not canonical content — a footer failure after the full diff is NOT content loss.
+  await senders.sendText(artifact.footer).catch(() => undefined);
+  return { outcome: 'SUCCESS_TEXT_COMPLETE', deliveryMode: 'text', partCount: plan.parts.length, deliveredPartCount: delivered, attachmentFallbackUsed: false, canonicalDiffLength };
 }

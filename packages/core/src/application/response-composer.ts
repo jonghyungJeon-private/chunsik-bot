@@ -5,9 +5,11 @@ import type {
   GitDiff,
   GitStatus,
   OutboundMessage,
+  PreviewFile,
   PullRequestStatusPreview,
 } from '../domain';
 import type { AiExecutionResult } from '../ports';
+import { buildCanonicalDiff } from './preview-delivery';
 
 /**
  * Read-only display context for the last post-apply validation run (Sprint 2w, ADR-0044). `'none'` = no
@@ -603,7 +605,26 @@ export class ResponseComposer {
     const warning = renderOutOfScopeWarning(preview.outOfScopeWarnings);
     const footerLines = [...(warning ? [warning] : []), DIFF_PREVIEW_FOOTER];
     const blocks = preview.changes.map(renderDiffChange);
-    return { context, text: assembleBoundedBody(DIFF_PREVIEW_HEADER, footerLines, blocks) };
+    const text = assembleBoundedBody(DIFF_PREVIEW_HEADER, footerLines, blocks);
+    // F5-A (Sprint 4c-Follow-up-5): also attach a COMPLETE structured preview (full canonical diff, never
+    // clamped). A preview-aware adapter delivers this losslessly (multipart or `.diff` attachment) so the
+    // final result is never content-dropped; `text` above is a bounded fallback for preview-unaware
+    // adapters. Binary/empty diffs carry no renderable body and are excluded from the canonical payload.
+    const files: PreviewFile[] = preview.changes
+      .filter((c) => !c.binary && c.unified.trim().length > 0)
+      .map((c) => ({ path: c.path, changeKind: c.kind, unifiedDiff: c.unified }));
+    if (files.length === 0) return { context, text };
+    return {
+      context,
+      text,
+      preview: {
+        header: DIFF_PREVIEW_HEADER,
+        footer: DIFF_PREVIEW_FOOTER,
+        files,
+        canonicalDiff: buildCanonicalDiff(files),
+        attachmentFilename: 'preview.diff',
+      },
+    };
   }
 
   /**

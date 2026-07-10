@@ -1,7 +1,7 @@
 import { Client, Events, GatewayIntentBits } from 'discord.js';
 import type { Message } from 'discord.js';
 import { NotImplementedError, now } from '@chunsik/core';
-import { deliverWithNotice, FILE_ATTACHMENT_CHUNK_THRESHOLD } from './delivery';
+import { deliverPreview, deliverWithNotice, FILE_ATTACHMENT_CHUNK_THRESHOLD } from './delivery';
 
 export {
   chunkText,
@@ -97,6 +97,46 @@ export class DiscordPlatformAdapter implements PlatformAdapter {
     const channel = await this.fetchChannel(target);
     if (!channel?.isSendable()) {
       this.logger.warn('send skipped: channel not sendable', { channelId: target });
+      return;
+    }
+
+    // F5-C/D/E (Sprint 4c-Follow-up-5): a complete structured preview is delivered LOSSLESSLY — ordered
+    // multipart fenced messages, or a complete `.diff` attachment (in-memory Buffer; no temp file, so
+    // nothing touches the workspace/sandbox). Observability is length-only (never raw diff content).
+    if (message.preview) {
+      const report = await deliverPreview(message.preview, {
+        sendText: async (chunk) => {
+          await channel.send(chunk);
+        },
+        sendAttachment: async (canonicalDiff, filename, caption) => {
+          await channel.send({
+            content: caption,
+            files: [{ attachment: Buffer.from(canonicalDiff, 'utf8'), name: filename }],
+          });
+        },
+        notify: async (notice) => {
+          try {
+            await channel.send(notice);
+          } catch (err) {
+            this.logger.warn('preview notice send failed', {
+              channelId: target,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        },
+      });
+      this.logger.info('preview delivered', {
+        channelId: target,
+        deliveryOutcome: report.outcome,
+        deliveryMode: report.deliveryMode,
+        partCount: report.partCount,
+        deliveredPartCount: report.deliveredPartCount,
+        attachmentFallbackUsed: report.attachmentFallbackUsed,
+        canonicalDiffLength: report.canonicalDiffLength,
+      });
+      if (report.outcome === 'DELIVERY_FAILED') {
+        this.logger.error('preview delivery failed', { channelId: target, deliveryMode: report.deliveryMode });
+      }
       return;
     }
 

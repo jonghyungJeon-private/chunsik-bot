@@ -9,28 +9,10 @@
  * exceeds the payload budget the split is impossible and the caller must use the attachment fallback.
  */
 
-/** One file's portion of a code-change preview — the complete unified diff for that path (never clamped). */
-export interface PreviewFile {
-  path: string;
-  changeKind: 'add' | 'update' | 'delete';
-  /** The COMPLETE unified diff for this file (no per-file content omission — F5-A). */
-  unifiedDiff: string;
-}
+import type { PreviewFile } from '../domain';
 
-/**
- * A COMPLETE structured code-change preview (CA RC2). Produced in core from the CodeProposal → Workspace
- * diff; consumed by a platform adapter which chooses a delivery strategy (multipart text vs attachment).
- */
-export interface PreviewArtifact {
-  /** Display-neutral header/summary prose (e.g. "코드 변경 제안" + per-file labels). Never the diff body. */
-  header: string;
-  files: PreviewFile[];
-  /** The complete concatenated canonical diff payload, under one newline policy (`\n`, each file block
-   *  terminated by a trailing `\n`). This is the byte-for-byte source of truth for delivery equality. */
-  canonicalDiff: string;
-  /** Non-secret filename for the `.diff` attachment fallback. */
-  attachmentFilename: string;
-}
+// Re-export the domain preview types so callers can import them alongside the split helpers.
+export type { PreviewArtifact, PreviewFile } from '../domain';
 
 /** Result of a lossless canonical-diff split against a caller-supplied per-segment payload budget. */
 export type CanonicalSplit =

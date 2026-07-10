@@ -2,10 +2,15 @@ import { describe, expect, it } from 'vitest';
 import {
   chunkText,
   deliverChunks,
+  deliverPreview,
   deliverWithNotice,
   DISCORD_SAFE_LIMIT,
   PARTIAL_FAILURE_NOTICE,
+  planPreviewDelivery,
+  wrapDiffPart,
+  type PreviewSenders,
 } from './delivery';
+import { buildCanonicalDiff, type PreviewArtifact } from '@chunsik/core';
 
 describe('chunkText', () => {
   it('returns [] for empty and a single chunk for short text', () => {
@@ -121,5 +126,160 @@ describe('deliverWithNotice', () => {
       { maxLen: 3 },
     );
     expect(report.ok).toBe(false);
+  });
+});
+
+// ── Sprint 4c-Follow-up-5 (F5-C/D/E) — lossless multipart preview delivery ─────────────────────────
+
+const artifactOf = (canonicalDiff: string): PreviewArtifact => ({
+  header: 'HDR',
+  footer: 'FTR',
+  files: [{ path: 'x.ts', changeKind: 'add', unifiedDiff: canonicalDiff }],
+  canonicalDiff,
+  attachmentFilename: 'preview.diff',
+});
+
+const bigDiff = (lines: number): string =>
+  buildCanonicalDiff([
+    { path: 'big.ts', changeKind: 'add', unifiedDiff: Array.from({ length: lines }, (_, i) => `+content line number ${i}`).join('\n') },
+  ]);
+
+/** Strip Discord wrappers ([n/m] + ```diff fences) to recover the canonical payload of a text part. */
+const unwrap = (part: string): string =>
+  part.replace(/^\[\d+\/\d+\]\n/, '').replace(/^```diff\n/, '').replace(/```$/, '');
+
+const makeCapture = (opts: { failTextAt?: number; failAttachment?: boolean } = {}) => {
+  const texts: string[] = [];
+  const attachments: Array<{ diff: string; name: string; caption: string }> = [];
+  const notices: string[] = [];
+  let textCalls = 0;
+  const senders: PreviewSenders = {
+    sendText: async (t) => {
+      textCalls += 1;
+      if (opts.failTextAt !== undefined && textCalls === opts.failTextAt) throw new Error('text send failed');
+      texts.push(t);
+    },
+    sendAttachment: async (diff, name, caption) => {
+      if (opts.failAttachment) throw new Error('attachment send failed');
+      attachments.push({ diff, name, caption });
+    },
+    notify: async (m) => { notices.push(m); },
+  };
+  return { senders, texts, attachments, notices };
+};
+
+describe('planPreviewDelivery (F5-C/D)', () => {
+  it('a small diff → one text part, no [n/m] prefix, valid fence', () => {
+    const canonical = buildCanonicalDiff([{ path: 'x.ts', changeKind: 'add', unifiedDiff: '@@ -0,0 +1 @@\n+hello' }]);
+    const plan = planPreviewDelivery(artifactOf(canonical));
+    expect(plan.mode).toBe('text');
+    if (plan.mode === 'text') {
+      expect(plan.parts).toHaveLength(1);
+      expect(plan.parts[0]!.startsWith('```diff\n')).toBe(true);
+      expect(plan.parts[0]!.endsWith('```')).toBe(true);
+      expect(unwrap(plan.parts[0]!)).toBe(canonical);
+    }
+  });
+
+  it('a large diff → multiple parts, each within budget and an independently valid fence; reconstructs byte-for-byte', () => {
+    const canonical = bigDiff(400);
+    const plan = planPreviewDelivery(artifactOf(canonical), { safeLimit: 400, partThreshold: 1000 });
+    expect(plan.mode).toBe('text');
+    if (plan.mode === 'text') {
+      expect(plan.parts.length).toBeGreaterThan(1);
+      expect(plan.parts.every((p) => p.length <= 400)).toBe(true);
+      expect(plan.parts.every((p) => /^\[\d+\/\d+\]\n```diff\n/.test(p) && p.endsWith('```'))).toBe(true);
+      expect(plan.parts.map(unwrap).join('')).toBe(canonical); // CA RC3
+    }
+  });
+
+  it('part count over threshold → attachment (CA RC6)', () => {
+    const plan = planPreviewDelivery(artifactOf(bigDiff(2000)), { safeLimit: 200, partThreshold: 3 });
+    expect(plan.mode).toBe('attachment');
+  });
+
+  it('a single diff line longer than the budget → attachment, never a mid-line split (CA RC4)', () => {
+    const oversized = `@@ -0,0 +1 @@\n+${'X'.repeat(3000)}\n`;
+    const plan = planPreviewDelivery(artifactOf(oversized), { safeLimit: 500 });
+    expect(plan.mode).toBe('attachment');
+  });
+});
+
+describe('deliverPreview (F5-C/D/E)', () => {
+  it('text success → SUCCESS_TEXT_COMPLETE; ordered header → parts → footer; no attachment', async () => {
+    const canonical = buildCanonicalDiff([{ path: 'x.ts', changeKind: 'add', unifiedDiff: '@@ -0,0 +1 @@\n+hi' }]);
+    const cap = makeCapture();
+    const report = await deliverPreview(artifactOf(canonical), cap.senders);
+    expect(report.outcome).toBe('SUCCESS_TEXT_COMPLETE');
+    expect(report.attachmentFallbackUsed).toBe(false);
+    expect(cap.texts[0]).toBe('HDR');
+    expect(cap.texts[cap.texts.length - 1]).toBe('FTR');
+    expect(cap.attachments).toHaveLength(0);
+  });
+
+  it('oversized diff → SUCCESS_ATTACHMENT_COMPLETE with the COMPLETE canonical diff', async () => {
+    const oversized = `@@ -0,0 +1 @@\n+${'X'.repeat(3000)}\n`;
+    const cap = makeCapture();
+    const report = await deliverPreview(artifactOf(oversized), cap.senders, { safeLimit: 500 });
+    expect(report.outcome).toBe('SUCCESS_ATTACHMENT_COMPLETE');
+    expect(report.attachmentFallbackUsed).toBe(true);
+    expect(cap.attachments).toHaveLength(1);
+    expect(cap.attachments[0]!.diff).toBe(oversized); // complete, byte-for-byte
+    expect(cap.attachments[0]!.name).toBe('preview.diff');
+  });
+
+  it('known text failure mid-stream → attachment fallback (complete diff), PARTIAL_TEXT_ATTACHMENT_COMPLETE, no resend of remaining parts', async () => {
+    const canonical = bigDiff(400);
+    const cap = makeCapture({ failTextAt: 3 }); // header=1 ok, part1=2 ok, part2=3 fails
+    const report = await deliverPreview(artifactOf(canonical), cap.senders, { safeLimit: 400, partThreshold: 1000 });
+    expect(report.outcome).toBe('PARTIAL_TEXT_ATTACHMENT_COMPLETE');
+    expect(report.attachmentFallbackUsed).toBe(true);
+    expect(cap.attachments[0]!.diff).toBe(canonical); // complete despite partial text
+    expect(cap.texts).toHaveLength(2); // header + part1 only; no blind resend after the failure
+    expect(report.deliveredPartCount).toBe(1);
+  });
+
+  it('text failure AND attachment failure → DELIVERY_FAILED with a best-effort notice', async () => {
+    const canonical = bigDiff(400);
+    const cap = makeCapture({ failTextAt: 2, failAttachment: true });
+    const report = await deliverPreview(artifactOf(canonical), cap.senders, { safeLimit: 400, partThreshold: 1000 });
+    expect(report.outcome).toBe('DELIVERY_FAILED');
+    expect(cap.notices).toContain(PARTIAL_FAILURE_NOTICE);
+  });
+
+  it('header send failure (0 diff parts) + attachment ok → SUCCESS_ATTACHMENT_COMPLETE', async () => {
+    const canonical = buildCanonicalDiff([{ path: 'x.ts', changeKind: 'add', unifiedDiff: '@@ -0,0 +1 @@\n+z' }]);
+    const cap = makeCapture({ failTextAt: 1 });
+    const report = await deliverPreview(artifactOf(canonical), cap.senders);
+    expect(report.outcome).toBe('SUCCESS_ATTACHMENT_COMPLETE');
+    expect(report.deliveredPartCount).toBe(0);
+    expect(cap.attachments[0]!.diff).toBe(canonical);
+  });
+
+  it('the delivery report is length-only — no raw diff content (CA RC8)', async () => {
+    const marker = 'SENSITIVE_DIFF_MARKER_XYZ';
+    const canonical = buildCanonicalDiff([{ path: 'x.ts', changeKind: 'add', unifiedDiff: `@@ -0,0 +1 @@\n+${marker}` }]);
+    const cap = makeCapture();
+    const report = await deliverPreview(artifactOf(canonical), cap.senders);
+    expect(typeof report.canonicalDiffLength).toBe('number');
+    expect(JSON.stringify(report)).not.toContain(marker);
+  });
+
+  it('real-chain: a large multi-part preview reconstructs to the original canonical diff across delivered messages', async () => {
+    const canonical = bigDiff(500);
+    const cap = makeCapture();
+    const report = await deliverPreview(artifactOf(canonical), cap.senders, { safeLimit: 600, partThreshold: 1000 });
+    expect(report.outcome).toBe('SUCCESS_TEXT_COMPLETE');
+    // drop the header (first) + footer (last); the middle messages are the [n/m] diff parts
+    const diffParts = cap.texts.slice(1, -1);
+    expect(diffParts.length).toBeGreaterThan(1);
+    expect(diffParts.map(unwrap).join('')).toBe(canonical); // complete delivery, byte-for-byte
+  });
+});
+
+describe('wrapDiffPart (F5-C)', () => {
+  it('single part → no [n/m] prefix; multi part → [n/m]; always a valid fenced block', () => {
+    expect(wrapDiffPart('+a\n', 1, 1)).toBe('```diff\n+a\n```');
+    expect(wrapDiffPart('+a\n', 2, 3)).toBe('[2/3]\n```diff\n+a\n```');
   });
 });

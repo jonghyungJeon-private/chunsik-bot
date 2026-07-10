@@ -30,6 +30,7 @@ export * from './code-proposal-parser';
 export * from './code-generation-manager';
 export * from './connector-manager';
 export * from './response-composer';
+export * from './preview-delivery';
 export * from './orchestrator';
 export * from './execution-orchestrator';
 export * from './intent-resolver';

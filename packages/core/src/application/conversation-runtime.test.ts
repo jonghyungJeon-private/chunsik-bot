@@ -2297,6 +2297,11 @@ describe('Code-change instruction fidelity beyond 200 chars (Sprint 4c-Follow-up
     expect(t2.reply.text).toContain(MARKER);
     expect(t2.reply.text).toContain('새 파일');
     expect(t2.reply.text).not.toContain('일부만');
+    // F5-A real-chain (Sprint 4c-Follow-up-5): the reply also carries a COMPLETE structured PreviewArtifact
+    // (full canonical diff) that a preview-aware adapter delivers losslessly — the runtime→artifact loop.
+    expect(t2.reply.preview).toBeDefined();
+    expect(t2.reply.preview!.canonicalDiff).toContain(MARKER);
+    expect(t2.reply.preview!.canonicalDiff).not.toContain('일부만');
     // still non-mutating
     expect(calls.workspaceApply).toBe(0);
     expect(calls.gitCommit + calls.gitPush + calls.hostingCreatePR + calls.commandRun).toBe(0);
