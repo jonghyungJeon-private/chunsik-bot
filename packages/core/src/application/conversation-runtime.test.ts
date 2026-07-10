@@ -408,6 +408,8 @@ interface Calls {
   loggerWarn: number;
   /** F3-B (Sprint 4c-Follow-up-3): captured `logger.warn` message + fields, for secret-free branch-log assertions. */
   loggerWarnCalls: Array<{ message: string; fields?: LogFields }>;
+  /** F4-C (Sprint 4c-Follow-up-4): captured `logger.info` message + fields, for length-only fidelity-log assertions. */
+  loggerInfoCalls: Array<{ message: string; fields?: LogFields }>;
   hostingCreatePR: number;
   lastHostingCreateInput?: {
     identity: RepositoryIdentity;
@@ -666,6 +668,7 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
     commandExecGet: 0,
     loggerWarn: 0,
     loggerWarnCalls: [],
+    loggerInfoCalls: [],
     hostingCreatePR: 0,
     hostingGetStatus: 0,
     hostingMergePR: 0,
@@ -968,6 +971,9 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
       warn: (message: string, fields?: LogFields) => {
         calls.loggerWarn++;
         calls.loggerWarnCalls.push({ message, ...(fields ? { fields } : {}) });
+      },
+      info: (message: string, fields?: LogFields) => {
+        calls.loggerInfoCalls.push({ message, ...(fields ? { fields } : {}) });
       },
     },
   };
@@ -1444,14 +1450,19 @@ describe('Multi-turn Code Scope Clarification — runtime', () => {
     await new ConversationRuntime(deps).handle(messageOf('이 버그 고쳐줘')); // turn 1: anchors
     expect(calls.scopeAnchor).toBe(1);
     expect(calls.lastScopeAnchor?.summary).toBe(codeIntent.summary);
+    // F4-B/RC4 (Sprint 4c-Follow-up-4): the anchor preserves the ORIGINAL full request text, not just the
+    // ≤200-char display summary, so recovery can hand CodeGeneration the complete instruction.
+    expect(calls.lastScopeAnchor?.authoritativeInstruction).toBe('이 버그 고쳐줘');
 
     const classifyCallsBeforeTurn2 = calls.classify;
     const result = await new ConversationRuntime(deps).handle(messageOf(TARGET_FILE)); // turn 2: bare path
 
     expect(calls.classify).toBe(classifyCallsBeforeTurn2); // classifier never consulted for this turn (Q6)
     expect(calls.run).toBe(1);
-    expect(calls.lastRunRequest?.goal).toBe(codeIntent.summary); // original summary, not "TARGET_FILE"
-    expect(calls.lastRunRequest?.instruction).toBe(codeIntent.summary);
+    expect(calls.lastRunRequest?.goal).toBe(codeIntent.summary); // display goal = original summary, not "TARGET_FILE"
+    // F4-B/RC4: the authoritative instruction is the ORIGINAL first-turn request — never the ≤200-char
+    // summary and never the bare-path follow-up ("TARGET_FILE").
+    expect(calls.lastRunRequest?.instruction).toBe('이 버그 고쳐줘');
     expect(calls.lastRunRequest?.targetFiles).toEqual([TARGET_FILE]);
     expect(calls.lastRunRequest?.planningOnly).toBe(true);
     expect(result.status).toBe('AWAITING_APPROVAL');
@@ -2076,6 +2087,179 @@ describe('New-file add-diff preview + preview-failure branch logging (Sprint 4c-
     expect(calls.hostingCreatePR).toBe(0);
     // apply approval stays separate — the preview success did NOT create a new (apply) approval
     expect(calls.requestForRisk).toBe(0);
+  });
+});
+
+// ── Sprint 4c-Follow-up-4 (F4-A/B/C) — code-change instruction fidelity beyond 200 characters ──────
+describe('Code-change instruction fidelity beyond 200 chars (Sprint 4c-Follow-up-4)', () => {
+  const LONG = '이 코드 고쳐줘 ' + 'A'.repeat(400); // > 200 chars, classifies as a code change
+
+  // ── F4-A: display summary vs authoritative instruction ─────────────────────────────────────────
+  it('F4-A: IntentResolver maps authoritativeInstruction → ExecutionRequest.instruction while goal stays the bounded summary', () => {
+    const req = new IntentResolver().resolve(codeIntent, { requestedBy: 'actor-1', authoritativeInstruction: LONG });
+    expect(req?.goal).toBe(codeIntent.summary); // display / plan title — bounded
+    expect(req?.instruction).toBe(LONG); // authoritative — full
+    expect((req?.instruction.length ?? 0)).toBeGreaterThan(200);
+  });
+
+  it('F4-A: without authoritativeInstruction, instruction falls back to the summary (prior behavior preserved)', () => {
+    const req = new IntentResolver().resolve(codeIntent, { requestedBy: 'actor-1' });
+    expect(req?.instruction).toBe(codeIntent.summary);
+    expect(req?.goal).toBe(codeIntent.summary);
+  });
+
+  it('F4-A (root-cause guard): the real IntentClassifier still caps the DISPLAY summary at 200 for a long code request', async () => {
+    const intent = await new IntentClassifier({} as unknown as CapabilityRouter).classify(messageOf(LONG));
+    expect(intent.capability).toBe(Capability.CODE_IMPLEMENTATION);
+    expect(intent.summary.length).toBe(200); // the ≤200 cap stays for display — it is just no longer reused as the instruction
+  });
+
+  it('F4-A real-chain: a >200-char code request threads the FULL text into ExecutionRequest.instruction; goal stays the summary', async () => {
+    const { deps, calls } = makeDeps({
+      intent: codeIntent,
+      runOutcome: outcomeOf(ExecutionOutcomeStatus.AWAITING_APPROVAL),
+      workspaceList: hitsFor(TARGET_FILE),
+    });
+    const full = `${TARGET_FILE} ` + 'C'.repeat(250); // > 200, includes a valid target
+    await new ConversationRuntime(deps).handle(messageOf(full));
+    expect(calls.run).toBe(1);
+    expect(calls.lastRunRequest?.instruction).toBe(full);
+    expect((calls.lastRunRequest?.instruction.length ?? 0)).toBeGreaterThan(200);
+    expect(calls.lastRunRequest?.goal).toBe(codeIntent.summary); // bounded display summary
+    expect(calls.lastRunRequest?.targetFiles).toEqual([TARGET_FILE]);
+    expect(calls.lastRunRequest?.planningOnly).toBe(true);
+  });
+
+  it('F4-A/RC3: a code request over MAX_AUTHORITATIVE_INSTRUCTION_CHARS is rejected explicitly — never silently sliced, never run', async () => {
+    const { deps, calls } = makeDeps({ intent: codeIntent, workspaceList: hitsFor(TARGET_FILE) });
+    const result = await new ConversationRuntime(deps).handle(messageOf('x'.repeat(8_001)));
+    expect(result.reply.text).toBe(new ResponseComposer().composeRequestTooLong(CTX).text);
+    expect(calls.run).toBe(0); // rejected before planning — no truncated instruction ever reaches CodeGeneration
+    expect(calls.workspaceList).toBe(0); // rejected before target extraction
+  });
+
+  it('F4-A: a non-code (TEST_EXECUTION) request is unaffected — instruction stays the summary even when long', async () => {
+    const { deps, calls } = makeDeps({
+      intent: testIntent,
+      runOutcome: outcomeOf(ExecutionOutcomeStatus.COMPLETED, 'cmd-1'),
+    });
+    await new ConversationRuntime(deps).handle(messageOf('테스트 돌려줘 ' + 'D'.repeat(250)));
+    expect(calls.run).toBe(1);
+    expect(calls.lastRunRequest?.instruction).toBe(testIntent.summary); // no authoritativeInstruction for non-code
+  });
+
+  // ── F4-B/RC4: scope-clarification recovery preserves the ORIGINAL full instruction ──────────────
+  it('F4-B/RC4: a >200-char request survives scope clarification — recovery uses the original full instruction, not the path reply', async () => {
+    const { deps, calls } = makeDeps({
+      intent: codeIntent,
+      runOutcome: outcomeOf(ExecutionOutcomeStatus.AWAITING_APPROVAL),
+      workspaceList: hitsFor(TARGET_FILE),
+    });
+    const original = '이 버그 고쳐줘 ' + 'E'.repeat(250); // > 200, no path → scope clarification
+    await new ConversationRuntime(deps).handle(messageOf(original)); // turn 1: anchors
+    expect(calls.scopeAnchor).toBe(1);
+    expect(calls.lastScopeAnchor?.authoritativeInstruction).toBe(original);
+
+    await new ConversationRuntime(deps).handle(messageOf(TARGET_FILE)); // turn 2: bare path recovers
+    expect(calls.run).toBe(1);
+    expect(calls.lastRunRequest?.instruction).toBe(original); // original full request, NOT the path, NOT the summary
+    expect(calls.lastRunRequest?.instruction).not.toBe(TARGET_FILE);
+    expect(calls.lastRunRequest?.goal).toBe(codeIntent.summary);
+  });
+
+  // ── F4-B real-chain: full instruction survives approval halt/resume and reaches CodeGeneration ──
+  it('F4-B real-chain: a >200-char explicit new-file request → approval → "승인" → CodeGeneration receives the FULL instruction; full content previewed; no mutation', async () => {
+    const NEW_FILE = 'docs/uat/f4.md';
+    const MARKER = '- marker: quoky-dev app auth smoke test — extended fidelity check ' + 'Z'.repeat(120);
+    const req = `파일 생성: ${NEW_FILE} 미리보기만 만들어줘\n파일 내용:\n# F4 UAT\n\n${MARKER}`; // > 200 chars
+
+    const sessions = new Map<string, Session>();
+    const tasks = new Map<string, Task>();
+    const approvals: ApprovalRequest[] = [];
+    sessions.set('sess-1', sessionOf());
+    let capturedRunRequest: ExecutionRequest | undefined;
+
+    const store = {
+      sessions: { async save(s: Session) { sessions.set(s.id, s); return s; } },
+      tasks: {
+        async get(id: string) { return tasks.get(id) ?? null; },
+        async save(t: Task) { tasks.set(t.id, t); return t; },
+      },
+      approvals: { async findByExecutionPlan(planId: string) { return approvals.filter((a) => a.executionPlanRef.id === planId); } },
+    };
+    const approvalFlow = new StatelessApprovalFlow(store);
+
+    const { deps: base, calls } = makeDeps({
+      intent: codeIntent,
+      workspaceList: () => [], // the new file does not exist (turn-1 A2 routing + turn-2 existence re-check)
+      codeProposal: codeProposalOf({ proposal: [{ path: NEW_FILE, newContent: `# F4 UAT\n\n${MARKER}\n` }] }),
+      workspaceDiff: {
+        refId: WORKSPACE.id,
+        files: [{ path: NEW_FILE, changeKind: 'add', unified: `@@ -0,0 +1,3 @@\n+# F4 UAT\n+\n+${MARKER}\n`, binary: false }],
+        estimatedChangedLines: 3,
+        truncated: false,
+      },
+    });
+    const deps: ConversationRuntimeDeps = {
+      ...base,
+      approvalFlow,
+      sessions: {
+        async openForContext() { return sessions.get('sess-1')!; },
+        async touch(s) { sessions.set(s.id, s); return s; },
+      },
+      orchestrator: {
+        async run(request) { capturedRunRequest = request; approvals.push(pendingApprovalOf()); return outcomeOf(ExecutionOutcomeStatus.AWAITING_APPROVAL); },
+        async resume() { return outcomeOf(ExecutionOutcomeStatus.COMPLETED); },
+      },
+      approvals: {
+        async decide(id) {
+          const idx = approvals.findIndex((a) => a.id === id);
+          if (idx >= 0) approvals[idx] = { ...approvals[idx]!, status: ApprovalStatus.APPROVED };
+          return approvals[idx]!;
+        },
+      },
+    };
+    const runtime = new ConversationRuntime(deps);
+
+    // Turn 1 — the full >200-char request becomes the authoritative instruction on the anchored request.
+    const t1 = await runtime.handle(messageOf(req));
+    expect(t1.status).toBe('AWAITING_APPROVAL');
+    expect(capturedRunRequest?.instruction).toBe(req);
+    expect((capturedRunRequest?.instruction.length ?? 0)).toBeGreaterThan(200);
+    expect(capturedRunRequest?.goal).toBe(codeIntent.summary); // display summary stays bounded
+
+    // Turn 2 — "승인": reconstructResume restores the FULL instruction; CodeGeneration receives it complete.
+    const t2 = await runtime.handle(messageOf('승인'));
+    expect(t2.status).toBe('RESPONDED');
+    expect(calls.codeGenerationGenerate).toBe(1);
+    expect(calls.lastCodeGenerationInput?.instruction).toBe(req); // FULL instruction survived halt/resume
+    // the preview renders the COMPLETE requested content (no truncation, no clamp note under the diff limit)
+    expect(t2.reply.text).toContain(MARKER);
+    expect(t2.reply.text).toContain('새 파일');
+    expect(t2.reply.text).not.toContain('일부만');
+    // still non-mutating
+    expect(calls.workspaceApply).toBe(0);
+    expect(calls.gitCommit + calls.gitPush + calls.hostingCreatePR + calls.commandRun).toBe(0);
+  });
+
+  // ── F4-C: length-only observability ────────────────────────────────────────────────────────────
+  it('F4-C: emits a length-only "code-change instruction fidelity" info log — never raw request content', async () => {
+    const { deps, calls } = makeDeps({
+      intent: codeIntent,
+      runOutcome: outcomeOf(ExecutionOutcomeStatus.AWAITING_APPROVAL),
+      workspaceList: hitsFor(TARGET_FILE),
+    });
+    const secret = 'SENSITIVE_MARKER_' + 'Q'.repeat(250);
+    await new ConversationRuntime(deps).handle(messageOf(`${TARGET_FILE} ${secret}`));
+    const log = calls.loggerInfoCalls.find((c) => c.message === 'code-change instruction fidelity');
+    expect(log).toBeDefined();
+    expect(log?.fields?.capability).toBe('CODE_IMPLEMENTATION');
+    expect(typeof log?.fields?.displaySummaryLength).toBe('number');
+    expect(typeof log?.fields?.authoritativeInstructionLength).toBe('number');
+    expect(typeof log?.fields?.instructionTruncatedForDisplay).toBe('boolean');
+    expect(log?.fields?.instructionTruncatedForDisplay).toBe(true); // full instruction longer than the bounded summary
+    // secret-free: no raw request/instruction content in any info log
+    expect(JSON.stringify(calls.loggerInfoCalls)).not.toContain(secret);
   });
 });
 

@@ -21,6 +21,15 @@ export interface IntentResolutionContext {
   /** Subset of `targetFiles` that came from the explicit new-file flow (F3-A). Passed straight through
    *  to `ExecutionRequest.newFileTargets` — the resolver neither classifies nor derives it. */
   newFileTargets?: string[];
+  /**
+   * The FULL authoritative code-generation instruction (Sprint 4c-Follow-up-4, F4-A) — the complete
+   * inbound request, NOT the ≤200-char display summary. When present it becomes
+   * `ExecutionRequest.instruction`; `goal` stays the bounded display summary. The resolver neither
+   * derives nor bounds it — the caller applies `MAX_AUTHORITATIVE_INSTRUCTION_CHARS` and rejects
+   * over-bound (never a silent slice). Absent (non-code intents / callers that don't set it) →
+   * `instruction` falls back to the summary, preserving prior behavior.
+   */
+  authoritativeInstruction?: string;
   command?: { command: string; args: string[] };
 }
 
@@ -48,8 +57,12 @@ export class IntentResolver {
     const command =
       intent.capability === Capability.TEST_EXECUTION ? testCommandFor(intent) : context.command;
     return {
-      goal: intent.summary,
-      instruction: intent.summary,
+      goal: intent.summary, // display / plan title — bounded (≤200)
+      // F4-A (Sprint 4c-Follow-up-4): the AUTHORITATIVE code-generation instruction is the full inbound
+      // request when the caller supplies it; the ≤200-char display summary is only a fallback (non-code
+      // intents, or callers that don't provide the full instruction). The display cap is NEVER reused as
+      // the authoritative instruction fed to CodeGeneration (root cause of the Gate 4B truncation).
+      instruction: context.authoritativeInstruction ?? intent.summary,
       requiredCapabilities: [intent.capability],
       requestedBy: context.requestedBy,
       ...(context.projectId ? { projectId: context.projectId } : {}),
