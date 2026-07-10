@@ -25,9 +25,9 @@ export interface IntentResolutionContext {
    * The FULL authoritative code-generation instruction (Sprint 4c-Follow-up-4, F4-A) — the complete
    * inbound request, NOT the ≤200-char display summary. When present it becomes
    * `ExecutionRequest.instruction`; `goal` stays the bounded display summary. The resolver neither
-   * derives nor bounds it — the caller applies `MAX_AUTHORITATIVE_INSTRUCTION_CHARS` and rejects
-   * over-bound (never a silent slice). Absent (non-code intents / callers that don't set it) →
-   * `instruction` falls back to the summary, preserving prior behavior.
+   * derives, bounds, nor truncates it — the caller passes the accepted inbound request through in full
+   * (bounded only by the inbound transport; no application-level cap). Absent (non-code intents / callers
+   * that don't set it) → `instruction` falls back to the summary, preserving prior behavior.
    */
   authoritativeInstruction?: string;
   command?: { command: string; args: string[] };

@@ -512,12 +512,6 @@ export class ResponseComposer {
     return { context, text: '명령을 실행할 수 없었어요. 잠시 후 다시 시도해 주세요.' };
   }
 
-  /** A code-change request exceeds the authoritative-instruction bound (Sprint 4c-Follow-up-4, F4-A/RC3).
-   *  Explicit rejection instead of silently truncating the instruction fed to CodeGeneration. */
-  composeRequestTooLong(context: ConversationContext): OutboundMessage {
-    return { context, text: '요청이 너무 길어요. 조금 더 짧게 나눠서 다시 보내주세요.' };
-  }
-
   /**
    * Clarification prompt when a code-change request names no validated target file (Code Change
    * Scope Collection, ADR-0036). No ExecutionPlan/ApprovalRequest exists at this point — this is a

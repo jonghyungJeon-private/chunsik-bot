@@ -2130,12 +2130,72 @@ describe('Code-change instruction fidelity beyond 200 chars (Sprint 4c-Follow-up
     expect(calls.lastRunRequest?.planningOnly).toBe(true);
   });
 
-  it('F4-A/RC3: a code request over MAX_AUTHORITATIVE_INSTRUCTION_CHARS is rejected explicitly — never silently sliced, never run', async () => {
-    const { deps, calls } = makeDeps({ intent: codeIntent, workspaceList: hitsFor(TARGET_FILE) });
-    const result = await new ConversationRuntime(deps).handle(messageOf('x'.repeat(8_001)));
-    expect(result.reply.text).toBe(new ResponseComposer().composeRequestTooLong(CTX).text);
-    expect(calls.run).toBe(0); // rejected before planning — no truncated instruction ever reaches CodeGeneration
-    expect(calls.workspaceList).toBe(0); // rejected before target extraction
+  it('F4-A (input-fidelity amendment): a >8000-char code request is preserved COMPLETELY — never rejected, never truncated; the full instruction survives approval anchor/resume into CodeGeneration', async () => {
+    const BIG = 'y'.repeat(8_100);
+    const NEW_FILE = 'docs/uat/big.md';
+    const req = `파일 생성: ${NEW_FILE} 미리보기만 만들어줘\n파일 내용:\n# Big UAT\n\n- marker: ${BIG}`; // > 8000 chars
+
+    const sessions = new Map<string, Session>();
+    const tasks = new Map<string, Task>();
+    const approvals: ApprovalRequest[] = [];
+    sessions.set('sess-1', sessionOf());
+    let capturedRunRequest: ExecutionRequest | undefined;
+
+    const store = {
+      sessions: { async save(s: Session) { sessions.set(s.id, s); return s; } },
+      tasks: {
+        async get(id: string) { return tasks.get(id) ?? null; },
+        async save(t: Task) { tasks.set(t.id, t); return t; },
+      },
+      approvals: { async findByExecutionPlan(planId: string) { return approvals.filter((a) => a.executionPlanRef.id === planId); } },
+    };
+    const approvalFlow = new StatelessApprovalFlow(store);
+
+    const { deps: base, calls } = makeDeps({
+      intent: codeIntent,
+      workspaceList: () => [],
+      codeProposal: codeProposalOf({ proposal: [{ path: NEW_FILE, newContent: `# Big UAT\n\n- marker: ${BIG}\n` }] }),
+      workspaceDiff: {
+        refId: WORKSPACE.id,
+        files: [{ path: NEW_FILE, changeKind: 'add', unified: `@@ -0,0 +1,3 @@\n+# Big UAT\n+\n+- marker: ${BIG}\n`, binary: false }],
+        estimatedChangedLines: 3,
+        truncated: false,
+      },
+    });
+    const deps: ConversationRuntimeDeps = {
+      ...base,
+      approvalFlow,
+      sessions: {
+        async openForContext() { return sessions.get('sess-1')!; },
+        async touch(s) { sessions.set(s.id, s); return s; },
+      },
+      orchestrator: {
+        async run(request) { capturedRunRequest = request; approvals.push(pendingApprovalOf()); return outcomeOf(ExecutionOutcomeStatus.AWAITING_APPROVAL); },
+        async resume() { return outcomeOf(ExecutionOutcomeStatus.COMPLETED); },
+      },
+      approvals: {
+        async decide(id) {
+          const idx = approvals.findIndex((a) => a.id === id);
+          if (idx >= 0) approvals[idx] = { ...approvals[idx]!, status: ApprovalStatus.APPROVED };
+          return approvals[idx]!;
+        },
+      },
+    };
+    const runtime = new ConversationRuntime(deps);
+
+    // Turn 1 — NOT rejected; the full >8000-char request is the authoritative instruction (no app cap).
+    const t1 = await runtime.handle(messageOf(req));
+    expect(t1.status).toBe('AWAITING_APPROVAL');
+    expect(capturedRunRequest?.instruction).toBe(req);
+    expect((capturedRunRequest?.instruction.length ?? 0)).toBeGreaterThan(8_000);
+    expect(capturedRunRequest?.goal).toBe(codeIntent.summary); // display summary still bounded
+
+    // Turn 2 — "승인": the FULL >8000-char instruction survives the anchor/resume roundtrip into CodeGeneration.
+    await runtime.handle(messageOf('승인'));
+    expect(calls.codeGenerationGenerate).toBe(1);
+    expect(calls.lastCodeGenerationInput?.instruction).toBe(req);
+    expect((calls.lastCodeGenerationInput?.instruction.length ?? 0)).toBeGreaterThan(8_000);
+    expect(calls.workspaceApply).toBe(0); // still non-mutating
   });
 
   it('F4-A: a non-code (TEST_EXECUTION) request is unaffected — instruction stays the summary even when long', async () => {

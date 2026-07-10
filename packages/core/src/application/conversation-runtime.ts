@@ -161,9 +161,9 @@ export interface PendingScopeClarification {
   /**
    * The FIRST message's FULL authoritative instruction (Sprint 4c-Follow-up-4, F4-B/RC4) — preserved so
    * that a request recovered on the next turn (a bare-path reply) reaches CodeGeneration with the ORIGINAL
-   * complete request, not the ≤200-char summary and not the path-only follow-up text. Bounded at anchor
-   * time by `MAX_AUTHORITATIVE_INSTRUCTION_CHARS`. Absent on anchors written before this field existed →
-   * recovery falls back to the summary (prior behavior).
+   * complete request, not the ≤200-char summary and not the path-only follow-up text. Preserved in full
+   * (bounded only by what the inbound transport accepts — no application-level cap). Absent on anchors
+   * written before this field existed → recovery falls back to the summary (prior behavior).
    */
   authoritativeInstruction?: string;
   /** The classifier's raw.kind tag ('fix' | 'change' | 'refactor'), if present. Named `rawKind` — not
@@ -1140,15 +1140,6 @@ function buildRemoteBranchCleanupApprovalReason(input: {
 /** Bound on how many extracted target-path candidates trigger a workspace.list call per turn
  *  (Sprint 2o, ADR-0036) — a chat message must never drive an unbounded number of workspace scans. */
 const MAX_TARGET_CANDIDATES = 5;
-
-/**
- * Upper bound on the FULL authoritative code-generation instruction (Sprint 4c-Follow-up-4, F4-A/RC3).
- * Deliberately far above the ≤200-char display summary AND above the practical Discord inbound message
- * limit (~2000–4000 chars), so a real request always fits — but bounded, so the authoritative instruction
- * persisted on the approval anchor is never unbounded. An over-bound request is REJECTED explicitly
- * (`composeRequestTooLong`); it is NEVER silently `slice()`d down and fed to CodeGeneration (that silent
- * truncation is the exact Gate 4B content-fidelity failure this sprint fixes). */
-const MAX_AUTHORITATIVE_INSTRUCTION_CHARS = 8_000;
 
 /** Map an Execution Orchestrator outcome status to the ResponseComposer reply status. */
 function toReplyStatus(status: ExecutionOutcomeStatus): ExecutionReplyStatus {
@@ -4606,15 +4597,12 @@ export class ConversationRuntime {
     let newFileTargets: string[] | undefined;
     // F4-A (Sprint 4c-Follow-up-4): the FULL inbound request is the authoritative code-generation
     // instruction (never the ≤200-char display summary). Set ONLY for CODE_IMPLEMENTATION so no other
-    // capability's behavior changes.
+    // capability's behavior changes. Per the CA input-fidelity amendment, every accepted inbound request
+    // is preserved COMPLETELY — no application-level length cap, no silent truncation. The instruction is
+    // bounded only by what the inbound transport (Discord) accepts; a small app cap is explicitly NOT
+    // imposed here (long-preview delivery is handled losslessly downstream — Sprint 4c-Follow-up-5).
     let authoritativeInstruction: string | undefined;
     if (intent.capability === Capability.CODE_IMPLEMENTATION) {
-      // F4-A/RC3: reject an over-bound request EXPLICITLY rather than silently slicing it — feeding a
-      // truncated instruction to CodeGeneration is the exact Gate 4B content-fidelity failure. The bound
-      // sits above any real Discord message, so this is a defensive guard, never a normal path.
-      if (message.text.length > MAX_AUTHORITATIVE_INSTRUCTION_CHARS) {
-        return this.failComposed(message, session, this.deps.composer.composeRequestTooLong(message.context));
-      }
       authoritativeInstruction = message.text;
       const candidates = extractTargetPathCandidates(message.text).slice(0, MAX_TARGET_CANDIDATES);
       for (const candidate of candidates) {
