@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  AiFailureKind,
   ApprovalStatus,
   Capability,
   CodeGenerationStatus,
@@ -47,7 +48,7 @@ import type {
   WorkspaceDiff,
   WorkspaceRef,
 } from '../domain';
-import type { Logger } from '../ports';
+import type { Logger, LogFields } from '../ports';
 import { ResponseComposer } from './response-composer';
 import type { TestResultDetail } from './response-composer';
 import { IntentClassifier } from './intent-classifier';
@@ -405,6 +406,8 @@ interface Calls {
   lastGitSyncMainInput?: { rootPath: string; remote: string; branch: string; expectedRemoteCommit: string };
   commandExecGet: number;
   loggerWarn: number;
+  /** F3-B (Sprint 4c-Follow-up-3): captured `logger.warn` message + fields, for secret-free branch-log assertions. */
+  loggerWarnCalls: Array<{ message: string; fields?: LogFields }>;
   hostingCreatePR: number;
   lastHostingCreateInput?: {
     identity: RepositoryIdentity;
@@ -662,6 +665,7 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
     gitPush: 0,
     commandExecGet: 0,
     loggerWarn: 0,
+    loggerWarnCalls: [],
     hostingCreatePR: 0,
     hostingGetStatus: 0,
     hostingMergePR: 0,
@@ -959,7 +963,13 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
               },
             }),
     },
-    logger: { ...silentLogger, warn: () => { calls.loggerWarn++; } },
+    logger: {
+      ...silentLogger,
+      warn: (message: string, fields?: LogFields) => {
+        calls.loggerWarn++;
+        calls.loggerWarnCalls.push({ message, ...(fields ? { fields } : {}) });
+      },
+    },
   };
   return { deps, calls };
 }
@@ -1774,6 +1784,298 @@ describe('AI Code Generation Preview — runtime', () => {
   it('a failed preview never anchors an apply-preview', async () => {
     const { calls } = await approveWith({ codeGeneration: 'throw' }, planningOnlyRequestOf());
     expect(calls.applyAnchorSet).toBe(0);
+  });
+});
+
+// ── Sprint 4c-Follow-up-3 (F3-A/F3-B) — new-file add-diff preview + preview-failure branch logging ──
+describe('New-file add-diff preview + preview-failure branch logging (Sprint 4c-Follow-up-3)', () => {
+  const addDiffOf = (path = TARGET_FILE, unified = '@@ -0,0 +1 @@\n+new file body\n') => ({
+    refId: WORKSPACE.id,
+    files: [{ path, changeKind: 'add' as const, unified, binary: false }],
+    estimatedChangedLines: 1,
+    truncated: false,
+  });
+
+  // ── F3-A: new-file add-diff preview rendering ──────────────────────────────────────────────────
+  it('F3-A: an explicit new-file target with a changeKind "add" diff → RESPONDED, rendered as a 새 파일 diff, existence re-checked, no mutation', async () => {
+    const { result, calls } = await approveWith(
+      { workspaceList: () => [], workspaceDiff: addDiffOf() }, // read-only re-check: the file does NOT exist yet
+      planningOnlyRequestOf({ newFileTargets: [TARGET_FILE] }),
+    );
+    expect(result.status).toBe('RESPONDED');
+    expect(result.reply.text).toContain(TARGET_FILE);
+    expect(result.reply.text).toContain('새 파일');
+    expect(result.reply.text).toContain('new file body');
+    expect(result.reply.text).not.toBe(new ResponseComposer().composeCodeGenerationPreviewFailed(CTX).text);
+    // the read-only existence check ran exactly once for the single add file; nothing was created
+    expect(calls.workspaceList).toBe(1);
+  });
+
+  it('F3-A: an "add" diff for an EXPLICIT new-file target that already EXISTS → failed preview (existence re-check), FAILED, branch logged', async () => {
+    const { result, calls } = await approveWith(
+      { workspaceList: hitsFor(TARGET_FILE), workspaceDiff: addDiffOf() }, // the target already exists → reject
+      planningOnlyRequestOf({ newFileTargets: [TARGET_FILE] }),
+    );
+    expect(result.status).toBe('FAILED');
+    expect(result.reply.text).toBe(new ResponseComposer().composeCodeGenerationPreviewFailed(CTX).text);
+    expect(result.reply.text).not.toContain('새 파일');
+    expect(calls.loggerWarnCalls.some((c) => c.fields?.branch === 'add-diff-for-existing-file')).toBe(true);
+  });
+
+  it('F3-A: an "add" diff for a NON-explicit target (no newFileTargets) → still rejected, not rendered, branch logged, no existence check', async () => {
+    const { result, calls } = await approveWith(
+      { workspaceDiff: addDiffOf() },
+      planningOnlyRequestOf(), // no newFileTargets → the add is unexpected (preserves the pre-F3-A safety)
+    );
+    expect(result.status).toBe('FAILED');
+    expect(result.reply.text).toBe(new ResponseComposer().composeCodeGenerationPreviewFailed(CTX).text);
+    expect(result.reply.text).not.toContain('새 파일');
+    expect(calls.workspaceList).toBe(0); // rejected on origin, before any existence check
+    expect(calls.loggerWarnCalls.some((c) => c.fields?.branch === 'unexpected-add-diff')).toBe(true);
+  });
+
+  it('F3-A: the explicit new-file path must ALSO be in targetFiles — an "add" for a path only in newFileTargets is rejected', async () => {
+    const { result, calls } = await approveWith(
+      { workspaceList: () => [], workspaceDiff: addDiffOf('packages/core/src/application/elsewhere.ts') },
+      // newFileTargets names a path that is NOT the (single) targetFiles entry
+      planningOnlyRequestOf({ newFileTargets: ['packages/core/src/application/elsewhere.ts'] }),
+    );
+    expect(result.status).toBe('FAILED');
+    expect(result.reply.text).toBe(new ResponseComposer().composeCodeGenerationPreviewFailed(CTX).text);
+    expect(calls.loggerWarnCalls.some((c) => c.fields?.branch === 'unexpected-add-diff')).toBe(true);
+  });
+
+  it('F3-A: an existence re-check that throws → fail-safe reject, FAILED, branch logged (never treated as non-existent)', async () => {
+    const { result, calls } = await approveWith(
+      {
+        workspaceList: () => { throw new Error('list boom'); },
+        workspaceDiff: addDiffOf(),
+      },
+      planningOnlyRequestOf({ newFileTargets: [TARGET_FILE] }),
+    );
+    expect(result.status).toBe('FAILED');
+    expect(result.reply.text).toBe(new ResponseComposer().composeCodeGenerationPreviewFailed(CTX).text);
+    expect(calls.loggerWarnCalls.some((c) => c.fields?.branch === 'add-existence-check-failed')).toBe(true);
+  });
+
+  it('F3-A: existing-file modify/delete previews are unchanged by the new-file gate', async () => {
+    const modify = await approveWith({}, planningOnlyRequestOf()); // default proposal → modify diff
+    expect(modify.result.status).toBe('RESPONDED');
+    expect(modify.result.reply.text).not.toContain('새 파일');
+
+    const del = await approveWith(
+      { codeProposal: codeProposalOf({ proposal: [{ path: TARGET_FILE, delete: true }] }) },
+      planningOnlyRequestOf(),
+    );
+    expect(del.result.status).toBe('RESPONDED');
+    expect(del.result.reply.text).toContain('삭제 제안');
+    expect(del.result.reply.text).not.toContain('새 파일');
+  });
+
+  it('F3-A real-chain: an explicit create-file marker threads newFileTargets through the real IntentResolver into the ExecutionRequest', async () => {
+    const { deps, calls } = makeDeps({
+      intent: codeIntent,
+      runOutcome: outcomeOf(ExecutionOutcomeStatus.AWAITING_APPROVAL),
+      workspaceList: () => [], // the new file does not exist yet
+    });
+    const result = await new ConversationRuntime(deps).handle(
+      messageOf('파일 생성: docs/uat/github-app-auth-smoke.md 미리보기만 만들어줘'),
+    );
+    expect(calls.run).toBe(1);
+    expect(calls.lastRunRequest?.targetFiles).toEqual(['docs/uat/github-app-auth-smoke.md']);
+    expect(calls.lastRunRequest?.newFileTargets).toEqual(['docs/uat/github-app-auth-smoke.md']);
+    expect(calls.workspaceApply).toBe(0); // still non-mutating; approval boundary respected
+    expect(result.status).toBe('AWAITING_APPROVAL');
+  });
+
+  it('F3-A real-chain: an ordinary existing-file code request does NOT set newFileTargets', async () => {
+    const { deps, calls } = makeDeps({
+      intent: codeIntent,
+      runOutcome: outcomeOf(ExecutionOutcomeStatus.AWAITING_APPROVAL),
+      workspaceList: hitsFor(TARGET_FILE), // the file exists
+    });
+    await new ConversationRuntime(deps).handle(messageOf(`${TARGET_FILE}에서 이 버그 고쳐줘`));
+    expect(calls.run).toBe(1);
+    expect(calls.lastRunRequest?.targetFiles).toEqual([TARGET_FILE]);
+    expect(calls.lastRunRequest?.newFileTargets).toBeUndefined();
+  });
+
+  // ── F3-B: secret-free preview-failure branch logging ───────────────────────────────────────────
+  it('F3-B: a missing workspaceRef logs a "missing-refs-or-targets" branch before generate is ever called', async () => {
+    const { result, calls } = await approveWith({}, planningOnlyRequestOf({ workspaceRef: undefined }));
+    expect(result.status).toBe('FAILED');
+    expect(calls.codeGenerationGenerate).toBe(0);
+    const log = calls.loggerWarnCalls.find((c) => c.fields?.branch === 'missing-refs-or-targets');
+    expect(log).toBeDefined();
+    expect(log?.message).toBe('code preview failed');
+    expect(log?.fields?.stage).toBe('code-generation-preview');
+    expect(log?.fields?.capability).toBe('CODE_IMPLEMENTATION');
+  });
+
+  it('F3-B: a code-generation exception logs a "code-generation-exception" branch (no codeGenerationId — generation threw)', async () => {
+    const { result, calls } = await approveWith({ codeGeneration: 'throw' }, planningOnlyRequestOf());
+    expect(result.status).toBe('FAILED');
+    const log = calls.loggerWarnCalls.find((c) => c.fields?.branch === 'code-generation-exception');
+    expect(log).toBeDefined();
+    expect(log?.fields?.stage).toBe('code-generation-preview');
+    expect(log?.fields?.codeGenerationId).toBeUndefined(); // generation threw before an id was observed
+  });
+
+  it('F3-B: a SUCCEEDED generation with a null proposal logs a "missing-proposal" branch with codeGenerationId', async () => {
+    const { result, calls } = await approveWith({ codeProposal: null }, planningOnlyRequestOf());
+    expect(result.status).toBe('FAILED');
+    const log = calls.loggerWarnCalls.find((c) => c.fields?.branch === 'missing-proposal');
+    expect(log).toBeDefined();
+    expect(log?.fields?.codeGenerationId).toBe('gen-1');
+  });
+
+  it('F3-B: workspace.diff throwing logs a "workspace-diff-throw" branch with codeGenerationId + proposalId', async () => {
+    const { result, calls } = await approveWith({ workspaceDiff: 'throw' }, planningOnlyRequestOf());
+    expect(result.status).toBe('FAILED');
+    const log = calls.loggerWarnCalls.find((c) => c.fields?.branch === 'workspace-diff-throw');
+    expect(log).toBeDefined();
+    expect(log?.fields?.codeGenerationId).toBe('gen-1');
+    expect(log?.fields?.proposalId).toBe('prop-1');
+  });
+
+  it('F3-B: a non-SUCCEEDED generation logs "code-generation-not-succeeded" with codeGenerationId + failureKind', async () => {
+    const { result, calls } = await approveWith(
+      {
+        codeGeneration: codeGenerationOf({
+          status: CodeGenerationStatus.FAILED,
+          failureKind: AiFailureKind.TIMEOUT,
+          codeProposalRef: undefined,
+        }),
+      },
+      planningOnlyRequestOf(),
+    );
+    expect(result.status).toBe('FAILED');
+    const log = calls.loggerWarnCalls.find((c) => c.fields?.branch === 'code-generation-not-succeeded');
+    expect(log).toBeDefined();
+    expect(log?.fields?.codeGenerationId).toBe('gen-1');
+    expect(log?.fields?.failureKind).toBe('TIMEOUT');
+  });
+
+  it('F3-B: an out-of-scope proposal logs "out-of-scope-proposal" with ids/counts only — never proposal content', async () => {
+    const { result, calls } = await approveWith(
+      { codeProposal: codeProposalOf({ proposal: [{ path: 'packages/core/secret-only.ts', newContent: 'TOP_SECRET_BODY' }] }) },
+      planningOnlyRequestOf(),
+    );
+    expect(result.status).toBe('FAILED');
+    const log = calls.loggerWarnCalls.find((c) => c.fields?.branch === 'out-of-scope-proposal');
+    expect(log).toBeDefined();
+    expect(log?.fields?.proposalId).toBe('prop-1');
+    expect(log?.fields?.outOfScopeCount).toBe(1);
+    // secret-free: no proposal body is ever logged
+    expect(JSON.stringify(calls.loggerWarnCalls)).not.toContain('TOP_SECRET_BODY');
+  });
+
+  it('F3-B: every emitted branch log carries only primitive metadata + a branch id, never proposal/diff/file objects', async () => {
+    const { calls } = await approveWith(
+      {
+        codeProposal: codeProposalOf({ proposal: [{ path: TARGET_FILE, newContent: 'sensitive body' }] }),
+        workspaceDiff: { refId: WORKSPACE.id, files: [], estimatedChangedLines: 0, truncated: false }, // empty-diff branch
+      },
+      planningOnlyRequestOf(),
+    );
+    expect(calls.loggerWarnCalls.some((c) => c.fields?.branch === 'empty-diff')).toBe(true);
+    for (const c of calls.loggerWarnCalls) {
+      expect(typeof c.fields?.branch).toBe('string');
+      for (const v of Object.values(c.fields ?? {})) {
+        expect(['string', 'number', 'boolean'].includes(typeof v)).toBe(true);
+      }
+    }
+    expect(JSON.stringify(calls.loggerWarnCalls)).not.toContain('sensitive body');
+  });
+
+  // Full Gate 4B Scenario C chain through the REAL two-turn approval boundary (real StatelessApprovalFlow,
+  // real reconstructResume, real runCodeGenerationPreview + diff/render). Only the AI provider, workspace
+  // diff/list, and orchestrator run/resume are faked (per CA §6). Proves newFileTargets survives the halt→
+  // resume anchor roundtrip, so an explicit new-file add-diff renders on the next turn's "승인".
+  it('F3-A integration (Gate 4B Scenario C): explicit create-file → approval → next-turn "승인" → visible new-file diff preview; target absent; nothing applied', async () => {
+    const NEW_FILE = 'docs/uat/github-app-auth-smoke.md';
+    const sessions = new Map<string, Session>();
+    const tasks = new Map<string, Task>();
+    const approvals: ApprovalRequest[] = [];
+    sessions.set('sess-1', sessionOf());
+    let resumeCalls = 0;
+    let capturedRunRequest: ExecutionRequest | undefined;
+
+    const store = {
+      sessions: { async save(s: Session) { sessions.set(s.id, s); return s; } },
+      tasks: {
+        async get(id: string) { return tasks.get(id) ?? null; },
+        async save(t: Task) { tasks.set(t.id, t); return t; },
+      },
+      approvals: { async findByExecutionPlan(planId: string) { return approvals.filter((a) => a.executionPlanRef.id === planId); } },
+    };
+    const approvalFlow = new StatelessApprovalFlow(store);
+
+    const { deps: base, calls } = makeDeps({
+      intent: codeIntent,
+      // read-only workspace: the new file does NOT exist — serves BOTH turn-1 new-file routing and
+      // turn-2's F3-A existence re-check (which only lists; it never creates the file).
+      workspaceList: () => [],
+      // the AI proposes exactly the explicit new-file path; workspace.diff reports it as an `add`.
+      codeProposal: codeProposalOf({ proposal: [{ path: NEW_FILE, newContent: 'new file body' }] }),
+      workspaceDiff: {
+        refId: WORKSPACE.id,
+        files: [{ path: NEW_FILE, changeKind: 'add', unified: '@@ -0,0 +1 @@\n+new file body\n', binary: false }],
+        estimatedChangedLines: 1,
+        truncated: false,
+      },
+    });
+    const deps: ConversationRuntimeDeps = {
+      ...base,
+      approvalFlow,
+      sessions: {
+        async openForContext() { return sessions.get('sess-1')!; },
+        async touch(s) { sessions.set(s.id, s); return s; },
+      },
+      orchestrator: {
+        async run(request) {
+          capturedRunRequest = request;
+          approvals.push(pendingApprovalOf());
+          return outcomeOf(ExecutionOutcomeStatus.AWAITING_APPROVAL);
+        },
+        async resume() { resumeCalls++; return outcomeOf(ExecutionOutcomeStatus.COMPLETED); },
+      },
+      approvals: {
+        async decide(id) {
+          const idx = approvals.findIndex((a) => a.id === id);
+          if (idx >= 0) approvals[idx] = { ...approvals[idx]!, status: ApprovalStatus.APPROVED };
+          return approvals[idx]!;
+        },
+      },
+    };
+    const runtime = new ConversationRuntime(deps);
+
+    // Turn 1 — explicit create-file request → planning/approval; newFileTargets threaded into the request.
+    const t1 = await runtime.handle(messageOf(`파일 생성: ${NEW_FILE} 미리보기만 만들어줘`));
+    expect(t1.status).toBe('AWAITING_APPROVAL');
+    expect(capturedRunRequest?.targetFiles).toEqual([NEW_FILE]);
+    expect(capturedRunRequest?.newFileTargets).toEqual([NEW_FILE]);
+    expect(sessions.get('sess-1')?.activeTaskId).toBeTruthy();
+    expect(calls.workspaceApply + calls.commandRun + calls.gitCommit + calls.gitPush + calls.hostingCreatePR).toBe(0);
+
+    // Turn 2 — "승인": real reconstruct carries newFileTargets → runCodeGenerationPreview renders the add diff.
+    const t2 = await runtime.handle(messageOf('승인'));
+    expect(resumeCalls).toBe(1);
+    expect(calls.codeGenerationGenerate).toBe(1);
+    expect(t2.status).toBe('RESPONDED');
+    // a visible new-file diff preview for the explicit target
+    expect(t2.reply.text).toContain(NEW_FILE);
+    expect(t2.reply.text).toContain('새 파일');
+    expect(t2.reply.text).toContain('new file body');
+    // the target file was never created (existence check only lists); nothing applied/run/committed/pushed/PR'd
+    expect(calls.workspaceApply).toBe(0);
+    expect(calls.patchGenerate).toBe(0);
+    expect(calls.commandRun).toBe(0);
+    expect(calls.gitCommit).toBe(0);
+    expect(calls.gitPush).toBe(0);
+    expect(calls.hostingCreatePR).toBe(0);
+    // apply approval stays separate — the preview success did NOT create a new (apply) approval
+    expect(calls.requestForRisk).toBe(0);
   });
 });
 

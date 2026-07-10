@@ -64,11 +64,13 @@ export interface CodeChangePreview {
  * Display-relevant shape of a unified-diff-style code-change preview (Unified Diff Preview, ADR-0039).
  * Application-layer, not domain, not persisted. `unified`/`binary` come straight from a
  * `WorkspaceManager.diff()` `FileDiff` — current-content-vs-proposed, never AI-authored diff text.
- * Every entry's `kind` is `'update' | 'delete'` — `'add'` is rejected as a failure before this DTO is
- * built (`ConversationRuntime.runCodeGenerationPreview`).
+ * Each entry's `kind` is `'add' | 'update' | 'delete'`. An `'add'` is a confirmed EXPLICIT new-file
+ * preview (F3-A, Sprint 4c-Follow-up-3), rendered as an all-additions diff against empty content; an
+ * unexpected/unexplained `'add'` is still rejected as a failure before this DTO is built
+ * (`ConversationRuntime.runCodeGenerationPreview`), so it never reaches rendering.
  */
 export interface CodeDiffPreview {
-  changes: Array<{ path: string; kind: 'update' | 'delete'; unified: string; binary: boolean }>;
+  changes: Array<{ path: string; kind: 'add' | 'update' | 'delete'; unified: string; binary: boolean }>;
   outOfScopeWarnings: string[];
 }
 
@@ -242,7 +244,9 @@ function renderDiffChange(c: CodeDiffPreview['changes'][number]): string {
   }
   const { text, truncated } = clampDiffText(c.unified);
   const fence = fenceFor(text);
-  const label = c.kind === 'delete' ? `${c.path} (삭제 제안)` : c.path;
+  // F3-A (Sprint 4c-Follow-up-3): an 'add' is an explicit new-file preview — every line is an addition,
+  // rendered against empty content. Same bounded, backtick-safe rendering as update/delete.
+  const label = c.kind === 'delete' ? `${c.path} (삭제 제안)` : c.kind === 'add' ? `${c.path} (새 파일)` : c.path;
   const note = truncated ? '\n(diff가 길어서 일부만 보여드렸어요.)' : '';
   return `- ${label}\n${fence}diff\n${text}\n${fence}${note}`;
 }
