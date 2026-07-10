@@ -155,9 +155,17 @@ export interface PendingScopeClarification {
   /** Proves this Task's metadata is a scope-clarification anchor, not merely a plan-less Task for
    *  some unrelated reason (`!task.planId` alone is too implicit). */
   kind: 'code-scope-clarification';
-  /** The original intent's restated summary — becomes the recovered request's goal/instruction. Must
-   *  be the FIRST message's summary, never overwritten by the follow-up reply's text. */
+  /** The original intent's restated summary — becomes the recovered request's DISPLAY goal. Must be the
+   *  FIRST message's summary, never overwritten by the follow-up reply's text. */
   summary: string;
+  /**
+   * The FIRST message's FULL authoritative instruction (Sprint 4c-Follow-up-4, F4-B/RC4) — preserved so
+   * that a request recovered on the next turn (a bare-path reply) reaches CodeGeneration with the ORIGINAL
+   * complete request, not the ≤200-char summary and not the path-only follow-up text. Preserved in full
+   * (bounded only by what the inbound transport accepts — no application-level cap). Absent on anchors
+   * written before this field existed → recovery falls back to the summary (prior behavior).
+   */
+  authoritativeInstruction?: string;
   /** The classifier's raw.kind tag ('fix' | 'change' | 'refactor'), if present. Named `rawKind` — not
    *  `kind` — specifically to avoid colliding with the discriminator above. */
   rawKind?: string;
@@ -4587,7 +4595,15 @@ export class ConversationRuntime {
     // F3-A (Sprint 4c-Follow-up-3): the positive origin signal for the new-file add-diff preview guard.
     // Set ONLY when A2's explicit new-file flow fires below — never for an ordinary existing-file target.
     let newFileTargets: string[] | undefined;
+    // F4-A (Sprint 4c-Follow-up-4): the FULL inbound request is the authoritative code-generation
+    // instruction (never the ≤200-char display summary). Set ONLY for CODE_IMPLEMENTATION so no other
+    // capability's behavior changes. Per the CA input-fidelity amendment, every accepted inbound request
+    // is preserved COMPLETELY — no application-level length cap, no silent truncation. The instruction is
+    // bounded only by what the inbound transport (Discord) accepts; a small app cap is explicitly NOT
+    // imposed here (long-preview delivery is handled losslessly downstream — Sprint 4c-Follow-up-5).
+    let authoritativeInstruction: string | undefined;
     if (intent.capability === Capability.CODE_IMPLEMENTATION) {
+      authoritativeInstruction = message.text;
       const candidates = extractTargetPathCandidates(message.text).slice(0, MAX_TARGET_CANDIDATES);
       for (const candidate of candidates) {
         const hits = await this.deps.workspace.list(workspaceRef!, candidate);
@@ -4621,6 +4637,9 @@ export class ConversationRuntime {
         await this.deps.scopeClarificationFlow.anchor(session, {
           kind: 'code-scope-clarification',
           summary: intent.summary,
+          // F4-B/RC4: preserve the ORIGINAL full request so a next-turn bare-path reply recovers the
+          // complete instruction, never the path-only text or the ≤200-char summary.
+          ...(authoritativeInstruction ? { authoritativeInstruction } : {}),
           ...(typeof intent.raw?.kind === 'string' ? { rawKind: intent.raw.kind } : {}),
           ...(session.activeProjectId ? { projectId: session.activeProjectId } : {}),
           createdAt: now(),
@@ -4633,7 +4652,9 @@ export class ConversationRuntime {
       }
     }
 
-    return this.runResolvedExecution(message, session, actor, intent, workspaceRef, targetFiles, newFileTargets);
+    return this.runResolvedExecution(
+      message, session, actor, intent, workspaceRef, targetFiles, newFileTargets, authoritativeInstruction,
+    );
   }
 
   /** Explicit create-file markers (Sprint 4c-Follow-up-2, A2) — KO + EN. Conservative: only unambiguous
@@ -4687,6 +4708,7 @@ export class ConversationRuntime {
     workspaceRef: WorkspaceRef | undefined,
     targetFiles: string[] | undefined,
     newFileTargets?: string[],
+    authoritativeInstruction?: string,
   ): Promise<TurnResult> {
     const request = this.deps.intentResolver.resolve(intent, {
       requestedBy: actor.id,
@@ -4694,10 +4716,26 @@ export class ConversationRuntime {
       ...(workspaceRef ? { workspaceRef } : {}),
       ...(targetFiles ? { targetFiles } : {}),
       ...(newFileTargets ? { newFileTargets } : {}),
+      // F4-A (Sprint 4c-Follow-up-4): the full authoritative instruction → ExecutionRequest.instruction;
+      // goal stays the bounded display summary.
+      ...(authoritativeInstruction ? { authoritativeInstruction } : {}),
     });
     if (!request) {
       // Defensive: isExecution() gated this path, so resolve should not return null.
       return this.failComposed(message, session, this.deps.composer.composeCommandUnavailable(message.context));
+    }
+
+    // F4-C (Sprint 4c-Follow-up-4): safe, length-only observability for instruction fidelity — proves the
+    // display summary is bounded while the authoritative instruction carries the full request. NEVER logs
+    // raw instruction/request/file content (LogFields is primitive-only; only lengths/booleans passed).
+    if (intent.capability === Capability.CODE_IMPLEMENTATION) {
+      this.deps.logger.info('code-change instruction fidelity', {
+        stage: 'intent-resolution',
+        capability: 'CODE_IMPLEMENTATION',
+        displaySummaryLength: intent.summary.length,
+        authoritativeInstructionLength: request.instruction.length,
+        instructionTruncatedForDisplay: request.instruction.length > intent.summary.length,
+      });
     }
 
     const outcome = await this.deps.orchestrator.run(request);
@@ -4755,7 +4793,11 @@ export class ConversationRuntime {
       const hits = await this.deps.workspace.list(ws.workspaceRef!, candidate);
       const matched = hits.find((hit) => normalizeRelativePath(hit) === normalizeRelativePath(candidate));
       if (matched) {
-        return this.runResolvedExecution(message, session, actor, recovered, ws.workspaceRef, [matched]);
+        // F4-B/RC4: recover with the ORIGINAL full instruction from the anchor — never `message.text`
+        // (the bare-path follow-up) and never the ≤200-char summary.
+        return this.runResolvedExecution(
+          message, session, actor, recovered, ws.workspaceRef, [matched], undefined, pending.authoritativeInstruction,
+        );
       }
     }
 
