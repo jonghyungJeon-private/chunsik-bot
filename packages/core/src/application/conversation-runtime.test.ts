@@ -6669,7 +6669,9 @@ describe('Gate 5 — workspace-apply boundary state machine (update fixture gate
     expect(input.patchSet.operations[0]!.operation).toBe('update');
     expect(input.patchSet.operations[0]!.path).toBe(GATE5_FILE);
     expect(calls.commandRun).toBe(0); // no command/test execution on the apply path
-    expect(calls.gitStatus + calls.gitDiff).toBe(0); // no git on the apply path
+    expect(calls.gitStatus + calls.gitDiff).toBe(0); // no git READ on the apply path
+    // Git MUTATION ports (CA §5/§7 "Git mutation ports == 0") — apply never stages/commits/pushes/PRs/etc.
+    expect(calls.gitCommit + calls.gitPush + calls.gitSyncMain + calls.gitDeleteBranch + calls.hostingCreatePR).toBe(0);
     expect(calls.lastApplyAnchor?.status).toBe('WORKSPACE_APPLIED');
     expect(calls.lastApplyAnchor?.workspaceChangeRef?.status).toBe(WorkspaceChangeStatus.APPLIED);
   });
