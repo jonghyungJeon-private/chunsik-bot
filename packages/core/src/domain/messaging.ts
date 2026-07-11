@@ -60,6 +60,10 @@ export interface PreviewArtifact {
   previewId: string;
   /** Display-neutral header/summary prose (apply-boundary framing) — never the diff body. */
   header: string;
+  /** Out-of-scope safety warning (Sprint 4c-Follow-up-5) — present when the proposal touched paths outside
+   *  the requested/approved scope. MUST be delivered with the preview (final text message + attachment
+   *  caption); it is a safety notice, not framing. Absent when there is nothing out of scope. */
+  warning?: string;
   /** Trailing apply-boundary prose shown on the FINAL delivered message/attachment (CA RC9). */
   footer: string;
   files: PreviewFile[];

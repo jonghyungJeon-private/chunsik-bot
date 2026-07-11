@@ -624,6 +624,9 @@ export class ResponseComposer {
       preview: {
         previewId,
         header: DIFF_PREVIEW_HEADER,
+        // F5 (Sprint 4c-Follow-up-5): carry the out-of-scope safety warning INTO the artifact so a
+        // preview-aware adapter (which delivers `preview`, not `text`) still surfaces it. Absent → clean.
+        ...(warning ? { warning } : {}),
         footer: DIFF_PREVIEW_FOOTER,
         files,
         canonicalDiff: buildCanonicalDiff(files),

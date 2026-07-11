@@ -131,9 +131,10 @@ describe('deliverWithNotice', () => {
 
 // ── Sprint 4c-Follow-up-5 (F5-C/D/E) — lossless multipart preview delivery ─────────────────────────
 
-const artifactOf = (canonicalDiff: string): PreviewArtifact => ({
+const artifactOf = (canonicalDiff: string, warning?: string): PreviewArtifact => ({
   previewId: 'pv-test-123',
   header: 'HDR',
+  ...(warning ? { warning } : {}),
   footer: 'FTR',
   files: [{ path: 'x.ts', changeKind: 'add', unifiedDiff: canonicalDiff }],
   canonicalDiff,
@@ -262,6 +263,48 @@ describe('deliverPreview (F5-C/D/E)', () => {
     const report = await deliverPreview(artifactOf(canonical), cap.senders, { safeLimit: 400, partThreshold: 1000 });
     expect(report.previewId).toBe('pv-test-123'); // report id == artifact id even on fallback
     expect(report.attachmentFallbackUsed).toBe(true);
+  });
+
+  it('F5 warning: the out-of-scope warning rides the FINAL text message exactly once (with the footer)', async () => {
+    const WARN = '⚠️ 범위를 벗어난 파일 other.ts';
+    const canonical = bigDiff(400);
+    const cap = makeCapture();
+    const report = await deliverPreview(artifactOf(canonical, WARN), cap.senders, { safeLimit: 400, partThreshold: 1000 });
+    expect(report.outcome).toBe('SUCCESS_TEXT_COMPLETE');
+    const joined = cap.texts.join('\n');
+    expect(joined.split(WARN)).toHaveLength(2); // warning appears exactly once across all messages
+    const last = cap.texts[cap.texts.length - 1]!;
+    expect(last).toContain(WARN);
+    expect(last.endsWith('\nFTR')).toBe(true); // …warning then footer, both on the final message
+    expect(cap.texts.every((m) => m.length <= 400)).toBe(true); // trailer within budget
+  });
+
+  it('F5 warning: the attachment caption includes the out-of-scope warning exactly once', async () => {
+    const WARN = '⚠️ 범위를 벗어난 파일 other.ts';
+    const oversized = `@@ -0,0 +1 @@\n+${'X'.repeat(3000)}\n`;
+    const cap = makeCapture();
+    await deliverPreview(artifactOf(oversized, WARN), cap.senders, { safeLimit: 500 });
+    expect(cap.attachments).toHaveLength(1);
+    expect(cap.attachments[0]!.caption.split(WARN)).toHaveLength(2); // exactly once
+    expect(cap.attachments[0]!.caption).toContain('FTR');
+  });
+
+  it('F5 warning: a failure on the warning/footer-bearing final message never returns SUCCESS_TEXT_COMPLETE', async () => {
+    const WARN = '⚠️ 범위를 벗어난 파일 other.ts';
+    const canonical = buildCanonicalDiff([{ path: 'x.ts', changeKind: 'add', unifiedDiff: '@@ -0,0 +1 @@\n+only' }]);
+    const cap = makeCapture({ failTextAt: 2 }); // header ok, final(part+warning+footer) fails
+    const report = await deliverPreview(artifactOf(canonical, WARN), cap.senders);
+    expect(report.outcome).not.toBe('SUCCESS_TEXT_COMPLETE');
+    expect(report.attachmentFallbackUsed).toBe(true);
+    expect(cap.attachments[0]!.caption).toContain(WARN); // warning still delivered via the attachment
+  });
+
+  it('F5 warning: the no-warning path adds no warning text', async () => {
+    const canonical = buildCanonicalDiff([{ path: 'x.ts', changeKind: 'add', unifiedDiff: '@@ -0,0 +1 @@\n+hi' }]);
+    const cap = makeCapture();
+    await deliverPreview(artifactOf(canonical), cap.senders); // no warning
+    const last = cap.texts[cap.texts.length - 1]!;
+    expect(last.endsWith('\n```\nFTR')).toBe(true); // fence directly followed by footer, no warning line
   });
 
   it('known text failure mid-stream → attachment fallback (complete diff), PARTIAL_TEXT_ATTACHMENT_COMPLETE, no resend of remaining parts', async () => {

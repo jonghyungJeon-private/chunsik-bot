@@ -443,6 +443,21 @@ describe('ResponseComposer.composeCodeDiffPreview', () => {
     expect(a.preview!.footer).toContain('적용'); // apply-boundary framing present for the final message
   });
 
+  it('F5: the out-of-scope safety warning is carried IN the PreviewArtifact (not only the fallback text)', () => {
+    const reply = composer.composeCodeDiffPreview(
+      CTX,
+      diffPreviewOf({ outOfScopeWarnings: ['packages/core/other.ts'] }),
+    );
+    expect(reply.preview!.warning).toBeDefined();
+    expect(reply.preview!.warning).toContain('packages/core/other.ts');
+    expect(reply.text).toContain('packages/core/other.ts'); // fallback text behavior unchanged
+  });
+
+  it('F5: no warning in the artifact when nothing is out of scope', () => {
+    const reply = composer.composeCodeDiffPreview(CTX, diffPreviewOf({ outOfScopeWarnings: [] }));
+    expect(reply.preview!.warning).toBeUndefined();
+  });
+
   it('F5-A: no PreviewArtifact when there is no renderable diff (binary/empty only)', () => {
     const reply = composer.composeCodeDiffPreview(
       CTX,

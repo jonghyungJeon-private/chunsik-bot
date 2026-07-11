@@ -147,6 +147,13 @@ export function wrapDiffPart(payloadSegment: string, index: number, total: numbe
   return `${prefix}\`\`\`diff\n${payloadSegment}\`\`\``;
 }
 
+/** The safety trailer appended AFTER the closing fence of the FINAL text message (and mirrored in the
+ *  attachment caption): the out-of-scope warning (when present) then the apply-boundary footer. Leading
+ *  newlines separate it from the fence. Kept in one place so budget reservation and delivery never drift. */
+export function previewTrailer(artifact: PreviewArtifact): string {
+  return `${artifact.warning ? `\n${artifact.warning}` : ''}\n${artifact.footer}`;
+}
+
 export type PreviewPlan =
   | { mode: 'text'; parts: string[]; canonicalDiffLength: number }
   | { mode: 'attachment'; reason: 'oversized-line' | 'part-threshold' | 'wrapped-overflow' | 'empty-budget'; canonicalDiffLength: number };
@@ -163,11 +170,12 @@ export function planPreviewDelivery(
   const safeLimit = opts.safeLimit ?? DISCORD_SAFE_LIMIT;
   const partThreshold = opts.partThreshold ?? FILE_ATTACHMENT_CHUNK_THRESHOLD;
   const canonicalDiffLength = artifact.canonicalDiff.length;
-  // Reserve room for the wrapper AND the apply-boundary footer that deliverPreview appends to the FINAL
-  // part (F5 Finding 1): with the footer reserved on every segment, `finalPart + "\n" + footer` is always
-  // ≤ safeLimit, so the boundary framing is atomic with the last diff message and never overflows.
-  const footerReserve = artifact.footer.length + 1;
-  const payloadBudget = safeLimit - PREVIEW_WRAPPER_RESERVE - footerReserve;
+  // Reserve room for the wrapper AND the safety trailer (out-of-scope warning + apply-boundary footer) that
+  // deliverPreview appends to the FINAL part (F5 Finding 1 + warning propagation): with the trailer reserved
+  // on every segment, `finalPart + trailer` is always ≤ safeLimit, so the boundary/warning framing is atomic
+  // with the last diff message and never overflows.
+  const trailerReserve = previewTrailer(artifact).length;
+  const payloadBudget = safeLimit - PREVIEW_WRAPPER_RESERVE - trailerReserve;
 
   const split = splitCanonicalDiff(artifact.canonicalDiff, payloadBudget);
   if (split.kind === 'attachment-required') {
@@ -177,9 +185,9 @@ export function planPreviewDelivery(
     return { mode: 'attachment', reason: 'part-threshold', canonicalDiffLength };
   }
   const parts = split.segments.map((seg, i) => wrapDiffPart(seg, i + 1, split.segments.length));
-  // Defensive: the final part carries the footer, so verify IT (the largest) stays within the limit.
-  const lastWithFooter = parts.length > 0 ? `${parts[parts.length - 1]!}\n${artifact.footer}` : '';
-  if (parts.some((p) => p.length > safeLimit) || lastWithFooter.length > safeLimit) {
+  // Defensive: the final part carries the trailer, so verify IT (the largest) stays within the limit.
+  const lastWithTrailer = parts.length > 0 ? `${parts[parts.length - 1]!}${previewTrailer(artifact)}` : '';
+  if (parts.some((p) => p.length > safeLimit) || lastWithTrailer.length > safeLimit) {
     return { mode: 'attachment', reason: 'wrapped-overflow', canonicalDiffLength }; // reserve should prevent this
   }
   return { mode: 'text', parts, canonicalDiffLength };
@@ -200,8 +208,8 @@ export async function deliverPreview(
   const plan = planPreviewDelivery(artifact, opts);
   const canonicalDiffLength = plan.canonicalDiffLength;
   const previewId = artifact.previewId;
-  // The attachment caption carries the SAME apply-boundary footer (F5 Finding 1 / CA RC9).
-  const attachmentCaption = `${artifact.header}\n(전체 diff는 첨부파일로 보내드려요.)\n${artifact.footer}`;
+  // The attachment caption carries the SAME safety trailer (out-of-scope warning + apply-boundary footer).
+  const attachmentCaption = `${artifact.header}\n(전체 diff는 첨부파일로 보내드려요.)${previewTrailer(artifact)}`;
 
   const sendCompleteAttachment = async (): Promise<boolean> => {
     try {
@@ -241,14 +249,16 @@ export async function deliverPreview(
   } catch {
     return attachmentFallback(0);
   }
-  // F5 Finding 1: the apply-boundary footer is appended to the FINAL diff message so it is ATOMIC with the
-  // last part — SUCCESS_TEXT_COMPLETE is returned only after that final (footer-bearing) message is
-  // confirmed sent. A failure delivering it routes to the attachment fallback like any other part failure;
-  // the footer is NEVER swallowed while still claiming success.
+  // F5 Finding 1 + warning propagation: the safety trailer (out-of-scope warning + apply-boundary footer)
+  // is appended to the FINAL diff message so it is ATOMIC with the last part — SUCCESS_TEXT_COMPLETE is
+  // returned only after that final (trailer-bearing) message is confirmed sent. A failure delivering it
+  // routes to the attachment fallback like any other part failure; it is NEVER swallowed while claiming
+  // success.
+  const trailer = previewTrailer(artifact);
   let delivered = 0;
   for (let i = 0; i < plan.parts.length; i += 1) {
     const isLast = i === plan.parts.length - 1;
-    const message = isLast ? `${plan.parts[i]!}\n${artifact.footer}` : plan.parts[i]!;
+    const message = isLast ? `${plan.parts[i]!}${trailer}` : plan.parts[i]!;
     try {
       await senders.sendText(message);
       delivered += 1;
