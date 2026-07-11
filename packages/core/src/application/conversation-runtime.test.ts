@@ -6642,3 +6642,57 @@ describe('Follow-up-6 — exact Scenario C final E2E (real classifier + real A2,
     if (split.kind === 'segments') expect(split.segments.join('')).toBe(preview.canonicalDiff);
   });
 });
+
+// ── Gate 5 — workspace-apply boundary state machine (corrected update fixture gate5/apply-smoke.txt) ──
+// Test-only Internal QA for the EXISTING (Sprint 2u, single-`update`-op) patch-apply flow. Proves the apply
+// approval boundary + WorkspaceWrite invocation counts + PatchSet shape + zero command/git on the apply path.
+// Byte-exact/file-only/rollback are proven by the real-fs E2E in packages/workspace-local/gate5-apply-e2e.test.ts.
+describe('Gate 5 — workspace-apply boundary state machine (update fixture gate5/apply-smoke.txt)', () => {
+  const GATE5_FILE = 'gate5/apply-smoke.txt';
+  const GATE5_DIFF =
+    '--- a/gate5/apply-smoke.txt\n+++ b/gate5/apply-smoke.txt\n@@ -1,2 +1,2 @@\n gate5 apply smoke\n-marker: PENDING\n+marker: quoky-gate5-workspace-apply\n';
+  const gate5PatchSet = (o: Partial<PatchSet> = {}): PatchSet =>
+    patchSetGeneratedOf({ operations: [{ path: GATE5_FILE, operation: 'update', diff: GATE5_DIFF }], ...o });
+  const gate5PatchReady = (): ApplyPreviewAnchor =>
+    approvedAnchorOf({ status: 'PATCH_READY', patchRef: { id: 'patch-1', status: PatchStatus.GENERATED }, targetFiles: [GATE5_FILE] });
+  const gate5Change = (): WorkspaceChange => {
+    const patchSet = gate5PatchSet();
+    return workspaceChangeOf({ patchSet, approvalRef: patchSet.approvalRef, workspaceRef: WORKSPACE });
+  };
+
+  it('apply approval (PATCH_READY) + final-apply → exactly ONE WorkspaceWrite of the single gate5 update op; command/git 0; WORKSPACE_APPLIED', async () => {
+    const { deps, calls } = makeDeps({ applyAnchor: gate5PatchReady(), patchGetResult: gate5PatchSet(), workspaceApply: gate5Change() });
+    await new ConversationRuntime(deps).handle(messageOf('패치 적용해줘'));
+    expect(calls.workspaceApply).toBe(1); // the ONE mutation, only after apply approval
+    const input = calls.lastWorkspaceApplyInput!;
+    expect(input.patchSet.operations).toHaveLength(1);
+    expect(input.patchSet.operations[0]!.operation).toBe('update');
+    expect(input.patchSet.operations[0]!.path).toBe(GATE5_FILE);
+    expect(calls.commandRun).toBe(0); // no command/test execution on the apply path
+    expect(calls.gitStatus + calls.gitDiff).toBe(0); // no git READ on the apply path
+    // Git MUTATION ports (CA §5/§7 "Git mutation ports == 0") — apply never stages/commits/pushes/PRs/etc.
+    expect(calls.gitCommit + calls.gitPush + calls.gitSyncMain + calls.gitDeleteBranch + calls.hostingCreatePR).toBe(0);
+    expect(calls.lastApplyAnchor?.status).toBe('WORKSPACE_APPLIED');
+    expect(calls.lastApplyAnchor?.workspaceChangeRef?.status).toBe(WorkspaceChangeStatus.APPLIED);
+  });
+
+  it('apply requested BEFORE apply-approval (ELIGIBLE / AWAITING_APPROVAL) → zero WorkspaceWrite', async () => {
+    for (const anchor of [
+      applyAnchorOf({ targetFiles: [GATE5_FILE] }), // ELIGIBLE — apply requested, not yet approved
+      approvedAnchorOf({ status: 'AWAITING_APPROVAL', targetFiles: [GATE5_FILE] }), // apply approval pending
+    ]) {
+      const { deps, calls } = makeDeps({ applyAnchor: anchor, patchGetResult: gate5PatchSet() });
+      await new ConversationRuntime(deps).handle(messageOf('패치 적용해줘'));
+      expect(calls.workspaceApply, anchor.status).toBe(0);
+    }
+  });
+
+  it('a distinct plan/preview approval boundary never writes: "승인" with no apply context → zero WorkspaceWrite', async () => {
+    // The preview/plan approval (StatelessApprovalFlow) is a DISTINCT boundary from the apply approval
+    // (StatelessApplyPreviewFlow, `code-preview-apply` anchor). It never enters the WorkspaceWrite path.
+    // (A full two-turn preview-approval→preview E2E asserting workspaceApply==0 is the Follow-up-6 E2E.)
+    const { deps, calls } = makeDeps({ applyAnchor: null });
+    await new ConversationRuntime(deps).handle(messageOf('승인'));
+    expect(calls.workspaceApply).toBe(0);
+  });
+});
