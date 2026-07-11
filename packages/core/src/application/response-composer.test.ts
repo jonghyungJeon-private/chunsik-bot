@@ -415,6 +415,57 @@ describe('ResponseComposer.composeCodeDiffPreview', () => {
     expect(reply.text).not.toContain('line 199'); // well past the 40-line cap
   });
 
+  it('F5-A: the attached PreviewArtifact carries the COMPLETE canonical diff even when the text field is clamped (Sprint 4c-Follow-up-5)', () => {
+    const hugeUnified = Array.from({ length: 200 }, (_, i) => `-line ${i}`).join('\n');
+    const reply = composer.composeCodeDiffPreview(
+      CTX,
+      diffPreviewOf({ changes: [{ path: 'foo.ts', kind: 'update', unified: hugeUnified, binary: false }] }),
+    );
+    // the bounded `text` fallback is still clamped…
+    expect(reply.text).not.toContain('line 199');
+    // …but the artifact is COMPLETE — no per-file omission, no truncation note in the canonical payload.
+    expect(reply.preview).toBeDefined();
+    expect(reply.preview!.canonicalDiff).toContain('-line 199');
+    expect(reply.preview!.canonicalDiff).not.toContain('일부만');
+    expect(reply.preview!.files).toHaveLength(1);
+    expect(reply.preview!.files[0]!.unifiedDiff).toBe(hugeUnified);
+    // F5-E: a stable, non-empty, secret-safe correlation id + a filesystem-safe non-secret filename.
+    expect(typeof reply.preview!.previewId).toBe('string');
+    expect(reply.preview!.previewId.length).toBeGreaterThan(0);
+    expect(reply.preview!.attachmentFilename).toBe(`quoky-preview-${reply.preview!.previewId}.diff`);
+    expect(reply.preview!.attachmentFilename).not.toContain('line 199'); // filename never carries diff content
+  });
+
+  it('F5-E: each preview gets its own stable previewId (distinct across calls, one per artifact)', () => {
+    const a = composer.composeCodeDiffPreview(CTX, diffPreviewOf());
+    const b = composer.composeCodeDiffPreview(CTX, diffPreviewOf());
+    expect(a.preview!.previewId).not.toBe(b.preview!.previewId); // generated once per preview
+    expect(a.preview!.footer).toContain('적용'); // apply-boundary framing present for the final message
+  });
+
+  it('F5: the out-of-scope safety warning is carried IN the PreviewArtifact (not only the fallback text)', () => {
+    const reply = composer.composeCodeDiffPreview(
+      CTX,
+      diffPreviewOf({ outOfScopeWarnings: ['packages/core/other.ts'] }),
+    );
+    expect(reply.preview!.warning).toBeDefined();
+    expect(reply.preview!.warning).toContain('packages/core/other.ts');
+    expect(reply.text).toContain('packages/core/other.ts'); // fallback text behavior unchanged
+  });
+
+  it('F5: no warning in the artifact when nothing is out of scope', () => {
+    const reply = composer.composeCodeDiffPreview(CTX, diffPreviewOf({ outOfScopeWarnings: [] }));
+    expect(reply.preview!.warning).toBeUndefined();
+  });
+
+  it('F5-A: no PreviewArtifact when there is no renderable diff (binary/empty only)', () => {
+    const reply = composer.composeCodeDiffPreview(
+      CTX,
+      diffPreviewOf({ changes: [{ path: 'bin', kind: 'update', unified: '', binary: true }] }),
+    );
+    expect(reply.preview).toBeUndefined();
+  });
+
   it('many large diffs together still preserve the not-applied/not-modified wording and stay within the message budget (CA Round 1 Required Change #2)', () => {
     const bigUnified = Array.from({ length: 60 }, (_, i) => `-line ${i}`).join('\n');
     const reply = composer.composeCodeDiffPreview(
