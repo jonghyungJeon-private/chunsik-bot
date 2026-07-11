@@ -11,6 +11,8 @@ import type {
 import type { AiExecutionResult } from '../ports';
 import { newId } from '../util/id';
 import { buildCanonicalDiff } from './preview-delivery';
+import { formatSafeErrorText } from './safe-error';
+import type { SafeError, SafeErrorContext } from './safe-error';
 
 /**
  * Read-only display context for the last post-apply validation run (Sprint 2w, ADR-0044). `'none'` = no
@@ -454,6 +456,16 @@ export class ResponseComposer {
   /** A user-facing failure reply (ADR-0015). Never includes technical detail. */
   composeError(context: ConversationContext, userMessage: string): OutboundMessage {
     return { context, text: userMessage };
+  }
+
+  /**
+   * A sanitized, user-visible inbound-failure response (Sprint 4c-Follow-up-7, F7-D). Takes an already-mapped
+   * {@link SafeError} (raw exception/stack stay in internal logs) and renders the CA-required template:
+   * a failure statement, the safe message, an explicit "no change applied" line, the safe code, and optional
+   * non-secret stage/requestId. Never carries raw exception text.
+   */
+  composeSanitizedError(context: ConversationContext, safe: SafeError, ctx: SafeErrorContext = {}): OutboundMessage {
+    return { context, text: formatSafeErrorText(safe, ctx) };
   }
 
   /**

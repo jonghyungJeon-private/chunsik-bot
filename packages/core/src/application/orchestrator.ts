@@ -1,7 +1,8 @@
 import { NotImplementedError } from '../errors';
 import type { ApprovalDecision, InboundMessage } from '../domain';
 import type { Logger, PlatformAdapter } from '../ports';
-import type { ConversationRuntime } from './conversation-runtime';
+import type { ConversationRuntime, TurnResult } from './conversation-runtime';
+import { formatSafeErrorText, safeRequestId, toSafeError } from './safe-error';
 
 /** Everything the facade needs, injected by the composition root. */
 export interface ChunsikCoreDeps {
@@ -26,7 +27,32 @@ export class ChunsikCore {
   /** Drive one inbound message: typing → runtime turn → deliver the runtime's OutboundMessage. */
   async handleInboundMessage(message: InboundMessage): Promise<void> {
     await this.deps.platform.sendTyping(message.context).catch(() => undefined);
-    const result = await this.deps.runtime.handle(message);
+    let result: TurnResult;
+    try {
+      result = await this.deps.runtime.handle(message);
+    } catch (err) {
+      // Backstop (Sprint 4c-Follow-up-7, F7-D): runtime.handle() is designed never to throw for an
+      // application error, but if it ever does, deliver exactly ONE sanitized error response (never a raw
+      // exception) and keep the runtime alive. A delivery failure is logged only — no recursive retry.
+      const safe = toSafeError(err);
+      this.deps.logger.error('inbound handling failed (backstop)', {
+        errorName: err instanceof Error ? err.name : typeof err,
+        code: safe.code,
+        messageId: message.id,
+        stack: err instanceof Error ? err.stack : undefined,
+      });
+      await this.deps.platform
+        .sendMessage({
+          context: message.context,
+          text: formatSafeErrorText(safe, { requestId: safeRequestId(message.id) }),
+        })
+        .catch((deliveryErr) =>
+          this.deps.logger.error('error-response delivery failed', {
+            errorName: deliveryErr instanceof Error ? deliveryErr.name : typeof deliveryErr,
+          }),
+        );
+      return;
+    }
     await this.deps.platform.sendMessage(result.reply);
   }
 

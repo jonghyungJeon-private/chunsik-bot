@@ -9,6 +9,8 @@ import {
   PatchStatus,
   RiskLevel,
   SessionStatus,
+  TaskRunStatus,
+  TaskStatus,
   WorkspaceChangeStatus,
 } from '../domain';
 import type {
@@ -19,6 +21,7 @@ import type {
   CodeGeneration,
   CodeProposal,
   CommandExecution,
+  ContextBundle,
   ConversationContext,
   ExecutionPlanRef,
   GenerateCodeInput,
@@ -31,6 +34,7 @@ import type {
   Intent,
   PatchGenerationInput,
   PatchSet,
+  PromptSpec,
   ProposedChange,
   Project,
   GitBranchCleanupResult,
@@ -44,11 +48,14 @@ import type {
   RunCommandInput,
   Session,
   Task,
+  TaskRun,
   WorkspaceChange,
   WorkspaceDiff,
   WorkspaceRef,
 } from '../domain';
-import type { Logger, LogFields } from '../ports';
+import type { AiRequest, Logger, LogFields, StorageProvider } from '../ports';
+import { InvalidTaskTransitionError } from '../errors';
+import { TaskManager } from './task-manager';
 import { ResponseComposer } from './response-composer';
 import type { TestResultDetail } from './response-composer';
 import { IntentClassifier } from './intent-classifier';
@@ -6694,5 +6701,262 @@ describe('Gate 5 — workspace-apply boundary state machine (update fixture gate
     const { deps, calls } = makeDeps({ applyAnchor: null });
     await new ConversationRuntime(deps).handle(messageOf('승인'));
     expect(calls.workspaceApply).toBe(0);
+  });
+});
+
+// ── Sprint 4c-Follow-up-7 (F7-A/C/D/E) — real-TaskManager work-turn lifecycle + sanitized inbound failure ──
+// Test-only. Proves the ALREADY-implemented production fix: handleWorkTurn transitions PENDING → PLANNING →
+// RUNNING (the real TaskManager forbids the prior direct PENDING → RUNNING), and handle() never throws for an
+// application error — it returns a sanitized FAILED TurnResult. No production file is touched by these tests.
+
+/**
+ * A minimal in-memory StorageProvider subset (TEST-ONLY) backing the REAL {@link TaskManager}. Only the
+ * repositories TaskManager actually touches are implemented — `tasks` (save/get) and `taskRuns`
+ * (listByTask/save). `taskSaves` records every task write in order, so a test can inspect the exact
+ * status history the real state machine walked (each save == one LEGAL transition; an illegal one would
+ * have thrown before reaching save). Everything else is intentionally absent — the cast documents that the
+ * work-turn path never reads any other repository.
+ */
+function makeTaskStorage(): { storage: StorageProvider; taskSaves: Task[]; runSaves: TaskRun[] } {
+  const tasks = new Map<string, Task>();
+  const runs = new Map<string, TaskRun>();
+  const taskSaves: Task[] = [];
+  const runSaves: TaskRun[] = [];
+  const storage = {
+    tasks: {
+      async get(id: string) {
+        return tasks.get(id) ?? null;
+      },
+      async save(t: Task) {
+        tasks.set(t.id, t);
+        taskSaves.push(t);
+        return t;
+      },
+    },
+    taskRuns: {
+      async listByTask(taskId: string) {
+        return [...runs.values()].filter((r) => r.taskId === taskId);
+      },
+      async save(r: TaskRun) {
+        runs.set(r.id, r);
+        runSaves.push(r);
+        return r;
+      },
+    },
+  } as unknown as StorageProvider;
+  return { storage, taskSaves, runSaves };
+}
+
+/** The non-throwing work-turn collaborators makeDeps intentionally stubs as throwing (a permissive fake
+ *  `transition` used to mask the bug). With the REAL TaskManager the turn must actually run to COMPLETED, so
+ *  build/compose/render need to succeed; the fake provider (makeDeps' router) ignores its input. */
+const workTurnHappyPathDeps = () => ({
+  contextBuilder: { async build() { return {} as unknown as ContextBundle; } },
+  promptComposer: { compose() { return {} as unknown as PromptSpec; } },
+  promptRenderer: { render() { return {} as unknown as AiRequest; } },
+});
+
+describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => {
+  it('a GENERAL_CHAT work turn drives the REAL TaskManager PENDING → PLANNING → RUNNING → COMPLETED (legal map, no InvalidTaskTransitionError) → RESPONDED (not a sanitized error)', async () => {
+    const { storage, taskSaves, runSaves } = makeTaskStorage();
+    const { deps: base } = makeDeps({ intent: intentOf(Capability.GENERAL_CHAT, IntentType.CHAT, true) });
+    const deps: ConversationRuntimeDeps = { ...base, ...workTurnHappyPathDeps(), tasks: new TaskManager(storage) };
+
+    const result = await new ConversationRuntime(deps).handle(messageOf('춘식아 안녕?'));
+
+    // A normal reply — NOT the F7-D sanitized inbound-failure response.
+    expect(result.status).toBe('RESPONDED');
+    expect(result.reply.text).not.toContain('오류 코드:');
+    expect(result.reply.text).not.toContain('작업 상태를 변경하는 과정에서 허용되지 않은 상태 전이가 발생했어요.');
+
+    // The real TaskManager only reaches RUNNING via the LEGAL PENDING → PLANNING → RUNNING path (F7-A). Every
+    // recorded save is one legal transition (an illegal one throws before save). Ends at COMPLETED.
+    expect(taskSaves.map((t) => t.status)).toEqual([
+      TaskStatus.PENDING,
+      TaskStatus.PLANNING,
+      TaskStatus.RUNNING,
+      TaskStatus.COMPLETED,
+    ]);
+    // A run was started and succeeded through the real TaskManager (startRun → completeRun).
+    expect(runSaves.map((r) => r.status)).toEqual([TaskRunStatus.STARTED, TaskRunStatus.SUCCEEDED]);
+  });
+
+  it('a PROJECT_ANALYSIS work turn ALSO reaches RUNNING then COMPLETED via the legal map (the other non-execution work path)', async () => {
+    const { storage, taskSaves } = makeTaskStorage();
+    const { deps: base } = makeDeps({ intent: intentOf(Capability.PROJECT_ANALYSIS, IntentType.PROJECT_ANALYSIS, true) });
+    const deps: ConversationRuntimeDeps = { ...base, ...workTurnHappyPathDeps(), tasks: new TaskManager(storage) };
+
+    const result = await new ConversationRuntime(deps).handle(messageOf('이 프로젝트 구조 분석해줘'));
+
+    expect(result.status).toBe('RESPONDED');
+    expect(result.reply.text).not.toContain('오류 코드:');
+    expect(taskSaves.map((t) => t.status)).toEqual([
+      TaskStatus.PENDING,
+      TaskStatus.PLANNING,
+      TaskStatus.RUNNING,
+      TaskStatus.COMPLETED,
+    ]);
+  });
+
+  it('regression guard: with the REAL TaskManager a direct PENDING → RUNNING throws InvalidTaskTransitionError — proving the map is real and PENDING → PLANNING → RUNNING is what makes handleWorkTurn legal', async () => {
+    const { storage } = makeTaskStorage();
+    const pendingTask: Task = {
+      id: 'task-pending',
+      title: 't',
+      description: 'd',
+      status: TaskStatus.PENDING,
+      intent: intentOf(Capability.GENERAL_CHAT, IntentType.CHAT, true),
+      riskLevel: RiskLevel.LOW,
+      context: CTX,
+      createdAt: TS,
+      updatedAt: TS,
+    };
+    // The prior (pre-F7-A) direct jump — the exact transition the live Gate 5 turn-1 attempted.
+    await expect(new TaskManager(storage).transition(pendingTask, TaskStatus.RUNNING)).rejects.toBeInstanceOf(
+      InvalidTaskTransitionError,
+    );
+    // And the fix's two-step walk is legal end-to-end (never throws) under the very same real map.
+    const planning = await new TaskManager(storage).transition(pendingTask, TaskStatus.PLANNING);
+    const running = await new TaskManager(storage).transition(planning, TaskStatus.RUNNING);
+    expect(running.status).toBe(TaskStatus.RUNNING);
+  });
+});
+
+describe('Follow-up-7 — sanitized inbound-failure response (F7-D)', () => {
+  it('an InvalidTaskTransitionError escaping the turn → resolves (never rejects) with a sanitized FAILED TurnResult; no raw/stack; zero mutation', async () => {
+    const { deps: base, calls } = makeDeps();
+    // Force the error in the FIRST thing the turn does (before any collaborator can mutate anything). This is
+    // exactly the class of error the live turn-1 raised — assert it never escapes handle().
+    const deps: ConversationRuntimeDeps = {
+      ...base,
+      actors: {
+        async resolveFromContext() {
+          throw new InvalidTaskTransitionError('PENDING', 'RUNNING');
+        },
+      },
+    };
+
+    const result = await new ConversationRuntime(deps).handle(messageOf('아무거나'));
+
+    expect(result.status).toBe('FAILED');
+    const text = result.reply.text;
+    expect(text).toContain('작업 상태를 변경하는 과정에서 허용되지 않은 상태 전이가 발생했어요.');
+    expect(text).toContain('TASK_TRANSITION_ERROR');
+    expect(text).toContain('아직 어떤 변경도 적용되지 않았어요.');
+    // never the raw exception text or a stack frame
+    expect(text).not.toContain('Illegal task transition: PENDING -> RUNNING');
+    expect(text).not.toMatch(/\bat [^\n]*:\d+:\d+/);
+    // no side effect of any kind was applied
+    expect(calls.workspaceApply).toBe(0);
+    expect(calls.commandRun).toBe(0);
+    expect(calls.gitCommit + calls.gitPush + calls.gitSyncMain + calls.gitDeleteBranch + calls.hostingCreatePR).toBe(0);
+  });
+
+  it('an UNKNOWN error escaping the turn → generic INTERNAL_ERROR message; raw error text / secret-like substrings never leak', async () => {
+    const { deps: base } = makeDeps();
+    const secret = 'connect ECONNREFUSED 10.0.0.1:5432 password=hunter2 /abs/secret/key.pem';
+    const deps: ConversationRuntimeDeps = {
+      ...base,
+      actors: {
+        async resolveFromContext() {
+          throw new Error(secret);
+        },
+      },
+    };
+
+    const result = await new ConversationRuntime(deps).handle(messageOf('아무거나'));
+
+    expect(result.status).toBe('FAILED');
+    const text = result.reply.text;
+    expect(text).toContain('알 수 없는 내부 오류가 발생했어요.');
+    expect(text).toContain('INTERNAL_ERROR');
+    expect(text).toContain('아직 어떤 변경도 적용되지 않았어요.');
+    // no leakage of host/port/password/path from the raw message
+    expect(text).not.toMatch(/ECONNREFUSED|password|hunter2|\.pem|10\.0\.0\.1/);
+    expect(text).not.toContain(secret);
+  });
+});
+
+describe('Follow-up-7 — final isolated E2E (F7-E)', () => {
+  const GATE5_FILE = 'gate5/apply-smoke.txt';
+  // The EXACT Gate 5 live preview request (mirrors intent-classifier.test.ts) — an existing-file marker update
+  // requested as a read-only preview, with every forbidden action explicitly negated.
+  const GATE5_PREVIEW_REQUEST = [
+    '현재 활성 프로젝트의 아래 기존 파일에 대한 패치 변경안을 미리보기로 보여줘.',
+    '',
+    '파일:',
+    GATE5_FILE,
+    '',
+    '현재 내용:',
+    'gate5 apply smoke',
+    'marker: PENDING',
+    '',
+    '변경 후 내용:',
+    'gate5 apply smoke',
+    'marker: quoky-gate5-workspace-apply',
+    '',
+    '조건:',
+    '- 지금은 preview만 보여줄 것',
+    '- 실제 파일에는 적용하지 말 것',
+    '- workspace apply 하지 말 것',
+    '- 테스트나 명령을 실행하지 말 것',
+    '- git add/commit/push/PR 하지 말 것',
+  ].join('\n');
+
+  it('success: the EXACT Gate 5 preview request through the REAL IntentClassifier → CODE_IMPLEMENTATION + AWAITING_APPROVAL plan/preview gate; ZERO mutation', async () => {
+    const { deps: base, calls } = makeDeps({
+      workspaceList: hitsFor(GATE5_FILE), // the fixture file exists → validated target
+      runOutcome: outcomeOf(ExecutionOutcomeStatus.AWAITING_APPROVAL),
+    });
+    const deps: ConversationRuntimeDeps = {
+      ...base,
+      classifier: new IntentClassifier({} as unknown as CapabilityRouter), // REAL routing (the F7-B fix)
+    };
+
+    const result = await new ConversationRuntime(deps).handle(messageOf(GATE5_PREVIEW_REQUEST));
+
+    // Turn stops at the plan/preview approval gate — never GENERAL_CHAT, never a direct execution.
+    expect(result.status).toBe('AWAITING_APPROVAL');
+    expect(calls.run).toBe(1);
+    expect(calls.lastRunRequest?.requiredCapabilities).toContain(Capability.CODE_IMPLEMENTATION);
+    expect(calls.lastRunRequest?.requiredCapabilities).not.toContain(Capability.TEST_EXECUTION);
+    expect(calls.lastRunRequest?.targetFiles).toEqual([GATE5_FILE]);
+    expect(calls.anchor).toBe(1); // awaiting-approval execution anchored for a later resume
+    // ZERO forbidden actions on the preview/approval gate.
+    expect(calls.workspaceApply).toBe(0);
+    expect(calls.commandRun).toBe(0);
+    expect(calls.gitCommit + calls.gitPush + calls.gitSyncMain + calls.gitDeleteBranch + calls.hostingCreatePR).toBe(0);
+  });
+
+  it('failure: a forced application error → exactly ONE sanitized error TurnResult (no raw/stack/secrets), zero mutation, and the runtime SURVIVES (a later normal turn still responds)', async () => {
+    const { deps: base, calls } = makeDeps();
+    let failFirst = true;
+    const deps: ConversationRuntimeDeps = {
+      ...base,
+      actors: {
+        async resolveFromContext() {
+          if (failFirst) {
+            failFirst = false;
+            throw new InvalidTaskTransitionError('PENDING', 'RUNNING');
+          }
+          return ACTOR;
+        },
+      },
+    };
+    const runtime = new ConversationRuntime(deps);
+
+    const failed = await runtime.handle(messageOf(GATE5_PREVIEW_REQUEST));
+    expect(failed.status).toBe('FAILED');
+    expect(failed.reply.text).toContain('작업 상태를 변경하는 과정에서 허용되지 않은 상태 전이가 발생했어요.');
+    expect(failed.reply.text).toContain('TASK_TRANSITION_ERROR');
+    expect(failed.reply.text).toContain('아직 어떤 변경도 적용되지 않았어요.');
+    expect(failed.reply.text).not.toContain('Illegal task transition');
+    expect(failed.reply.text).not.toMatch(/\bat [^\n]*:\d+:\d+/);
+    expect(calls.workspaceApply + calls.commandRun + calls.gitCommit + calls.gitPush + calls.hostingCreatePR).toBe(0);
+
+    // "runtime survives" — the same runtime instance handles a subsequent normal turn without residue.
+    const ok = await runtime.handle(messageOf('춘식아 안녕?'));
+    expect(ok.status).toBe('RESPONDED');
+    expect(ok.reply.text).not.toContain('오류 코드:');
   });
 });

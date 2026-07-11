@@ -123,8 +123,11 @@ export class IntentClassifier {
     // Preview-only requests (Sprint 4c-Follow-up, ADR-0062 draft) — a preview phrase needs NO change verb; it is
     // still a CODE_IMPLEMENTATION intent that reuses the planningOnly → plan-approval → CodeGeneration-preview
     // pipeline and stops at the read-only diff preview (ELIGIBLE). Checked first so a preview phrasing wins.
+    // F7-B (Sprint 4c-Follow-up-7): broadened preview coverage so the Gate 5 phrasing
+    // "패치 변경안을 미리보기로 보여줘" routes to CODE_IMPLEMENTATION (preview) instead of falling to
+    // GENERAL_CHAT — (?:코드|파일|패치)\s*변경안 (was 파일 only) and an optional 로/를 between 미리보기 and 보여.
     const previewWords =
-      /(변경\s*미리\s*보기|코드\s*변경\s*미리\s*보기|패치\s*미리\s*보기|diff\s*미리\s*보기|미리\s*보기만|미리\s*보기\s*(?:생성|만들|보여)|코드\s*변경\s*초안|파일\s*변경안|patch\s+preview|diff\s+preview|preview\s+only|preview\s+the\s+change|(?:generate|show|make|create)\s+(?:me\s+)?(?:a\s+)?(?:code\s+|patch\s+|diff\s+)?preview)/i;
+      /(변경\s*미리\s*보기|코드\s*변경\s*미리\s*보기|패치\s*미리\s*보기|diff\s*미리\s*보기|미리\s*보기만|미리\s*보기\s*(?:로|를)?\s*(?:생성|만들|보여)|코드\s*변경\s*초안|(?:코드|파일|패치)\s*변경안|patch\s+preview|diff\s+preview|preview\s+only|preview\s+the\s+change|(?:generate|show|make|create)\s+(?:me\s+)?(?:a\s+)?(?:code\s+|patch\s+|diff\s+)?preview)/i;
     if (previewWords.test(text)) return 'preview';
     if (/(리팩터|리팩토링|refactor)/i.test(text)) return 'refactor';
     const bugish = /(버그|bug|에러|오류|error)/i;

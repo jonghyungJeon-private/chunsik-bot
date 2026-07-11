@@ -1,5 +1,6 @@
 import { describeAiFailure } from './ai-failure';
 import { hasCoLocatedUnnegated, unnegatedMatch } from './intent-negation';
+import { safeRequestId, toSafeError } from './safe-error';
 import { RepositoryHostingBlockedError } from './repository-hosting-manager';
 import { RemoteBranchCleanupBlockedError, RemoteBranchCleanupUnverifiedError } from '../domain';
 import {
@@ -1507,7 +1508,32 @@ export class ConversationRuntime {
    * Handle one inbound message → one transient `TurnResult` (with an `OutboundMessage`). Never sends
    * to the platform (delivery is the facade's job) and never persists runtime state.
    */
+  /**
+   * Public entry — NEVER throws for an application/runtime error (Sprint 4c-Follow-up-7, F7-D). Delegates to
+   * the full turn flow; on ANY escaping error it returns a sanitized FAILED TurnResult so the caller delivers
+   * exactly ONE safe user-facing response (mapped message + code, no raw exception / stack / secrets). The full
+   * exception + stack are preserved in the internal log only. No business action is retried.
+   */
   async handle(message: InboundMessage): Promise<TurnResult> {
+    try {
+      return await this.handleInner(message);
+    } catch (err) {
+      const safe = toSafeError(err);
+      this.deps.logger.error('inbound handling failed', {
+        errorName: err instanceof Error ? err.name : typeof err,
+        code: safe.code,
+        messageId: message.id,
+        // internal-only (stdout/stderr sink) — never sent to the user (CA §5)
+        stack: err instanceof Error ? err.stack : undefined,
+      });
+      const reply = this.deps.composer.composeSanitizedError(message.context, safe, {
+        requestId: safeRequestId(message.id),
+      });
+      return { status: 'FAILED', reply, sessionId: '' };
+    }
+  }
+
+  private async handleInner(message: InboundMessage): Promise<TurnResult> {
     const actor = await this.deps.actors.resolveFromContext(message.context);
     const session = await this.deps.sessions.openForContext(message.context, actor.id);
     await this.deps.sessions.touch(session);
@@ -4941,6 +4967,12 @@ export class ConversationRuntime {
       sessionId: session.id,
       ...(session.activeProjectId ? { projectId: session.activeProjectId } : {}),
     });
+    // F7-A (Sprint 4c-Follow-up-7): reach RUNNING through the LEGAL lifecycle PENDING → PLANNING → RUNNING.
+    // TaskManager.TRANSITIONS forbids PENDING → RUNNING directly; the prior direct jump threw
+    // InvalidTaskTransitionError under the real TaskManager on every GENERAL_CHAT / PROJECT_ANALYSIS work
+    // turn (masked in tests by a permissive fake `transition`). A non-execution work turn has no separate
+    // planning phase, so PLANNING is a pass-through step to the legal predecessor of RUNNING.
+    task = await this.deps.tasks.transition(task, TaskStatus.PLANNING);
     task = await this.deps.tasks.transition(task, TaskStatus.RUNNING);
     const capability: Capability = task.intent.capability;
     const run = await this.deps.tasks.startRun(task, capability);
