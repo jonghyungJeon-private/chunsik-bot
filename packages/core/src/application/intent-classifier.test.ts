@@ -135,3 +135,70 @@ describe('IntentClassifier — preview intent + negated test handling', () => {
     }
   });
 });
+
+// ── Sprint 4c-Follow-up-6 (F6-A/B/C) — clause-scoped, negation-aware test-run routing ──────────────
+describe('IntentClassifier — Follow-up-6 routing matrix (Gate 4B FAIL fix)', () => {
+  const SCENARIO_C = [
+    '다음 파일을 새로 만들어줘.',
+    '',
+    '경로:',
+    'docs/uat/github-app-auth-smoke.md',
+    '',
+    '내용:',
+    '# GitHub App Auth UAT',
+    '',
+    '- marker: quoky-dev app auth smoke test',
+    '',
+    '조건:',
+    '- preview only',
+    '- 파일을 실제로 만들거나 수정하지 말 것',
+    '- workspace apply 하지 말 것',
+    '- 테스트 실행하지 말 것',
+    '- git commit/push/PR 하지 말 것',
+  ].join('\n');
+
+  it('the EXACT Gate 4B Scenario C request classifies as CODE_IMPLEMENTATION (never RUN_TESTS)', async () => {
+    const intent = await classifier.classify(msg(SCENARIO_C));
+    expect(intent.type).toBe(IntentType.IMPLEMENT_CODE);
+    expect(intent.capability).toBe(Capability.CODE_IMPLEMENTATION);
+    expect(intent.type).not.toBe(IntentType.RUN_TESTS);
+  });
+
+  it('a create-file request whose CONTENT merely contains the word "test" is NOT a test run (the exact defect)', async () => {
+    const intent = await classifier.classify(
+      msg('파일 생성:\ndocs/x.md\n내용:\n- marker: smoke test\n조건:\n- preview only\n- 테스트 실행하지 말 것'),
+    );
+    expect(intent.type).toBe(IntentType.IMPLEMENT_CODE);
+  });
+
+  it('cross-clause noun/verb never infers RUN_TESTS (test noun in clause A, action verb in clause B)', async () => {
+    // "test" only in a content line; "실행" only in a negated condition — must not combine into RUN_TESTS.
+    const intent = await classifier.classify(msg('- marker: smoke test\n- 뭔가 실행하지 마'));
+    expect(intent.type).not.toBe(IntentType.RUN_TESTS);
+  });
+
+  it('CA §2 required outcomes', async () => {
+    // positive
+    for (const t of ['테스트 실행해줘', 'pnpm test 실행해줘']) {
+      expect((await classifier.classify(msg(t))).type, t).toBe(IntentType.RUN_TESTS);
+    }
+    // negated → not RUN_TESTS
+    for (const t of ['테스트 실행하지 말 것', '테스트는 돌리지 마']) {
+      expect((await classifier.classify(msg(t))).type, t).not.toBe(IntentType.RUN_TESTS);
+    }
+    // mixed create/code + negated test → CODE_IMPLEMENTATION
+    for (const t of ['파일을 만들어줘. 테스트는 실행하지 마.', '코드를 수정해줘. pnpm test는 돌리지 마.']) {
+      expect((await classifier.classify(msg(t))).type, t).toBe(IntentType.IMPLEMENT_CODE);
+    }
+  });
+
+  it('an explicit create-file request routes to CODE_IMPLEMENTATION even without a preview phrase', async () => {
+    const intent = await classifier.classify(msg('docs/x.md 파일을 만들어줘'));
+    expect(intent.type).toBe(IntentType.IMPLEMENT_CODE);
+  });
+
+  it('a negated create ("파일 만들지 마") does not force CODE_IMPLEMENTATION via the create signal', async () => {
+    const intent = await classifier.classify(msg('그 파일 만들지 마'));
+    expect(intent.type).not.toBe(IntentType.IMPLEMENT_CODE);
+  });
+});

@@ -52,6 +52,27 @@ function escapeRegExp(source: string): string {
   return source.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/** Split `text` into clause spans on the same separators `isNegated` uses (sentence punctuation, line
+ *  breaks, list-item boundaries via `\n`, and KO/EN coordinating connectives). */
+function toClauses(text: string): string[] {
+  return text.split(new RegExp(CLAUSE_SEPARATOR.source, 'gi'));
+}
+
+/**
+ * True iff SOME clause contains BOTH a `noun` match and a `verb` match while carrying NO negation marker
+ * (Sprint 4c-Follow-up-6). This is the fix for the Gate 4B routing FAIL: a matcher must not combine a noun
+ * from one clause (e.g. the word "test" sitting in file-CONTENT) with an action verb from a different clause
+ * (e.g. "실행" inside a negated "테스트 실행하지 말 것"). Requiring the noun and verb to be co-located in the
+ * SAME, un-negated clause makes passive payload tokens and cross-clause verbs stop producing a false intent.
+ * `noun`/`verb` must be non-global RegExps (stateless `.test`).
+ */
+export function hasCoLocatedUnnegated(text: string, noun: RegExp, verb: RegExp): boolean {
+  for (const clause of toClauses(text)) {
+    if (noun.test(clause) && verb.test(clause) && !NEGATION_MARKERS.test(clause)) return true;
+  }
+  return false;
+}
+
 /**
  * True iff at least one of `patterns` matches `text` at a position that is NOT negated. A negation-aware,
  * drop-in replacement for `RE.test(text)` and `WORDS.some((w) => text.includes(w))`: for text with no negation

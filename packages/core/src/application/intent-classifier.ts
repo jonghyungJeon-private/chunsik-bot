@@ -1,7 +1,7 @@
 import { Capability, IntentType } from '../domain';
 import type { InboundMessage, Intent } from '../domain';
 import type { CapabilityRouter } from './capability-router';
-import { isNegated } from './intent-negation';
+import { hasCoLocatedUnnegated, isNegated } from './intent-negation';
 
 /**
  * Classifies a natural-language message into an Intent. v1 is MINIMAL and
@@ -105,9 +105,11 @@ export class IntentClassifier {
     if (typecheck && !isNegated(text, typecheck.index ?? 0, typecheck[0].length)) return 'typecheck';
     const pnpmTest = text.match(/\bpnpm\s+test\b/i);
     if (pnpmTest && !isNegated(text, pnpmTest.index ?? 0, pnpmTest[0].length)) return 'test';
-    const testNoun = text.match(/(테스트|\btest\b)/i);
-    const actionVerb = /(돌려|실행|run|해줘|해 줘)/i.test(text);
-    if (testNoun && actionVerb && !isNegated(text, testNoun.index ?? 0, testNoun[0].length)) return 'test';
+    // F6-A/B (Sprint 4c-Follow-up-6): a generic test-run needs a test NOUN and an action VERB CO-LOCATED in
+    // the SAME, un-negated clause. This replaces the prior first-occurrence noun + global-verb heuristic that
+    // combined a payload-content "test" (e.g. "…smoke test") with a verb from a different (negated) clause and
+    // misrouted a preview-only create-file request to RUN_TESTS (the Gate 4B FAIL).
+    if (hasCoLocatedUnnegated(text, /(테스트|\btest\b)/i, /(돌려|돌리|실행|\brun\b|해줘|해 줘)/i)) return 'test';
     return undefined;
   }
 
@@ -129,6 +131,11 @@ export class IntentClassifier {
     const changeVerb = /(고쳐|고치|수정해|수정\s*해|바꿔|바꾸어|변경해|구현해|fix|change|modify|implement)/i;
     const codeish = /(코드|code|파일|file|부분|함수|function|버그|bug)/i;
     if (changeVerb.test(text) && codeish.test(text)) return 'change';
+    // F6 (Sprint 4c-Follow-up-6): an explicit create-file request is a CODE_IMPLEMENTATION intent. Require a
+    // create VERB and a file/code NOUN CO-LOCATED in the same, un-negated clause, so "파일을 만들어줘" routes to
+    // code (→ A2 new-file preview) while a negated "파일 만들지 마" does not. Keeps the exact Scenario C request
+    // on the code-change path even absent an explicit preview phrase.
+    if (hasCoLocatedUnnegated(text, /(파일|file)/i, /(만들어|만들|생성|\bcreate\b)/i)) return 'change';
     return undefined;
   }
 
