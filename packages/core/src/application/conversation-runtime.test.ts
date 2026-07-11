@@ -53,6 +53,7 @@ import { ResponseComposer } from './response-composer';
 import type { TestResultDetail } from './response-composer';
 import { IntentClassifier } from './intent-classifier';
 import type { CapabilityRouter } from './capability-router';
+import { buildCanonicalDiff, splitCanonicalDiff } from './preview-delivery';
 import { IntentResolver } from './intent-resolver';
 import { ExecutionOutcomeStatus, ExecutionStage } from './execution-orchestrator';
 import type { ExecutionOutcome, ExecutionRequest } from './execution-orchestrator';
@@ -6525,5 +6526,119 @@ describe('ConversationRuntime + StatelessApprovalFlow (production-like)', () => 
     // ADR-0038: the resumed planningOnly request's real, anchored/reconstructed targetFiles/
     // workspaceRef reach the preview step, and CodeGeneration runs exactly once.
     expect(calls.codeGenerationGenerate).toBe(1);
+  });
+});
+
+// ── Sprint 4c-Follow-up-6 (F6-D/E) — new-file marker + real-classifier Scenario C state-machine/E2E ──
+describe('Follow-up-6 — new-file marker recognition (F6 scope expansion)', () => {
+  it('recognizes natural KO create-file phrasings (positive) as an explicit new-file target', () => {
+    for (const t of [
+      '다음 파일을 새로 만들어줘', '파일을 새로 만들어줘', '새 파일을 만들어줘', '파일 만들어줘',
+      '파일을 만들어줘', '파일 생성해줘', 'create file', 'new file', 'add file',
+    ]) {
+      expect(ConversationRuntime.explicitNewFileTarget(`${t} docs/x.md`, ['docs/x.md']), t).toBe('docs/x.md');
+    }
+  });
+
+  it('rejects negated / descriptive create-file phrasings (negative) — a constraint, not a create intent', () => {
+    for (const t of [
+      '파일을 만들지 마', '새 파일 생성 금지', '파일은 실제로 만들거나 수정하지 말 것',
+      '파일 내용만 설명해줘', '이 파일이 어떻게 만들어졌는지 알려줘',
+    ]) {
+      expect(ConversationRuntime.explicitNewFileTarget(`${t} docs/x.md`, ['docs/x.md']), t).toBeNull();
+    }
+  });
+});
+
+describe('Follow-up-6 — exact Scenario C final E2E (real classifier + real A2, state-machine)', () => {
+  const NEW_FILE = 'docs/uat/github-app-auth-smoke.md';
+  const MARKER = '- marker: quoky-dev app auth smoke test';
+  const SCENARIO_C = [
+    '다음 파일을 새로 만들어줘.', '', '경로:', NEW_FILE, '', '내용:', '# GitHub App Auth UAT', '',
+    MARKER, '', '조건:', '- preview only', '- 파일을 실제로 만들거나 수정하지 말 것',
+    '- workspace apply 하지 말 것', '- 테스트 실행하지 말 것', '- git commit/push/PR 하지 말 것',
+  ].join('\n');
+
+  it('routes the EXACT Scenario C to CODE_IMPLEMENTATION + plan approval, then "승인" → complete preview; zero forbidden actions; target absent', async () => {
+    const sessions = new Map<string, Session>();
+    const tasks = new Map<string, Task>();
+    const approvals: ApprovalRequest[] = [];
+    sessions.set('sess-1', sessionOf());
+    let capturedRunRequest: ExecutionRequest | undefined;
+
+    const store = {
+      sessions: { async save(s: Session) { sessions.set(s.id, s); return s; } },
+      tasks: {
+        async get(id: string) { return tasks.get(id) ?? null; },
+        async save(t: Task) { tasks.set(t.id, t); return t; },
+      },
+      approvals: { async findByExecutionPlan(planId: string) { return approvals.filter((a) => a.executionPlanRef.id === planId); } },
+    };
+    const approvalFlow = new StatelessApprovalFlow(store);
+
+    const { deps: base, calls } = makeDeps({
+      workspaceList: () => [], // the new file does not exist
+      codeProposal: codeProposalOf({ proposal: [{ path: NEW_FILE, newContent: `# GitHub App Auth UAT\n\n${MARKER}\n` }] }),
+      workspaceDiff: {
+        refId: WORKSPACE.id,
+        files: [{ path: NEW_FILE, changeKind: 'add', unified: `@@ -0,0 +1,3 @@\n+# GitHub App Auth UAT\n+\n+${MARKER}\n`, binary: false }],
+        estimatedChangedLines: 3,
+        truncated: false,
+      },
+    });
+    const deps: ConversationRuntimeDeps = {
+      ...base,
+      classifier: new IntentClassifier({} as unknown as CapabilityRouter), // REAL classifier — genuine routing
+      approvalFlow,
+      sessions: {
+        async openForContext() { return sessions.get('sess-1')!; },
+        async touch(s) { sessions.set(s.id, s); return s; },
+      },
+      orchestrator: {
+        async run(request) { capturedRunRequest = request; approvals.push(pendingApprovalOf()); return outcomeOf(ExecutionOutcomeStatus.AWAITING_APPROVAL); },
+        async resume() { return outcomeOf(ExecutionOutcomeStatus.COMPLETED); },
+      },
+      approvals: {
+        async decide(id) {
+          const idx = approvals.findIndex((a) => a.id === id);
+          if (idx >= 0) approvals[idx] = { ...approvals[idx]!, status: ApprovalStatus.APPROVED };
+          return approvals[idx]!;
+        },
+      },
+    };
+    const runtime = new ConversationRuntime(deps);
+
+    // Turn 1 — real classifier + real A2 → CODE_IMPLEMENTATION, plan-approval gate, zero forbidden actions.
+    const t1 = await runtime.handle(messageOf(SCENARIO_C));
+    expect(t1.status).toBe('AWAITING_APPROVAL'); // plan approval gate (not scope clarification, not a test run)
+    expect(capturedRunRequest?.requiredCapabilities).toContain(Capability.CODE_IMPLEMENTATION);
+    expect(capturedRunRequest?.requiredCapabilities).not.toContain(Capability.TEST_EXECUTION);
+    expect(capturedRunRequest?.targetFiles).toEqual([NEW_FILE]);
+    expect(capturedRunRequest?.newFileTargets).toEqual([NEW_FILE]);
+    expect(calls.commandRun).toBe(0); // no pnpm test / shell command
+    expect(calls.workspaceApply).toBe(0);
+    expect(calls.gitCommit + calls.gitPush + calls.hostingCreatePR).toBe(0);
+
+    // Turn 2 — "승인" → complete preview; target still absent; still zero forbidden actions.
+    const t2 = await runtime.handle(messageOf('승인'));
+    expect(t2.status).toBe('RESPONDED');
+    expect(calls.codeGenerationGenerate).toBe(1);
+    expect(t2.reply.preview).toBeDefined();
+    const preview = t2.reply.preview!;
+    expect(preview.canonicalDiff).toContain(MARKER); // complete requested content
+    expect(preview.canonicalDiff).not.toContain('일부만');
+    expect(preview.files.map((f) => f.path)).toEqual([NEW_FILE]);
+    expect(preview.files[0]!.changeKind).toBe('add'); // a genuine new-file add-diff
+    expect(calls.commandRun + calls.workspaceApply + calls.gitCommit + calls.gitPush + calls.hostingCreatePR).toBe(0);
+
+    // F5 lossless delivery guarantee for the EXACT scenario: the artifact's files losslessly reproduce the
+    // canonical diff, and a realistic-budget split concatenates back byte-for-byte (no content is lost or
+    // truncated on the way to Discord).
+    expect(buildCanonicalDiff(preview.files)).toBe(preview.canonicalDiff);
+    const lines = preview.canonicalDiff.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+    const budget = Math.max(...lines.map((l) => l.length)) + 4; // ≥ longest line ⇒ chunkable, never attachment
+    const split = splitCanonicalDiff(preview.canonicalDiff, budget);
+    expect(split.kind).toBe('segments');
+    if (split.kind === 'segments') expect(split.segments.join('')).toBe(preview.canonicalDiff);
   });
 });

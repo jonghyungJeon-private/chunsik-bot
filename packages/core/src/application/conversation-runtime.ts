@@ -1,5 +1,5 @@
 import { describeAiFailure } from './ai-failure';
-import { unnegatedMatch } from './intent-negation';
+import { hasCoLocatedUnnegated, unnegatedMatch } from './intent-negation';
 import { RepositoryHostingBlockedError } from './repository-hosting-manager';
 import { RemoteBranchCleanupBlockedError, RemoteBranchCleanupUnverifiedError } from '../domain';
 import {
@@ -4662,19 +4662,46 @@ export class ConversationRuntime {
   private static readonly NEW_FILE_MARKER =
     /(파일\s*생성|파일\s*추가|새\s*파일(?:\s*(?:생성|추가))?|create\s+(?:a\s+)?(?:new\s+)?file|new\s+file|add\s+(?:a\s+)?(?:new\s+)?file)/i;
 
+  /** File noun for the co-located create-file phrasing (Sprint 4c-Follow-up-6). */
+  private static readonly NEW_FILE_NOUN = /(파일|file)/i;
+
+  /** IMPERATIVE/request create verb (Sprint 4c-Follow-up-6): natural KO "만들어줘 / 만들어 줘 / 만들자 / 생성해(줘)"
+   *  and "make/create". Deliberately request-shaped so a PAST/descriptive "만들어졌는지" ("how it was made") or a
+   *  negated "만들지 마" is NOT matched as a create request. */
+  private static readonly NEW_FILE_CREATE_VERB =
+    /(만들어\s*줘|만들어\s*주(?:세요|실래요|시겠어요)?|만들어\s*줄래|만들어라|만들자|생성\s*해(?:\s*줘|\s*주세요)?|\bcreate\b|\bmake\b)/i;
+
   /**
-   * An explicitly-requested single new-file target (Sprint 4c-Follow-up-2, A2). Returns the normalized path ONLY
-   * when the request is an UNAMBIGUOUS explicit new-file creation: a create-file marker is present AND there is
-   * exactly ONE candidate path. `candidates` are already absolute/traversal/dot-filtered by
-   * extractTargetPathCandidates, so a returned path is a safe project-relative path. Returns null otherwise
-   * (no marker, or 0 / >1 candidates) so the caller falls back to scope clarification. Pure/synchronous; no I/O,
-   * no workspace mutation — it only lets a new-file path be a valid planning/preview TARGET.
+   * An explicitly-requested single new-file target (Sprint 4c-Follow-up-2, A2; extended 4c-Follow-up-6). Returns
+   * the normalized path ONLY for an UNAMBIGUOUS explicit new-file creation: a create-file request AND exactly
+   * ONE candidate path. `candidates` are already absolute/traversal/dot-filtered by extractTargetPathCandidates.
+   * Returns null otherwise (no create request, or 0 / >1 candidates) so the caller falls back to scope
+   * clarification. Pure/synchronous; no I/O, no workspace mutation — it only lets a new-file path be a valid
+   * planning/preview TARGET.
    */
   static explicitNewFileTarget(text: string, candidates: readonly string[]): string | null {
-    if (!ConversationRuntime.NEW_FILE_MARKER.test(text)) return null;
+    if (!ConversationRuntime.isExplicitNewFileRequest(text)) return null;
     if (candidates.length !== 1) return null; // 0 → nothing to target; >1 → ambiguous → clarify
     const only = candidates[0];
     return only ? normalizeRelativePath(only) : null;
+  }
+
+  /**
+   * Whether the text is an explicit, NON-negated new-file creation request (Sprint 4c-Follow-up-6, CA scope
+   * expansion). Two recognizers, both negation-/clause-aware so a negated or descriptive phrase stays a
+   * constraint, not a create intent:
+   *   (a) the fixed markers (파일 생성/추가, 새 파일, create/new/add file) at a NON-negated position — so
+   *       "새 파일 생성 금지" / "do not create file" do NOT count;
+   *   (b) natural KO "파일 … 만들다(imperative)" — a file NOUN co-located in the same, un-negated clause with a
+   *       request-shaped create VERB — so "다음 파일을 새로 만들어줘" counts, while "파일을 만들지 마" (negated),
+   *       "파일은 실제로 만들거나 수정하지 말 것" (negated), and "이 파일이 어떻게 만들어졌는지 알려줘" (descriptive,
+   *       not imperative) do NOT.
+   */
+  private static isExplicitNewFileRequest(text: string): boolean {
+    return (
+      unnegatedMatch(text, [ConversationRuntime.NEW_FILE_MARKER]) ||
+      hasCoLocatedUnnegated(text, ConversationRuntime.NEW_FILE_NOUN, ConversationRuntime.NEW_FILE_CREATE_VERB)
+    );
   }
 
   /** Resolve the active project's workspace for a needsWorkspace capability, or an early-return reply. */
