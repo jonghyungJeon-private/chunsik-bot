@@ -201,4 +201,26 @@ describe('IntentClassifier — Follow-up-6 routing matrix (Gate 4B FAIL fix)', (
     const intent = await classifier.classify(msg('그 파일 만들지 마'));
     expect(intent.type).not.toBe(IntentType.IMPLEMENT_CODE);
   });
+
+  // F6 QA regressions (independent QA falsification): the classifier create-signal must be request-shaped, and
+  // a create verb ending in "해줘" must not be consumed as a test-run action.
+  it('a DESCRIPTIVE/past create phrase is NOT forced to CODE_IMPLEMENTATION ("이 파일이 어떻게 만들어졌는지 알려줘")', async () => {
+    const intent = await classifier.classify(msg('이 파일이 어떻게 만들어졌는지 알려줘'));
+    expect(intent.type).not.toBe(IntentType.IMPLEMENT_CODE);
+    expect(intent.type).not.toBe(IntentType.RUN_TESTS);
+  });
+
+  it('a "create a test file" request routes to CODE_IMPLEMENTATION, never RUN_TESTS ("테스트 파일 생성해줘")', async () => {
+    for (const t of ['테스트 파일 생성해줘', '테스트 파일 만들어줘']) {
+      const intent = await classifier.classify(msg(t));
+      expect(intent.type, t).toBe(IntentType.IMPLEMENT_CODE);
+      expect(intent.type, t).not.toBe(IntentType.RUN_TESTS);
+    }
+  });
+
+  it('a genuine test run with an explicit run verb still classifies as RUN_TESTS (no over-tightening)', async () => {
+    for (const t of ['테스트 돌려줘', '테스트 실행해줘', '이 프로젝트 테스트 실행해줘']) {
+      expect((await classifier.classify(msg(t))).type, t).toBe(IntentType.RUN_TESTS);
+    }
+  });
 });
