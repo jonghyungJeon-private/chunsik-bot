@@ -147,3 +147,61 @@ user (probe: 0 leaked tokens); delivery is exactly-once with no recursion and th
 survives; F7-A enforces the REAL TaskManager map (probe: direct PENDING→RUNNING throws,
 two-step succeeds); typecheck exit 0 and full suite 1250/1250 + focused 482/482 green on Node
 v22.22.1.
+
+---
+
+## MUTATION_CERTAINTY_CORRECTION (CA re-review delta — Sprint 4c-Follow-up-7)
+
+Addresses the CA `Required Change` on PR #48: the sanitized error MUST NOT claim "no change
+applied" unless the failing path is provably read-only / pre-mutation. Kept strictly within F7
+(no WorkspaceWrite/approval-semantics redesign).
+
+### 1. Mutation-safety model chosen
+- New typed flag `MutationSafety = 'CONFIRMED_NOT_APPLIED' | 'MAY_HAVE_APPLIED'`
+  (`safe-error.ts`), carried on `SafeErrorContext.mutationSafety` into `formatSafeErrorText` /
+  `composeSanitizedError`. **Omitted defaults to `MAY_HAVE_APPLIED`** so no caller can emit a
+  false zero-mutation claim by accident.
+- Boundary placement (CA approach #1 + #2 + #3):
+  - Generic `ConversationRuntime.handle()` backstop → explicit `MAY_HAVE_APPLIED` (wraps the
+    whole turn; cannot prove where it failed).
+  - `ChunsikCore` facade backstop → explicit `MAY_HAVE_APPLIED`.
+  - Read-only preview boundary: `runResolvedExecution` split into a thin try/catch wrapper over
+    `runResolvedExecutionInner`. Both of its callers are FIRST-turn preview/plan paths, and the
+    only `workspaceWrite.apply` lives in the separate `handleApplyApprovalTurn` (a different
+    approval-decision turn), so any error escaping this path is provably pre-mutation → caught
+    and rendered `CONFIRMED_NOT_APPLIED`. Never rethrows (honest verdict wins over the generic
+    backstop); never leaks raw/stack.
+
+### 2. Exact user-visible text
+- `CONFIRMED_NOT_APPLIED` → `아직 어떤 변경도 적용되지 않았어요.`
+- `MAY_HAVE_APPLIED` → `변경 적용 여부를 확인할 수 없어요.` + `추가 작업을 진행하기 전에 현재 상태를 확인해주세요.`
+  (Never claims rollback or zero mutation.)
+
+### 3. Tests proving the two outcomes cannot be confused
+- `safe-error.test.ts`: `CONFIRMED_NOT_APPLIED` renders the confirmed line and NOT the
+  conservative wording; `MAY_HAVE_APPLIED` renders the conservative wording and NOT the confirmed
+  line; omitted `mutationSafety` DEFAULTS to the conservative wording.
+- `conversation-runtime.test.ts`: the EXACT Gate 5 preview request whose preview generation
+  (`orchestrator.run`) throws → `CONFIRMED_NOT_APPLIED` (asserts the confirmed line, asserts the
+  conservative line ABSENT), zero mutation, runtime survives (next preview reaches the approval
+  gate). Generic-backstop tests (known + UNKNOWN error via `handle()`) → conservative wording,
+  assert the confirmed line ABSENT (the required unknown-failure regression).
+- `orchestrator.test.ts`: `ChunsikCore` backstop → conservative wording, confirmed line ABSENT.
+
+### 4. Validation (Node v22.22.1)
+- `pnpm typecheck` (`tsc -b`) → exit 0, clean.
+- Full `vitest run` → exit 0; **Test Files 59 passed (59)**, **Tests 1252 passed (1252)**
+  (+2 vs the prior 1250 from splitting the safe-error render test into the two-outcome + default
+  cases). No failures, no regressions.
+
+### 5. Non-blocking observation (recorded as deferred, per CA)
+- The broadened `previewWords` matcher `(?:코드|파일|패치)\s*변경안` can over-route analysis prose
+  into the read-only preview path. Acceptable for F7 (destination is approval-gated, zero
+  mutation). **Deferred routing-precision work.**
+
+### 6. Repository / sandbox state
+- Product change is confined to `packages/core/src/application` (7 files: 4 source + 3 test)
+  plus this record. No adapters/apps, no dependency-direction change, no runtime→git shell.
+- UAT sandbox and disposable repos: unchanged (no mutation performed by this correction).
+
+`F7_MUTATION_CERTAINTY_CORRECTION=PASS` — stops for CA re-review; NOT merged.

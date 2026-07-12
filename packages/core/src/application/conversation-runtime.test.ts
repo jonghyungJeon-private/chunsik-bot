@@ -6823,7 +6823,7 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
 });
 
 describe('Follow-up-7 — sanitized inbound-failure response (F7-D)', () => {
-  it('an InvalidTaskTransitionError escaping the turn → resolves (never rejects) with a sanitized FAILED TurnResult; no raw/stack; zero mutation', async () => {
+  it('an InvalidTaskTransitionError escaping the turn via the GENERIC handle() backstop → sanitized FAILED TurnResult with the conservative MAY_HAVE_APPLIED wording (the catch-all cannot prove where it failed); no raw/stack', async () => {
     const { deps: base, calls } = makeDeps();
     // Force the error in the FIRST thing the turn does (before any collaborator can mutate anything). This is
     // exactly the class of error the live turn-1 raised — assert it never escapes handle().
@@ -6842,17 +6842,22 @@ describe('Follow-up-7 — sanitized inbound-failure response (F7-D)', () => {
     const text = result.reply.text;
     expect(text).toContain('작업 상태를 변경하는 과정에서 허용되지 않은 상태 전이가 발생했어요.');
     expect(text).toContain('TASK_TRANSITION_ERROR');
-    expect(text).toContain('아직 어떤 변경도 적용되지 않았어요.');
+    // The generic handle() catch wraps the WHOLE turn and cannot prove where it failed, so it uses the
+    // conservative "cannot verify" wording — NEVER a false zero-mutation claim (CA mutation-certainty fix).
+    expect(text).toContain('변경 적용 여부를 확인할 수 없어요.');
+    expect(text).toContain('추가 작업을 진행하기 전에 현재 상태를 확인해주세요.');
+    expect(text).not.toContain('아직 어떤 변경도 적용되지 않았어요.');
     // never the raw exception text or a stack frame
     expect(text).not.toContain('Illegal task transition: PENDING -> RUNNING');
     expect(text).not.toMatch(/\bat [^\n]*:\d+:\d+/);
-    // no side effect of any kind was applied
+    // no side effect of any kind was applied (this happens to be true here — the error is raised before any
+    // collaborator runs — but the generic backstop still cannot PROVE it, hence the conservative wording above)
     expect(calls.workspaceApply).toBe(0);
     expect(calls.commandRun).toBe(0);
     expect(calls.gitCommit + calls.gitPush + calls.gitSyncMain + calls.gitDeleteBranch + calls.hostingCreatePR).toBe(0);
   });
 
-  it('an UNKNOWN error escaping the turn → generic INTERNAL_ERROR message; raw error text / secret-like substrings never leak', async () => {
+  it('regression: an UNKNOWN error escaping the turn → generic INTERNAL_ERROR with the conservative MAY_HAVE_APPLIED wording and NEVER the confirmed "아직 어떤 변경도 적용되지 않았어요." line; raw/secret-like substrings never leak', async () => {
     const { deps: base } = makeDeps();
     const secret = 'connect ECONNREFUSED 10.0.0.1:5432 password=hunter2 /abs/secret/key.pem';
     const deps: ConversationRuntimeDeps = {
@@ -6870,7 +6875,10 @@ describe('Follow-up-7 — sanitized inbound-failure response (F7-D)', () => {
     const text = result.reply.text;
     expect(text).toContain('알 수 없는 내부 오류가 발생했어요.');
     expect(text).toContain('INTERNAL_ERROR');
-    expect(text).toContain('아직 어떤 변경도 적용되지 않았어요.');
+    // Unknown failure through the generic backstop → conservative wording; the confirmed zero-mutation claim
+    // must NEVER appear here (the runtime cannot know where an unknown error was raised).
+    expect(text).toContain('변경 적용 여부를 확인할 수 없어요.');
+    expect(text).not.toContain('아직 어떤 변경도 적용되지 않았어요.');
     // no leakage of host/port/password/path from the raw message
     expect(text).not.toMatch(/ECONNREFUSED|password|hunter2|\.pem|10\.0\.0\.1/);
     expect(text).not.toContain(secret);
@@ -6928,18 +6936,25 @@ describe('Follow-up-7 — final isolated E2E (F7-E)', () => {
     expect(calls.gitCommit + calls.gitPush + calls.gitSyncMain + calls.gitDeleteBranch + calls.hostingCreatePR).toBe(0);
   });
 
-  it('failure: a forced application error → exactly ONE sanitized error TurnResult (no raw/stack/secrets), zero mutation, and the runtime SURVIVES (a later normal turn still responds)', async () => {
-    const { deps: base, calls } = makeDeps();
-    let failFirst = true;
+  it('failure at the READ-ONLY preview boundary: the EXACT Gate 5 preview request whose preview generation (orchestrator.run) throws → exactly ONE sanitized FAILED TurnResult with CONFIRMED_NOT_APPLIED (that path is provably pre-mutation), no raw/stack/secrets, zero mutation, and the runtime SURVIVES (a later preview still reaches the approval gate)', async () => {
+    let failFirstRun = true;
+    const { deps: base, calls } = makeDeps({ workspaceList: hitsFor(GATE5_FILE) });
     const deps: ConversationRuntimeDeps = {
       ...base,
-      actors: {
-        async resolveFromContext() {
-          if (failFirst) {
-            failFirst = false;
+      classifier: new IntentClassifier({} as unknown as CapabilityRouter), // REAL routing → CODE_IMPLEMENTATION
+      orchestrator: {
+        // The preview/plan generation itself fails. This throw is INSIDE runResolvedExecution — a path where
+        // the actual apply is provably deferred to a later approval turn (no mutation port is reachable here),
+        // so the sanitized reply may honestly CONFIRM that nothing was applied.
+        async run() {
+          if (failFirstRun) {
+            failFirstRun = false;
             throw new InvalidTaskTransitionError('PENDING', 'RUNNING');
           }
-          return ACTOR;
+          return outcomeOf(ExecutionOutcomeStatus.AWAITING_APPROVAL);
+        },
+        async resume() {
+          return outcomeOf(ExecutionOutcomeStatus.COMPLETED);
         },
       },
     };
@@ -6947,16 +6962,22 @@ describe('Follow-up-7 — final isolated E2E (F7-E)', () => {
 
     const failed = await runtime.handle(messageOf(GATE5_PREVIEW_REQUEST));
     expect(failed.status).toBe('FAILED');
-    expect(failed.reply.text).toContain('작업 상태를 변경하는 과정에서 허용되지 않은 상태 전이가 발생했어요.');
-    expect(failed.reply.text).toContain('TASK_TRANSITION_ERROR');
-    expect(failed.reply.text).toContain('아직 어떤 변경도 적용되지 않았어요.');
-    expect(failed.reply.text).not.toContain('Illegal task transition');
-    expect(failed.reply.text).not.toMatch(/\bat [^\n]*:\d+:\d+/);
+    const text = failed.reply.text;
+    expect(text).toContain('작업 상태를 변경하는 과정에서 허용되지 않은 상태 전이가 발생했어요.');
+    expect(text).toContain('TASK_TRANSITION_ERROR');
+    // Provably pre-mutation (read-only preview boundary) → the confirmed "no change applied" line …
+    expect(text).toContain('아직 어떤 변경도 적용되지 않았어요.');
+    // … and NEVER the conservative wording — the two outcomes cannot be confused.
+    expect(text).not.toContain('변경 적용 여부를 확인할 수 없어요.');
+    expect(text).not.toContain('Illegal task transition');
+    expect(text).not.toMatch(/\bat [^\n]*:\d+:\d+/);
     expect(calls.workspaceApply + calls.commandRun + calls.gitCommit + calls.gitPush + calls.hostingCreatePR).toBe(0);
 
-    // "runtime survives" — the same runtime instance handles a subsequent normal turn without residue.
-    const ok = await runtime.handle(messageOf('춘식아 안녕?'));
-    expect(ok.status).toBe('RESPONDED');
+    // "runtime survives" — the SAME instance handles a subsequent preview turn: it now reaches the approval
+    // gate (AWAITING_APPROVAL) with no error code and still zero mutation. No residue from the failed turn.
+    const ok = await runtime.handle(messageOf(GATE5_PREVIEW_REQUEST));
+    expect(ok.status).toBe('AWAITING_APPROVAL');
     expect(ok.reply.text).not.toContain('오류 코드:');
+    expect(calls.workspaceApply + calls.commandRun + calls.gitCommit + calls.gitPush + calls.hostingCreatePR).toBe(0);
   });
 });

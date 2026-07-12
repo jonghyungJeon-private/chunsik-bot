@@ -459,10 +459,11 @@ export class ResponseComposer {
   }
 
   /**
-   * A sanitized, user-visible inbound-failure response (Sprint 4c-Follow-up-7, F7-D). Takes an already-mapped
-   * {@link SafeError} (raw exception/stack stay in internal logs) and renders the CA-required template:
-   * a failure statement, the safe message, an explicit "no change applied" line, the safe code, and optional
-   * non-secret stage/requestId. Never carries raw exception text.
+   * A sanitized, user-visible inbound-failure response (Sprint 4c-Follow-up-7, F7-D; mutation-certainty
+   * correction). Takes an already-mapped {@link SafeError} (raw exception/stack stay in internal logs) and
+   * renders the CA-required template: a failure statement, the safe message, a mutation-certainty line
+   * (chosen by `ctx.mutationSafety` — conservative `MAY_HAVE_APPLIED` when omitted), the safe code, and
+   * optional non-secret stage/requestId. Never carries raw exception text.
    */
   composeSanitizedError(context: ConversationContext, safe: SafeError, ctx: SafeErrorContext = {}): OutboundMessage {
     return { context, text: formatSafeErrorText(safe, ctx) };

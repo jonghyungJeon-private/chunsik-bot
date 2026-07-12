@@ -44,7 +44,12 @@ export class ChunsikCore {
       await this.deps.platform
         .sendMessage({
           context: message.context,
-          text: formatSafeErrorText(safe, { requestId: safeRequestId(message.id) }),
+          // The facade backstop cannot prove where the runtime failed, so it MUST default to
+          // "possibly applied" — never a false zero-mutation claim (Sprint 4c-Follow-up-7 CA correction).
+          text: formatSafeErrorText(safe, {
+            requestId: safeRequestId(message.id),
+            mutationSafety: 'MAY_HAVE_APPLIED',
+          }),
         })
         .catch((deliveryErr) =>
           this.deps.logger.error('error-response delivery failed', {

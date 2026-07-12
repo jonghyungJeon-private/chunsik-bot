@@ -1526,8 +1526,12 @@ export class ConversationRuntime {
         // internal-only (stdout/stderr sink) — never sent to the user (CA §5)
         stack: err instanceof Error ? err.stack : undefined,
       });
+      // Generic backstop: this catch wraps the ENTIRE turn, so it cannot prove where handleInner failed —
+      // a mutation may already have been applied. Render the conservative "cannot verify" wording; NEVER
+      // claim zero mutation here (Sprint 4c-Follow-up-7 CA mutation-certainty correction).
       const reply = this.deps.composer.composeSanitizedError(message.context, safe, {
         requestId: safeRequestId(message.id),
+        mutationSafety: 'MAY_HAVE_APPLIED',
       });
       return { status: 'FAILED', reply, sessionId: '' };
     }
@@ -4752,8 +4756,57 @@ export class ConversationRuntime {
     }
   }
 
-  /** Resolve → run → frame the halt/complete/fail reply. Shared tail for a ready ExecutionRequest. */
+  /**
+   * Resolve → run → frame the halt/complete/fail reply. Shared tail for a ready ExecutionRequest.
+   *
+   * READ-ONLY BOUNDARY (Sprint 4c-Follow-up-7 CA mutation-certainty correction): this first-turn path only
+   * resolves the request, runs the orchestrator (which, for an approval-gated code change, stops at
+   * AWAITING_APPROVAL WITHOUT applying), and frames the reply. The actual WorkspaceWrite apply / git ops live
+   * exclusively in the separate approval-decision turns (`handleApplyApprovalTurn` et al.), never here — so
+   * ANY error escaping this path is PROVABLY pre-mutation. It is caught here and rendered as a sanitized
+   * FAILED reply with `CONFIRMED_NOT_APPLIED`; the generic `handle()` backstop (conservative
+   * `MAY_HAVE_APPLIED`) still covers everything outside this boundary. Never rethrows (so the honest
+   * confirmed-not-applied verdict wins over the generic backstop) and never leaks raw/stack.
+   */
   private async runResolvedExecution(
+    message: InboundMessage,
+    session: Session,
+    actor: Actor,
+    intent: Intent,
+    workspaceRef: WorkspaceRef | undefined,
+    targetFiles: string[] | undefined,
+    newFileTargets?: string[],
+    authoritativeInstruction?: string,
+  ): Promise<TurnResult> {
+    try {
+      return await this.runResolvedExecutionInner(
+        message,
+        session,
+        actor,
+        intent,
+        workspaceRef,
+        targetFiles,
+        newFileTargets,
+        authoritativeInstruction,
+      );
+    } catch (err) {
+      const safe = toSafeError(err);
+      this.deps.logger.error('preview/execution turn failed (read-only boundary)', {
+        errorName: err instanceof Error ? err.name : typeof err,
+        code: safe.code,
+        messageId: message.id,
+        // internal-only sink — never sent to the user
+        stack: err instanceof Error ? err.stack : undefined,
+      });
+      const reply = this.deps.composer.composeSanitizedError(message.context, safe, {
+        requestId: safeRequestId(message.id),
+        mutationSafety: 'CONFIRMED_NOT_APPLIED',
+      });
+      return { status: 'FAILED', reply, sessionId: session.id };
+    }
+  }
+
+  private async runResolvedExecutionInner(
     message: InboundMessage,
     session: Session,
     actor: Actor,

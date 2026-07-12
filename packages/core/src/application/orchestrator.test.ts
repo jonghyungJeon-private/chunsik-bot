@@ -57,7 +57,7 @@ function makeRuntime(handle: (m: InboundMessage) => Promise<TurnResult>): Conver
 }
 
 describe('ChunsikCore.handleInboundMessage — F7-D backstop', () => {
-  it('runtime.handle THROWS → exactly ONE sanitized sendMessage (mapped message + 오류 코드 + no-change line, no raw/stack); method resolves', async () => {
+  it('runtime.handle THROWS → exactly ONE sanitized sendMessage (mapped message + 오류 코드 + conservative MAY_HAVE_APPLIED wording, NEVER a false zero-mutation claim, no raw/stack); method resolves', async () => {
     const { platform, rec } = makePlatform();
     const runtime = makeRuntime(async () => {
       throw new InvalidTaskTransitionError('PENDING', 'RUNNING');
@@ -72,7 +72,11 @@ describe('ChunsikCore.handleInboundMessage — F7-D backstop', () => {
     expect(text).toContain('작업 상태를 변경하는 과정에서 허용되지 않은 상태 전이가 발생했어요.');
     expect(text).toContain('오류 코드:');
     expect(text).toContain('TASK_TRANSITION_ERROR');
-    expect(text).toContain('아직 어떤 변경도 적용되지 않았어요.');
+    // The facade backstop cannot prove WHERE the runtime failed, so it must default to "possibly applied":
+    // the conservative wording, and NEVER the confirmed "no change applied" line (CA mutation-certainty fix).
+    expect(text).toContain('변경 적용 여부를 확인할 수 없어요.');
+    expect(text).toContain('추가 작업을 진행하기 전에 현재 상태를 확인해주세요.');
+    expect(text).not.toContain('아직 어떤 변경도 적용되지 않았어요.');
     // never the raw exception / stack frame
     expect(text).not.toContain('Illegal task transition: PENDING -> RUNNING');
     expect(text).not.toMatch(/\bat [^\n]*:\d+:\d+/);
