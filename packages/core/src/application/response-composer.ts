@@ -123,6 +123,17 @@ const DIFF_BUDGET_MARGIN_CHARS = 20;
 const DIFF_PREVIEW_HEADER =
   '코드 변경 제안을 diff로 보여드려요. 아직 실제로 적용되지 않았어요. 파일은 수정되지 않았어요.';
 const DIFF_PREVIEW_FOOTER = '이 제안을 실제로 적용하는 기능은 아직 지원하지 않아요.';
+/** Apply-CAPABLE preview footer (Footer Minimal Fix). Shown only when the previewed change is the one
+ *  shape the WorkspaceWrite integrity gate accepts (a single, non-binary, existing-file `update`). It
+ *  states files are still unmodified, that apply is now available, the explicit apply-REQUEST phrase, and
+ *  that a bare "승인" does not modify files. The phrase is "적용해줘" (an APPLY_WORDS entry that drives the
+ *  ELIGIBLE→apply-approval transition) — deliberately NOT the later FINAL_APPLY phrase "파일에 적용", which
+ *  at ELIGIBLE would route to workspace-apply-unavailable. Keeps a "적용되지 않았어요" phrase so the
+ *  repeated not-applied assertion still holds alongside DIFF_PREVIEW_HEADER. */
+const DIFF_PREVIEW_APPLY_FOOTER = [
+  '아직 실제 파일에는 적용되지 않았어요.',
+  '적용하려면 "적용해줘"라고 다시 요청해 주세요. 단순히 "승인"만으로는 파일이 변경되지 않아요.',
+].join('\n');
 
 /** PatchSet preview (Sprint 2t, ADR-0041). CA Round 1 Required Change #3: "패치 미리보기" framing —
  *  never a bare "패치를 만들었어요" a non-developer could read as "applied." */
@@ -295,6 +306,22 @@ function assembleBoundedBody(header: string, footerLines: string[], blocks: stri
   if (omitted > 0) lines.push(`(길이 제한으로 파일 ${omitted}개의 diff는 생략했어요.)`);
   lines.push(...footerLines);
   return clampToMessageBudget(lines.join('\n'));
+}
+
+/**
+ * Pre-apply SHAPE signal for footer wording ONLY (Footer Minimal Fix). A previewed change is
+ * apply-capable iff it is exactly one non-binary existing-file `update` — the same shape the
+ * authoritative WorkspaceWrite integrity gate (ConversationRuntime.handleWorkspaceApplyTurn) accepts;
+ * add/delete/rename/binary/multi-file are not applicable via WorkspaceWrite today. This is NOT an
+ * authorization check: it deliberately does not — and must not — inspect the ApprovalRef, PatchSet, or
+ * ExecutionPlan binding (the runtime owns that gate; it is never re-implemented here). It reads only the
+ * deterministic change metadata already present on the preview, and does not query any Manager, the DB,
+ * the ApplyPreviewAnchor, or the filesystem. Target-scope path safety is already guaranteed upstream
+ * (the preview is built solely from validated, in-scope targetFiles).
+ */
+function isApplyCapablePreview(preview: CodeDiffPreview): boolean {
+  const only = preview.changes.length === 1 ? preview.changes[0] : undefined;
+  return !!only && only.kind === 'update' && !only.binary;
 }
 
 /**
@@ -617,7 +644,10 @@ export class ResponseComposer {
    */
   composeCodeDiffPreview(context: ConversationContext, preview: CodeDiffPreview): OutboundMessage {
     const warning = renderOutOfScopeWarning(preview.outOfScopeWarnings);
-    const footerLines = [...(warning ? [warning] : []), DIFF_PREVIEW_FOOTER];
+    // Footer Minimal Fix: an apply-capable single existing-file `update` truthfully advertises apply;
+    // every other shape keeps the existing "적용 미지원" footer (accurate — the update-only gate rejects it).
+    const footer = isApplyCapablePreview(preview) ? DIFF_PREVIEW_APPLY_FOOTER : DIFF_PREVIEW_FOOTER;
+    const footerLines = [...(warning ? [warning] : []), footer];
     const blocks = preview.changes.map(renderDiffChange);
     const text = assembleBoundedBody(DIFF_PREVIEW_HEADER, footerLines, blocks);
     // F5-A (Sprint 4c-Follow-up-5): also attach a COMPLETE structured preview (full canonical diff, never
@@ -640,7 +670,7 @@ export class ResponseComposer {
         // F5 (Sprint 4c-Follow-up-5): carry the out-of-scope safety warning INTO the artifact so a
         // preview-aware adapter (which delivers `preview`, not `text`) still surfaces it. Absent → clean.
         ...(warning ? { warning } : {}),
-        footer: DIFF_PREVIEW_FOOTER,
+        footer,
         files,
         canonicalDiff: buildCanonicalDiff(files),
         attachmentFilename: `quoky-preview-${previewId}.diff`,

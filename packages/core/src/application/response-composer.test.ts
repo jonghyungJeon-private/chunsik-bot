@@ -493,6 +493,58 @@ describe('ResponseComposer.composeCodeDiffPreview', () => {
     );
     expect(reply.text.length).toBeLessThanOrEqual(1900);
   });
+
+  // ── Footer Minimal Fix — apply-capable vs apply-incapable footer branching ───────────────────────
+  it('apply-capable (single non-binary existing-file update) → advertises apply with the explicit "적용해줘" request phrase, calls out that bare 승인 is insufficient, and drops the stale "미지원" line', () => {
+    const reply = composer.composeCodeDiffPreview(CTX, diffPreviewOf()); // default fixture = one non-binary update
+    expect(reply.text).toContain('적용해줘'); // the phrase that drives the ELIGIBLE→apply-approval transition
+    expect(reply.text).toContain('승인');
+    expect(reply.text).toContain('파일이 변경되지 않아요'); // bare 승인 does not modify files
+    expect(reply.text).toContain('아직 실제 파일에는 적용되지 않았어요'); // files still unmodified
+    expect(reply.text).not.toContain('적용하는 기능은 아직 지원하지 않아요'); // stale blanket wording gone
+    for (const word of FORBIDDEN_MUTATION_WORDS) expect(reply.text).not.toContain(word); // never implies applied
+  });
+
+  it('apply-INcapable (new-file add) → keeps the "미지원" footer, offers no apply-request phrase, files unchanged', () => {
+    const reply = composer.composeCodeDiffPreview(
+      CTX,
+      diffPreviewOf({
+        changes: [{ path: 'packages/core/src/new.ts', kind: 'add', unified: '--- /dev/null\n+++ b/new.ts\n@@ -0,0 +1 @@\n+new\n', binary: false }],
+      }),
+    );
+    expect(reply.text).toContain('이 제안을 실제로 적용하는 기능은 아직 지원하지 않아요');
+    expect(reply.text).not.toContain('적용해줘');
+    expect(reply.text).toContain('파일은 수정되지 않았어요'); // not-modified fact stays explicit (header)
+  });
+
+  it('apply-INcapable (multi-file update — fails the single-op integrity shape) → no apply-request phrase, keeps the "미지원" footer', () => {
+    const reply = composer.composeCodeDiffPreview(
+      CTX,
+      diffPreviewOf({
+        changes: [
+          { path: 'a.ts', kind: 'update', unified: '--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-x\n+y\n', binary: false },
+          { path: 'b.ts', kind: 'update', unified: '--- a/b.ts\n+++ b/b.ts\n@@ -1 +1 @@\n-x\n+y\n', binary: false },
+        ],
+      }),
+    );
+    expect(reply.text).not.toContain('적용해줘');
+    expect(reply.text).toContain('이 제안을 실제로 적용하는 기능은 아직 지원하지 않아요');
+  });
+
+  it('the structured PreviewArtifact footer is identical to the rendered text footer (both capable and incapable)', () => {
+    const capable = composer.composeCodeDiffPreview(CTX, diffPreviewOf());
+    expect(capable.preview!.footer).toContain('적용해줘');
+    expect(capable.text).toContain(capable.preview!.footer); // same footer in text and artifact
+
+    const incapable = composer.composeCodeDiffPreview(
+      CTX,
+      diffPreviewOf({
+        changes: [{ path: 'packages/core/src/new.ts', kind: 'add', unified: '--- /dev/null\n+++ b/new.ts\n@@ -0,0 +1 @@\n+n\n', binary: false }],
+      }),
+    );
+    expect(incapable.preview!.footer).toBe('이 제안을 실제로 적용하는 기능은 아직 지원하지 않아요.');
+    expect(incapable.text).toContain(incapable.preview!.footer);
+  });
 });
 
 // ── Sprint 2s — Explicit Preview Apply Approval (ADR-0040) ─────────────────────────────────────────
