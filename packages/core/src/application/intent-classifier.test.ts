@@ -224,3 +224,44 @@ describe('IntentClassifier — Follow-up-6 routing matrix (Gate 4B FAIL fix)', (
     }
   });
 });
+
+// ── Sprint 4c-Follow-up-7 (F7-B) — preview-request routing coverage (Gate 5 live turn-1 misroute fix) ──
+describe('IntentClassifier — Follow-up-7 preview-request routing (Gate 5 turn-1 fix)', () => {
+  const GATE5_PREVIEW_REQUEST = [
+    '현재 활성 프로젝트의 아래 기존 파일에 대한 패치 변경안을 미리보기로 보여줘.',
+    '',
+    '파일:',
+    'gate5/apply-smoke.txt',
+    '',
+    '현재 내용:',
+    'gate5 apply smoke',
+    'marker: PENDING',
+    '',
+    '변경 후 내용:',
+    'gate5 apply smoke',
+    'marker: quoky-gate5-workspace-apply',
+    '',
+    '조건:',
+    '- 지금은 preview만 보여줄 것',
+    '- 실제 파일에는 적용하지 말 것',
+    '- workspace apply 하지 말 것',
+    '- 테스트나 명령을 실행하지 말 것',
+    '- git add/commit/push/PR 하지 말 것',
+  ].join('\n');
+
+  it('the EXACT Gate 5 live preview request routes to CODE_IMPLEMENTATION (preview), NOT GENERAL_CHAT (the turn-1 defect)', async () => {
+    const intent = await classifier.classify(msg(GATE5_PREVIEW_REQUEST));
+    expect(intent.type).toBe(IntentType.IMPLEMENT_CODE);
+    expect(intent.capability).toBe(Capability.CODE_IMPLEMENTATION);
+    expect(intent.raw).toEqual({ kind: 'preview' });
+    expect(intent.type).not.toBe(IntentType.CHAT);
+  });
+
+  it('the broadened preview phrasings all route to IMPLEMENT_CODE (preview)', async () => {
+    for (const t of ['패치 변경안을 미리보기로 보여줘', '코드 변경안 미리보기', '파일 변경안을 미리보기로 보여줘', '변경안을 미리보기로 보여줘']) {
+      const intent = await classifier.classify(msg(t));
+      expect(intent.type, t).toBe(IntentType.IMPLEMENT_CODE);
+      expect(intent.raw, t).toEqual({ kind: 'preview' });
+    }
+  });
+});

@@ -1,5 +1,6 @@
 import { describeAiFailure } from './ai-failure';
 import { hasCoLocatedUnnegated, unnegatedMatch } from './intent-negation';
+import { type MutationSafety, safeRequestId, toSafeError } from './safe-error';
 import { RepositoryHostingBlockedError } from './repository-hosting-manager';
 import { RemoteBranchCleanupBlockedError, RemoteBranchCleanupUnverifiedError } from '../domain';
 import {
@@ -1507,7 +1508,36 @@ export class ConversationRuntime {
    * Handle one inbound message → one transient `TurnResult` (with an `OutboundMessage`). Never sends
    * to the platform (delivery is the facade's job) and never persists runtime state.
    */
+  /**
+   * Public entry — NEVER throws for an application/runtime error (Sprint 4c-Follow-up-7, F7-D). Delegates to
+   * the full turn flow; on ANY escaping error it returns a sanitized FAILED TurnResult so the caller delivers
+   * exactly ONE safe user-facing response (mapped message + code, no raw exception / stack / secrets). The full
+   * exception + stack are preserved in the internal log only. No business action is retried.
+   */
   async handle(message: InboundMessage): Promise<TurnResult> {
+    try {
+      return await this.handleInner(message);
+    } catch (err) {
+      const safe = toSafeError(err);
+      this.deps.logger.error('inbound handling failed', {
+        errorName: err instanceof Error ? err.name : typeof err,
+        code: safe.code,
+        messageId: message.id,
+        // internal-only (stdout/stderr sink) — never sent to the user (CA §5)
+        stack: err instanceof Error ? err.stack : undefined,
+      });
+      // Generic backstop: this catch wraps the ENTIRE turn, so it cannot prove where handleInner failed —
+      // a mutation may already have been applied. Render the conservative "cannot verify" wording; NEVER
+      // claim zero mutation here (Sprint 4c-Follow-up-7 CA mutation-certainty correction).
+      const reply = this.deps.composer.composeSanitizedError(message.context, safe, {
+        requestId: safeRequestId(message.id),
+        mutationSafety: 'MAY_HAVE_APPLIED',
+      });
+      return { status: 'FAILED', reply, sessionId: '' };
+    }
+  }
+
+  private async handleInner(message: InboundMessage): Promise<TurnResult> {
     const actor = await this.deps.actors.resolveFromContext(message.context);
     const session = await this.deps.sessions.openForContext(message.context, actor.id);
     await this.deps.sessions.touch(session);
@@ -4726,8 +4756,70 @@ export class ConversationRuntime {
     }
   }
 
-  /** Resolve → run → frame the halt/complete/fail reply. Shared tail for a ready ExecutionRequest. */
+  /**
+   * Resolve → run → frame the halt/complete/fail reply. Shared tail for a ready ExecutionRequest.
+   *
+   * MUTATION-CERTAINTY BOUNDARY (Sprint 4c-Follow-up-7; narrowed per CA re-review). This is a SHARED
+   * execution tail — it runs `orchestrator.run` for EVERY execution capability, including `TEST_EXECUTION`
+   * and command flows that CAN produce side effects (generated files, snapshots, caches, artifacts,
+   * side-effecting scripts) before an error escapes. So the method as a whole is NOT read-only, and the
+   * mutation-safety invariant covers ALL mutations, not only `WorkspaceWrite.apply`. On a thrown error the
+   * sanitized FAILED reply's mutation-certainty is therefore chosen by capability:
+   *   - `CODE_IMPLEMENTATION` — the approval-gated preview flow. The orchestrator computes a read-only diff
+   *     and stops at AWAITING_APPROVAL BEFORE any apply; the actual WorkspaceWrite apply / git ops live
+   *     exclusively in the separate approval-decision turns (`handleApplyApprovalTurn` et al.). No
+   *     mutation-capable port is reachable on this first-turn/recovered preview path, so a failure is
+   *     provably pre-mutation → `CONFIRMED_NOT_APPLIED`.
+   *   - EVERY OTHER capability (`TEST_EXECUTION`, command execution, any other shared execution capability)
+   *     — a side effect may already have happened, so the verdict stays conservative → `MAY_HAVE_APPLIED`.
+   * Never rethrows (so this specific verdict wins over the generic backstop) and never leaks raw/stack. The
+   * generic `handle()` and `ChunsikCore` backstops stay conservative (`MAY_HAVE_APPLIED`) for everything else.
+   */
   private async runResolvedExecution(
+    message: InboundMessage,
+    session: Session,
+    actor: Actor,
+    intent: Intent,
+    workspaceRef: WorkspaceRef | undefined,
+    targetFiles: string[] | undefined,
+    newFileTargets?: string[],
+    authoritativeInstruction?: string,
+  ): Promise<TurnResult> {
+    try {
+      return await this.runResolvedExecutionInner(
+        message,
+        session,
+        actor,
+        intent,
+        workspaceRef,
+        targetFiles,
+        newFileTargets,
+        authoritativeInstruction,
+      );
+    } catch (err) {
+      const safe = toSafeError(err);
+      this.deps.logger.error('execution turn failed', {
+        errorName: err instanceof Error ? err.name : typeof err,
+        code: safe.code,
+        capability: intent.capability,
+        messageId: message.id,
+        // internal-only sink — never sent to the user
+        stack: err instanceof Error ? err.stack : undefined,
+      });
+      // CONFIRMED_NOT_APPLIED ONLY for the approval-gated CODE_IMPLEMENTATION preview flow (provably
+      // pre-mutation on this shared tail). TEST_EXECUTION / command execution / any other shared capability
+      // may already have triggered a side effect, so they MUST stay conservative (CA re-review).
+      const mutationSafety: MutationSafety =
+        intent.capability === Capability.CODE_IMPLEMENTATION ? 'CONFIRMED_NOT_APPLIED' : 'MAY_HAVE_APPLIED';
+      const reply = this.deps.composer.composeSanitizedError(message.context, safe, {
+        requestId: safeRequestId(message.id),
+        mutationSafety,
+      });
+      return { status: 'FAILED', reply, sessionId: session.id };
+    }
+  }
+
+  private async runResolvedExecutionInner(
     message: InboundMessage,
     session: Session,
     actor: Actor,
@@ -4941,6 +5033,12 @@ export class ConversationRuntime {
       sessionId: session.id,
       ...(session.activeProjectId ? { projectId: session.activeProjectId } : {}),
     });
+    // F7-A (Sprint 4c-Follow-up-7): reach RUNNING through the LEGAL lifecycle PENDING → PLANNING → RUNNING.
+    // TaskManager.TRANSITIONS forbids PENDING → RUNNING directly; the prior direct jump threw
+    // InvalidTaskTransitionError under the real TaskManager on every GENERAL_CHAT / PROJECT_ANALYSIS work
+    // turn (masked in tests by a permissive fake `transition`). A non-execution work turn has no separate
+    // planning phase, so PLANNING is a pass-through step to the legal predecessor of RUNNING.
+    task = await this.deps.tasks.transition(task, TaskStatus.PLANNING);
     task = await this.deps.tasks.transition(task, TaskStatus.RUNNING);
     const capability: Capability = task.intent.capability;
     const run = await this.deps.tasks.startRun(task, capability);
