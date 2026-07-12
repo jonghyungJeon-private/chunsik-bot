@@ -165,12 +165,17 @@ applied" unless the failing path is provably read-only / pre-mutation. Kept stri
   - Generic `ConversationRuntime.handle()` backstop → explicit `MAY_HAVE_APPLIED` (wraps the
     whole turn; cannot prove where it failed).
   - `ChunsikCore` facade backstop → explicit `MAY_HAVE_APPLIED`.
-  - Read-only preview boundary: `runResolvedExecution` split into a thin try/catch wrapper over
-    `runResolvedExecutionInner`. Both of its callers are FIRST-turn preview/plan paths, and the
-    only `workspaceWrite.apply` lives in the separate `handleApplyApprovalTurn` (a different
-    approval-decision turn), so any error escaping this path is provably pre-mutation → caught
-    and rendered `CONFIRMED_NOT_APPLIED`. Never rethrows (honest verdict wins over the generic
-    backstop); never leaks raw/stack.
+  - Preview boundary (NARROWED per CA re-review): `runResolvedExecution` split into a thin
+    try/catch wrapper over `runResolvedExecutionInner`. This is a SHARED execution tail — it also
+    runs `orchestrator.run` for `TEST_EXECUTION` / command flows that CAN produce side effects
+    (generated files, snapshots, caches, artifacts, scripts), so the method as a whole is NOT
+    read-only and the mutation-safety invariant covers ALL mutations, not only `workspaceWrite.apply`.
+    The catch therefore renders `CONFIRMED_NOT_APPLIED` **only when `intent.capability ===
+    Capability.CODE_IMPLEMENTATION`** — the approval-gated preview flow whose orchestrator run
+    computes a read-only diff and gates on AWAITING_APPROVAL before any apply (the real apply lives
+    in the separate `handleApplyApprovalTurn`), so no mutation-capable port is reachable. EVERY
+    other capability sharing this tail (`TEST_EXECUTION`, command execution, …) → `MAY_HAVE_APPLIED`.
+    Never rethrows (honest verdict wins over the generic backstop); never leaks raw/stack.
 
 ### 2. Exact user-visible text
 - `CONFIRMED_NOT_APPLIED` → `아직 어떤 변경도 적용되지 않았어요.`
@@ -181,18 +186,24 @@ applied" unless the failing path is provably read-only / pre-mutation. Kept stri
 - `safe-error.test.ts`: `CONFIRMED_NOT_APPLIED` renders the confirmed line and NOT the
   conservative wording; `MAY_HAVE_APPLIED` renders the conservative wording and NOT the confirmed
   line; omitted `mutationSafety` DEFAULTS to the conservative wording.
-- `conversation-runtime.test.ts`: the EXACT Gate 5 preview request whose preview generation
-  (`orchestrator.run`) throws → `CONFIRMED_NOT_APPLIED` (asserts the confirmed line, asserts the
-  conservative line ABSENT), zero mutation, runtime survives (next preview reaches the approval
-  gate). Generic-backstop tests (known + UNKNOWN error via `handle()`) → conservative wording,
-  assert the confirmed line ABSENT (the required unknown-failure regression).
+- `conversation-runtime.test.ts`:
+  - the EXACT Gate 5 CODE_IMPLEMENTATION preview request whose `orchestrator.run` throws →
+    `CONFIRMED_NOT_APPLIED` (asserts the confirmed line, asserts the conservative line ABSENT,
+    asserts zero WorkspaceWrite + every mutation port), runtime survives (next preview reaches the
+    approval gate).
+  - **CA re-review addition** — a `TEST_EXECUTION` failure AFTER entering the orchestrator (the
+    SHARED tail) → `MAY_HAVE_APPLIED` (conservative wording present, confirmed line ABSENT),
+    proving `TEST_EXECUTION` (and by construction any other non-CODE_IMPLEMENTATION shared
+    capability) cannot receive the confirmed verdict.
+  - generic-backstop tests (known + UNKNOWN error via `handle()`) → conservative wording, confirmed
+    line ABSENT (the required unknown-failure regression).
 - `orchestrator.test.ts`: `ChunsikCore` backstop → conservative wording, confirmed line ABSENT.
 
 ### 4. Validation (Node v22.22.1)
 - `pnpm typecheck` (`tsc -b`) → exit 0, clean.
-- Full `vitest run` → exit 0; **Test Files 59 passed (59)**, **Tests 1252 passed (1252)**
-  (+2 vs the prior 1250 from splitting the safe-error render test into the two-outcome + default
-  cases). No failures, no regressions.
+- Full `vitest run` → exit 0; **Test Files 59 passed (59)**, **Tests 1253 passed (1253)**
+  (+3 vs the prior 1250: +2 from splitting the safe-error render test into the two-outcome +
+  default cases, +1 for the `TEST_EXECUTION` conservative-verdict regression). No failures/regressions.
 
 ### 5. Non-blocking observation (recorded as deferred, per CA)
 - The broadened `previewWords` matcher `(?:코드|파일|패치)\s*변경안` can over-route analysis prose

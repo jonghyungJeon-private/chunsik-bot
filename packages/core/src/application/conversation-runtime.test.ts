@@ -6943,9 +6943,11 @@ describe('Follow-up-7 — final isolated E2E (F7-E)', () => {
       ...base,
       classifier: new IntentClassifier({} as unknown as CapabilityRouter), // REAL routing → CODE_IMPLEMENTATION
       orchestrator: {
-        // The preview/plan generation itself fails. This throw is INSIDE runResolvedExecution — a path where
-        // the actual apply is provably deferred to a later approval turn (no mutation port is reachable here),
-        // so the sanitized reply may honestly CONFIRM that nothing was applied.
+        // The CODE_IMPLEMENTATION preview/plan generation itself fails. This throw is inside
+        // runResolvedExecution, but the confirmed verdict is gated on the CODE_IMPLEMENTATION capability —
+        // its orchestrator run computes a read-only diff and gates on AWAITING_APPROVAL before any apply (the
+        // real apply is a separate approval turn), so no mutation-capable port is reachable and the sanitized
+        // reply may honestly CONFIRM that nothing was applied.
         async run() {
           if (failFirstRun) {
             failFirstRun = false;
@@ -6965,12 +6967,13 @@ describe('Follow-up-7 — final isolated E2E (F7-E)', () => {
     const text = failed.reply.text;
     expect(text).toContain('작업 상태를 변경하는 과정에서 허용되지 않은 상태 전이가 발생했어요.');
     expect(text).toContain('TASK_TRANSITION_ERROR');
-    // Provably pre-mutation (read-only preview boundary) → the confirmed "no change applied" line …
+    // CODE_IMPLEMENTATION preview capability → provably pre-mutation → the confirmed "no change applied" line …
     expect(text).toContain('아직 어떤 변경도 적용되지 않았어요.');
     // … and NEVER the conservative wording — the two outcomes cannot be confused.
     expect(text).not.toContain('변경 적용 여부를 확인할 수 없어요.');
     expect(text).not.toContain('Illegal task transition');
     expect(text).not.toMatch(/\bat [^\n]*:\d+:\d+/);
+    // zero WorkspaceWrite (and every other mutation port) on the confirmed preview path
     expect(calls.workspaceApply + calls.commandRun + calls.gitCommit + calls.gitPush + calls.hostingCreatePR).toBe(0);
 
     // "runtime survives" — the SAME instance handles a subsequent preview turn: it now reaches the approval
@@ -6979,5 +6982,40 @@ describe('Follow-up-7 — final isolated E2E (F7-E)', () => {
     expect(ok.status).toBe('AWAITING_APPROVAL');
     expect(ok.reply.text).not.toContain('오류 코드:');
     expect(calls.workspaceApply + calls.commandRun + calls.gitCommit + calls.gitPush + calls.hostingCreatePR).toBe(0);
+  });
+
+  it('boundary is NOT read-only for TEST_EXECUTION: a TEST_EXECUTION failure AFTER entering the orchestrator (shared execution tail) → MAY_HAVE_APPLIED, NEVER the confirmed no-change line (a command/test may have produced a side effect)', async () => {
+    // TEST_EXECUTION shares runResolvedExecution and its orchestrator.run runs a command that CAN mutate
+    // generated files / snapshots / caches / artifacts. So even though WorkspaceWrite.apply is not called,
+    // a failure here must stay conservative — only the CODE_IMPLEMENTATION preview capability is confirmed.
+    const { deps: base, calls } = makeDeps({ intent: testIntent });
+    const deps: ConversationRuntimeDeps = {
+      ...base,
+      orchestrator: {
+        // The command/test flow has ENTERED the orchestrator (a side effect may already have happened) and
+        // then fails — the verdict MUST be conservative for any non-CODE_IMPLEMENTATION shared capability.
+        async run() {
+          throw new InvalidTaskTransitionError('PENDING', 'RUNNING');
+        },
+        async resume() {
+          return outcomeOf(ExecutionOutcomeStatus.COMPLETED);
+        },
+      },
+    };
+
+    const result = await new ConversationRuntime(deps).handle(messageOf('테스트 돌려줘'));
+    expect(result.status).toBe('FAILED');
+    const text = result.reply.text;
+    expect(text).toContain('TASK_TRANSITION_ERROR');
+    // conservative wording (the two outcomes cannot be confused) …
+    expect(text).toContain('변경 적용 여부를 확인할 수 없어요.');
+    expect(text).toContain('추가 작업을 진행하기 전에 현재 상태를 확인해주세요.');
+    // … and NEVER the confirmed zero-mutation claim for TEST_EXECUTION (or any other shared capability).
+    expect(text).not.toContain('아직 어떤 변경도 적용되지 않았어요.');
+    expect(text).not.toContain('Illegal task transition');
+    expect(text).not.toMatch(/\bat [^\n]*:\d+:\d+/);
+    // WorkspaceWrite/git are still zero here — the conservative verdict is about the *possibility* of a
+    // command/test side effect the runtime cannot prove did not happen, not about WorkspaceWrite specifically.
+    expect(calls.workspaceApply + calls.gitCommit + calls.gitPush + calls.hostingCreatePR).toBe(0);
   });
 });

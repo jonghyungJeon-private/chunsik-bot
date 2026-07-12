@@ -1,6 +1,6 @@
 import { describeAiFailure } from './ai-failure';
 import { hasCoLocatedUnnegated, unnegatedMatch } from './intent-negation';
-import { safeRequestId, toSafeError } from './safe-error';
+import { type MutationSafety, safeRequestId, toSafeError } from './safe-error';
 import { RepositoryHostingBlockedError } from './repository-hosting-manager';
 import { RemoteBranchCleanupBlockedError, RemoteBranchCleanupUnverifiedError } from '../domain';
 import {
@@ -4759,14 +4759,21 @@ export class ConversationRuntime {
   /**
    * Resolve → run → frame the halt/complete/fail reply. Shared tail for a ready ExecutionRequest.
    *
-   * READ-ONLY BOUNDARY (Sprint 4c-Follow-up-7 CA mutation-certainty correction): this first-turn path only
-   * resolves the request, runs the orchestrator (which, for an approval-gated code change, stops at
-   * AWAITING_APPROVAL WITHOUT applying), and frames the reply. The actual WorkspaceWrite apply / git ops live
-   * exclusively in the separate approval-decision turns (`handleApplyApprovalTurn` et al.), never here — so
-   * ANY error escaping this path is PROVABLY pre-mutation. It is caught here and rendered as a sanitized
-   * FAILED reply with `CONFIRMED_NOT_APPLIED`; the generic `handle()` backstop (conservative
-   * `MAY_HAVE_APPLIED`) still covers everything outside this boundary. Never rethrows (so the honest
-   * confirmed-not-applied verdict wins over the generic backstop) and never leaks raw/stack.
+   * MUTATION-CERTAINTY BOUNDARY (Sprint 4c-Follow-up-7; narrowed per CA re-review). This is a SHARED
+   * execution tail — it runs `orchestrator.run` for EVERY execution capability, including `TEST_EXECUTION`
+   * and command flows that CAN produce side effects (generated files, snapshots, caches, artifacts,
+   * side-effecting scripts) before an error escapes. So the method as a whole is NOT read-only, and the
+   * mutation-safety invariant covers ALL mutations, not only `WorkspaceWrite.apply`. On a thrown error the
+   * sanitized FAILED reply's mutation-certainty is therefore chosen by capability:
+   *   - `CODE_IMPLEMENTATION` — the approval-gated preview flow. The orchestrator computes a read-only diff
+   *     and stops at AWAITING_APPROVAL BEFORE any apply; the actual WorkspaceWrite apply / git ops live
+   *     exclusively in the separate approval-decision turns (`handleApplyApprovalTurn` et al.). No
+   *     mutation-capable port is reachable on this first-turn/recovered preview path, so a failure is
+   *     provably pre-mutation → `CONFIRMED_NOT_APPLIED`.
+   *   - EVERY OTHER capability (`TEST_EXECUTION`, command execution, any other shared execution capability)
+   *     — a side effect may already have happened, so the verdict stays conservative → `MAY_HAVE_APPLIED`.
+   * Never rethrows (so this specific verdict wins over the generic backstop) and never leaks raw/stack. The
+   * generic `handle()` and `ChunsikCore` backstops stay conservative (`MAY_HAVE_APPLIED`) for everything else.
    */
   private async runResolvedExecution(
     message: InboundMessage,
@@ -4791,16 +4798,22 @@ export class ConversationRuntime {
       );
     } catch (err) {
       const safe = toSafeError(err);
-      this.deps.logger.error('preview/execution turn failed (read-only boundary)', {
+      this.deps.logger.error('execution turn failed', {
         errorName: err instanceof Error ? err.name : typeof err,
         code: safe.code,
+        capability: intent.capability,
         messageId: message.id,
         // internal-only sink — never sent to the user
         stack: err instanceof Error ? err.stack : undefined,
       });
+      // CONFIRMED_NOT_APPLIED ONLY for the approval-gated CODE_IMPLEMENTATION preview flow (provably
+      // pre-mutation on this shared tail). TEST_EXECUTION / command execution / any other shared capability
+      // may already have triggered a side effect, so they MUST stay conservative (CA re-review).
+      const mutationSafety: MutationSafety =
+        intent.capability === Capability.CODE_IMPLEMENTATION ? 'CONFIRMED_NOT_APPLIED' : 'MAY_HAVE_APPLIED';
       const reply = this.deps.composer.composeSanitizedError(message.context, safe, {
         requestId: safeRequestId(message.id),
-        mutationSafety: 'CONFIRMED_NOT_APPLIED',
+        mutationSafety,
       });
       return { status: 'FAILED', reply, sessionId: session.id };
     }
