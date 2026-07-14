@@ -2,6 +2,8 @@
 
 새 세션 또는 모델 전환 때만 읽는다. 매 작업마다 자동 갱신하지 않는다.
 세션 종료 checkpoint 또는 명시 승인 후에만 갱신한다.
+이 문서는 생성 시점의 snapshot이며 live Git/GitHub 상태의 source가 아니다.
+현재 branch, HEAD, Push, PR, Merge 상태는 작업 전에 반드시 직접 재검증한다.
 
 ## LAST UPDATED
 
@@ -15,12 +17,13 @@
 
 ## ACTIVE BOT DEVELOPMENT
 
-- Branch: `v2/footer-minimal-fix`
-- HEAD: `45e87fb59f599c43cd6fbcabbc7af9e009e837f1`
+- Branch at checkpoint creation: `v2/footer-minimal-fix`
+- Recorded Base HEAD: `45e87fb59f599c43cd6fbcabbc7af9e009e837f1`
+- Checkpoint Commit: `12c9c57d38b77ae0cfb9b21971f1084b35ad8fb9`
 - Footer Minimal Fix commit: `d096ebeee73b0f1c08d67faed010268a6bcb58be`
 - Footer implementation: `APPROVED`
-- Runtime Restart: `NOT PERFORMED`
-- Live WorkspaceWrite: `NOT PERFORMED`
+- Runtime Restart at checkpoint creation: `NOT PERFORMED`
+- Live WorkspaceWrite at checkpoint creation: `NOT PERFORMED`
 
 ## AI OPS DOCUMENTATION
 
@@ -28,22 +31,24 @@
 - AI Ops docs commit: `45e87fb59f599c43cd6fbcabbc7af9e009e837f1`
 - Task: token-efficient AI operating document refactor
 - Scope: `AGENTS.md`, `CLAUDE.md`, and four `docs/ai/*.md` files only
-- Status: implementation committed locally; awaiting Push and PR approval decision
+- Status at checkpoint creation: implementation committed locally; awaiting Push and PR approval decision
 
-## BRANCH DELIVERY STATUS
+## BRANCH DELIVERY STATUS AT CHECKPOINT CREATION
 
 - Branch push: `NOT PERFORMED`
 - Combined PR: `NOT CREATED`
-- Combined PR would contain:
+- Planned Combined PR commits:
   - `d096ebeee73b0f1c08d67faed010268a6bcb58be`
   - `45e87fb59f599c43cd6fbcabbc7af9e009e837f1`
+- Subsequent checkpoint commit: `12c9c57d38b77ae0cfb9b21971f1084b35ad8fb9`
+- These values are historical. Reverify the current remote branch and PR state directly.
 
-## GATE STATUS
+## GATE STATUS AT CHECKPOINT CREATION
 
 - Gate 5: `PASS`
 - Gate 6: not finally closed
 
-## APPROVALS GRANTED
+## APPROVALS GRANTED AT CHECKPOINT CREATION
 
 - Footer Minimal Fix implementation: `APPROVED`
 - Footer Minimal Fix commit: `COMPLETED`
@@ -52,7 +57,7 @@
 - SESSION_STATE checkpoint update: `APPROVED`
 - Branch/HEAD/status/diff read-only validation: `APPROVED`
 
-## APPROVALS NOT GRANTED
+## APPROVALS NOT GRANTED AT CHECKPOINT CREATION
 
 - Commit, Push, PR, Merge
 - Branch/worktree creation, checkout, reset, rebase, amend
@@ -67,4 +72,4 @@
 
 ## EXACT NEXT STEP
 
-Decide whether to push `v2/footer-minimal-fix` and create one combined PR containing commits `d096ebeee73b0f1c08d67faed010268a6bcb58be` and `45e87fb59f599c43cd6fbcabbc7af9e009e837f1`.
+Resolve PR #49 review findings.

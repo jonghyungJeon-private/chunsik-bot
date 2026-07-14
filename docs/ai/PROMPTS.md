@@ -24,32 +24,19 @@ Prohibited:
 완료 후 검증 증거를 제출하고 중단하라.
 ```
 
-## Claude To Codex Switch
+## Agent Session Switch
 
 ```text
-Claude Code 토큰 제한으로 Codex가 이어서 작업한다.
+새 AI Agent 세션이 이전 작업을 이어서 수행한다.
 
-AGENTS.md를 따르고 다음만 추가로 읽어라:
+현재 Agent의 기본 진입 문서를 따르고 다음을 읽어라:
+- AGENTS.md
 - docs/ai/SESSION_STATE.md
 - docs/ai/HANDOFF.md
 
 repository 상태를 직접 검증하라.
-HANDOFF의 EXACT NEXT STEP 하나만 수행하라.
-승인 범위를 확대하지 마라.
-```
-
-## Codex To Claude Switch
-
-```text
-Codex 토큰 제한으로 Claude Code가 이어서 작업한다.
-
-AGENTS.md를 따르고 다음만 추가로 읽어라:
-- docs/ai/SESSION_STATE.md
-- docs/ai/HANDOFF.md
-
-repository 상태를 직접 검증하라.
-HANDOFF의 EXACT NEXT STEP 하나만 수행하라.
-승인 범위를 확대하지 마라.
+검증된 현재 상태를 기준으로 EXACT NEXT STEP 하나만 수행하라.
+Agent 또는 모델 교체를 승인 범위 확대로 해석하지 마라.
 ```
 
 ## Read-Only Review
