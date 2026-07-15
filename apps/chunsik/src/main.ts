@@ -15,8 +15,8 @@ import type {
   VectorProvider,
 } from '@chunsik/core';
 
-import { AppModule } from './app.module';
 import { ConsoleLogger } from './console-logger';
+import { loadLocalEnvironment } from './env-loader';
 import { serializeError } from './error-diagnostics';
 
 const log = new ConsoleLogger('chunsik');
@@ -33,6 +33,9 @@ const log = new ConsoleLogger('chunsik');
  * Sprint 1b-2 swaps in the real Claude CLI execution.
  */
 async function bootstrap(): Promise<void> {
+  loadLocalEnvironment();
+  const { AppModule } = await import('./app.module');
+
   const app = await NestFactory.createApplicationContext(AppModule, {
     logger: ['error', 'warn', 'log'],
   });
