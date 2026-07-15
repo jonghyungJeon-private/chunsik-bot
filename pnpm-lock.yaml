@@ -62,6 +62,9 @@ importers:
       '@quoky/github-app-auth':
         specifier: workspace:*
         version: link:../../packages/github-app-auth
+      dotenv:
+        specifier: ^16.4.5
+        version: 16.6.1
       reflect-metadata:
         specifier: ^0.2.2
         version: 0.2.2
@@ -665,6 +668,10 @@ packages:
   discord.js@14.16.3:
     resolution: {integrity: sha512-EPCWE9OkA9DnFFNrO7Kl1WHHDYFXu3CNVFJg63bfU7hVtjZGyhShwZtSBImINQRWxWP2tgo2XI+QhdXx28r0aA==}
     engines: {node: '>=18'}
+
+  dotenv@16.6.1:
+    resolution: {integrity: sha512-uBq4egWHTcTt33a72vpSG0z3HnPuIl6NqYcTrKEg2azoEyl2hpW0zqlxysq2pK9HlDIHyHyakeYaYnSAwd8bow==}
+    engines: {node: '>=12'}
 
   end-of-stream@1.4.5:
     resolution: {integrity: sha512-ooEGc6HP26xXq/N+GCGOT0JKCLDGrq2bQUZrQ7gyrJiZANJ/8YDTxTpQBXGMn+WbIQXNVpyWymm7KYVICQnyOg==}
@@ -1437,6 +1444,8 @@ snapshots:
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
+
+  dotenv@16.6.1: {}
 
   end-of-stream@1.4.5:
     dependencies:
