@@ -75,6 +75,28 @@ describe('PromptComposer', () => {
     expect(spec.context).toContain('Resolved connection target: current conversation platform (matrix)');
   });
 
+  it('preserves an explicitly named Discord target when the current platform is different', () => {
+    const task = mkTask(Capability.GENERAL_CHAT);
+    const spec = pc.compose(
+      { ...task, context: { ...task.context, platform: 'matrix' } },
+      withSummary('Discord 연결 상태 알려줘'),
+    );
+
+    expect(spec.context).toContain('Resolved connection target: explicit Discord target');
+    expect(spec.context).not.toContain('Resolved connection target: current conversation platform (matrix)');
+    expect(spec.context).not.toContain('Resolved connection target: explicit conversation-platform target (matrix)');
+  });
+
+  it('does not treat repo inside report as an explicit repository target', () => {
+    const spec = pc.compose(
+      mkTask(Capability.GENERAL_CHAT),
+      withSummary('Give me a connection status report'),
+    );
+
+    expect(spec.context).toContain('Resolved connection target: current conversation platform (discord)');
+    expect(spec.context).not.toContain('Resolved connection target: explicit repository target');
+  });
+
   it.each([
     ['현재 연결된 프로젝트 알려줘', 'explicit project target'],
     ['워크스페이스 연결 상태 알려줘', 'explicit workspace target'],

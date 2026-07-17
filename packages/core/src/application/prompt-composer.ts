@@ -114,10 +114,11 @@ export class PromptComposer {
     if (!PromptComposer.isConnectionStatusQuestion(summary)) return undefined;
 
     if (/(?:GitHub|깃허브)/i.test(summary)) return 'explicit GitHub target';
-    if (/(?:repository|repo|저장소)/i.test(summary)) return 'explicit repository target';
+    if (/(?:\b(?:repository|repo)\b|저장소)/i.test(summary)) return 'explicit repository target';
     if (/(?:workspace|워크스페이스)/i.test(summary)) return 'explicit workspace target';
     if (/(?:project|프로젝트)/i.test(summary)) return 'explicit project target';
-    if (/(?:discord|디스코드|\bbot\b|봇|platform|플랫폼)/i.test(summary)) {
+    if (/(?:discord|디스코드)/i.test(summary)) return 'explicit Discord target';
+    if (/(?:\bbot\b|봇|platform|플랫폼)/i.test(summary)) {
       return `explicit conversation-platform target (${platform})`;
     }
 
