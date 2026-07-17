@@ -56,6 +56,7 @@ import type {
 import type { AiRequest, Logger, LogFields, StorageProvider } from '../ports';
 import { InvalidTaskTransitionError } from '../errors';
 import { TaskManager } from './task-manager';
+import { PromptComposer } from './prompt-composer';
 import { ResponseComposer } from './response-composer';
 import type { TestResultDetail } from './response-composer';
 import { IntentClassifier } from './intent-classifier';
@@ -6757,6 +6758,41 @@ const workTurnHappyPathDeps = () => ({
 });
 
 describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => {
+  it('preserves the generic conversation platform from inbound context through task creation into prompt composition', async () => {
+    const { storage } = makeTaskStorage();
+    const intent = {
+      ...intentOf(Capability.GENERAL_CHAT, IntentType.CHAT, true),
+      summary: '현재 연결 상태 알려줘',
+    };
+    const { deps: base } = makeDeps({ intent });
+    let composed: PromptSpec | undefined;
+    const deps: ConversationRuntimeDeps = {
+      ...base,
+      tasks: new TaskManager(storage),
+      contextBuilder: {
+        async build(task) {
+          return { taskId: task.id, summary: task.intent.summary, recentMessages: [] };
+        },
+      },
+      promptComposer: new PromptComposer(),
+      promptRenderer: {
+        render(spec) {
+          composed = spec;
+          return {} as AiRequest;
+        },
+      },
+    };
+    const message = messageOf('현재 연결 상태 알려줘');
+    message.context = { ...message.context, platform: 'matrix' };
+
+    const result = await new ConversationRuntime(deps).handle(message);
+
+    expect(result.status).toBe('RESPONDED');
+    expect(composed?.context).toContain('Current conversation platform: matrix');
+    expect(composed?.context).toContain('Resolved connection target: current conversation platform (matrix)');
+    expect(composed?.developer).toContain('current conversation platform');
+  });
+
   it('a GENERAL_CHAT work turn drives the REAL TaskManager PENDING → PLANNING → RUNNING → COMPLETED (legal map, no InvalidTaskTransitionError) → RESPONDED (not a sanitized error)', async () => {
     const { storage, taskSaves, runSaves } = makeTaskStorage();
     const { deps: base } = makeDeps({ intent: intentOf(Capability.GENERAL_CHAT, IntentType.CHAT, true) });
