@@ -33,86 +33,58 @@ describe('PromptComposer', () => {
 
   it('produces a layered spec; context empty when no recent messages', () => {
     const spec = pc.compose(mkTask(Capability.GENERAL_CHAT), bundle([]));
-    expect(spec.system).toContain('Chunsik');
+    expect(spec.system).toContain('You are Quoky');
+    expect(spec.system).not.toContain('You are Chunsik');
     expect(spec.developer.toLowerCase()).toContain('conversational');
     expect(spec.context).toContain('Current conversation platform: discord');
     expect(spec.task).toBe('hello there');
   });
 
-  it('prioritizes an explicit connection target, then the current platform, over project background', () => {
+  it('provides the current platform while keeping the active project as background context', () => {
     const spec = pc.compose(mkTask(Capability.GENERAL_CHAT), {
       ...bundle([]),
       projectSummary: 'quoky-gate5-disposable',
     });
 
-    expect(spec.developer).toContain('explicit user-named target');
-    expect(spec.developer).toContain('If no target is named');
+    expect(spec.developer).toContain("Interpret the user's intent naturally");
     expect(spec.developer).toContain('current conversation platform');
-    expect(spec.developer).toContain('background context, not as the connection target');
+    expect(spec.developer).toContain('background context');
+    expect(spec.developer).toContain('Do not assume the active project or workspace is the subject');
     expect(spec.context).toContain('Current conversation platform: discord');
     expect(spec.context).toContain('Active project (background context):');
     expect(spec.context).toContain('quoky-gate5-disposable');
   });
 
-  it('resolves an ambiguous connection-status question to the current platform, not the active project', () => {
+  it('does not turn user language into a resolved target hint', () => {
     const spec = pc.compose(
       mkTask(Capability.GENERAL_CHAT),
       withSummary('현재 연결상태 알려줘', 'quoky-gate5-disposable'),
     );
 
-    expect(spec.context).toContain('Resolved connection target: current conversation platform (discord)');
+    expect(spec.context).toContain('Current conversation platform: discord');
     expect(spec.context).toContain('Active project (background context):');
-    expect(spec.context).not.toContain('Resolved connection target: explicit project target');
+    expect(spec.context).not.toContain('Resolved connection target:');
   });
 
-  it('resolves an ambiguous equivalent generically for a non-Discord platform', () => {
+  it('represents a non-Discord conversation platform generically', () => {
     const task = mkTask(Capability.GENERAL_CHAT);
     const spec = pc.compose(
       { ...task, context: { ...task.context, platform: 'matrix' } },
       withSummary('지금 연결됐어?'),
     );
 
-    expect(spec.context).toContain('Resolved connection target: current conversation platform (matrix)');
-  });
-
-  it('preserves an explicitly named Discord target when the current platform is different', () => {
-    const task = mkTask(Capability.GENERAL_CHAT);
-    const spec = pc.compose(
-      { ...task, context: { ...task.context, platform: 'matrix' } },
-      withSummary('Discord 연결 상태 알려줘'),
-    );
-
-    expect(spec.context).toContain('Resolved connection target: explicit Discord target');
-    expect(spec.context).not.toContain('Resolved connection target: current conversation platform (matrix)');
-    expect(spec.context).not.toContain('Resolved connection target: explicit conversation-platform target (matrix)');
-  });
-
-  it('does not treat repo inside report as an explicit repository target', () => {
-    const spec = pc.compose(
-      mkTask(Capability.GENERAL_CHAT),
-      withSummary('Give me a connection status report'),
-    );
-
-    expect(spec.context).toContain('Resolved connection target: current conversation platform (discord)');
-    expect(spec.context).not.toContain('Resolved connection target: explicit repository target');
-  });
-
-  it.each([
-    ['현재 연결된 프로젝트 알려줘', 'explicit project target'],
-    ['워크스페이스 연결 상태 알려줘', 'explicit workspace target'],
-    ['GitHub 연결 상태 알려줘', 'explicit GitHub target'],
-    ['현재 연결된 저장소 알려줘', 'explicit repository target'],
-  ])('preserves the explicit target in %s', (summary, target) => {
-    const spec = pc.compose(mkTask(Capability.GENERAL_CHAT), withSummary(summary));
-
-    expect(spec.context).toContain(`Resolved connection target: ${target}`);
-    expect(spec.context).not.toContain('Resolved connection target: current conversation platform');
-  });
-
-  it('does not add a resolved target hint to unrelated chat', () => {
-    const spec = pc.compose(mkTask(Capability.GENERAL_CHAT), withSummary('오늘 날씨 어때?'));
-
+    expect(spec.context).toContain('Current conversation platform: matrix');
     expect(spec.context).not.toContain('Resolved connection target:');
+  });
+
+  it('guides the assistant to interpret context naturally and clarify only when needed', () => {
+    const developer = pc.compose(mkTask(Capability.GENERAL_CHAT), bundle([])).developer;
+
+    expect(developer).toContain("Interpret the user's intent naturally");
+    expect(developer).toContain('recent conversation');
+    expect(developer).toContain('Resolve ambiguity using the most natural meaning');
+    expect(developer).toContain('Ask a brief clarifying question only when');
+    expect(developer).toContain('Do not invent system state that Core has not provided');
   });
 
   it('does not instruct the model to claim outbound delivery before it occurs', () => {
@@ -123,7 +95,7 @@ describe('PromptComposer', () => {
     expect(developer).toContain('do not claim outbound delivery succeeded');
   });
 
-  it('represents non-Discord platforms generically without changing the priority rule', () => {
+  it('keeps provider-neutral guidance for a non-Discord platform', () => {
     const task = mkTask(Capability.GENERAL_CHAT);
     const spec = pc.compose(
       { ...task, context: { ...task.context, platform: 'matrix' } },

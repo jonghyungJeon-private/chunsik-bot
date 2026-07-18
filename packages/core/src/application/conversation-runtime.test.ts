@@ -6789,7 +6789,7 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
 
     expect(result.status).toBe('RESPONDED');
     expect(composed?.context).toContain('Current conversation platform: matrix');
-    expect(composed?.context).toContain('Resolved connection target: current conversation platform (matrix)');
+    expect(composed?.context).not.toContain('Resolved connection target:');
     expect(composed?.developer).toContain('current conversation platform');
   });
 
