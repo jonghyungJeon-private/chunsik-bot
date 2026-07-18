@@ -16,9 +16,9 @@ export interface CodeGenerationPromptInput {
  */
 export class PromptComposer {
   compose(task: Task, context: ContextBundle, readout?: ProjectReadout): PromptSpec {
-    const parts: string[] = [];
+    const parts: string[] = [`Current conversation platform: ${task.context.platform}`];
     if (context.projectSummary) {
-      parts.push(`Active project:\n${context.projectSummary}`);
+      parts.push(`Active project (background context):\n${context.projectSummary}`);
     }
     if (readout) {
       parts.push(PromptComposer.renderReadout(readout));
@@ -28,7 +28,7 @@ export class PromptComposer {
     }
     return {
       system:
-        'You are Chunsik, a concise, helpful local-first AI assistant. Use the ' +
+        'You are Quoky, a concise, helpful local-first AI assistant. Use the ' +
         'conversation and any provided context (such as an "Active project" summary) ' +
         'together with your own knowledge to answer. Do NOT read files, run commands, ' +
         'or use tools — rely only on the provided context; if key information is ' +
@@ -74,7 +74,16 @@ export class PromptComposer {
   private developerFor(capability: Capability): string {
     switch (capability) {
       case Capability.GENERAL_CHAT:
-        return 'Respond conversationally and briefly to the user.';
+        return (
+          'Respond conversationally and briefly to the user. Interpret the user\'s intent naturally ' +
+          'from their message together with the recent conversation, current conversation platform, ' +
+          'and background context. Resolve ambiguity using the most natural meaning in the current ' +
+          'conversation. Do not assume the active project or workspace is the subject merely because ' +
+          'its background information is available. Ask a brief clarifying question only when the ' +
+          'intended meaning cannot be inferred reliably. Do not invent system state that Core has not ' +
+          'provided. You may say that the inbound message was received and the response is being ' +
+          'processed; do not claim outbound delivery succeeded before delivery occurs.'
+        );
       case Capability.SUMMARIZATION:
         return 'Summarize the provided content faithfully and concisely.';
       case Capability.PROJECT_ANALYSIS:
