@@ -4145,3 +4145,219 @@ Extends **ADR-0038** (AI Code Generation Preview) / **ADR-0040** (Explicit Previ
 Authentication) — no App-auth/token-flow change. Plans:
 `docs/plans/sprint-4c-followup-preview-intent-routing-fix-plan.md` (investigation + approved scope),
 `docs/plans/sprint-4c-followup-preview-intent-routing-fix-implementation-plan.md` (implementation design).
+
+## ADR-0063 — Provider-Neutral Context Provenance and Current-Fact Precedence
+
+- **Status:** ✅ **Accepted** — ratified by Product Owner and Chief Architect on 2026-07-19. Implementation requires
+  separate approval.
+- **Date:** 2026-07-19
+- **Scope:** Supersedes only the relevant context-shaping portions of **ADR-0017** and **ADR-0018** as stated in
+  Relations. It does not change memory persistence, project registration, intent/capability routing, provider
+  selection, approvals, execution, storage, or mutation policy.
+
+### Context
+
+PR #52 removed Core-side keyword/regex connection-target interpretation and delegated natural-language meaning to
+the selected `GENERAL_CHAT` provider. A Live UAT then received the ambiguous current-connection question through
+Discord and produced the prior project-target answer from an `ollama-cli` run. The served artifact contained the
+new Quoky prompt and no connection-target resolver.
+
+The failed Session contained both an active-project summary and earlier Assistant-generated copies of the same
+incorrect answer. Under ADR-0017, ContextBuilder flattens the most recent same-Session User and Assistant memories
+to `role: text` strings. Under ADR-0018, the active project's memory summary is included in later chat. PromptComposer
+currently places the platform fact, project background, and flattened transcript in one context layer. Role is
+visible, but source provenance and epistemic authority are not preserved as separate concepts. Consequently, a
+Provider can treat earlier generated Assistant text or project-memory content as current system evidence.
+
+The required invariant is:
+
+> AI decides meaning. Core decides authority, provenance, and facts.
+
+Quoky remains an AI Assistant rather than a command bot. Core must provide a clear provider-neutral context contract
+without deciding semantic targets from phrases, adding a second AI call, or deleting contaminated history.
+
+### Decision
+
+#### 1. Separate provenance from epistemic status
+
+Context supplied to a Provider MUST preserve two independent axes. Implementations may refine type names, but MUST
+NOT collapse these axes into one field.
+
+**Source / provenance** identifies where content came from:
+
+- **Core Runtime** — data established by the current application turn;
+- **User** — User-authored message content;
+- **Assistant** — earlier AI-generated response content;
+- **Project Memory** — stored active-project summary/background.
+
+**Epistemic status / authority** identifies how the Provider may rely on it:
+
+- **authoritative current fact** — a fact Core can establish for the current turn;
+- **user-provided claim or intent input** — authoritative as the User's request/claim, not as external truth;
+- **assistant-generated non-authoritative content** — continuity material that may be inaccurate;
+- **non-authoritative background** — contextual material that does not establish the current request target or
+  external truth.
+
+User input is never promoted to an authoritative system fact merely because the User stated it. Assistant output
+never becomes authoritative merely because it was persisted as SHORT_TERM memory. Project memory never becomes
+authoritative merely because its project is active.
+
+Chunsik Memory remains the source of record for what was stored and for the provenance attached to each record.
+That authority covers the record's existence and origin; it does not establish the external truth of a stored User
+claim, Assistant output, or project summary. Record provenance and content-level epistemic truth remain distinct.
+
+#### 2. Give current-turn facts one owner
+
+`Session.activeProjectId` remains the source of the mutable active-project selection that persists across turns.
+When a Task is created, `Task.projectId` captures that selection as the immutable project reference for the current
+turn. The **Task** is the single source of current-turn facts used during prompt composition:
+
+- `Task.context.platform` owns the inbound conversation-platform value;
+- the existence of `Task.projectId` reflects the active-project selection captured for that Task;
+- reaching PromptComposer through the normal Runtime path establishes that the inbound message was accepted by the
+  Runtime for processing;
+- response generation occurs before outbound delivery success can be established.
+
+ContextBuilder MUST NOT duplicate these current-turn facts into ContextBundle. It owns only:
+
+- bounded, ordered conversation history with preserved role/provenance;
+- active-project memory rendered as non-authoritative background.
+
+PromptComposer combines Task and ContextBundle. It derives and renders the current-facts section from Task, then
+renders background and transcript sections from ContextBundle. Task and ContextBundle MUST NOT store parallel
+copies of the same current-turn fact.
+
+#### 3. Bound authoritative facts narrowly
+
+Core MAY present the following as authoritative current-turn facts:
+
+- the current request was received through the conversation platform named by `Task.context.platform`;
+- the inbound message was accepted by the Runtime for the current turn;
+- outbound response delivery success is not yet known at response-generation time;
+- an active project id is selected for the Task when `Task.projectId` exists.
+
+Core MUST NOT present the following as authoritative facts without separate verified evidence:
+
+- overall Discord Gateway or transport health;
+- the health or actual connection state of any external service;
+- successful outbound response delivery before delivery occurs;
+- the truth of project-memory summary content;
+- the truth of any earlier Assistant response;
+- a semantic target inferred from keywords, regexes, language-specific phrases, provider id, concrete platform
+  value, or project name.
+
+The platform fact proves how the current inbound request reached Quoky; it does not prove global transport health.
+The active-project-id fact proves selection state; it does not prove project-summary correctness or make the project
+the implicit target of the User's question.
+
+#### 4. Keep active-project selection separate from project background
+
+The active-project concepts are split as follows:
+
+- **`Session.activeProjectId`** — mutable active-project selection owned by Session across turns;
+- **`Task.projectId`** — immutable current-turn snapshot captured from `Session.activeProjectId` when the Task is
+  created and used as the authoritative selection fact for prompt composition;
+- **project memory/summary content** — Project Memory provenance with non-authoritative-background status, assembled
+  by ContextBuilder;
+- **request target** — natural-language meaning decided by the selected `GENERAL_CHAT` Provider.
+
+ContextBundle does not duplicate `Task.projectId` or an equivalent current-turn selection fact. PromptComposer
+combines the Task-owned snapshot with ContextBuilder's project background while preserving their distinct authority
+and meaning.
+
+Project background remains available for legitimate project-aware conversation. Core MUST NOT condition its
+inclusion on phrase matching, and the existence of an active project MUST NOT by itself identify the current User
+question's target.
+
+#### 5. Preserve conversation history with role and provenance
+
+ContextBuilder continues to retrieve the most recent same-Session SHORT_TERM records under ADR-0017's existing
+bounds, ordering, truncation, current-inbound exclusion, and pruning policy. It MUST preserve User/Assistant role and
+provenance in structured context until PromptComposer renders it.
+
+Assistant turns remain available for continuity, including follow-ups that refer to the preceding answer. They are
+rendered as Assistant-generated, non-authoritative transcript entries that may be inaccurate. They are not deleted,
+rewritten, hidden through sentence matching, or moved to a special clean Session. Missing or malformed legacy role
+metadata fails safe as non-authoritative transcript content, never as an authoritative current fact.
+
+#### 6. Render explicit provider-neutral precedence
+
+PromptComposer renders the following conceptual sections in this order:
+
+1. **Current-turn facts supplied by Core** — derived from Task;
+2. **Background resources** — including active-project memory, explicitly non-authoritative for target selection;
+3. **Conversation transcript** — continuity material with User/Assistant provenance and epistemic labels;
+4. **Current User task** — the existing final Task layer.
+
+The `GENERAL_CHAT` developer contract instructs every provider that:
+
+- the current User task is interpreted naturally using the whole conversation;
+- current Core facts outrank contradictory Assistant-generated history;
+- User messages are intent/claim input, not automatically verified external facts;
+- Assistant history supports continuity but is not evidence of current state;
+- active-project background is not an implicit target merely because it exists;
+- a short clarification is requested only when meaning remains genuinely uncertain;
+- external status absent from current Core facts is not invented.
+
+These are provenance and precedence rules, not semantic resolution rules. No specific natural-language sentence,
+language, provider, project name, or transport name is part of the decision logic.
+
+#### 7. Keep one Provider call and existing governance
+
+Natural-language interpretation and final response generation remain one selected `GENERAL_CHAT` provider call.
+This ADR adds no semantic classifier, target enum/parser, confidence service, additional AI call, provider-id branch,
+or concrete transport branch.
+
+The decision does not change IntentClassifier, IntentResolver, CapabilityRouter, approval/risk policy, execution
+requests, workspace access, storage schema, Session identity, memory contents, or Runtime mutation boundaries.
+
+### Consequences
+
+- **+** Current facts, User claims, Assistant output, and project background have explicit, independent provenance
+  and epistemic status.
+- **+** Contaminated Assistant history remains usable for continuity without being promoted to current evidence.
+- **+** Active-project context remains available without becoming an implicit semantic target.
+- **+** The contract is deterministic and provider-neutral while meaning interpretation stays with the selected AI.
+- **+** No extra Provider call, memory cleanup, Session reset, storage migration, or routing change is required.
+- **−** `ContextBundle` and related fixtures must evolve from flattened strings to structured conversation turns.
+- **−** Prompt wording and structure affect all `GENERAL_CHAT` providers and require contract, regression, and Live
+  UAT coverage.
+- **−** A structurally stronger prompt still cannot guarantee that every model follows the contract; Provider
+  behavior remains a separately verified UAT concern.
+- **Risk:** Over-isolating Assistant history could degrade ordinary follow-ups. Tests must prove the content remains
+  present, ordered, bounded, and usable.
+- **Risk:** Treating `authoritative` too broadly could create false claims. Only the fact boundary above is allowed.
+
+### V1 / V2
+
+**V1 target — after ratification and separately approved implementation:**
+
+- provider-neutral structured history entries with separate provenance and epistemic status;
+- Task-owned current-turn facts;
+- ContextBuilder-owned history and project background;
+- PromptComposer-owned sectioning and precedence;
+- one existing `GENERAL_CHAT` Provider call;
+- deterministic contract/application-flow tests plus separately approved Live UAT.
+
+**V2+ [LATER]:** semantic retrieval/ranking, summarized memory, confidence models, or richer factual verification.
+None is introduced by this ADR. A future feature that changes routing or adds AI calls requires its own ADR.
+
+### Supersession and Relations
+
+- **ADR-0017 is superseded only in this respect:** recent conversation is no longer flattened to unqualified
+  `role: text` strings before prompt composition. Existing same-Session retrieval, N=10 bound, oldest-to-newest
+  ordering, 400-character truncation, current-inbound exclusion, storage, and pruning decisions remain in force.
+- **ADR-0018 is superseded only in this respect:** `Session.activeProjectId` continues to own mutable selection across
+  turns, while `Task.projectId` is the immutable current-turn snapshot used during prompt composition; PROJECT
+  memory/summary is non-authoritative background, and active-project existence does not establish the current request
+  target. Project registration, scanning, persistence, workspace gating, and read-only behavior remain in force.
+- Extends **ADR-0002** (ContextBuilder assembles structured per-run context) and **ADR-0003** (PromptComposer owns
+  provider-neutral layered prompt authorship).
+- Preserves `ARCHITECTURE.md` provider rules: Core does not know Ollama/Discord as concrete implementations, does
+  not branch on provider id, and does not pin providers to Session/Task/Actor.
+
+### Approval Boundary
+
+This Accepted ADR records the ratified Architecture decision only. Ratification does not authorize production/test
+implementation, Build/Test, Merge, Runtime/Discord/AI execution, DB/session/memory mutation, Live UAT, Cleanup, or
+Gate 6. Each requires separate explicit approval.
