@@ -4153,8 +4153,7 @@ Authentication) — no App-auth/token-flow change. Plans:
 - **Date:** 2026-07-19
 - **Scope:** Supersedes only the relevant context-shaping portions of **ADR-0017** and **ADR-0018** as stated in
   Relations. It does not change memory persistence, project registration, intent/capability routing, provider
-  selection, approvals, execution, storage, or mutation policy. Authoritative plan:
-  `docs/plans/quoky-live-uat-context-remediation-plan.md`.
+  selection, approvals, execution, storage, or mutation policy.
 
 ### Context
 
@@ -4203,12 +4202,18 @@ User input is never promoted to an authoritative system fact merely because the 
 never becomes authoritative merely because it was persisted as SHORT_TERM memory. Project memory never becomes
 authoritative merely because its project is active.
 
+Chunsik Memory remains the source of record for what was stored and for the provenance attached to each record.
+That authority covers the record's existence and origin; it does not establish the external truth of a stored User
+claim, Assistant output, or project summary. Record provenance and content-level epistemic truth remain distinct.
+
 #### 2. Give current-turn facts one owner
 
-The **Task** is the single source of current-turn facts used during prompt composition:
+`Session.activeProjectId` remains the source of the mutable active-project selection that persists across turns.
+When a Task is created, `Task.projectId` captures that selection as the immutable project reference for the current
+turn. The **Task** is the single source of current-turn facts used during prompt composition:
 
 - `Task.context.platform` owns the inbound conversation-platform value;
-- the existence of `Task.projectId` reflects the currently selected active-project id for the Task;
+- the existence of `Task.projectId` reflects the active-project selection captured for that Task;
 - reaching PromptComposer through the normal Runtime path establishes that the inbound message was accepted by the
   Runtime for processing;
 - response generation occurs before outbound delivery success can be established.
@@ -4249,10 +4254,16 @@ the implicit target of the User's question.
 
 The active-project concepts are split as follows:
 
-- **selected activeProjectId** — current Runtime selection fact owned by Task;
+- **`Session.activeProjectId`** — mutable active-project selection owned by Session across turns;
+- **`Task.projectId`** — immutable current-turn snapshot captured from `Session.activeProjectId` when the Task is
+  created and used as the authoritative selection fact for prompt composition;
 - **project memory/summary content** — Project Memory provenance with non-authoritative-background status, assembled
   by ContextBuilder;
 - **request target** — natural-language meaning decided by the selected `GENERAL_CHAT` Provider.
+
+ContextBundle does not duplicate `Task.projectId` or an equivalent current-turn selection fact. PromptComposer
+combines the Task-owned snapshot with ContextBuilder's project background while preserving their distinct authority
+and meaning.
 
 Project background remains available for legitimate project-aware conversation. Core MUST NOT condition its
 inclusion on phrase matching, and the existence of an active project MUST NOT by itself identify the current User
@@ -4319,7 +4330,7 @@ requests, workspace access, storage schema, Session identity, memory contents, o
 
 ### V1 / V2
 
-**V1 [NOW], after ratification and separate implementation approval:**
+**V1 target — after ratification and separately approved implementation:**
 
 - provider-neutral structured history entries with separate provenance and epistemic status;
 - Task-owned current-turn facts;
@@ -4336,14 +4347,14 @@ None is introduced by this ADR. A future feature that changes routing or adds AI
 - **ADR-0017 is superseded only in this respect:** recent conversation is no longer flattened to unqualified
   `role: text` strings before prompt composition. Existing same-Session retrieval, N=10 bound, oldest-to-newest
   ordering, 400-character truncation, current-inbound exclusion, storage, and pruning decisions remain in force.
-- **ADR-0018 is superseded only in this respect:** active-project-id selection is a current Task fact, while PROJECT
-  memory/summary is non-authoritative background and active-project existence does not establish the current request
+- **ADR-0018 is superseded only in this respect:** `Session.activeProjectId` continues to own mutable selection across
+  turns, while `Task.projectId` is the immutable current-turn snapshot used during prompt composition; PROJECT
+  memory/summary is non-authoritative background, and active-project existence does not establish the current request
   target. Project registration, scanning, persistence, workspace gating, and read-only behavior remain in force.
 - Extends **ADR-0002** (ContextBuilder assembles structured per-run context) and **ADR-0003** (PromptComposer owns
   provider-neutral layered prompt authorship).
 - Preserves `ARCHITECTURE.md` provider rules: Core does not know Ollama/Discord as concrete implementations, does
   not branch on provider id, and does not pin providers to Session/Task/Actor.
-- Plan: `docs/plans/quoky-live-uat-context-remediation-plan.md`.
 
 ### Approval Boundary
 
