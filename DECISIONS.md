@@ -4148,8 +4148,8 @@ Authentication) — no App-auth/token-flow change. Plans:
 
 ## ADR-0063 — Provider-Neutral Context Provenance and Current-Fact Precedence
 
-- **Status:** Proposed — Chief Architect plan review approved the direction with required Architecture changes on
-  2026-07-19; this ADR is not ratified and does not authorize implementation.
+- **Status:** ✅ **Accepted** — ratified by Product Owner and Chief Architect on 2026-07-19. Implementation requires
+  separate approval.
 - **Date:** 2026-07-19
 - **Scope:** Supersedes only the relevant context-shaping portions of **ADR-0017** and **ADR-0018** as stated in
   Relations. It does not change memory persistence, project registration, intent/capability routing, provider
