@@ -4358,6 +4358,6 @@ None is introduced by this ADR. A future feature that changes routing or adds AI
 
 ### Approval Boundary
 
-This Proposed ADR records a reviewable Architecture decision only. It authorizes no production/test implementation,
-Build/Test, Git add/Commit/Push/PR, Runtime/Discord/AI execution, DB/session/memory mutation, Live UAT, Cleanup, or
-Gate 6. Product Owner/Chief Architect ratification and a separate implementation packet are required.
+This Accepted ADR records the ratified Architecture decision only. Ratification does not authorize production/test
+implementation, Build/Test, Merge, Runtime/Discord/AI execution, DB/session/memory mutation, Live UAT, Cleanup, or
+Gate 6. Each requires separate explicit approval.
