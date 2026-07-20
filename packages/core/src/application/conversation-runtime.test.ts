@@ -6793,7 +6793,13 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
     const result = await new ConversationRuntime(deps).handle(message);
 
     expect(result.status).toBe('RESPONDED');
-    expect(composed?.context).toContain('received through platform "matrix"');
+    expect(composed?.context).toContain(
+      JSON.stringify({
+        provenance: 'CORE_RUNTIME',
+        epistemicStatus: 'AUTHORITATIVE_CURRENT_FACT',
+        content: 'The current User request was received through platform "matrix".',
+      }),
+    );
     expect(composed?.context).not.toContain('Resolved connection target:');
     expect(composed?.developer).toContain('Current authoritative facts supplied by Core');
   });
@@ -6878,17 +6884,43 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
     expect(result.status).toBe('RESPONDED');
     expect(builtTask?.projectId).toBe('quoky-gate5-disposable');
     expect(builtTask?.context.platform).toBe('Discord');
-    expect(composed?.context).toContain('received through platform "Discord"');
     expect(composed?.context).toContain(
-      'Active project id selected for this Task: "quoky-gate5-disposable"',
+      JSON.stringify({
+        provenance: 'CORE_RUNTIME',
+        epistemicStatus: 'AUTHORITATIVE_CURRENT_FACT',
+        content: 'The current User request was received through platform "Discord".',
+      }),
     );
     expect(composed?.context).toContain(
-      '[provenance=PROJECT_MEMORY; epistemic_status=NON_AUTHORITATIVE_BACKGROUND]',
+      JSON.stringify({
+        provenance: 'CORE_RUNTIME',
+        epistemicStatus: 'AUTHORITATIVE_CURRENT_FACT',
+        content:
+          'Active project id selected for this Task: "quoky-gate5-disposable".',
+      }),
     );
     expect(composed?.context).toContain(
-      '[provenance=ASSISTANT; epistemic_status=ASSISTANT_NON_AUTHORITATIVE]',
+      JSON.stringify({
+        provenance: 'PROJECT_MEMORY',
+        epistemicStatus: 'NON_AUTHORITATIVE_BACKGROUND',
+        content: '# Project: quoky-gate5-disposable',
+      }),
     );
-    expect(composed?.task).toContain('현재 연결 상태 알려줘');
+    expect(composed?.context).toContain(
+      JSON.stringify({
+        provenance: 'ASSISTANT',
+        epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
+        content: '프로젝트가 연결 대상입니다',
+      }),
+    );
+    expect(composed?.task).toBe(
+      JSON.stringify({
+        provenance: 'CORE_RUNTIME',
+        epistemicStatus: 'USER_CLAIM_OR_INTENT',
+        content: '현재 연결 상태 알려줘',
+      }),
+    );
+    expect(composed?.task).not.toContain('"provenance":"USER"');
     const providerPrompt = deliveredRequest?.prompt ?? '';
     const factsIndex = providerPrompt.indexOf('1. Current-turn facts supplied by Core');
     const backgroundIndex = providerPrompt.indexOf('2. Background resources');
