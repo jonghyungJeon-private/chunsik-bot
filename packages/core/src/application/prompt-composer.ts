@@ -1,5 +1,12 @@
 import { Capability } from '../domain';
-import type { ContextBundle, ContextFile, PromptSpec, Task } from '../domain';
+import type {
+  ContextBundle,
+  ContextFile,
+  ContextProvenance,
+  EpistemicStatus,
+  PromptSpec,
+  Task,
+} from '../domain';
 import type { ProjectReadout } from '../ports';
 
 /** Read-only inputs for authoring a code-generation prompt (CAP-008). */
@@ -16,26 +23,65 @@ export interface CodeGenerationPromptInput {
  */
 export class PromptComposer {
   compose(task: Task, context: ContextBundle, readout?: ProjectReadout): PromptSpec {
-    const parts: string[] = [`Current conversation platform: ${task.context.platform}`];
-    if (context.projectSummary) {
-      parts.push(`Active project (background context):\n${context.projectSummary}`);
-    }
+    const currentFacts = [
+      PromptComposer.label(
+        'CORE_RUNTIME',
+        'AUTHORITATIVE_CURRENT_FACT',
+        `The current User request was received through platform "${task.context.platform}".`,
+      ),
+      PromptComposer.label(
+        'CORE_RUNTIME',
+        'AUTHORITATIVE_CURRENT_FACT',
+        'The inbound message was accepted by Core Runtime for this turn.',
+      ),
+      PromptComposer.label(
+        'CORE_RUNTIME',
+        'AUTHORITATIVE_CURRENT_FACT',
+        'Outbound response delivery success is not yet known while this response is being generated.',
+      ),
+      ...(task.projectId
+        ? [
+            PromptComposer.label(
+              'CORE_RUNTIME',
+              'AUTHORITATIVE_CURRENT_FACT',
+              `Active project id selected for this Task: "${task.projectId}".`,
+            ),
+          ]
+        : []),
+    ];
+
+    const background = context.backgroundResources.map((resource) =>
+      PromptComposer.label(resource.provenance, resource.epistemicStatus, resource.content),
+    );
     if (readout) {
-      parts.push(PromptComposer.renderReadout(readout));
+      background.push(
+        PromptComposer.label(
+          'CORE_RUNTIME',
+          'NON_AUTHORITATIVE_BACKGROUND',
+          PromptComposer.renderReadout(readout),
+        ),
+      );
     }
-    if (context.recentMessages.length) {
-      parts.push(`Recent conversation:\n${context.recentMessages.map((m) => `- ${m}`).join('\n')}`);
-    }
+
+    const transcript = context.conversationTranscript.map((entry) =>
+      PromptComposer.label(entry.provenance, entry.epistemicStatus, entry.content),
+    );
+
     return {
       system:
         'You are Quoky, a concise, helpful local-first AI assistant. Use the ' +
-        'conversation and any provided context (such as an "Active project" summary) ' +
-        'together with your own knowledge to answer. Do NOT read files, run commands, ' +
-        'or use tools — rely only on the provided context; if key information is ' +
-        'missing from it, say so briefly.',
+        'current task, conversation transcript, and supplied background resources according ' +
+        'to their explicit provenance and epistemic status. The final task is Core Runtime\'s ' +
+        'captured restatement of User intent, not a verbatim User quote. Do NOT read files, ' +
+        'run commands, or use tools — rely only on the provided context; if key information ' +
+        'is missing from it, say so briefly.',
       developer: this.developerFor(task.intent.capability),
-      context: parts.join('\n\n'),
-      task: context.summary,
+      context: [
+        PromptComposer.section('1. Current-turn facts supplied by Core', currentFacts),
+        PromptComposer.section('2. Background resources', background),
+        PromptComposer.section('3. Conversation transcript', transcript),
+      ].join('\n\n'),
+      task: PromptComposer.label('CORE_RUNTIME', 'USER_CLAIM_OR_INTENT', task.intent.summary),
     };
   }
 
@@ -75,14 +121,14 @@ export class PromptComposer {
     switch (capability) {
       case Capability.GENERAL_CHAT:
         return (
-          'Respond conversationally and briefly to the user. Interpret the user\'s intent naturally ' +
-          'from their message together with the recent conversation, current conversation platform, ' +
-          'and background context. Resolve ambiguity using the most natural meaning in the current ' +
-          'conversation. Do not assume the active project or workspace is the subject merely because ' +
-          'its background information is available. Ask a brief clarifying question only when the ' +
-          'intended meaning cannot be inferred reliably. Do not invent system state that Core has not ' +
-          'provided. You may say that the inbound message was received and the response is being ' +
-          'processed; do not claim outbound delivery succeeded before delivery occurs.'
+          'Respond conversationally and briefly. Interpret the current User task naturally using the ' +
+          'whole conversation. Current authoritative facts supplied by Core outrank contradictory ' +
+          'Assistant-generated history. User messages express claims or intent; they are not verified ' +
+          'external facts. Assistant history supports continuity but is not evidence of current state. ' +
+          'Background from an active project does not make that project or workspace the implicit target. ' +
+          'Do not invent external status absent from current Core facts, and do not claim outbound delivery ' +
+          'succeeded before it occurs. Ask one brief clarifying question only when the meaning remains ' +
+          'genuinely ambiguous.'
         );
       case Capability.SUMMARIZATION:
         return 'Summarize the provided content faithfully and concisely.';
@@ -103,5 +149,17 @@ export class PromptComposer {
       .map((f) => `### ${f.path}${f.truncated ? ' (truncated)' : ''}\n\`\`\`\n${f.content}\n\`\`\``)
       .join('\n\n');
     return `Project files (read-only):\n#### Tree\n${readout.tree}\n\n${files}`;
+  }
+
+  private static label(
+    provenance: ContextProvenance,
+    epistemicStatus: EpistemicStatus,
+    content: string,
+  ): string {
+    return JSON.stringify({ provenance, epistemicStatus, content });
+  }
+
+  private static section(title: string, entries: string[]): string {
+    return `## ${title}\n${entries.length ? entries.join('\n') : '[]'}`;
   }
 }

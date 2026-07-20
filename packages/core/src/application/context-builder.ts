@@ -1,4 +1,11 @@
-import type { ContextBundle, Id, MemoryScope, Task } from '../domain';
+import type {
+  ContextBundle,
+  ConversationTranscriptEntry,
+  Id,
+  MemoryRecord,
+  MemoryScope,
+  Task,
+} from '../domain';
 import type { MemoryManager } from './memory-manager';
 
 /** Default number of recent turns to include (ADR-0017). */
@@ -31,19 +38,45 @@ export class ContextBuilder {
 
     const bundle: ContextBundle = {
       taskId: task.id,
-      summary: task.intent.summary,
-      recentMessages: recent.map((r) => {
-        const role = typeof r.metadata?.role === 'string' ? r.metadata.role : 'user';
-        return `${role}: ${ContextBuilder.truncate(r.content, MAX_MEMORY_CHARS)}`;
-      }),
+      conversationTranscript: recent.map((record) => ContextBuilder.toTranscriptEntry(record)),
+      backgroundResources: [],
     };
 
     if (task.projectId) {
       const project = await this.memory.projectMemory(task.projectId);
-      if (project) bundle.projectSummary = ContextBuilder.truncate(project.content, MAX_PROJECT_CHARS);
+      if (project) {
+        bundle.backgroundResources.push({
+          content: ContextBuilder.truncate(project.content, MAX_PROJECT_CHARS),
+          provenance: 'PROJECT_MEMORY',
+          epistemicStatus: 'NON_AUTHORITATIVE_BACKGROUND',
+        });
+      }
     }
 
     return bundle;
+  }
+
+  private static toTranscriptEntry(record: MemoryRecord): ConversationTranscriptEntry {
+    const content = ContextBuilder.truncate(record.content, MAX_MEMORY_CHARS);
+    if (record.metadata?.role === 'user') {
+      return {
+        content,
+        provenance: 'USER',
+        epistemicStatus: 'USER_CLAIM_OR_INTENT',
+      };
+    }
+    if (record.metadata?.role === 'assistant') {
+      return {
+        content,
+        provenance: 'ASSISTANT',
+        epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
+      };
+    }
+    return {
+      content,
+      provenance: 'LEGACY_UNKNOWN',
+      epistemicStatus: 'NON_AUTHORITATIVE_TRANSCRIPT',
+    };
   }
 
   private static truncate(text: string, max: number): string {
