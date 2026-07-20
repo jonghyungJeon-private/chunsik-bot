@@ -57,6 +57,7 @@ import type { AiRequest, Logger, LogFields, StorageProvider } from '../ports';
 import { InvalidTaskTransitionError } from '../errors';
 import { TaskManager } from './task-manager';
 import { PromptComposer } from './prompt-composer';
+import { PromptRenderer } from './prompt-renderer';
 import { ResponseComposer } from './response-composer';
 import type { TestResultDetail } from './response-composer';
 import { IntentClassifier } from './intent-classifier';
@@ -6771,7 +6772,11 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
       tasks: new TaskManager(storage),
       contextBuilder: {
         async build(task) {
-          return { taskId: task.id, summary: task.intent.summary, recentMessages: [] };
+          return {
+            taskId: task.id,
+            conversationTranscript: [],
+            backgroundResources: [],
+          };
         },
       },
       promptComposer: new PromptComposer(),
@@ -6788,9 +6793,122 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
     const result = await new ConversationRuntime(deps).handle(message);
 
     expect(result.status).toBe('RESPONDED');
-    expect(composed?.context).toContain('Current conversation platform: matrix');
+    expect(composed?.context).toContain('received through platform "matrix"');
     expect(composed?.context).not.toContain('Resolved connection target:');
-    expect(composed?.developer).toContain('current conversation platform');
+    expect(composed?.developer).toContain('Current authoritative facts supplied by Core');
+  });
+
+  it('passes the contaminated ADR-0063 contract through one GENERAL_CHAT Provider call without execution collaborators', async () => {
+    const { storage } = makeTaskStorage();
+    const intent = {
+      ...intentOf(Capability.GENERAL_CHAT, IntentType.CHAT, true),
+      summary: '현재 연결 상태 알려줘',
+    };
+    const { deps: base, calls } = makeDeps({
+      intent,
+      session: sessionOf({ activeProjectId: 'quoky-gate5-disposable' }),
+    });
+    let builtTask: Task | undefined;
+    let composed: PromptSpec | undefined;
+    let deliveredRequest: AiRequest | undefined;
+    let providerSelects = 0;
+    let providerExecutions = 0;
+    const renderer = new PromptRenderer();
+    const deps: ConversationRuntimeDeps = {
+      ...base,
+      tasks: new TaskManager(storage),
+      contextBuilder: {
+        async build(task) {
+          builtTask = task;
+          return {
+            taskId: task.id,
+            backgroundResources: [
+              {
+                content: '# Project: quoky-gate5-disposable',
+                provenance: 'PROJECT_MEMORY',
+                epistemicStatus: 'NON_AUTHORITATIVE_BACKGROUND',
+              },
+            ],
+            conversationTranscript: [
+              {
+                content: '현재 연결상태 알려줘',
+                provenance: 'USER',
+                epistemicStatus: 'USER_CLAIM_OR_INTENT',
+              },
+              {
+                content: '프로젝트가 연결 대상입니다',
+                provenance: 'ASSISTANT',
+                epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
+              },
+            ],
+          };
+        },
+      },
+      promptComposer: new PromptComposer(),
+      promptRenderer: {
+        render(spec, options) {
+          composed = spec;
+          return renderer.render(spec, options);
+        },
+      },
+      router: {
+        async select(capability) {
+          providerSelects++;
+          expect(capability).toBe(Capability.GENERAL_CHAT);
+          return {
+            id: 'single-general-chat-provider',
+            capabilities: [{ capability: Capability.GENERAL_CHAT, priority: 1 }],
+            async isAvailable() {
+              return true;
+            },
+            async execute(request) {
+              providerExecutions++;
+              deliveredRequest = request;
+              return { text: '확인 가능한 현재 사실만 답변합니다.', artifacts: [] };
+            },
+          };
+        },
+      },
+    };
+    const message = messageOf('현재 연결 상태 알려줘');
+    message.context = { ...message.context, platform: 'Discord' };
+
+    const result = await new ConversationRuntime(deps).handle(message);
+
+    expect(result.status).toBe('RESPONDED');
+    expect(builtTask?.projectId).toBe('quoky-gate5-disposable');
+    expect(builtTask?.context.platform).toBe('Discord');
+    expect(composed?.context).toContain('received through platform "Discord"');
+    expect(composed?.context).toContain(
+      'Active project id selected for this Task: "quoky-gate5-disposable"',
+    );
+    expect(composed?.context).toContain(
+      '[provenance=PROJECT_MEMORY; epistemic_status=NON_AUTHORITATIVE_BACKGROUND]',
+    );
+    expect(composed?.context).toContain(
+      '[provenance=ASSISTANT; epistemic_status=ASSISTANT_NON_AUTHORITATIVE]',
+    );
+    expect(composed?.task).toContain('현재 연결 상태 알려줘');
+    const providerPrompt = deliveredRequest?.prompt ?? '';
+    const factsIndex = providerPrompt.indexOf('1. Current-turn facts supplied by Core');
+    const backgroundIndex = providerPrompt.indexOf('2. Background resources');
+    const transcriptIndex = providerPrompt.indexOf('3. Conversation transcript');
+    const currentTaskIndex = providerPrompt.indexOf('# Task');
+    expect(factsIndex).toBeGreaterThanOrEqual(0);
+    expect(backgroundIndex).toBeGreaterThan(factsIndex);
+    expect(transcriptIndex).toBeGreaterThan(backgroundIndex);
+    expect(currentTaskIndex).toBeGreaterThan(transcriptIndex);
+    expect(providerPrompt.slice(currentTaskIndex)).toContain('현재 연결 상태 알려줘');
+    expect(providerSelects).toBe(1);
+    expect(providerExecutions).toBe(1);
+    expect(calls.run + calls.resume + calls.decide + calls.requestForRisk).toBe(0);
+    expect(
+      calls.workspaceOpen +
+        calls.workspaceList +
+        calls.workspaceDiff +
+        calls.workspaceApply +
+        calls.commandRun,
+    ).toBe(0);
   });
 
   it('a GENERAL_CHAT work turn drives the REAL TaskManager PENDING → PLANNING → RUNNING → COMPLETED (legal map, no InvalidTaskTransitionError) → RESPONDED (not a sanitized error)', async () => {
