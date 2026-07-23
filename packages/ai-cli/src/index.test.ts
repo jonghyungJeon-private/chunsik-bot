@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
 import { AiFailureKind, AiProviderError, ArtifactKind, Capability, NotImplementedError } from '@chunsik/core';
@@ -28,6 +29,7 @@ describe('ClaudeCliProvider', () => {
     expect(calls[0]?.args).toEqual(['-p']);
     expect(calls[0]?.opts.input).toContain('do the thing');
     expect(calls[0]?.opts.cwd).toBeTruthy();
+    expect(calls[0]?.opts.env).toBeUndefined();
     expect(res.text).toBe('hi there');
     expect(res.artifacts?.[0]?.kind).toBe(ArtifactKind.MARKDOWN_REPORT);
   });
@@ -69,13 +71,18 @@ describe('ClaudeCliProvider', () => {
   });
 
   it('isAvailable is true when `--version` exits 0', async () => {
-    const runner: CliRunner = async (_bin, args) => ({
-      code: args[0] === '--version' ? 0 : 1,
-      stdout: '',
-      stderr: '',
-      timedOut: false,
-    });
+    const calls: CliRunOptions[] = [];
+    const runner: CliRunner = async (_bin, args, opts) => {
+      calls.push(opts);
+      return {
+        code: args[0] === '--version' ? 0 : 1,
+        stdout: '',
+        stderr: '',
+        timedOut: false,
+      };
+    };
     expect(await new ClaudeCliProvider('claude', { runner }).isAvailable()).toBe(true);
+    expect(calls[0]?.env).toBeUndefined();
   });
 });
 
@@ -120,8 +127,59 @@ describe('OllamaCliProvider (CAP-009, ADR-0030) — suggest-only local code gene
     expect(calls[0]?.args).toEqual(['run', 'llama3.1']);
     expect(calls[0]?.opts.input).toContain('do the thing'); // prompt via stdin, not argv
     expect(calls[0]?.opts.cwd).toBe(tmpdir()); // neutral cwd
+    expect(calls[0]?.opts.env).toEqual({
+      NO_COLOR: '1',
+      CLICOLOR: '0',
+      CLICOLOR_FORCE: '0',
+    });
     expect(res.text).toBe('proposed change');
     expect(res.artifacts?.[0]?.kind).toBe(ArtifactKind.MARKDOWN_REPORT);
+    expect(res.audit).toEqual({
+      model: 'llama3.1',
+      sanitizedCommand: ['ollama', 'run', 'llama3.1'],
+      promptSha256: createHash('sha256').update(Buffer.from(PROMPT, 'utf8')).digest('hex'),
+      captureMode: 'pipe',
+      colorDisabled: true,
+      outputSanitized: true,
+    });
+  });
+
+  it('sanitizes stdout before using it for result text and the Artifact without merging stderr', async () => {
+    const res = await ollamaExec({
+      code: 0,
+      stdout: '\x1B[K## 결과\n\n```ts\nconst 상태 = "정상";\n```\x00',
+      stderr: 'machine progress that must not become response text',
+      timedOut: false,
+    });
+    const expected = '## 결과\n\n```ts\nconst 상태 = "정상";\n```';
+    expect(res.text).toBe(expected);
+    expect(res.artifacts?.[0]?.content).toBe(expected);
+    expect(res.text).not.toContain('machine progress');
+  });
+
+  it('treats ANSI/control-only stdout as EMPTY_OUTPUT after sanitation', async () => {
+    await expect(
+      ollamaExec({ code: 0, stdout: '\x1B[K\x1B[31m\x1B[0m\x00', stderr: '', timedOut: false }),
+    ).rejects.toMatchObject({ kind: AiFailureKind.EMPTY_OUTPUT });
+  });
+
+  it('stores only allowlisted audit facts, never the prompt, stdin, environment, or custom bin path', async () => {
+    const fakeSecret = ['A'.repeat(24), 'B'.repeat(6), 'C'.repeat(30)].join('.');
+    const prompt = `private prompt ${fakeSecret}`;
+    const res = await new OllamaCliProvider({
+      bin: `/private/${fakeSecret}/ollama`,
+      runner: runnerOf({ code: 0, stdout: 'ok', stderr: '', timedOut: false }),
+    }).execute({
+      capability: Capability.GENERAL_CHAT,
+      prompt,
+    });
+    const serialized = JSON.stringify(res.audit);
+    expect(serialized).not.toContain(prompt);
+    expect(serialized).not.toContain(fakeSecret);
+    expect(serialized).not.toContain('NO_COLOR');
+    expect(Object.keys(res.audit ?? {}).sort()).toEqual(
+      ['captureMode', 'colorDisabled', 'model', 'outputSanitized', 'promptSha256', 'sanitizedCommand'].sort(),
+    );
   });
 
   it('honors a custom model in argv: `ollama run <model>`', async () => {
@@ -183,15 +241,24 @@ describe('OllamaCliProvider (CAP-009, ADR-0030) — suggest-only local code gene
   });
 
   it('isAvailable is true when `--version` exits 0, false otherwise', async () => {
-    const up: CliRunner = async (_bin, args) => ({
-      code: args[0] === '--version' ? 0 : 1,
-      stdout: '',
-      stderr: '',
-      timedOut: false,
-    });
+    const calls: CliRunOptions[] = [];
+    const up: CliRunner = async (_bin, args, opts) => {
+      calls.push(opts);
+      return {
+        code: args[0] === '--version' ? 0 : 1,
+        stdout: '',
+        stderr: '',
+        timedOut: false,
+      };
+    };
     const down: CliRunner = async () => ({ code: 1, stdout: '', stderr: 'no', timedOut: false });
     expect(await new OllamaCliProvider({ runner: up }).isAvailable()).toBe(true);
     expect(await new OllamaCliProvider({ runner: down }).isAvailable()).toBe(false);
+    expect(calls[0]?.env).toEqual({
+      NO_COLOR: '1',
+      CLICOLOR: '0',
+      CLICOLOR_FORCE: '0',
+    });
   });
 
   it('advertises CODE_IMPLEMENTATION at priority 40 (below Claude 50 — a fallback for code)', () => {
