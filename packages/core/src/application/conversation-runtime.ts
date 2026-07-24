@@ -56,6 +56,7 @@ import type {
   InboundMessage,
   Intent,
   IsoTimestamp,
+  Metadata,
   OutboundMessage,
   PatchGenerationInput,
   PatchRef,
@@ -539,7 +540,10 @@ export interface ConversationRuntimeDeps {
     ): Promise<Task>;
     transition(task: Task, to: TaskStatus): Promise<Task>;
     startRun(task: Task, capability: Capability): Promise<TaskRun>;
-    completeRun(run: TaskRun, opts: { artifactIds: Id[]; providerId?: string }): Promise<unknown>;
+    completeRun(
+      run: TaskRun,
+      opts: { artifactIds: Id[]; providerId?: string; metadata?: Metadata },
+    ): Promise<unknown>;
     failRun(run: TaskRun, summary: string, opts: { providerId?: string }): Promise<unknown>;
   };
   readonly workspace: {
@@ -5059,7 +5063,11 @@ export class ConversationRuntime {
       const result = await provider.execute(aiRequest);
 
       const artifactIds = await this.deps.artifacts.persistAll(task.id, run.id, result.artifacts ?? []);
-      await this.deps.tasks.completeRun(run, { artifactIds, ...(providerId ? { providerId } : {}) });
+      await this.deps.tasks.completeRun(run, {
+        artifactIds,
+        ...(providerId ? { providerId } : {}),
+        ...(result.audit ? { metadata: result.audit } : {}),
+      });
       await this.deps.memory.recordAssistant(result.text, message.context, task.sessionId ?? session.id);
       if (capability === Capability.PROJECT_ANALYSIS && task.projectId) {
         await this.deps.memory.recordToolMemory(result.text, {

@@ -56,4 +56,6 @@ export interface TaskRun {
   durationMs?: number;
   /** Failure summary (classified kind + masked technical detail) when FAILED. */
   error?: string;
+  /** Optional provider-owned audit facts. Core stores but does not interpret them. */
+  metadata?: Metadata;
 }

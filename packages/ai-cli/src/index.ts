@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { AiFailureKind, AiProviderError, ArtifactKind, newId, now } from '@chunsik/core';
 import type {
@@ -9,10 +10,21 @@ import type {
 import { BaseCliAiProvider, Capability } from './base-cli-provider';
 import { defaultCliRunner, maskSecrets } from './cli-runner';
 import type { CliRunner } from './cli-runner';
+import { sanitizeTerminalOutput } from './output-sanitizer';
 
 export { BaseCliAiProvider };
 export { defaultCliRunner, maskSecrets } from './cli-runner';
 export type { CliRunner, CliRunOptions, CliRunResult } from './cli-runner';
+
+const OLLAMA_COLOR_ENV = {
+  NO_COLOR: '1',
+  CLICOLOR: '0',
+  CLICOLOR_FORCE: '0',
+} as const;
+
+function sanitizedModelName(model: string): string {
+  return /^[A-Za-z0-9._:/-]{1,200}$/.test(model) ? model : '[redacted]';
+}
 
 export interface CliProviderOptions {
   runner?: CliRunner;
@@ -205,6 +217,7 @@ export class OllamaCliProvider extends BaseCliAiProvider {
         cwd: tmpdir(),
         input: '',
         timeoutMs: 10_000,
+        env: OLLAMA_COLOR_ENV,
       });
       return r.code === 0;
     } catch {
@@ -218,8 +231,14 @@ export class OllamaCliProvider extends BaseCliAiProvider {
     // ingest workspace files (defense in depth on top of CAP-008's no-workspace AiRequest).
     const cwd = tmpdir();
     const timeoutMs = request.timeoutMs ?? this.defaultTimeoutMs;
+    const promptSha256 = createHash('sha256').update(Buffer.from(input, 'utf8')).digest('hex');
 
-    const result = await this.runner(this.bin, this.buildArgs(), { cwd, input, timeoutMs });
+    const result = await this.runner(this.bin, this.buildArgs(), {
+      cwd,
+      input,
+      timeoutMs,
+      env: OLLAMA_COLOR_ENV,
+    });
 
     // Classified failure taxonomy (ADR-0015). stderr is masked before it leaves. Ollama is
     // local + auth-free, so there is no AUTH_REQUIRED path.
@@ -239,11 +258,12 @@ export class OllamaCliProvider extends BaseCliAiProvider {
       );
     }
 
-    const text = result.stdout.trim();
+    const text = sanitizeTerminalOutput(result.stdout).trim();
     if (!text) {
       throw new AiProviderError(AiFailureKind.EMPTY_OUTPUT, 'ollama CLI returned empty output');
     }
 
+    const model = sanitizedModelName(this.model);
     const artifact: Artifact = {
       id: newId(),
       kind: ArtifactKind.MARKDOWN_REPORT,
@@ -255,6 +275,14 @@ export class OllamaCliProvider extends BaseCliAiProvider {
       text,
       artifacts: [artifact],
       raw: { exitCode: result.code, stderr: maskSecrets(result.stderr).slice(0, 1000) },
+      audit: {
+        model,
+        sanitizedCommand: ['ollama', 'run', model],
+        promptSha256,
+        captureMode: 'pipe',
+        colorDisabled: true,
+        outputSanitized: true,
+      },
     };
   }
 }

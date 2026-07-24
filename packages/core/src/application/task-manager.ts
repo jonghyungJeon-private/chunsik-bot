@@ -2,7 +2,7 @@ import { InvalidTaskTransitionError } from '../errors';
 import { newId } from '../util/id';
 import { now } from '../util/clock';
 import { Capability, RiskLevel, TaskRunStatus, TaskStatus } from '../domain';
-import type { ConversationContext, Id, Intent, Task, TaskRun } from '../domain';
+import type { ConversationContext, Id, Intent, Metadata, Task, TaskRun } from '../domain';
 import type { StorageProvider } from '../ports';
 
 /**
@@ -89,7 +89,7 @@ export class TaskManager {
 
   async completeRun(
     run: TaskRun,
-    result: { artifactIds: Id[]; providerId?: string },
+    result: { artifactIds: Id[]; providerId?: string; metadata?: Metadata },
   ): Promise<TaskRun> {
     const finishedAt = now();
     const updated: TaskRun = {
@@ -99,6 +99,7 @@ export class TaskManager {
       finishedAt,
       durationMs: TaskManager.elapsed(run.startedAt, finishedAt),
       ...(result.providerId ? { providerId: result.providerId } : {}),
+      ...(result.metadata ? { metadata: result.metadata } : {}),
     };
     return this.storage.taskRuns.save(updated);
   }

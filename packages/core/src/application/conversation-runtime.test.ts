@@ -6967,6 +6967,49 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
     expect(runSaves.map((r) => r.status)).toEqual([TaskRunStatus.STARTED, TaskRunStatus.SUCCEEDED]);
   });
 
+  it('passes opaque provider audit metadata to the completed TaskRun without interpreting it', async () => {
+    const { storage, runSaves } = makeTaskStorage();
+    const { deps: base } = makeDeps({
+      intent: intentOf(Capability.GENERAL_CHAT, IntentType.CHAT, true),
+    });
+    const audit = {
+      model: 'llama3.1',
+      sanitizedCommand: ['ollama', 'run', 'llama3.1'],
+      promptSha256: 'a'.repeat(64),
+      captureMode: 'pipe',
+      colorDisabled: true,
+      outputSanitized: true,
+    };
+    const deps: ConversationRuntimeDeps = {
+      ...base,
+      ...workTurnHappyPathDeps(),
+      tasks: new TaskManager(storage),
+      router: {
+        async select() {
+          return {
+            id: 'provider-with-audit',
+            capabilities: [{ capability: Capability.GENERAL_CHAT, priority: 1 }],
+            async isAvailable() {
+              return true;
+            },
+            async execute() {
+              return { text: 'sanitized response', artifacts: [], audit };
+            },
+          };
+        },
+      },
+    };
+
+    const result = await new ConversationRuntime(deps).handle(messageOf('audit metadata test'));
+
+    expect(result.status).toBe('RESPONDED');
+    expect(runSaves.at(-1)).toMatchObject({
+      status: TaskRunStatus.SUCCEEDED,
+      providerId: 'provider-with-audit',
+      metadata: audit,
+    });
+  });
+
   it('a PROJECT_ANALYSIS work turn ALSO reaches RUNNING then COMPLETED via the legal map (the other non-execution work path)', async () => {
     const { storage, taskSaves } = makeTaskStorage();
     const { deps: base } = makeDeps({ intent: intentOf(Capability.PROJECT_ANALYSIS, IntentType.PROJECT_ANALYSIS, true) });

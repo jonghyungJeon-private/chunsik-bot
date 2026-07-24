@@ -6,6 +6,8 @@ export interface CliRunOptions {
   /** Text written to the child's stdin (the prompt — never passed as an argv). */
   input: string;
   timeoutMs: number;
+  /** Provider-owned child environment overrides; the parent environment is preserved. */
+  env?: Readonly<Record<string, string>>;
 }
 
 export interface CliRunResult {
@@ -23,7 +25,11 @@ export type CliRunner = (bin: string, args: string[], options: CliRunOptions) =>
 
 export const defaultCliRunner: CliRunner = (bin, args, options) =>
   new Promise<CliRunResult>((resolve) => {
-    const child = spawn(bin, args, { cwd: options.cwd, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(bin, args, {
+      cwd: options.cwd,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      ...(options.env ? { env: { ...process.env, ...options.env } } : {}),
+    });
     let stdout = '';
     let stderr = '';
     let timedOut = false;

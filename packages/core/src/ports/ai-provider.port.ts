@@ -51,6 +51,8 @@ export interface AiExecutionResult {
   text: string;
   /** Structured outputs (diffs, patches, logs) the run produced. */
   artifacts?: Artifact[];
+  /** Sanitized, provider-owned audit facts for TaskRun persistence. */
+  audit?: Metadata;
   /** Raw CLI output for debugging; never surfaced to the user by default. */
   raw?: Metadata;
 }
