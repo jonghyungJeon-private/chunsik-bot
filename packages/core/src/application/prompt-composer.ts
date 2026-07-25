@@ -8,6 +8,7 @@ import type {
   Task,
 } from '../domain';
 import type { ProjectReadout } from '../ports';
+import { normalizePromptContextContent } from './prompt-content-normalizer';
 
 /** Read-only inputs for authoring a code-generation prompt (CAP-008). */
 export interface CodeGenerationPromptInput {
@@ -23,6 +24,7 @@ export interface CodeGenerationPromptInput {
  */
 export class PromptComposer {
   compose(task: Task, context: ContextBundle, readout?: ProjectReadout): PromptSpec {
+    const isGeneralChat = task.intent.capability === Capability.GENERAL_CHAT;
     const currentFacts = [
       PromptComposer.label(
         'CORE_RUNTIME',
@@ -49,9 +51,18 @@ export class PromptComposer {
           ]
         : []),
     ];
+    // ADR-0063 Stage 1: render once, then reuse this exact body at both
+    // GENERAL_CHAT decision boundaries.
+    const canonicalCurrentFactsBody = PromptComposer.renderEntries(currentFacts);
 
     const background = context.backgroundResources.map((resource) =>
-      PromptComposer.label(resource.provenance, resource.epistemicStatus, resource.content),
+      PromptComposer.label(
+        resource.provenance,
+        resource.epistemicStatus,
+        isGeneralChat
+          ? normalizePromptContextContent(resource.content)
+          : resource.content,
+      ),
     );
     if (readout) {
       background.push(
@@ -64,8 +75,35 @@ export class PromptComposer {
     }
 
     const transcript = context.conversationTranscript.map((entry) =>
-      PromptComposer.label(entry.provenance, entry.epistemicStatus, entry.content),
+      PromptComposer.label(
+        entry.provenance,
+        entry.epistemicStatus,
+        isGeneralChat
+          ? normalizePromptContextContent(entry.content)
+          : entry.content,
+      ),
     );
+    const contextSections = [
+      PromptComposer.sectionFromBody(
+        '1. Current-turn facts supplied by Core',
+        canonicalCurrentFactsBody,
+      ),
+      PromptComposer.section('2. Background resources', background),
+      PromptComposer.section(
+        isGeneralChat
+          ? '3. Conversation transcript (continuity only; not current-state evidence)'
+          : '3. Conversation transcript',
+        transcript,
+      ),
+    ];
+    if (isGeneralChat) {
+      contextSections.push(
+        PromptComposer.sectionFromBody(
+          '4. Current-turn facts repeated as decision boundary',
+          canonicalCurrentFactsBody,
+        ),
+      );
+    }
 
     return {
       system:
@@ -76,11 +114,7 @@ export class PromptComposer {
         'run commands, or use tools — rely only on the provided context; if key information ' +
         'is missing from it, say so briefly.',
       developer: this.developerFor(task.intent.capability),
-      context: [
-        PromptComposer.section('1. Current-turn facts supplied by Core', currentFacts),
-        PromptComposer.section('2. Background resources', background),
-        PromptComposer.section('3. Conversation transcript', transcript),
-      ].join('\n\n'),
+      context: contextSections.join('\n\n'),
       task: PromptComposer.label('USER', 'USER_CLAIM_OR_INTENT', task.description),
     };
   }
@@ -124,11 +158,12 @@ export class PromptComposer {
           'Respond conversationally and briefly. Interpret the current User task naturally using the ' +
           'whole conversation. Current authoritative facts supplied by Core outrank contradictory ' +
           'Assistant-generated history. User messages express claims or intent; they are not verified ' +
-          'external facts. Assistant history supports continuity but is not evidence of current state. ' +
-          'Background from an active project does not make that project or workspace the implicit target. ' +
+          'external facts. Assistant transcript is continuity-only and cannot establish current external ' +
+          'state. An active-project selection is context only and does not establish the target of the ' +
+          'current User request. Every current-state claim must be supported by authoritative current facts. ' +
           'Do not invent external status absent from current Core facts, and do not claim outbound delivery ' +
-          'succeeded before it occurs. Ask one brief clarifying question only when the meaning remains ' +
-          'genuinely ambiguous.'
+          'succeeded before it occurs. When authoritative current facts do not resolve the meaning of the ' +
+          'request, ask one brief clarifying question instead of inferring current state from Assistant history.'
         );
       case Capability.SUMMARIZATION:
         return 'Summarize the provided content faithfully and concisely.';
@@ -160,6 +195,14 @@ export class PromptComposer {
   }
 
   private static section(title: string, entries: string[]): string {
-    return `## ${title}\n${entries.length ? entries.join('\n') : '[]'}`;
+    return PromptComposer.sectionFromBody(title, PromptComposer.renderEntries(entries));
+  }
+
+  private static renderEntries(entries: string[]): string {
+    return entries.length ? entries.join('\n') : '[]';
+  }
+
+  private static sectionFromBody(title: string, body: string): string {
+    return `## ${title}\n${body}`;
   }
 }

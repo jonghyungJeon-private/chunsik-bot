@@ -1,7 +1,9 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
+import { PromptComposer } from './prompt-composer';
 import { PromptRenderer } from './prompt-renderer';
-import { Capability } from '../domain';
-import type { PromptSpec, WorkspaceRef } from '../domain';
+import { Capability, IntentType, RiskLevel, TaskStatus } from '../domain';
+import type { ContextBundle, PromptSpec, Task, WorkspaceRef } from '../domain';
 
 const spec: PromptSpec = { system: 'SYS', developer: 'DEV', context: 'CTX', task: 'TASK' };
 const renderer = new PromptRenderer();
@@ -34,5 +36,92 @@ describe('PromptRenderer (CAP-008, ADR-0029)', () => {
     expect(req.workspace?.id).toBe('w1');
     expect(req.contextFiles?.[0]?.path).toBe('a.ts');
     expect(req.timeoutMs).toBe(5000);
+  });
+
+  it('keeps the GENERAL_CHAT decision-boundary order and deterministic prompt hash', () => {
+    const task: Task = {
+      id: 'task-deterministic',
+      title: 'Synthetic status request',
+      description: 'What is the current status?',
+      status: TaskStatus.PENDING,
+      intent: {
+        type: IntentType.CHAT,
+        capability: Capability.GENERAL_CHAT,
+        confidence: 1,
+        requiresWork: true,
+        summary: 'What is the current status?',
+      },
+      riskLevel: RiskLevel.LOW,
+      context: {
+        platform: 'synthetic-platform',
+        channelId: 'channel-1',
+        userId: 'user-1',
+      },
+      projectId: 'project-alpha',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    };
+    const context: ContextBundle = {
+      taskId: task.id,
+      backgroundResources: [
+        {
+          content: '# Project: project-alpha',
+          provenance: 'PROJECT_MEMORY',
+          epistemicStatus: 'NON_AUTHORITATIVE_BACKGROUND',
+        },
+      ],
+      conversationTranscript: [
+        {
+          content: 'The project is the current external target.',
+          provenance: 'ASSISTANT',
+          epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
+        },
+      ],
+    };
+    const composer = new PromptComposer();
+    const first = renderer.render(composer.compose(task, context), {
+      capability: Capability.GENERAL_CHAT,
+    });
+    const second = renderer.render(composer.compose(task, context), {
+      capability: Capability.GENERAL_CHAT,
+    });
+
+    const system = first.prompt.indexOf('# System');
+    const developer = first.prompt.indexOf('# Developer');
+    const promptContext = first.prompt.indexOf('# Context');
+    const primaryFacts = first.prompt.indexOf(
+      '## 1. Current-turn facts supplied by Core',
+    );
+    const background = first.prompt.indexOf('## 2. Background resources');
+    const transcript = first.prompt.indexOf(
+      '## 3. Conversation transcript (continuity only; not current-state evidence)',
+    );
+    const repeatedFacts = first.prompt.indexOf(
+      '## 4. Current-turn facts repeated as decision boundary',
+    );
+    const taskSection = first.prompt.indexOf('# Task');
+
+    expect(system).toBe(0);
+    expect(developer).toBeGreaterThan(system);
+    expect(promptContext).toBeGreaterThan(developer);
+    expect(primaryFacts).toBeGreaterThan(promptContext);
+    expect(background).toBeGreaterThan(primaryFacts);
+    expect(transcript).toBeGreaterThan(background);
+    expect(repeatedFacts).toBeGreaterThan(transcript);
+    expect(taskSection).toBeGreaterThan(repeatedFacts);
+    expect(first.prompt.slice(taskSection)).toBe(
+      '# Task\n' +
+        JSON.stringify({
+          provenance: 'USER',
+          epistemicStatus: 'USER_CLAIM_OR_INTENT',
+          content: task.description,
+        }),
+    );
+
+    expect(second.prompt).toBe(first.prompt);
+    const hash = (value: string): string =>
+      createHash('sha256').update(value).digest('hex');
+    expect(hash(second.prompt)).toBe(hash(first.prompt));
+    expect((first as unknown as { promptSpec?: unknown }).promptSpec).toBeUndefined();
   });
 });
