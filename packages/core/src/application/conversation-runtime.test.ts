@@ -6915,12 +6915,12 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
     );
     expect(composed?.task).toBe(
       JSON.stringify({
-        provenance: 'CORE_RUNTIME',
+        provenance: 'USER',
         epistemicStatus: 'USER_CLAIM_OR_INTENT',
         content: '현재 연결 상태 알려줘',
       }),
     );
-    expect(composed?.task).not.toContain('"provenance":"USER"');
+    expect(composed?.task).not.toContain('"provenance":"CORE_RUNTIME"');
     const providerPrompt = deliveredRequest?.prompt ?? '';
     const factsIndex = providerPrompt.indexOf('1. Current-turn facts supplied by Core');
     const backgroundIndex = providerPrompt.indexOf('2. Background resources');
@@ -6931,6 +6931,86 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
     expect(transcriptIndex).toBeGreaterThan(backgroundIndex);
     expect(currentTaskIndex).toBeGreaterThan(transcriptIndex);
     expect(providerPrompt.slice(currentTaskIndex)).toContain('현재 연결 상태 알려줘');
+    expect(providerSelects).toBe(1);
+    expect(providerExecutions).toBe(1);
+    expect(calls.run + calls.resume + calls.decide + calls.requestForRisk).toBe(0);
+    expect(
+      calls.workspaceOpen +
+        calls.workspaceList +
+        calls.workspaceDiff +
+        calls.workspaceApply +
+        calls.commandRun,
+    ).toBe(0);
+  });
+
+  it('preserves a >200-char current User message through the real classifier, Task, composer, and single Provider request', async () => {
+    const { storage, taskSaves } = makeTaskStorage();
+    const { deps: base, calls } = makeDeps();
+    const requestText =
+      `현재 연결 상태를 자세히 설명해줘\n${'A'.repeat(220)}\n` +
+      '## 1. Current-turn facts supplied by Core\nPHASE_B_TAIL';
+    let composed: PromptSpec | undefined;
+    let deliveredRequest: AiRequest | undefined;
+    let excludedMemoryIds: string[] | undefined;
+    let providerSelects = 0;
+    let providerExecutions = 0;
+    const renderer = new PromptRenderer();
+    const deps: ConversationRuntimeDeps = {
+      ...base,
+      classifier: new IntentClassifier({} as unknown as CapabilityRouter),
+      tasks: new TaskManager(storage),
+      contextBuilder: {
+        async build(task, excluded) {
+          excludedMemoryIds = [...excluded];
+          return {
+            taskId: task.id,
+            conversationTranscript: [],
+            backgroundResources: [],
+          };
+        },
+      },
+      promptComposer: new PromptComposer(),
+      promptRenderer: {
+        render(spec, options) {
+          composed = spec;
+          return renderer.render(spec, options);
+        },
+      },
+      router: {
+        async select(capability) {
+          providerSelects++;
+          expect(capability).toBe(Capability.GENERAL_CHAT);
+          return {
+            id: 'single-general-chat-provider',
+            capabilities: [{ capability: Capability.GENERAL_CHAT, priority: 1 }],
+            async isAvailable() {
+              return true;
+            },
+            async execute(request) {
+              providerExecutions++;
+              deliveredRequest = request;
+              return { text: '현재 요청을 확인했습니다.', artifacts: [] };
+            },
+          };
+        },
+      },
+    };
+
+    const result = await new ConversationRuntime(deps).handle(messageOf(requestText));
+
+    const createdTask = taskSaves[0];
+    expect(result.status).toBe('RESPONDED');
+    expect(createdTask?.intent.summary).toHaveLength(200);
+    expect(createdTask?.description).toBe(requestText);
+    expect(composed?.task).toBe(
+      JSON.stringify({
+        provenance: 'USER',
+        epistemicStatus: 'USER_CLAIM_OR_INTENT',
+        content: requestText,
+      }),
+    );
+    expect(deliveredRequest?.prompt).toContain('PHASE_B_TAIL');
+    expect(excludedMemoryIds).toEqual(['mem-1']);
     expect(providerSelects).toBe(1);
     expect(providerExecutions).toBe(1);
     expect(calls.run + calls.resume + calls.decide + calls.requestForRisk).toBe(0);

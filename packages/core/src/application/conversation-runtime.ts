@@ -536,7 +536,7 @@ export interface ConversationRuntimeDeps {
     createTask(
       intent: Intent,
       context: ConversationContext,
-      anchor: { actorId: Id; sessionId: Id; projectId?: Id },
+      anchor: { requestText: string; actorId: Id; sessionId: Id; projectId?: Id },
     ): Promise<Task>;
     transition(task: Task, to: TaskStatus): Promise<Task>;
     startRun(task: Task, capability: Capability): Promise<TaskRun>;
@@ -5033,6 +5033,7 @@ export class ConversationRuntime {
     readout: ProjectReadout | undefined,
   ): Promise<TurnResult> {
     let task = await this.deps.tasks.createTask(intent, message.context, {
+      requestText: message.text,
       actorId: actor.id,
       sessionId: session.id,
       ...(session.activeProjectId ? { projectId: session.activeProjectId } : {}),

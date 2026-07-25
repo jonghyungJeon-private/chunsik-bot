@@ -40,13 +40,13 @@ export class TaskManager {
   async createTask(
     intent: Intent,
     context: ConversationContext,
-    opts: { actorId?: Id; sessionId?: Id; projectId?: Id } = {},
+    opts: { requestText: string; actorId?: Id; sessionId?: Id; projectId?: Id },
   ): Promise<Task> {
     const ts = now();
     const task: Task = {
       id: newId(),
       title: intent.summary.slice(0, 80),
-      description: intent.summary,
+      description: opts.requestText,
       status: TaskStatus.PENDING,
       intent,
       // Provisional; the Planner sets the real risk once the plan is known.

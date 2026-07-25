@@ -71,8 +71,8 @@ export class PromptComposer {
       system:
         'You are Quoky, a concise, helpful local-first AI assistant. Use the ' +
         'current task, conversation transcript, and supplied background resources according ' +
-        'to their explicit provenance and epistemic status. The final task is Core Runtime\'s ' +
-        'captured restatement of User intent, not a verbatim User quote. Do NOT read files, ' +
+        'to their explicit provenance and epistemic status. The final task contains the current ' +
+        'User input captured by Core Runtime. Do NOT read files, ' +
         'run commands, or use tools — rely only on the provided context; if key information ' +
         'is missing from it, say so briefly.',
       developer: this.developerFor(task.intent.capability),
@@ -81,7 +81,7 @@ export class PromptComposer {
         PromptComposer.section('2. Background resources', background),
         PromptComposer.section('3. Conversation transcript', transcript),
       ].join('\n\n'),
-      task: PromptComposer.label('CORE_RUNTIME', 'USER_CLAIM_OR_INTENT', task.intent.summary),
+      task: PromptComposer.label('USER', 'USER_CLAIM_OR_INTENT', task.description),
     };
   }
 
