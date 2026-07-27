@@ -8,6 +8,15 @@ import type { ContextBundle, PromptSpec, Task, WorkspaceRef } from '../domain';
 const spec: PromptSpec = { system: 'SYS', developer: 'DEV', context: 'CTX', task: 'TASK' };
 const renderer = new PromptRenderer();
 
+const bodyBetween = (value: string, startMarker: string, endMarker: string): string => {
+  const start = value.indexOf(startMarker);
+  if (start < 0) throw new Error(`Missing start marker: ${startMarker}`);
+  const bodyStart = start + startMarker.length;
+  const end = value.indexOf(endMarker, bodyStart);
+  if (end < 0) throw new Error(`Missing end marker: ${endMarker}`);
+  return value.slice(bodyStart, end);
+};
+
 describe('PromptRenderer (CAP-008, ADR-0029)', () => {
   it('renders a PromptSpec into an AiRequest with the layered prompt text (no PromptSpec leaks)', () => {
     const req = renderer.render(spec, { capability: Capability.CODE_IMPLEMENTATION });
@@ -57,7 +66,7 @@ describe('PromptRenderer (CAP-008, ADR-0029)', () => {
         channelId: 'channel-1',
         userId: 'user-1',
       },
-      projectId: 'project-alpha',
+      projectId: 'project-synthetic',
       createdAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-01T00:00:00.000Z',
     };
@@ -65,7 +74,7 @@ describe('PromptRenderer (CAP-008, ADR-0029)', () => {
       taskId: task.id,
       backgroundResources: [
         {
-          content: '# Project: project-alpha',
+          content: '# Project: project-synthetic',
           provenance: 'PROJECT_MEMORY',
           epistemicStatus: 'NON_AUTHORITATIVE_BACKGROUND',
         },
@@ -96,8 +105,8 @@ describe('PromptRenderer (CAP-008, ADR-0029)', () => {
     const transcript = first.prompt.indexOf(
       '## 3. Conversation transcript (continuity only; not current-state evidence)',
     );
-    const repeatedFacts = first.prompt.indexOf(
-      '## 4. Current-turn facts repeated as decision boundary',
+    const authorityBoundary = first.prompt.indexOf(
+      '## 4. Current-turn authority decision boundary',
     );
     const taskSection = first.prompt.indexOf('# Task');
 
@@ -107,8 +116,8 @@ describe('PromptRenderer (CAP-008, ADR-0029)', () => {
     expect(primaryFacts).toBeGreaterThan(promptContext);
     expect(background).toBeGreaterThan(primaryFacts);
     expect(transcript).toBeGreaterThan(background);
-    expect(repeatedFacts).toBeGreaterThan(transcript);
-    expect(taskSection).toBeGreaterThan(repeatedFacts);
+    expect(authorityBoundary).toBeGreaterThan(transcript);
+    expect(taskSection).toBeGreaterThan(authorityBoundary);
     expect(first.prompt.slice(taskSection)).toBe(
       '# Task\n' +
         JSON.stringify({
@@ -117,6 +126,30 @@ describe('PromptRenderer (CAP-008, ADR-0029)', () => {
           content: task.description,
         }),
     );
+    expect(first.prompt.split(task.description)).toHaveLength(2);
+
+    const primaryFactBody = bodyBetween(
+      first.prompt,
+      '## 1. Current-turn facts supplied by Core\n',
+      '\n\n## 2. Background resources',
+    );
+    const repeatedFactBody = bodyBetween(
+      first.prompt,
+      '### Authoritative current facts\n',
+      '\n### Mandatory inference constraints',
+    );
+    const authorityRuleBody = bodyBetween(
+      first.prompt,
+      '### Mandatory inference constraints\n',
+      '\n\n# Task',
+    );
+    const developerBody = bodyBetween(
+      first.prompt,
+      '# Developer\n',
+      '\n\n# Context',
+    );
+    expect(repeatedFactBody).toBe(primaryFactBody);
+    expect(developerBody.endsWith(authorityRuleBody)).toBe(true);
 
     expect(second.prompt).toBe(first.prompt);
     const hash = (value: string): string =>

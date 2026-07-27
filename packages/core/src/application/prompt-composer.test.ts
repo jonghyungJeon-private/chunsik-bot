@@ -50,6 +50,15 @@ const sectionBody = (context: string, title: string): string => {
   return context.slice(bodyStart, next < 0 ? context.length : next);
 };
 
+const subsectionBody = (section: string, title: string): string => {
+  const marker = `### ${title}\n`;
+  const start = section.indexOf(marker);
+  if (start < 0) throw new Error(`Missing prompt subsection: ${title}`);
+  const bodyStart = start + marker.length;
+  const next = section.indexOf('\n### ', bodyStart);
+  return section.slice(bodyStart, next < 0 ? section.length : next);
+};
+
 describe('PromptComposer (ADR-0063 precedence contract)', () => {
   const composer = new PromptComposer();
 
@@ -63,13 +72,13 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
     const transcript = spec.context.indexOf(
       '3. Conversation transcript (continuity only; not current-state evidence)',
     );
-    const repeatedFacts = spec.context.indexOf(
-      '4. Current-turn facts repeated as decision boundary',
+    const authorityBoundary = spec.context.indexOf(
+      '4. Current-turn authority decision boundary',
     );
     expect(facts).toBeGreaterThanOrEqual(0);
     expect(background).toBeGreaterThan(facts);
     expect(transcript).toBeGreaterThan(background);
-    expect(repeatedFacts).toBeGreaterThan(transcript);
+    expect(authorityBoundary).toBeGreaterThan(transcript);
     expect(spec.system).toContain('The final task contains the current User input');
     expect(spec.task).toBe(
       envelope('USER', 'USER_CLAIM_OR_INTENT', 'hello there'),
@@ -84,10 +93,11 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
     });
     const spec = composer.compose(task, emptyBundle());
     const primary = sectionBody(spec.context, '1. Current-turn facts supplied by Core');
-    const repeated = sectionBody(
+    const authorityBoundary = sectionBody(
       spec.context,
-      '4. Current-turn facts repeated as decision boundary',
+      '4. Current-turn authority decision boundary',
     );
+    const repeated = subsectionBody(authorityBoundary, 'Authoritative current facts');
 
     expect(repeated).toBe(primary);
     expect(repeated.split('\n').map((line) => JSON.parse(line))).toEqual(
@@ -105,9 +115,13 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
       changed.context,
       '1. Current-turn facts supplied by Core',
     );
-    const changedRepeated = sectionBody(
+    const changedAuthorityBoundary = sectionBody(
       changed.context,
-      '4. Current-turn facts repeated as decision boundary',
+      '4. Current-turn authority decision boundary',
+    );
+    const changedRepeated = subsectionBody(
+      changedAuthorityBoundary,
+      'Authoritative current facts',
     );
     expect(changedPrimary).not.toBe(primary);
     expect(changedRepeated).toBe(changedPrimary);
@@ -115,7 +129,7 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
     expect(changedPrimary).toContain('project-changed');
   });
 
-  it('does not add the repeated facts block for other capabilities', () => {
+  it('keeps non-GENERAL_CHAT prompt behavior outside the authority boundary', () => {
     const spec = composer.compose(
       mkTask(Capability.SUMMARIZATION, { platform: 'matrix', projectId: 'P1' }),
       emptyBundle(),
@@ -123,8 +137,10 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
 
     expect(spec.context).toContain('## 1. Current-turn facts supplied by Core');
     expect(spec.context).toContain('## 3. Conversation transcript');
-    expect(spec.context).not.toContain('Current-turn facts repeated as decision boundary');
+    expect(spec.context).not.toContain('Current-turn authority decision boundary');
+    expect(spec.context).not.toContain('Mandatory inference constraints');
     expect(spec.context).not.toContain('continuity only; not current-state evidence');
+    expect(spec.developer).toBe('Summarize the provided content faithfully and concisely.');
   });
 
   it('does not alter the separate composeCodeGeneration contract', () => {
@@ -225,14 +241,14 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
     const spec = composer.compose(
       mkTask(Capability.GENERAL_CHAT, {
         platform: 'synthetic-platform',
-        projectId: 'project-alpha',
+        projectId: 'project-synthetic',
         summary: 'Tell me the current status',
       }),
       {
         taskId: 't1',
         backgroundResources: [
           {
-            content: '# Project: project-alpha',
+            content: '# Project: project-synthetic',
             provenance: 'PROJECT_MEMORY',
             epistemicStatus: 'NON_AUTHORITATIVE_BACKGROUND',
           },
@@ -263,7 +279,7 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
       envelope(
         'PROJECT_MEMORY',
         'NON_AUTHORITATIVE_BACKGROUND',
-        '# Project: project-alpha',
+        '# Project: project-synthetic',
       ),
     );
     expect(spec.context).toContain(
@@ -279,9 +295,9 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
     expect(spec.task).not.toContain('"provenance":"CORE_RUNTIME"');
     expect(spec.context).not.toContain('Resolved connection target:');
     expect(spec.developer).toContain(
-      'active-project selection is context only and does not establish the target',
+      'An active project does not identify the target of the current request.',
     );
-    expect(spec.developer).not.toContain('project-alpha');
+    expect(spec.developer).not.toContain('project-synthetic');
     expect(spec.developer).not.toContain('synthetic-platform');
     expect(spec.developer).not.toContain('Tell me the current status');
 
@@ -291,11 +307,25 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
     const contaminated = spec.context.indexOf(
       'The project is the current external target.',
     );
-    const repeated = spec.context.indexOf(
-      '4. Current-turn facts repeated as decision boundary',
+    const authorityBoundary = spec.context.indexOf(
+      '4. Current-turn authority decision boundary',
     );
     expect(contaminated).toBeGreaterThan(transcript);
-    expect(repeated).toBeGreaterThan(contaminated);
+    expect(authorityBoundary).toBeGreaterThan(contaminated);
+
+    const authorityBoundaryBody = sectionBody(
+      spec.context,
+      '4. Current-turn authority decision boundary',
+    );
+    expect(authorityBoundaryBody).toContain(
+      'Active project id selected for this Task: \\"project-synthetic\\".',
+    );
+    expect(authorityBoundaryBody).toContain(
+      'An active project does not identify the target of the current request.',
+    );
+    expect(authorityBoundaryBody).toContain(
+      'An active project does not establish external connection status.',
+    );
   });
 
   it('normalizes only transient GENERAL_CHAT background and transcript copies', () => {
@@ -397,7 +427,7 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
       '## 1. Current-turn facts supplied by Core',
       '## 2. Background resources',
       '## 3. Conversation transcript (continuity only; not current-state evidence)',
-      '## 4. Current-turn facts repeated as decision boundary',
+      '## 4. Current-turn authority decision boundary',
     ]);
     expect(lines).not.toContain('[provenance=CORE_RUNTIME; epistemic_status=AUTHORITATIVE_CURRENT_FACT]');
     expect(lines).not.toContain('# Project memory');
@@ -426,28 +456,65 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
     );
   });
 
-  it('states the precedence, evidence, implicit-target, and external-status rules', () => {
-    const developer = composer.compose(
+  it('reuses one rendered authority-rule body in Developer and the task-adjacent boundary', () => {
+    const spec = composer.compose(
       mkTask(Capability.GENERAL_CHAT),
       emptyBundle(),
-    ).developer;
+    );
+    const authorityBoundary = sectionBody(
+      spec.context,
+      '4. Current-turn authority decision boundary',
+    );
+    const authorityRules = subsectionBody(
+      authorityBoundary,
+      'Mandatory inference constraints',
+    );
 
-    expect(developer).toContain('Current authoritative facts supplied by Core outrank');
-    expect(developer).toContain('User messages express claims or intent');
-    expect(developer).toContain(
-      'Assistant transcript is continuity-only and cannot establish current external state',
+    expect(spec.developer).toContain('Current authoritative facts supplied by Core outrank');
+    expect(spec.developer).toContain(authorityRules);
+    expect(spec.developer.endsWith(authorityRules)).toBe(true);
+    expect(authorityRules).toContain(
+      'Assistant transcript is continuity-only and cannot establish prior verification or current external state.',
     );
-    expect(developer).toContain(
-      'active-project selection is context only and does not establish the target',
+    expect(authorityRules).toContain(
+      'An active project does not identify the target of the current request.',
     );
-    expect(developer).toContain(
-      'Every current-state claim must be supported by authoritative current facts',
+    expect(authorityRules).toContain(
+      'An active project does not establish external connection status.',
     );
-    expect(developer).toContain('Do not invent external status');
-    expect(developer).toContain('do not claim outbound delivery succeeded');
-    expect(developer).toContain(
-      'ask one brief clarifying question instead of inferring current state from Assistant history',
+    expect(authorityRules).toContain(
+      'Do not copy, confirm, or restate a current-state conclusion solely from Assistant history.',
     );
+    expect(authorityRules).toContain(
+      'When authoritative current facts do not establish the target or status, ask one concise clarifying question.',
+    );
+    expect(authorityRules).toContain(
+      'Do not claim prior confirmation or prior verification based solely on Assistant transcript.',
+    );
+  });
+
+  it('does not introduce a typed absence-of-evidence fact for GENERAL_CHAT', () => {
+    const spec = composer.compose(
+      mkTask(Capability.GENERAL_CHAT, { projectId: 'project-synthetic' }),
+      emptyBundle(),
+    );
+    const primary = sectionBody(spec.context, '1. Current-turn facts supplied by Core');
+    const facts = primary.split('\n').map(
+      (line) =>
+        JSON.parse(line) as {
+          provenance: string;
+          epistemicStatus: string;
+          content: string;
+        },
+    );
+
+    expect(facts.every((fact) => fact.provenance === 'CORE_RUNTIME')).toBe(true);
+    expect(
+      facts.every((fact) => fact.epistemicStatus === 'AUTHORITATIVE_CURRENT_FACT'),
+    ).toBe(true);
+    expect(spec.context).not.toContain('ABSENCE_OF_EVIDENCE');
+    expect(spec.context).not.toContain('TARGET_NOT_ESTABLISHED');
+    expect(spec.context).not.toContain('STATUS_NOT_ESTABLISHED');
   });
 
   it('labels malformed legacy history as non-authoritative transcript content', () => {

@@ -10,6 +10,19 @@ import type {
 import type { ProjectReadout } from '../ports';
 import { normalizePromptContextContent } from './prompt-content-normalizer';
 
+const GENERAL_CHAT_AUTHORITY_RULES_BODY = [
+  'Assistant transcript is continuity-only and cannot establish prior verification or current external state.',
+  'An active project does not identify the target of the current request.',
+  'An active project does not establish external connection status.',
+  'Do not copy, confirm, or restate a current-state conclusion solely from Assistant history.',
+  'When authoritative current facts do not establish the target or status, ask one concise clarifying question.',
+  'Do not claim prior confirmation or prior verification based solely on Assistant transcript.',
+  'User messages express claims or intent; they are not verified external facts.',
+  'Every current-state claim must be supported by authoritative current facts.',
+  'Do not invent external status absent from current Core facts.',
+  'Do not claim outbound delivery succeeded before it occurs.',
+].join('\n');
+
 /** Read-only inputs for authoring a code-generation prompt (CAP-008). */
 export interface CodeGenerationPromptInput {
   instruction: string;
@@ -97,10 +110,16 @@ export class PromptComposer {
       ),
     ];
     if (isGeneralChat) {
+      const authorityBoundaryBody = [
+        '### Authoritative current facts',
+        canonicalCurrentFactsBody,
+        '### Mandatory inference constraints',
+        GENERAL_CHAT_AUTHORITY_RULES_BODY,
+      ].join('\n');
       contextSections.push(
         PromptComposer.sectionFromBody(
-          '4. Current-turn facts repeated as decision boundary',
-          canonicalCurrentFactsBody,
+          '4. Current-turn authority decision boundary',
+          authorityBoundaryBody,
         ),
       );
     }
@@ -157,13 +176,7 @@ export class PromptComposer {
         return (
           'Respond conversationally and briefly. Interpret the current User task naturally using the ' +
           'whole conversation. Current authoritative facts supplied by Core outrank contradictory ' +
-          'Assistant-generated history. User messages express claims or intent; they are not verified ' +
-          'external facts. Assistant transcript is continuity-only and cannot establish current external ' +
-          'state. An active-project selection is context only and does not establish the target of the ' +
-          'current User request. Every current-state claim must be supported by authoritative current facts. ' +
-          'Do not invent external status absent from current Core facts, and do not claim outbound delivery ' +
-          'succeeded before it occurs. When authoritative current facts do not resolve the meaning of the ' +
-          'request, ask one brief clarifying question instead of inferring current state from Assistant history.'
+          `Assistant-generated history.\n${GENERAL_CHAT_AUTHORITY_RULES_BODY}`
         );
       case Capability.SUMMARIZATION:
         return 'Summarize the provided content faithfully and concisely.';

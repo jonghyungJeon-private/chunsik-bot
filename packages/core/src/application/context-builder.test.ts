@@ -71,34 +71,34 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
   it('keeps a contaminated transcript, excludes current inbound, and separates project background', async () => {
     const memory = {
       recentShortTerm: async () => [
-        rec('1', 'user', '현재 연결상태 알려줘'),
-        rec('2', 'assistant', 'quoky-gate5-disposable 프로젝트가 연결 대상입니다'),
-        rec('3', 'user', '현재 연결 상태 알려줘'),
+        rec('1', 'user', 'Tell me the current status'),
+        rec('2', 'assistant', 'The active project is the current external target'),
+        rec('3', 'user', 'Tell me the current status now'),
       ],
       projectMemory: async () =>
-        rec('4', 'project', '# Project: quoky-gate5-disposable\n- disposable UAT workspace'),
+        rec('4', 'project', '# Project: project-synthetic\n- synthetic fixture'),
     } as unknown as MemoryManager;
 
     const bundle = await new ContextBuilder(memory).build(
-      taskWith({ sessionId: 'S1', projectId: 'quoky-gate5-disposable' }),
+      taskWith({ sessionId: 'S1', projectId: 'project-synthetic' }),
       ['3'],
     );
 
     expect(bundle.conversationTranscript).toEqual([
       {
-        content: '현재 연결상태 알려줘',
+        content: 'Tell me the current status',
         provenance: 'USER',
         epistemicStatus: 'USER_CLAIM_OR_INTENT',
       },
       {
-        content: 'quoky-gate5-disposable 프로젝트가 연결 대상입니다',
+        content: 'The active project is the current external target',
         provenance: 'ASSISTANT',
         epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
       },
     ]);
     expect(bundle.backgroundResources).toEqual([
       {
-        content: '# Project: quoky-gate5-disposable\n- disposable UAT workspace',
+        content: '# Project: project-synthetic\n- synthetic fixture',
         provenance: 'PROJECT_MEMORY',
         epistemicStatus: 'NON_AUTHORITATIVE_BACKGROUND',
       },
@@ -190,6 +190,16 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
     expect(bundle.conversationTranscript[9]?.content).toMatch(/^11:/);
     expect(bundle.conversationTranscript.every((entry) => entry.content.length === 401)).toBe(true);
     expect(bundle.conversationTranscript.every((entry) => entry.content.endsWith('…'))).toBe(true);
+    expect(
+      bundle.conversationTranscript
+        .filter((entry) => entry.provenance === 'ASSISTANT')
+        .every((entry) => entry.epistemicStatus === 'ASSISTANT_NON_AUTHORITATIVE'),
+    ).toBe(true);
+    expect(
+      bundle.conversationTranscript
+        .filter((entry) => entry.provenance === 'USER')
+        .every((entry) => entry.epistemicStatus === 'USER_CLAIM_OR_INTENT'),
+    ).toBe(true);
   });
 
   it('requests enough records to preserve N=10 after current-inbound exclusion', async () => {

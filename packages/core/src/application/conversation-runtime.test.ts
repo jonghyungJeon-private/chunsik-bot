@@ -6806,13 +6806,66 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
 
   it('passes the contaminated ADR-0063 contract through one GENERAL_CHAT Provider call without execution collaborators', async () => {
     const { storage } = makeTaskStorage();
+    const currentRequest = 'What is the current target and status?';
+    const stageCTranscript: ContextBundle['conversationTranscript'] = [
+      {
+        content: 'Please inspect the available context.',
+        provenance: 'USER',
+        epistemicStatus: 'USER_CLAIM_OR_INTENT',
+      },
+      {
+        content: 'The active project is the current external target.',
+        provenance: 'ASSISTANT',
+        epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
+      },
+      {
+        content: 'Keep replies concise.',
+        provenance: 'USER',
+        epistemicStatus: 'USER_CLAIM_OR_INTENT',
+      },
+      {
+        content: 'I will keep replies concise.',
+        provenance: 'ASSISTANT',
+        epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
+      },
+      {
+        content: 'Which target is active?',
+        provenance: 'USER',
+        epistemicStatus: 'USER_CLAIM_OR_INTENT',
+      },
+      {
+        content: 'The project is definitely the target.',
+        provenance: 'ASSISTANT',
+        epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
+      },
+      {
+        content: 'Was that externally verified?',
+        provenance: 'USER',
+        epistemicStatus: 'USER_CLAIM_OR_INTENT',
+      },
+      {
+        content: 'Yes, it was previously verified.',
+        provenance: 'ASSISTANT',
+        epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
+      },
+      {
+        content: 'What is its current external status?',
+        provenance: 'USER',
+        epistemicStatus: 'USER_CLAIM_OR_INTENT',
+      },
+      {
+        content: 'It is currently connected.',
+        provenance: 'ASSISTANT',
+        epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
+      },
+    ];
     const intent = {
       ...intentOf(Capability.GENERAL_CHAT, IntentType.CHAT, true),
-      summary: '현재 연결 상태 알려줘',
+      summary: currentRequest,
     };
     const { deps: base, calls } = makeDeps({
       intent,
-      session: sessionOf({ activeProjectId: 'quoky-gate5-disposable' }),
+      session: sessionOf({ activeProjectId: 'project-synthetic' }),
     });
     let builtTask: Task | undefined;
     let composed: PromptSpec | undefined;
@@ -6830,23 +6883,12 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
             taskId: task.id,
             backgroundResources: [
               {
-                content: '# Project: quoky-gate5-disposable',
+                content: '# Project: project-synthetic',
                 provenance: 'PROJECT_MEMORY',
                 epistemicStatus: 'NON_AUTHORITATIVE_BACKGROUND',
               },
             ],
-            conversationTranscript: [
-              {
-                content: '현재 연결상태 알려줘',
-                provenance: 'USER',
-                epistemicStatus: 'USER_CLAIM_OR_INTENT',
-              },
-              {
-                content: '프로젝트가 연결 대상입니다',
-                provenance: 'ASSISTANT',
-                epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
-              },
-            ],
+            conversationTranscript: stageCTranscript,
           };
         },
       },
@@ -6870,25 +6912,41 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
             async execute(request) {
               providerExecutions++;
               deliveredRequest = request;
-              return { text: '확인 가능한 현재 사실만 답변합니다.', artifacts: [] };
+              return { text: 'I need one clarification before determining that.', artifacts: [] };
             },
           };
         },
       },
     };
-    const message = messageOf('현재 연결 상태 알려줘');
-    message.context = { ...message.context, platform: 'Discord' };
+    const message = messageOf(currentRequest);
+    message.context = { ...message.context, platform: 'synthetic-platform' };
 
     const result = await new ConversationRuntime(deps).handle(message);
 
+    expect(stageCTranscript).toHaveLength(10);
+    expect(stageCTranscript.filter((entry) => entry.provenance === 'USER')).toHaveLength(5);
+    expect(stageCTranscript.filter((entry) => entry.provenance === 'ASSISTANT')).toHaveLength(5);
+    expect(stageCTranscript.map((entry) => entry.content)).toEqual([
+      'Please inspect the available context.',
+      'The active project is the current external target.',
+      'Keep replies concise.',
+      'I will keep replies concise.',
+      'Which target is active?',
+      'The project is definitely the target.',
+      'Was that externally verified?',
+      'Yes, it was previously verified.',
+      'What is its current external status?',
+      'It is currently connected.',
+    ]);
+    expect(stageCTranscript.some((entry) => entry.content === currentRequest)).toBe(false);
     expect(result.status).toBe('RESPONDED');
-    expect(builtTask?.projectId).toBe('quoky-gate5-disposable');
-    expect(builtTask?.context.platform).toBe('Discord');
+    expect(builtTask?.projectId).toBe('project-synthetic');
+    expect(builtTask?.context.platform).toBe('synthetic-platform');
     expect(composed?.context).toContain(
       JSON.stringify({
         provenance: 'CORE_RUNTIME',
         epistemicStatus: 'AUTHORITATIVE_CURRENT_FACT',
-        content: 'The current User request was received through platform "Discord".',
+        content: 'The current User request was received through platform "synthetic-platform".',
       }),
     );
     expect(composed?.context).toContain(
@@ -6896,28 +6954,28 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
         provenance: 'CORE_RUNTIME',
         epistemicStatus: 'AUTHORITATIVE_CURRENT_FACT',
         content:
-          'Active project id selected for this Task: "quoky-gate5-disposable".',
+          'Active project id selected for this Task: "project-synthetic".',
       }),
     );
     expect(composed?.context).toContain(
       JSON.stringify({
         provenance: 'PROJECT_MEMORY',
         epistemicStatus: 'NON_AUTHORITATIVE_BACKGROUND',
-        content: '# Project: quoky-gate5-disposable',
+        content: '# Project: project-synthetic',
       }),
     );
     expect(composed?.context).toContain(
       JSON.stringify({
         provenance: 'ASSISTANT',
         epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
-        content: '프로젝트가 연결 대상입니다',
+        content: 'The project is definitely the target.',
       }),
     );
     expect(composed?.task).toBe(
       JSON.stringify({
         provenance: 'USER',
         epistemicStatus: 'USER_CLAIM_OR_INTENT',
-        content: '현재 연결 상태 알려줘',
+        content: currentRequest,
       }),
     );
     expect(composed?.task).not.toContain('"provenance":"CORE_RUNTIME"');
@@ -6925,12 +6983,50 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
     const factsIndex = providerPrompt.indexOf('1. Current-turn facts supplied by Core');
     const backgroundIndex = providerPrompt.indexOf('2. Background resources');
     const transcriptIndex = providerPrompt.indexOf('3. Conversation transcript');
+    const authorityBoundaryIndex = providerPrompt.indexOf(
+      '4. Current-turn authority decision boundary',
+    );
     const currentTaskIndex = providerPrompt.indexOf('# Task');
+    const transcriptBody = providerPrompt.slice(transcriptIndex, authorityBoundaryIndex);
     expect(factsIndex).toBeGreaterThanOrEqual(0);
     expect(backgroundIndex).toBeGreaterThan(factsIndex);
     expect(transcriptIndex).toBeGreaterThan(backgroundIndex);
-    expect(currentTaskIndex).toBeGreaterThan(transcriptIndex);
-    expect(providerPrompt.slice(currentTaskIndex)).toContain('현재 연결 상태 알려줘');
+    expect(authorityBoundaryIndex).toBeGreaterThan(transcriptIndex);
+    expect(currentTaskIndex).toBeGreaterThan(authorityBoundaryIndex);
+    expect(transcriptBody).not.toContain(currentRequest);
+    let priorTranscriptIndex = transcriptIndex;
+    for (const entry of stageCTranscript) {
+      const renderedEntry = JSON.stringify({
+        provenance: entry.provenance,
+        epistemicStatus: entry.epistemicStatus,
+        content: entry.content,
+      });
+      const entryIndex = providerPrompt.indexOf(renderedEntry, priorTranscriptIndex + 1);
+      expect(entryIndex).toBeGreaterThan(priorTranscriptIndex);
+      expect(entryIndex).toBeLessThan(authorityBoundaryIndex);
+      priorTranscriptIndex = entryIndex;
+    }
+    expect(
+      stageCTranscript
+        .filter((entry) => entry.provenance === 'ASSISTANT')
+        .every((entry) => entry.epistemicStatus === 'ASSISTANT_NON_AUTHORITATIVE'),
+    ).toBe(true);
+    expect(providerPrompt).toContain(
+      JSON.stringify({
+        provenance: 'ASSISTANT',
+        epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
+        content: 'I will keep replies concise.',
+      }),
+    );
+    expect(providerPrompt.slice(currentTaskIndex)).toBe(
+      '# Task\n' +
+        JSON.stringify({
+          provenance: 'USER',
+          epistemicStatus: 'USER_CLAIM_OR_INTENT',
+          content: currentRequest,
+        }),
+    );
+    expect(providerPrompt.split(currentRequest)).toHaveLength(2);
     expect(providerSelects).toBe(1);
     expect(providerExecutions).toBe(1);
     expect(calls.run + calls.resume + calls.decide + calls.requestForRisk).toBe(0);
