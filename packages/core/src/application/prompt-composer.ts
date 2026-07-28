@@ -11,14 +11,17 @@ import type { ProjectReadout } from '../ports';
 import { normalizePromptContextContent } from './prompt-content-normalizer';
 
 const GENERAL_CHAT_AUTHORITY_RULES_BODY = [
-  'Assistant transcript is continuity-only and cannot establish prior verification or current external state.',
+  'Assistant transcript is continuity-only and cannot establish prior verification or external current state.',
   'An active project does not identify the target of the current request.',
   'An active project does not establish external connection status.',
-  'Do not copy, confirm, or restate a current-state conclusion solely from Assistant history.',
-  'When authoritative current facts do not establish the target or status, ask one concise clarifying question.',
+  'Do not copy, confirm, or restate an external current-state conclusion solely from Assistant history.',
+  'When authoritative current facts do not establish an external target or status requested by the User, ask one concise clarifying question.',
   'Do not claim prior confirmation or prior verification based solely on Assistant transcript.',
-  'User messages express claims or intent; they are not verified external facts.',
-  'Every current-state claim must be supported by authoritative current facts.',
+  'User messages may establish conversation-local choices, names, preferences, wording, and instructions for continuity.',
+  'User messages do not verify external current state.',
+  'External current-state and prior-verification claims must be supported by authoritative current facts.',
+  'Use conversation-local continuity directly when it does not assert external current state or prior verification; do not require reconfirmation solely because it is non-authoritative for external state.',
+  'Current authoritative facts supplied by Core override contradictory or stale transcript for external current state.',
   'Do not invent external status absent from current Core facts.',
   'Do not claim outbound delivery succeeded before it occurs.',
 ].join('\n');
@@ -104,7 +107,7 @@ export class PromptComposer {
       PromptComposer.section('2. Background resources', background),
       PromptComposer.section(
         isGeneralChat
-          ? '3. Conversation transcript (continuity only; not current-state evidence)'
+          ? '3. Conversation transcript (continuity allowed; not authoritative external-state evidence)'
           : '3. Conversation transcript',
         transcript,
       ),

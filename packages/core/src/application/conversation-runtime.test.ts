@@ -6809,7 +6809,17 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
     const currentRequest = 'What is the current target and status?';
     const stageCTranscript: ContextBundle['conversationTranscript'] = [
       {
-        content: 'Please inspect the available context.',
+        content: 'We chose Blue Lantern as the release checklist name.',
+        provenance: 'USER',
+        epistemicStatus: 'USER_CLAIM_OR_INTENT',
+      },
+      {
+        content: 'Use semantic-validation as our validation wording.',
+        provenance: 'USER',
+        epistemicStatus: 'USER_CLAIM_OR_INTENT',
+      },
+      {
+        content: 'The external service is currently connected.',
         provenance: 'USER',
         epistemicStatus: 'USER_CLAIM_OR_INTENT',
       },
@@ -6923,11 +6933,13 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
 
     const result = await new ConversationRuntime(deps).handle(message);
 
-    expect(stageCTranscript).toHaveLength(10);
-    expect(stageCTranscript.filter((entry) => entry.provenance === 'USER')).toHaveLength(5);
+    expect(stageCTranscript).toHaveLength(12);
+    expect(stageCTranscript.filter((entry) => entry.provenance === 'USER')).toHaveLength(7);
     expect(stageCTranscript.filter((entry) => entry.provenance === 'ASSISTANT')).toHaveLength(5);
     expect(stageCTranscript.map((entry) => entry.content)).toEqual([
-      'Please inspect the available context.',
+      'We chose Blue Lantern as the release checklist name.',
+      'Use semantic-validation as our validation wording.',
+      'The external service is currently connected.',
       'The active project is the current external target.',
       'Keep replies concise.',
       'I will keep replies concise.',
@@ -7011,13 +7023,50 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
         .filter((entry) => entry.provenance === 'ASSISTANT')
         .every((entry) => entry.epistemicStatus === 'ASSISTANT_NON_AUTHORITATIVE'),
     ).toBe(true);
-    expect(providerPrompt).toContain(
-      JSON.stringify({
-        provenance: 'ASSISTANT',
-        epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
-        content: 'I will keep replies concise.',
-      }),
-    );
+    const safePromptContract = {
+      assistantContinuityPresent: providerPrompt.includes(
+        JSON.stringify({
+          provenance: 'ASSISTANT',
+          epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
+          content: 'I will keep replies concise.',
+        }),
+      ),
+      userContinuityPresent: providerPrompt.includes(
+        JSON.stringify({
+          provenance: 'USER',
+          epistemicStatus: 'USER_CLAIM_OR_INTENT',
+          content: 'We chose Blue Lantern as the release checklist name.',
+        }),
+      ),
+      continuityHeadingPresent: providerPrompt.includes(
+        '3. Conversation transcript (continuity allowed; not authoritative external-state evidence)',
+      ),
+      userContinuityRulePresent: providerPrompt.includes(
+        'User messages may establish conversation-local choices, names, preferences, wording, and instructions for continuity.',
+      ),
+      userExternalStateRulePresent: providerPrompt.includes(
+        'User messages do not verify external current state.',
+      ),
+      externalEvidenceRulePresent: providerPrompt.includes(
+        'External current-state and prior-verification claims must be supported by authoritative current facts.',
+      ),
+      noUnnecessaryReconfirmationRulePresent: providerPrompt.includes(
+        'Use conversation-local continuity directly when it does not assert external current state or prior verification; do not require reconfirmation solely because it is non-authoritative for external state.',
+      ),
+      authoritativeOverrideRulePresent: providerPrompt.includes(
+        'Current authoritative facts supplied by Core override contradictory or stale transcript for external current state.',
+      ),
+    };
+    expect(safePromptContract).toEqual({
+      assistantContinuityPresent: true,
+      userContinuityPresent: true,
+      continuityHeadingPresent: true,
+      userContinuityRulePresent: true,
+      userExternalStateRulePresent: true,
+      externalEvidenceRulePresent: true,
+      noUnnecessaryReconfirmationRulePresent: true,
+      authoritativeOverrideRulePresent: true,
+    });
     expect(providerPrompt.slice(currentTaskIndex)).toBe(
       '# Task\n' +
         JSON.stringify({

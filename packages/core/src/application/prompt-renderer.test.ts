@@ -103,7 +103,7 @@ describe('PromptRenderer (CAP-008, ADR-0029)', () => {
     );
     const background = first.prompt.indexOf('## 2. Background resources');
     const transcript = first.prompt.indexOf(
-      '## 3. Conversation transcript (continuity only; not current-state evidence)',
+      '## 3. Conversation transcript (continuity allowed; not authoritative external-state evidence)',
     );
     const authorityBoundary = first.prompt.indexOf(
       '## 4. Current-turn authority decision boundary',
