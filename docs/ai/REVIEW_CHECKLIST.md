@@ -2,6 +2,7 @@
 
 Implementation, Commit, Push, PR, Merge, Runtime 또는 Gate review 때만 읽는다.
 Review는 read-only가 기본이며 승인되지 않은 다음 단계로 넘어가지 않는다.
+개발 승인 묶음과 Strict 경계는 `docs/governance/DEVELOPMENT-MODE.md`를 따른다.
 
 ## Implementation Review
 
@@ -20,7 +21,7 @@ Review는 read-only가 기본이며 승인되지 않은 다음 단계로 넘어�
 
 ## Commit Review
 
-- Commit에 대한 별도 명시 승인이 있는가?
+- FAST DELIVERY 승인에 local commit이 포함됐거나 별도 Commit 승인이 있는가?
 - current branch, HEAD, expected parent SHA를 직접 확인했는가?
 - staged files가 승인된 changed files만 포함하는가?
 - user-owned untracked files가 제외됐는가?
@@ -62,4 +63,4 @@ Review는 read-only가 기본이며 승인되지 않은 다음 단계로 넘어�
 - SHA, test, diff, clean state를 추측하지 않았는가?
 - 변경 여부에 맞는 mutation safety 문구를 사용했는가?
 - 다음 단계가 정확히 하나인가?
-- 이전 승인이 다음 단계로 자동 승계되지 않았는가?
+- FAST DELIVERY의 명시적 승인 범위와 별도 승인이 필요한 Strict 경계를 구분했는가?

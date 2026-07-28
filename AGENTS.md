@@ -2,6 +2,7 @@
 
 이 문서는 Claude Code와 Codex를 포함한 모든 Implementation Agent의 canonical 공통 규칙이다.
 Repository 문서가 source of truth이며 prompt나 이전 Agent의 self-report는 사실로 간주하지 않는다.
+개발 실행과 승인 방식의 canonical source는 `docs/governance/DEVELOPMENT-MODE.md`다.
 
 ## Project Invariants
 
@@ -41,21 +42,39 @@ Repository 문서가 source of truth이며 prompt나 이전 Agent의 self-report
 
 Architecture 또는 settled decision과 충돌할 가능성이 있으면 반드시 root 문서를 읽는다.
 
-## Approval Boundary
+## Development Governance
 
-다음은 각각 별도 승인이다: Plan, Implementation, Test, Commit, Push, PR, Merge,
-Runtime Restart, Discord Action, Workspace Apply, Sandbox Mutation, Live UAT, Gate, Cleanup.
-이전 승인은 다음 단계로 자동 승계되지 않는다. 승인된 범위를 마치면 즉시 중단한다.
-`Implementation` 승인은 mutation만 허용하며 `Test` 또는 `pnpm typecheck` 실행 승인을 포함하지 않는다.
-
-명시 승인 없이 다음을 수행하지 않는다.
-
-- commit, push, PR, merge, auto-delete, force-push
-- destructive command, deploy, connector/external write
-- runtime restart, WorkspaceWrite, sandbox/live mutation, Live UAT, Gate, cleanup
+- 기본은 `FAST DELIVERY MODE`다. 하나의 명시적 Sprint/Task 실행 승인은 승인 범위 안의
+  구현, 리팩터링, 테스트 작성·수정, focused test, typecheck, build, 자체 수정·재검증,
+  문서 갱신, local commit을 함께 허용한다.
+- 같은 범위의 검증 실패는 최대 2회 수정 루프까지 별도 packet/승인 없이 해결한다.
+- 일반 개발에 execution packet, packet SHA, evidence 전용 Markdown, 단계별 재승인을 만들지 않는다.
+- Architecture 경계 변경은 구현·검증 후 merge 전에 독립 Chief Architect Review를 받는다.
+- Push, PR, Merge, Runtime start/stop/restart, Discord action, 실제 AI Provider 실행,
+  runtime data mutation, Workspace Apply, Live UAT, release/production gate,
+  destructive filesystem/database 작업, secret 접근은 `STRICT GOVERNANCE MODE`로 별도 승인한다.
+- 구체적 blocker가 없으면 승인된 Sprint 범위를 끝까지 수행한다.
+- 분류, 승인 묶음, retry, blocker, verification, 보고 형식의 상세 규칙은
+  `docs/governance/DEVELOPMENT-MODE.md`를 따른다.
 
 Command 실행 전 `RiskPolicy.assessCommand`를 적용한다. Approval gate는 planning이 아니라
 external/destructive action을 감싼다.
+
+## Temporary Local/UAT Runtime Environment
+
+- 이 section은 local test와 attended Live UAT를 위한 임시 안전장치이며 production/deployment 실행 계약이 아니다.
+- 해당 local Chunsik application runtime의 configuration source는 repository root의 `.env.local`이다.
+- `apps/chunsik`의 dotenv loader는 `override: false`이므로 inherited process environment가 `.env.local`보다
+  우선한다. Runtime Start 전에 `.env.local`에 선언된 variable 이름과 현재 process environment의 이름을
+  비교하고, 중복된 runtime-owned variable이 있으면 그대로 시작하지 않는다. Secret 값은 출력하지 않는다.
+- 중복 variable은 해당 실행 명령에서 `env -u <NAME>`으로 제거해 `.env.local` loader가 값을 설정하도록 한다.
+  특히 `DISCORD_BOT_TOKEN`과 `DISCORD_GUILD_ID`는 반드시 제거하거나 부재를 직접 확인한다.
+- `.env`를 source하거나 기존 login-shell Discord configuration에 의존해 Chunsik을 시작하지 않는다.
+- Discord Runtime Start 후 readiness를 선언하기 전에 실제 bot identity, guild, channel이 `.env.local`의
+  대상과 일치하는지 read-only로 검증한다. 불일치하거나 검증할 수 없으면 Discord Action/Live UAT 없이
+  Runtime을 중지하고 blocker를 보고한다.
+- 전용 runtime launcher 또는 영구 environment-selection 계약이 승인·구현·검증되면 이 임시 section과
+  `CLAUDE.md`의 대응 section을 함께 제거한다. Cleanup/문서 제거는 별도 승인을 받는다.
 
 ## Before Mutation
 
@@ -72,8 +91,8 @@ external/destructive action을 감싼다.
 ## Engineering Rules
 
 - TypeScript `strict`, `noUncheckedIndexedAccess`, `noImplicitOverride`를 약화하지 않는다.
-- 별도 `Test` 승인 범위에서 코드 변경 완료 전 `pnpm typecheck`와 Risk에 맞는 test를 실행한다.
-  `Test`가 승인되지 않았으면 실행하지 않고 완료 보고에 명시한다.
+- 승인된 Sprint/Task 범위에서 코드 변경 완료 전 `pnpm typecheck`와 Risk에 맞는 test를 실행한다.
+  문서-only 변경은 근거를 기록하고 제품 Build/Test를 생략할 수 있다.
 - Deterministic plumbing은 test하고, 미구현 model cognition은 `NotImplementedError`로 유지한다.
 - 시간과 ID는 shared `clock`/`id` utility를 사용한다.
 - `Resource` input과 `Artifact` output을 합치지 않는다.
@@ -91,7 +110,8 @@ SHA, changed files, diff, tests, typecheck, clean/mutation state를 추측하지
 ```text
 CURRENT MAIN
 COMPLETED
-PROJECT PROGRESS
+VALIDATION
+CHANGED FILES
 SAFETY
 APPROVAL BOUNDARY
 NEXT STEP
