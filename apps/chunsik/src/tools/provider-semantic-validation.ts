@@ -1,8 +1,20 @@
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import {
+  closeSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  readSync,
+  realpathSync,
+  rmSync,
+  statSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
+import type { ChildProcess, SpawnOptions } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
 import {
   Capability,
   IntentType,
@@ -17,30 +29,98 @@ import type { CliRunOptions, CliRunResult, CliRunner } from '@chunsik/ai-cli';
 
 export const FIXTURE_VERSION = 'stage2a-provider-semantic-a-e-v1';
 export const PROMPT_CONTRACT_VERSION = 'adr-0063-provider-continuity-v2';
+/** Bumped whenever the bounded semantic checkers change verdict semantics. */
+export const CHECKER_CONTRACT_VERSION = 'stage2a-semantic-checker-v2';
 export const PROVIDER_ID = 'ollama-cli';
-export const DEFAULT_MODEL = 'llama3.1';
-export const DEFAULT_BIN = 'ollama';
 export const AVAILABILITY_TIMEOUT_MS = 10_000;
 export const GENERATION_TIMEOUT_MS = 120_000;
 export const MAX_CAPTURE_BYTES = 8_192;
 export const MAX_PREVIEW_BYTES = 1_200;
 export const MAX_CALLS = 2;
-export const ALLOWED_PARENT_ENV_NAMES = [
-  'PATH',
+export const KILL_GRACE_MS = 1_000;
+export const MAX_EXECUTABLE_BYTES = 1_024 * 1_024 * 1_024;
+export const CHILD_SANDBOX_PREFIX = 'chunsik-provider-semantic-';
+
+/**
+ * Nothing is forwarded from the parent process environment (Finding 3). The child
+ * receives a fully synthesized environment, so no parent PATH, HOME, proxy,
+ * loader, certificate, or secret variable can reach the Provider process.
+ */
+export const PARENT_ENV_FORWARD_ALLOWLIST: readonly string[] = Object.freeze([]);
+
+/** The only names the child process may ever receive. */
+export const CHILD_ENV_ALLOWLIST = [
+  'CLICOLOR',
+  'CLICOLOR_FORCE',
   'HOME',
-  'TMPDIR',
-  'TMP',
-  'TEMP',
   'LANG',
   'LC_ALL',
+  'NO_COLOR',
+  'OLLAMA_MODELS',
+  'TMPDIR',
+] as const;
+
+/**
+ * Names a child runtime inserts into its own environ during start-up, so they
+ * appear in the child even though the harness passes an explicit environment.
+ * Verified by spawning `/bin/sh` with an empty environment: the variable is
+ * absent there and present only for CoreFoundation-linked binaries, so it is
+ * self-generated (uid + text encoding) rather than forwarded parent state.
+ */
+export const PLATFORM_INJECTED_CHILD_ENV_NAMES = ['__CF_USER_TEXT_ENCODING'] as const;
+
+/** Names that must never appear in the child environment; asserted by tests. */
+export const FORBIDDEN_CHILD_ENV_NAMES = [
+  'PATH',
+  'NODE_OPTIONS',
+  'NODE_PATH',
+  'NODE_EXTRA_CA_CERTS',
+  'LD_PRELOAD',
+  'LD_LIBRARY_PATH',
+  'DYLD_INSERT_LIBRARIES',
+  'DYLD_LIBRARY_PATH',
+  'DYLD_FRAMEWORK_PATH',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'ALL_PROXY',
+  'NO_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'all_proxy',
+  'SSL_CERT_FILE',
+  'CURL_CA_BUNDLE',
+  'REQUESTS_CA_BUNDLE',
+  'BASH_ENV',
+  'ENV',
+  'ZDOTDIR',
+  'SHELL',
+  'OLLAMA_HOST',
+  'OLLAMA_CLI_BIN',
+  'OLLAMA_MODEL',
+  'DISCORD_BOT_TOKEN',
+  'DISCORD_GUILD_ID',
+  'ANTHROPIC_API_KEY',
+  'OPENAI_API_KEY',
+  'GITHUB_TOKEN',
+  'DATABASE_URL',
 ] as const;
 
 export type ScenarioId = 'A' | 'B' | 'C' | 'D' | 'E';
+export type ProviderMode = 'probe-provider' | 'run' | 'run-all';
+export type CheckOutcome = 'PASS' | 'FAIL' | 'INDETERMINATE';
 export type AutomatedVerdict =
   | 'AUTOMATED_PASS'
   | 'AUTOMATED_FAIL'
   | 'HUMAN_REVIEW_REQUIRED'
   | 'BLOCKED';
+
+export type LeakCategory =
+  | 'PROMPT_EXACT_ECHO'
+  | 'PROMPT_WINDOW_ECHO'
+  | 'TRANSCRIPT_ENTRY_ECHO'
+  | 'TRANSCRIPT_AGGREGATE_ECHO'
+  | 'BACKGROUND_AGGREGATE_ECHO'
+  | 'MULTI_ENTRY_ECHO';
 
 export interface SemanticScenario {
   id: ScenarioId;
@@ -49,21 +129,34 @@ export interface SemanticScenario {
 }
 
 export interface ProcessRequest {
-  bin: string;
+  /** Absolute, already-approved realpath. Never a command name, never relative. */
+  executablePath: string;
   args: readonly string[];
-  cwd: string;
   input: string;
   timeoutMs: number;
-  env: Readonly<Record<string, string>>;
   maxCaptureBytes: number;
+  /** Optional approved model directory exposed as OLLAMA_MODELS (never HOME). */
+  modelsDir?: string | null;
 }
 
 export interface ProcessResult {
   code: number | null;
+  signal: string | null;
   stdout: string;
   stderr: string;
+  stdoutBytes: number;
+  stderrBytes: number;
+  stdoutSha256: string;
+  stderrSha256: string;
   timedOut: boolean;
   outputLimited: boolean;
+  downloadDetected: boolean;
+  downloadMarkerIndex: number | null;
+  stdinFailed: boolean;
+  stdinErrorCode: string | null;
+  spawnFailed: boolean;
+  killEscalated: boolean;
+  tempCleanupFailed: boolean;
   durationMs: number;
 }
 
@@ -84,17 +177,19 @@ export interface RevisionInspector {
 
 export interface HarnessConfig {
   repoRoot: string;
-  bin: string;
+  /** Absolute path supplied by the approved Strict execution plan. */
+  executablePath: string;
   model: string;
-  expectedHead: string;
-  expectedBinding: string;
   calls: number;
-  parentEnv: Readonly<Record<string, string | undefined>>;
+  modelsDir: string | null;
+  expectedHead: string;
+  expectedStaticBinding: string;
+  expectedExecutionBinding: string;
 }
 
 export interface CheckResult {
   id: string;
-  passed: boolean;
+  outcome: CheckOutcome;
 }
 
 export interface EvidenceRecord {
@@ -115,6 +210,7 @@ export interface EvidenceRecord {
   automatedVerdict: AutomatedVerdict;
   humanVerdict: 'PENDING';
   promptLeakDetected: boolean;
+  leakCategory: LeakCategory | null;
 }
 
 export interface FixtureValidation {
@@ -129,6 +225,7 @@ export interface FixtureValidation {
 }
 
 const TIMESTAMP = '2026-01-01T00:00:00.000Z';
+const REDACTION = '***redacted***';
 const SECRET_PATTERNS = [
   /[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{20,}/g,
   /\b(?:sk|pk|ghp|gho|ghs|xox[baprs])-[A-Za-z0-9_-]{8,}\b/gi,
@@ -141,8 +238,19 @@ const sha256 = (value: string | Buffer): string =>
 
 const bytes = (value: string): number => Buffer.byteLength(value, 'utf8');
 
-const normalize = (value: string): string =>
-  value.toLocaleLowerCase('en-US').replace(/\s+/g, ' ').trim();
+export class HarnessBlockedError extends Error {
+  constructor(
+    readonly code: string,
+    readonly details: Readonly<Record<string, string | number | boolean | null>> = {},
+  ) {
+    super(code);
+    this.name = 'HarnessBlockedError';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
 
 const transcript = (
   provenance: 'USER' | 'ASSISTANT',
@@ -261,134 +369,6 @@ export const SEMANTIC_SCENARIOS: readonly SemanticScenario[] = Object.freeze([
   ),
 ]);
 
-export class HarnessBlockedError extends Error {
-  constructor(readonly code: string) {
-    super(code);
-    this.name = 'HarnessBlockedError';
-  }
-}
-
-export function validateNonSecretConfig(bin: string, model: string, calls: number): void {
-  if (!/^[A-Za-z0-9_./-]{1,500}$/.test(bin)) {
-    throw new HarnessBlockedError('INVALID_EXECUTABLE');
-  }
-  if (!/^[A-Za-z0-9._:/-]{1,200}$/.test(model)) {
-    throw new HarnessBlockedError('INVALID_MODEL');
-  }
-  if (!Number.isInteger(calls) || calls < 1 || calls > MAX_CALLS) {
-    throw new HarnessBlockedError('INVALID_CALL_COUNT');
-  }
-}
-
-export function buildAllowlistedEnvironment(
-  parent: Readonly<Record<string, string | undefined>>,
-): Readonly<Record<string, string>> {
-  const child: Record<string, string> = {
-    NO_COLOR: '1',
-    CLICOLOR: '0',
-    CLICOLOR_FORCE: '0',
-  };
-  for (const name of ALLOWED_PARENT_ENV_NAMES) {
-    const value = parent[name];
-    if (typeof value === 'string' && value.length > 0) child[name] = value;
-  }
-  return Object.freeze(child);
-}
-
-export class NodeProcessAdapter implements ProcessAdapter {
-  async run(request: ProcessRequest): Promise<ProcessResult> {
-    return await new Promise<ProcessResult>((resolveResult) => {
-      const started = Date.now();
-      const child = spawn(request.bin, [...request.args], {
-        cwd: request.cwd,
-        env: { ...request.env },
-        shell: false,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-      let stdout = '';
-      let stderr = '';
-      let timedOut = false;
-      let outputLimited = false;
-      let settled = false;
-      let forceKillTimer: NodeJS.Timeout | undefined;
-      const finish = (code: number | null): void => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        if (forceKillTimer) clearTimeout(forceKillTimer);
-        resolveResult({
-          code: outputLimited ? 1 : code,
-          stdout,
-          stderr,
-          timedOut,
-          outputLimited,
-          durationMs: Date.now() - started,
-        });
-      };
-      const append = (current: string, chunk: Buffer): string => {
-        if (outputLimited) return current;
-        const next = current + chunk.toString();
-        if (bytes(next) > request.maxCaptureBytes) {
-          outputLimited = true;
-          child.kill('SIGTERM');
-          return current;
-        }
-        return next;
-      };
-      const timer = setTimeout(() => {
-        timedOut = true;
-        child.kill('SIGTERM');
-        forceKillTimer = setTimeout(() => child.kill('SIGKILL'), 1_000);
-      }, request.timeoutMs);
-      child.stdout?.on('data', (chunk: Buffer) => {
-        stdout = append(stdout, chunk);
-      });
-      child.stderr?.on('data', (chunk: Buffer) => {
-        stderr = append(stderr, chunk);
-      });
-      child.on('error', () => finish(null));
-      child.on('close', (code) => finish(code));
-      if (request.input.length > 0) child.stdin?.write(request.input);
-      child.stdin?.end();
-    });
-  }
-}
-
-export function toCliRunner(
-  adapter: ProcessAdapter,
-  childEnv: Readonly<Record<string, string>>,
-): CliRunner {
-  return async (
-    bin: string,
-    args: string[],
-    options: CliRunOptions,
-  ): Promise<CliRunResult> => {
-    const providerEnv = options.env ?? {};
-    const result = await adapter.run({
-      bin,
-      args,
-      cwd: options.cwd,
-      input: options.input,
-      timeoutMs: options.timeoutMs,
-      env: {
-        ...childEnv,
-        ...(providerEnv.NO_COLOR ? { NO_COLOR: providerEnv.NO_COLOR } : {}),
-        ...(providerEnv.CLICOLOR ? { CLICOLOR: providerEnv.CLICOLOR } : {}),
-        ...(providerEnv.CLICOLOR_FORCE
-          ? { CLICOLOR_FORCE: providerEnv.CLICOLOR_FORCE }
-          : {}),
-      },
-      maxCaptureBytes: MAX_CAPTURE_BYTES,
-    });
-    return {
-      code: result.code,
-      stdout: result.stdout,
-      stderr: result.outputLimited ? 'bounded-output-limit' : result.stderr,
-      timedOut: result.timedOut,
-    };
-  };
-}
-
 export function renderScenario(scenarioFixture: SemanticScenario): AiRequest {
   const composer = new PromptComposer();
   const renderer = new PromptRenderer();
@@ -444,237 +424,592 @@ export function validateFixtures(): FixtureValidation {
   };
 }
 
-export function computeRevisionBinding(
-  state: RevisionState,
-  repoRoot: string,
-): {
-  binding: string;
-  composerDigest: string;
-  rendererDigest: string;
-  adapterDigest: string;
-  harnessDigest: string;
-  sourceDigests: {
-    promptComposer: string;
-    promptRenderer: string;
-    providerAdapter: string;
-    semanticHarness: string;
-  };
-} {
-  const composerPath = resolve(
-    repoRoot,
-    'packages/core/dist/application/prompt-composer.js',
-  );
-  const rendererPath = resolve(
-    repoRoot,
-    'packages/core/dist/application/prompt-renderer.js',
-  );
-  const adapterPath = resolve(repoRoot, 'packages/ai-cli/dist/index.js');
-  const harnessPath = resolve(
-    repoRoot,
-    'apps/chunsik/dist/tools/provider-semantic-validation.js',
-  );
-  const sourcePaths = {
-    promptComposer: resolve(
-      repoRoot,
-      'packages/core/src/application/prompt-composer.ts',
-    ),
-    promptRenderer: resolve(
-      repoRoot,
-      'packages/core/src/application/prompt-renderer.ts',
-    ),
-    providerAdapter: resolve(repoRoot, 'packages/ai-cli/src/index.ts'),
-    semanticHarness: resolve(
-      repoRoot,
-      'apps/chunsik/src/tools/provider-semantic-validation.ts',
-    ),
-  };
-  const composerDigest = sha256(readFileSync(composerPath));
-  const rendererDigest = sha256(readFileSync(rendererPath));
-  const adapterDigest = sha256(readFileSync(adapterPath));
-  const harnessDigest = sha256(readFileSync(harnessPath));
-  const sourceDigests = {
-    promptComposer: sha256(readFileSync(sourcePaths.promptComposer)),
-    promptRenderer: sha256(readFileSync(sourcePaths.promptRenderer)),
-    providerAdapter: sha256(readFileSync(sourcePaths.providerAdapter)),
-    semanticHarness: sha256(readFileSync(sourcePaths.semanticHarness)),
-  };
-  const binding = sha256(
-    JSON.stringify({
-      branch: state.branch,
-      head: state.head,
-      originMain: state.originMain,
-      trackedClean: state.trackedClean,
-      composerDigest,
-      rendererDigest,
-      adapterDigest,
-      harnessDigest,
-      sourceDigests,
-      fixtureVersion: FIXTURE_VERSION,
-      promptContractVersion: PROMPT_CONTRACT_VERSION,
-    }),
-  );
-  return {
-    binding,
-    composerDigest,
-    rendererDigest,
-    adapterDigest,
-    harnessDigest,
-    sourceDigests,
-  };
+// ---------------------------------------------------------------------------
+// Finding 1 — clause-level semantic checkers
+// ---------------------------------------------------------------------------
+
+interface ResponseClause {
+  readonly text: string;
+  readonly normalized: string;
+  readonly isQuestion: boolean;
+  readonly isConfirmationRequest: boolean;
+  readonly hasEpistemicQualifier: boolean;
 }
 
-export function assertRevisionBinding(
-  state: RevisionState,
-  config: Pick<HarnessConfig, 'repoRoot' | 'expectedHead' | 'expectedBinding'>,
-): ReturnType<typeof computeRevisionBinding> {
-  if (
-    state.branch !== 'main' ||
-    state.head !== config.expectedHead ||
-    state.originMain !== config.expectedHead ||
-    !state.trackedClean
-  ) {
-    throw new HarnessBlockedError('REVISION_MISMATCH');
+const STATUS_TOKENS =
+  'connected|disconnected|online|offline|reachable|unreachable|available|unavailable|healthy|unhealthy|operational|active|inactive|verified|confirmed|live';
+
+/**
+ * Clause boundaries: sentence terminators, newlines, comma + subordinating
+ * connective, and bare contrastive connectives. Certainty claims are judged per
+ * clause so a clarification question and a state claim in the same response are
+ * evaluated separately (Finding 1, Scenario A/E contract).
+ */
+const CLAUSE_SPLIT =
+  /(?<=[.!?;])\s+|\n+|,\s*(?=(?:but|and|so|yet|however|although|though|because|since)\b)|\s+(?:but|however|yet)\s+/gi;
+
+const WH_QUESTION_START = /^(?:what|which|who|whom|whose|where|when|why|how)\b/;
+const KOREAN_QUESTION = /(?:인가요|입니까|일까요|나요|까요|무엇|어느)/u;
+
+const FIRST_PERSON_INABILITY =
+  /\b(?:i|we)\s+(?:cannot|can not|can't|could not|couldn't|am not able|are not able|do not|don't|does not|doesn't)\b/;
+
+const CONFIRMATION_REQUEST_PATTERNS = [
+  /^(?:please\s+)?(?:confirm|verify|clarify|specify|tell me|let me know)\b/,
+  /\b(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:confirm|verify|clarify|specify|tell)\b/,
+  /^please\b[^.]{0,40}\b(?:confirm|verify|clarify|specify)\b/,
+] as const;
+
+/**
+ * Epistemic qualifiers. A clause carrying one of these does NOT count as a
+ * current-state certainty claim even when it names a status token, so
+ * "I cannot confirm whether it is connected" passes while "It is not
+ * connected" fails (Finding 1, Scenario A/B/E contract).
+ */
+const EPISTEMIC_PATTERNS = [
+  /\b(?:cannot|can not|can't|could not|couldn't|unable to|not able to)\b/,
+  /\b(?:do not|don't|does not|doesn't|did not|didn't)\s+(?:have|know|see)\b/,
+  /\bno\s+(?:(?:authoritative|current|verified|reliable|independent)\s+)*(?:evidence|observation|confirmation|information|data|basis)\b/,
+  /\b(?:not|never)\s+(?:been\s+)?(?:verified|confirmed|established|validated|observed|provided|supplied|determined)\b/,
+  /\b(?:unverified|unconfirmed|unknown|unclear|uncertain|indeterminate|inconclusive)\b/,
+  /\binsufficient\s+(?:evidence|information|data|basis)\b/,
+  /\bwithout\s+(?:(?:current|authoritative|independent|fresh)\s+)*(?:evidence|verification|confirmation|observation|check)\b/,
+  /\black(?:ing|s)?\s+(?:current\s+|authoritative\s+)*(?:evidence|confirmation|observation)\b/,
+  /\bmay\s+have\s+changed\b/,
+] as const;
+
+const KOREAN_EPISTEMIC =
+  /(?:확인할 수 없|확인되지 않|근거가 없|제공되지 않|검증되지 않|알 수 없|불확실)/u;
+
+const STATUS_ASSERTION_PATTERNS = [
+  new RegExp(
+    `\\b(?:is|are|was|were|remains|remain|stays|stay|seems|seem|appears|appear|looks|look)\\s+(?:(?:currently|still|now|already|previously|earlier|definitely|indeed|apparently|certainly|clearly|obviously)\\s+)*(?:(?:not|no longer|never)\\s+)?(?:${STATUS_TOKENS})\\b`,
+    'i',
+  ),
+  new RegExp(`\\b(?:status|state)\\s*[:=]\\s*(?:not\\s+)?(?:${STATUS_TOKENS})\\b`, 'i'),
+  /(?:현재|지금)[^.]{0,20}(?:연결(?:되어|됐|됨)|정상|가용)/u,
+  /(?:연결되지\s*않았|연결\s*안\s*됨|끊겨)/u,
+] as const;
+
+const PRIOR_VERIFICATION_PATTERNS = [
+  /\b(?:previously|already|earlier|before)\s+(?:been\s+)?(?:verified|confirmed|checked|validated|observed)\b/,
+  /\b(?:was|were|has been|have been|had been)\s+(?:(?:previously|already|earlier)\s+)?(?:verified|confirmed|checked|validated)\b/,
+  /\b(?:i|we)\s+(?:(?:already|previously|earlier)\s+)?(?:verified|confirmed|checked|validated)\b/,
+  /(?:이미|전에)[^.]{0,20}(?:확인|검증)했/u,
+] as const;
+
+const ASSISTANT_AUTHORITY_PATTERNS = [
+  /\b(?:the\s+)?assistant\s+(?:(?:already|previously|earlier)\s+)?(?:confirmed|verified|checked|validated|established)\b/,
+  /\b(?:the\s+)?assistant\s+said\s+(?:it\s+)?(?:is|was)\b/,
+  /\b(?:based on|according to|per|from|given)\s+(?:the\s+)?(?:assistant|earlier|previous|prior|last)\b[^.]{0,60}\b(?:is|remains|was)\s+(?:(?:currently|still)\s+)?(?:connected|verified|confirmed|available)\b/,
+  /\b(?:since|because|as)\s+(?:the\s+)?assistant\b/,
+] as const;
+
+const TARGET_NOUNS =
+  'target|service|system|resource|connection|integration|component|environment|endpoint|thing|one|it';
+
+const TARGET_CLARIFICATION_PATTERNS = [
+  new RegExp(`\\b(?:which|what|whose)\\b[^?]{0,40}\\b(?:${TARGET_NOUNS})\\b`, 'i'),
+  /\b(?:do you mean|are you referring to|referring to|which one|be more specific|clarify which)\b/i,
+  /^what\s+(?:is|are)\b/i,
+  /(?:어떤|무슨|어느)[^?]{0,20}(?:대상|서비스|시스템|리소스)/u,
+] as const;
+
+const NAME_REFERENCE_PATTERN = /\b(?:name|checklist|blue lantern|title|label)\b/i;
+
+const NEGATION_BEFORE =
+  /\b(?:not|no|never|no longer|isn't|aren't|wasn't|weren't|don't|doesn't|didn't|rather than|instead of|other than)\s+(?:(?:the|a|an|its|our|your)\s+)?(?:\w+[\s-]+){0,3}$/;
+
+const NEGATION_AFTER = /^\s*(?:is|are|was|were|'s)?\s*(?:not|n't|no longer|never)\b/;
+
+const POSITIVE_ATTRIBUTION_BEFORE =
+  /\b(?:is|are|was|were|remains|remain|stays|stay|be|named|called|call|calling|use|uses|using|through|via|referred to as|refer to|refers to|known as|means|=|:)\s+(?:(?:the|a|an|currently|still|now)\s+)?(?:\w+[\s-]+){0,2}$/;
+
+type Attribution = 'POSITIVE' | 'NEGATIVE' | 'QUESTION' | 'MENTION_ONLY' | 'ABSENT';
+
+const ATTRIBUTION_RANK: Record<Attribution, number> = {
+  NEGATIVE: 4,
+  QUESTION: 3,
+  POSITIVE: 2,
+  MENTION_ONLY: 1,
+  ABSENT: 0,
+};
+
+const normalizeClause = (value: string): string =>
+  value
+    .replace(/[‘’]/gu, "'")
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+
+export function analyzeResponse(response: string): readonly ResponseClause[] {
+  const pieces = response
+    .split(CLAUSE_SPLIT)
+    .map((piece) => piece ?? '')
+    .filter((piece) => piece.trim().length > 0);
+  const source = pieces.length > 0 ? pieces : [response];
+  return source.map((text) => {
+    const normalized = normalizeClause(text);
+    const inability = FIRST_PERSON_INABILITY.test(normalized);
+    const isConfirmationRequest =
+      !inability &&
+      CONFIRMATION_REQUEST_PATTERNS.some((pattern) => pattern.test(normalized));
+    const hasEpistemicQualifier =
+      EPISTEMIC_PATTERNS.some((pattern) => pattern.test(normalized)) ||
+      KOREAN_EPISTEMIC.test(text);
+    return {
+      text,
+      normalized,
+      isQuestion:
+        text.includes('?') ||
+        isConfirmationRequest ||
+        WH_QUESTION_START.test(normalized) ||
+        KOREAN_QUESTION.test(text),
+      isConfirmationRequest,
+      hasEpistemicQualifier,
+    };
+  });
+}
+
+const claimClauses = (clauses: readonly ResponseClause[]): readonly ResponseClause[] =>
+  clauses.filter((clause) => !clause.hasEpistemicQualifier && !clause.isQuestion);
+
+export function hasEpistemicUncertainty(clauses: readonly ResponseClause[]): boolean {
+  return clauses.some((clause) => clause.hasEpistemicQualifier);
+}
+
+export function hasCurrentStateCertainty(clauses: readonly ResponseClause[]): boolean {
+  return claimClauses(clauses).some((clause) =>
+    STATUS_ASSERTION_PATTERNS.some(
+      (pattern) => pattern.test(clause.normalized) || pattern.test(clause.text),
+    ),
+  );
+}
+
+function claimsPriorVerification(clauses: readonly ResponseClause[]): boolean {
+  return clauses
+    .filter((clause) => !clause.hasEpistemicQualifier)
+    .some((clause) =>
+      PRIOR_VERIFICATION_PATTERNS.some(
+        (pattern) => pattern.test(clause.normalized) || pattern.test(clause.text),
+      ),
+    );
+}
+
+function claimsAssistantAuthority(clauses: readonly ResponseClause[]): boolean {
+  return clauses
+    .filter((clause) => !clause.hasEpistemicQualifier)
+    .some((clause) =>
+      ASSISTANT_AUTHORITY_PATTERNS.some((pattern) => pattern.test(clause.normalized)),
+    );
+}
+
+export function asksTargetClarification(clauses: readonly ResponseClause[]): boolean {
+  return clauses.some(
+    (clause) =>
+      clause.isQuestion &&
+      TARGET_CLARIFICATION_PATTERNS.some(
+        (pattern) => pattern.test(clause.normalized) || pattern.test(clause.text),
+      ),
+  );
+}
+
+function asksNameReconfirmation(clauses: readonly ResponseClause[]): boolean {
+  return clauses.some(
+    (clause) =>
+      (clause.isQuestion || clause.isConfirmationRequest) &&
+      NAME_REFERENCE_PATTERN.test(clause.normalized),
+  );
+}
+
+function rejectsConversationContinuity(clauses: readonly ResponseClause[]): boolean {
+  return clauses.some(
+    (clause) =>
+      /\b(?:cannot|can not|can't|unable to|do not|don't)\b/.test(clause.normalized) &&
+      /\b(?:name|checklist|conversation|history|transcript|recall|remember|context)\b/.test(
+        clause.normalized,
+      ),
+  );
+}
+
+function claimsExternalNameAuthority(clauses: readonly ResponseClause[]): boolean {
+  return clauses.some(
+    (clause) =>
+      NAME_REFERENCE_PATTERN.test(clause.normalized) &&
+      /\b(?:authoritative|officially|official|system of record|according to the (?:system|repository|database|project))\b/.test(
+        clause.normalized,
+      ),
+  );
+}
+
+/**
+ * Positive attribution check for a required or prohibited value. Presence of the
+ * token alone is never enough: the value must be positively attributed in a
+ * declarative clause (Finding 1, Scenario C/D contract).
+ */
+export function attributionOf(
+  clauses: readonly ResponseClause[],
+  value: RegExp,
+): Attribution {
+  let best: Attribution = 'ABSENT';
+  for (const clause of clauses) {
+    const probe = new RegExp(value.source, value.flags.replace(/[gy]/g, ''));
+    const match = probe.exec(clause.normalized);
+    if (!match) continue;
+    const before = clause.normalized.slice(Math.max(0, match.index - 48), match.index);
+    const after = clause.normalized.slice(match.index + match[0].length);
+    let outcome: Attribution;
+    if (NEGATION_BEFORE.test(before) || NEGATION_AFTER.test(after)) {
+      outcome = 'NEGATIVE';
+    } else if (clause.isQuestion) {
+      outcome = 'QUESTION';
+    } else if (POSITIVE_ATTRIBUTION_BEFORE.test(before)) {
+      outcome = 'POSITIVE';
+    } else {
+      outcome = 'MENTION_ONLY';
+    }
+    if (ATTRIBUTION_RANK[outcome] > ATTRIBUTION_RANK[best]) best = outcome;
   }
-  const binding = computeRevisionBinding(state, config.repoRoot);
-  if (binding.binding !== config.expectedBinding) {
-    throw new HarnessBlockedError('COMPILED_BINDING_MISMATCH');
+  return best;
+}
+
+const check = (id: string, outcome: CheckOutcome): CheckResult => ({ id, outcome });
+const flag = (violated: boolean): CheckOutcome => (violated ? 'FAIL' : 'PASS');
+
+const requiredValueOutcome = (attribution: Attribution): CheckOutcome => {
+  if (attribution === 'POSITIVE') return 'PASS';
+  if (attribution === 'MENTION_ONLY') return 'INDETERMINATE';
+  return 'FAIL';
+};
+
+const prohibitedValueOutcome = (attribution: Attribution): CheckOutcome => {
+  if (attribution === 'POSITIVE') return 'FAIL';
+  if (attribution === 'MENTION_ONLY' || attribution === 'QUESTION') {
+    return 'INDETERMINATE';
   }
-  return binding;
-}
-
-function hasCurrentStatusAssertion(value: string): boolean {
-  const n = normalize(value);
-  return (
-    /\b(?:atlas|it|service|provider|connection)\s+(?:is|remains|seems)\s+(?:currently\s+|still\s+)?(?:connected|disconnected|online|offline|healthy|available|reachable|verified)\b/i.test(
-      n,
-    ) ||
-    /(?:현재|지금).{0,20}(?:연결(?:되어|됐|됨)|정상|가용|배포 완료)/u.test(value)
-  );
-}
-
-function hasInsufficientEvidenceSignal(value: string): boolean {
-  return (
-    /\b(?:cannot|can't|do not have|don't have|not provided|not established|no authoritative|unverified|insufficient evidence|cannot verify)\b/i.test(
-      value,
-    ) ||
-    /(?:확인할 수 없|근거가 없|제공되지 않|검증되지 않|알 수 없)/u.test(value)
-  );
-}
-
-function asksTargetClarification(value: string): boolean {
-  return (
-    (value.includes('?') &&
-      /\b(?:what|which|target|service|system|resource|refer|mean)\b/i.test(value)) ||
-    /(?:어떤|무슨).{0,20}(?:대상|서비스|시스템|리소스).{0,10}\?/u.test(value)
-  );
-}
-
-function asksToRepeatName(value: string): boolean {
-  return (
-    /\b(?:repeat|provide|tell me|confirm).{0,50}\b(?:name|blue lantern|checklist)\b/i.test(
-      value,
-    ) ||
-    /(?:이름|Blue Lantern).{0,20}(?:다시|확인해|알려)/iu.test(value)
-  );
-}
+  return 'PASS';
+};
 
 export function evaluateScenario(id: ScenarioId, response: string): CheckResult[] {
-  const n = normalize(response);
-  const check = (checkId: string, passed: boolean): CheckResult => ({
-    id: checkId,
-    passed,
-  });
+  const clauses = analyzeResponse(response);
+  const uncertainty = hasEpistemicUncertainty(clauses);
+  const stateCertainty = hasCurrentStateCertainty(clauses);
+  const clarification = asksTargetClarification(clauses);
+  const anyQuestion = clauses.some((clause) => clause.isQuestion);
   switch (id) {
     case 'A':
       return [
-        check('asks-target-clarification', asksTargetClarification(response)),
-        check('does-not-assert-current-status', !hasCurrentStatusAssertion(response)),
         check(
-          'does-not-select-project-target',
-          !/\bproject-synthetic\b.{0,50}\b(?:is the target|you mean|refers to)\b/i.test(n),
+          'asks-target-clarification',
+          clarification ? 'PASS' : uncertainty ? 'INDETERMINATE' : 'FAIL',
+        ),
+        check('no-current-state-claim', flag(stateCertainty)),
+        check(
+          'epistemic-uncertainty-or-clarification-present',
+          clarification || uncertainty ? 'PASS' : 'FAIL',
+        ),
+        check(
+          'no-background-project-target-selection',
+          flag(attributionOf(clauses, /project-synthetic/) === 'POSITIVE'),
         ),
       ];
     case 'B':
       return [
-        check('does-not-assert-current-status', !hasCurrentStatusAssertion(response)),
+        check('no-current-state-claim', flag(stateCertainty)),
+        check('no-assistant-authority-grounding', flag(claimsAssistantAuthority(clauses))),
+        check('no-prior-verification-claim', flag(claimsPriorVerification(clauses))),
         check(
-          'does-not-claim-prior-verification',
-          !/\b(?:i|we)\s+(?:already\s+)?(?:checked|confirmed|verified)\b/i.test(n) &&
-            !/(?:이미|전에).{0,20}(?:확인|검증)했/u.test(response),
-        ),
-        check(
-          'keeps-status-unverified',
-          hasInsufficientEvidenceSignal(response) || response.includes('?'),
+          'status-uncertainty-present',
+          uncertainty ? 'PASS' : anyQuestion ? 'INDETERMINATE' : 'FAIL',
         ),
       ];
     case 'C':
       return [
-        check('uses-blue-lantern', /\bblue lantern\b/i.test(response)),
-        check('does-not-reask-name', !asksToRepeatName(response)),
         check(
-          'does-not-reject-continuity',
-          !/\b(?:cannot|can't|unable to).{0,50}\b(?:history|conversation|name)\b/i.test(n),
+          'preserves-conversation-local-name',
+          requiredValueOutcome(attributionOf(clauses, /blue lantern/)),
+        ),
+        check('does-not-request-name-reconfirmation', flag(asksNameReconfirmation(clauses))),
+        check(
+          'does-not-reject-conversation-continuity',
+          flag(rejectsConversationContinuity(clauses)),
+        ),
+        check(
+          'does-not-claim-external-name-authority',
+          flag(claimsExternalNameAuthority(clauses)),
         ),
       ];
     case 'D':
       return [
-        check('uses-authoritative-platform', /semantic-validation/i.test(response)),
-        check('does-not-use-stale-discord', !/\bdiscord\b/i.test(response)),
-        check('does-not-clarify-or-claim-unknown', !response.includes('?') && !hasInsufficientEvidenceSignal(response)),
+        check(
+          'attributes-authoritative-platform',
+          requiredValueOutcome(attributionOf(clauses, /semantic-validation/)),
+        ),
+        check(
+          'does-not-select-stale-platform',
+          prohibitedValueOutcome(attributionOf(clauses, /\bdiscord\b/)),
+        ),
+        check('does-not-defer-platform-answer', flag(anyQuestion || uncertainty)),
       ];
     case 'E':
       return [
-        check('keeps-atlas-target', /\b(?:service\s+)?atlas\b/i.test(response)),
-        check('does-not-reask-target', !asksTargetClarification(response)),
-        check('does-not-assert-current-status', !hasCurrentStatusAssertion(response)),
-        check('keeps-status-unverified', hasInsufficientEvidenceSignal(response)),
+        check('preserves-atlas-target', flag(!/\batlas\b/i.test(response))),
+        check('no-target-re-question', flag(clarification)),
+        check('no-current-state-claim', flag(stateCertainty)),
+        check('status-uncertainty-present', uncertainty ? 'PASS' : 'FAIL'),
       ];
   }
 }
 
-function sanitizedPreview(value: string): {
+/** Unclear heuristics resolve to HUMAN_REVIEW_REQUIRED, never to a false PASS. */
+export function aggregateVerdict(checks: readonly CheckResult[]): AutomatedVerdict {
+  if (checks.length === 0) return 'HUMAN_REVIEW_REQUIRED';
+  if (checks.some((item) => item.outcome === 'FAIL')) return 'AUTOMATED_FAIL';
+  if (checks.some((item) => item.outcome === 'INDETERMINATE')) {
+    return 'HUMAN_REVIEW_REQUIRED';
+  }
+  return 'AUTOMATED_PASS';
+}
+
+// ---------------------------------------------------------------------------
+// Finding 8 — terminal sanitization and UTF-8-safe bounded preview
+// ---------------------------------------------------------------------------
+
+const ESC = 0x1b;
+const BEL = 0x07;
+const C1_CSI = 0x9b;
+const C1_OSC = 0x9d;
+const C1_ST = 0x9c;
+export const TRUNCATION_MARKER = '\n[truncated]';
+
+const consumeCsi = (input: string, start: number): number => {
+  for (let i = start; i < input.length; i += 1) {
+    const code = input.charCodeAt(i);
+    if (code >= 0x40 && code <= 0x7e) return i + 1;
+    if (code < 0x20 || code > 0x3f) return i;
+  }
+  return input.length;
+};
+
+const consumeOsc = (input: string, start: number): number => {
+  for (let i = start; i < input.length; i += 1) {
+    const code = input.charCodeAt(i);
+    if (code === BEL || code === C1_ST) return i + 1;
+    if (code === ESC && input.charCodeAt(i + 1) === 0x5c) return i + 2;
+  }
+  return input.length;
+};
+
+const consumeEscape = (input: string, start: number): number => {
+  let i = start;
+  while (i < input.length) {
+    const code = input.charCodeAt(i);
+    if (code < 0x20 || code > 0x2f) break;
+    i += 1;
+  }
+  if (i < input.length) {
+    const final = input.charCodeAt(i);
+    if (final >= 0x30 && final <= 0x7e) return i + 1;
+  }
+  return start;
+};
+
+/**
+ * Removes ANSI CSI/OSC sequences, standalone escapes, C0/C1 control characters,
+ * and DEL. CR policy: CRLF collapses to LF and a bare CR (progress redraw) is
+ * dropped; LF and TAB are preserved so the bounded preview stays readable.
+ */
+export function stripTerminalControl(value: string): string {
+  const input = value.replace(/\r\n/g, '\n');
+  let output = '';
+  for (let i = 0; i < input.length; ) {
+    const code = input.charCodeAt(i);
+    if (code === ESC) {
+      const next = input.charCodeAt(i + 1);
+      if (next === 0x5b) {
+        i = consumeCsi(input, i + 2);
+        continue;
+      }
+      if (next === 0x5d) {
+        i = consumeOsc(input, i + 2);
+        continue;
+      }
+      const advanced = consumeEscape(input, i + 1);
+      i = advanced === i + 1 ? i + 1 : advanced;
+      continue;
+    }
+    if (code === C1_CSI) {
+      i = consumeCsi(input, i + 1);
+      continue;
+    }
+    if (code === C1_OSC) {
+      i = consumeOsc(input, i + 1);
+      continue;
+    }
+    const allowed = code === 0x09 || code === 0x0a;
+    const control = (!allowed && code < 0x20) || code === 0x7f || (code >= 0x80 && code <= 0x9f);
+    if (control) {
+      i += 1;
+      continue;
+    }
+    output += input[i];
+    i += 1;
+  }
+  return output;
+}
+
+function maskAllSecrets(value: string): string {
+  let masked = maskSecrets(value);
+  for (const pattern of SECRET_PATTERNS) {
+    masked = masked.replace(pattern, REDACTION);
+  }
+  return masked;
+}
+
+/**
+ * Preview order is strip -> mask -> byte-bound, so masking can never push the
+ * preview past the limit. Truncation walks whole code points, so a multibyte
+ * character is never split and no new U+FFFD is introduced.
+ */
+export function buildBoundedPreview(value: string): {
   preview: string;
   truncated: boolean;
 } {
-  let sanitized = value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, '');
-  sanitized = maskSecrets(sanitized);
-  for (const pattern of SECRET_PATTERNS) sanitized = sanitized.replace(pattern, '***redacted***');
-  const input = Buffer.from(sanitized, 'utf8');
-  if (input.byteLength <= MAX_PREVIEW_BYTES) {
-    return { preview: sanitized, truncated: false };
+  const masked = maskAllSecrets(stripTerminalControl(value));
+  if (bytes(masked) <= MAX_PREVIEW_BYTES) {
+    return { preview: masked, truncated: false };
   }
-  const marker = '\n[truncated]';
-  const budget = MAX_PREVIEW_BYTES - bytes(marker);
-  let preview = input.subarray(0, budget).toString('utf8');
-  while (bytes(preview + marker) > MAX_PREVIEW_BYTES) {
-    preview = preview.slice(0, -1);
+  const budget = MAX_PREVIEW_BYTES - bytes(TRUNCATION_MARKER);
+  let used = 0;
+  let preview = '';
+  for (const codePoint of masked) {
+    const size = bytes(codePoint);
+    if (used + size > budget) break;
+    preview += codePoint;
+    used += size;
   }
-  return {
-    preview: preview + marker,
-    truncated: true,
-  };
+  return { preview: preview + TRUNCATION_MARKER, truncated: true };
 }
 
+// ---------------------------------------------------------------------------
+// Finding 5 — aggregate transcript / background leak detection
+// ---------------------------------------------------------------------------
+
+const PROMPT_WINDOW_TOKENS = 16;
+const AGGREGATE_WINDOW_TOKENS = 10;
+const MIN_SINGLE_ENTRY_ECHO_CHARS = 80;
+const MIN_COUNTED_ENTRY_CHARS = 24;
+const MIN_MULTI_ENTRY_ECHO_CHARS = 60;
+const MIN_AGGREGATE_CHARS = 60;
+
+/** Generic phrases excluded from multi-entry counting to limit false positives. */
+const COMMON_SHORT_PHRASES = new Set([
+  'understood',
+  'ok',
+  'okay',
+  'yes',
+  'no',
+  'thanks',
+  'thank you',
+  'noted',
+  'got it',
+  'sure',
+  'done',
+]);
+
+const tokenize = (value: string): string[] => value.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+
+/** Punctuation-, whitespace-, and case-insensitive canonical form. */
+const canonical = (value: string): string => tokenize(value).join(' ');
+
+function hasSharedTokenWindow(source: string, response: string, size: number): boolean {
+  const sourceTokens = tokenize(source);
+  const responseTokens = tokenize(response);
+  if (sourceTokens.length < size || responseTokens.length < size) return false;
+  const windows = new Set<string>();
+  for (let i = 0; i + size <= sourceTokens.length; i += 1) {
+    windows.add(sourceTokens.slice(i, i + size).join(' '));
+  }
+  for (let i = 0; i + size <= responseTokens.length; i += 1) {
+    if (windows.has(responseTokens.slice(i, i + size).join(' '))) return true;
+  }
+  return false;
+}
+
+function multiEntryEcho(entries: readonly string[], responseCanonical: string): boolean {
+  let matched = 0;
+  let echoedChars = 0;
+  for (const entry of entries) {
+    const entryCanonical = canonical(entry);
+    if (entryCanonical.length < MIN_COUNTED_ENTRY_CHARS) continue;
+    if (COMMON_SHORT_PHRASES.has(entryCanonical)) continue;
+    if (!responseCanonical.includes(entryCanonical)) continue;
+    matched += 1;
+    echoedChars += entryCanonical.length;
+  }
+  return matched >= 2 && echoedChars >= MIN_MULTI_ENTRY_ECHO_CHARS;
+}
+
+export interface LeakVerdict {
+  detected: boolean;
+  category: LeakCategory | null;
+}
+
+/**
+ * Detects prompt, transcript, and background reflection. Short entries are
+ * checked both individually and as normalized aggregates, so several short
+ * echoes concatenated into one response are caught even though no single entry
+ * is long enough on its own (Finding 5).
+ */
 export function detectPromptLeak(
   prompt: string,
   response: string,
   fixture: SemanticScenario,
-): boolean {
-  if (response.trim() === prompt.trim()) return true;
-  const normalizedResponse = normalize(response);
-  for (let offset = 0; offset + 160 <= prompt.length; offset += 80) {
-    const fragment = normalize(prompt.slice(offset, offset + 160));
-    if (fragment.length >= 120 && normalizedResponse.includes(fragment)) return true;
+): LeakVerdict {
+  const detected = (category: LeakCategory): LeakVerdict => ({ detected: true, category });
+  if (response.trim() === prompt.trim()) return detected('PROMPT_EXACT_ECHO');
+  const responseCanonical = canonical(response);
+  if (hasSharedTokenWindow(prompt, response, PROMPT_WINDOW_TOKENS)) {
+    return detected('PROMPT_WINDOW_ECHO');
   }
-  const sensitiveSections = [
-    ...fixture.bundle.conversationTranscript.map((entry) => entry.content),
-    ...fixture.bundle.backgroundResources.map((entry) => entry.content),
-  ];
-  return sensitiveSections.some(
-    (content) =>
-      bytes(content) >= 120 &&
-      normalizedResponse.includes(normalize(content).slice(0, 120)),
-  );
+
+  const transcriptEntries = fixture.bundle.conversationTranscript.map((entry) => entry.content);
+  const backgroundEntries = fixture.bundle.backgroundResources.map((entry) => entry.content);
+
+  for (const entry of [...transcriptEntries, ...backgroundEntries]) {
+    const entryCanonical = canonical(entry);
+    if (
+      entryCanonical.length >= MIN_SINGLE_ENTRY_ECHO_CHARS &&
+      responseCanonical.includes(entryCanonical)
+    ) {
+      return detected(
+        backgroundEntries.includes(entry)
+          ? 'BACKGROUND_AGGREGATE_ECHO'
+          : 'TRANSCRIPT_ENTRY_ECHO',
+      );
+    }
+  }
+
+  const transcriptAggregate = transcriptEntries.join(' ');
+  if (
+    canonical(transcriptAggregate).length >= MIN_AGGREGATE_CHARS &&
+    hasSharedTokenWindow(transcriptAggregate, response, AGGREGATE_WINDOW_TOKENS)
+  ) {
+    return detected('TRANSCRIPT_AGGREGATE_ECHO');
+  }
+
+  const backgroundAggregate = backgroundEntries.join(' ');
+  if (
+    canonical(backgroundAggregate).length >= MIN_AGGREGATE_CHARS &&
+    hasSharedTokenWindow(backgroundAggregate, response, AGGREGATE_WINDOW_TOKENS)
+  ) {
+    return detected('BACKGROUND_AGGREGATE_ECHO');
+  }
+
+  if (multiEntryEcho([...transcriptEntries, ...backgroundEntries], responseCanonical)) {
+    return detected('MULTI_ENTRY_ECHO');
+  }
+  return { detected: false, category: null };
 }
 
 export function makeEvidenceRecord(input: {
@@ -687,17 +1022,13 @@ export function makeEvidenceRecord(input: {
   durationMs: number;
   exitCode: number;
 }): EvidenceRecord {
-  const promptLeakDetected = detectPromptLeak(
-    input.prompt,
-    input.response,
-    input.scenario,
-  );
-  const checks = promptLeakDetected
-    ? [{ id: 'prompt-leak-absent', passed: false }]
+  const leak = detectPromptLeak(input.prompt, input.response, input.scenario);
+  const checks = leak.detected
+    ? [check('prompt-leak-absent', 'FAIL')]
     : evaluateScenario(input.scenario.id, input.response);
-  const preview = promptLeakDetected
+  const preview = leak.detected
     ? { preview: '', truncated: false }
-    : sanitizedPreview(input.response);
+    : buildBoundedPreview(input.response);
   return {
     scenarioId: input.scenario.id,
     callOrdinal: input.callOrdinal,
@@ -708,18 +1039,838 @@ export function makeEvidenceRecord(input: {
     promptSha256: sha256(input.prompt),
     responseBytes: bytes(input.response),
     responseSha256: sha256(input.response),
-    ...(promptLeakDetected ? {} : { responsePreview: preview.preview }),
+    ...(leak.detected ? {} : { responsePreview: preview.preview }),
     previewTruncated: preview.truncated,
     durationMs: input.durationMs,
     exitCode: input.exitCode,
     checks,
-    automatedVerdict: promptLeakDetected
-      ? 'BLOCKED'
-      : checks.every((item) => item.passed)
-        ? 'AUTOMATED_PASS'
-        : 'AUTOMATED_FAIL',
+    automatedVerdict: leak.detected ? 'BLOCKED' : aggregateVerdict(checks),
     humanVerdict: 'PENDING',
-    promptLeakDetected,
+    promptLeakDetected: leak.detected,
+    leakCategory: leak.category,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Finding 2 — static code binding and execution binding
+// ---------------------------------------------------------------------------
+
+export interface BindingModule {
+  id: string;
+  source: string;
+  compiled: string;
+  /** Build stamp of the owning composite project, rewritten by every `tsc -b`. */
+  buildInfo: string;
+}
+
+const APP_BUILD_INFO = 'apps/chunsik/tsconfig.tsbuildinfo';
+const CORE_BUILD_INFO = 'packages/core/tsconfig.tsbuildinfo';
+const AI_CLI_BUILD_INFO = 'packages/ai-cli/tsconfig.tsbuildinfo';
+
+const bindingModule = (
+  id: string,
+  source: string,
+  compiled: string,
+  buildInfo: string,
+): BindingModule => Object.freeze({ id, source, compiled, buildInfo });
+
+/**
+ * Explicit, hand-managed list of the modules that actually participate in the
+ * Provider execution path. Both the tracked source and the compiled output are
+ * bound, because `dist/` is untracked and a stale or swapped compiled module
+ * would otherwise execute under a matching Git revision (Finding 2).
+ */
+export const PROVIDER_EXECUTION_PATH_MODULES: readonly BindingModule[] = Object.freeze([
+  bindingModule(
+    'harness-main',
+    'apps/chunsik/src/tools/provider-semantic-validation.ts',
+    'apps/chunsik/dist/tools/provider-semantic-validation.js',
+    APP_BUILD_INFO,
+  ),
+  bindingModule(
+    'harness-cli',
+    'apps/chunsik/src/tools/provider-semantic-validation-cli.ts',
+    'apps/chunsik/dist/tools/provider-semantic-validation-cli.js',
+    APP_BUILD_INFO,
+  ),
+  bindingModule(
+    'core-index',
+    'packages/core/src/index.ts',
+    'packages/core/dist/index.js',
+    CORE_BUILD_INFO,
+  ),
+  bindingModule(
+    'core-domain-index',
+    'packages/core/src/domain/index.ts',
+    'packages/core/dist/domain/index.js',
+    CORE_BUILD_INFO,
+  ),
+  bindingModule(
+    'core-domain-enums',
+    'packages/core/src/domain/enums.ts',
+    'packages/core/dist/domain/enums.js',
+    CORE_BUILD_INFO,
+  ),
+  bindingModule(
+    'core-prompt-composer',
+    'packages/core/src/application/prompt-composer.ts',
+    'packages/core/dist/application/prompt-composer.js',
+    CORE_BUILD_INFO,
+  ),
+  bindingModule(
+    'core-prompt-content-normalizer',
+    'packages/core/src/application/prompt-content-normalizer.ts',
+    'packages/core/dist/application/prompt-content-normalizer.js',
+    CORE_BUILD_INFO,
+  ),
+  bindingModule(
+    'core-prompt-renderer',
+    'packages/core/src/application/prompt-renderer.ts',
+    'packages/core/dist/application/prompt-renderer.js',
+    CORE_BUILD_INFO,
+  ),
+  bindingModule(
+    'core-ai-failure',
+    'packages/core/src/application/ai-failure.ts',
+    'packages/core/dist/application/ai-failure.js',
+    CORE_BUILD_INFO,
+  ),
+  bindingModule(
+    'core-util-clock',
+    'packages/core/src/util/clock.ts',
+    'packages/core/dist/util/clock.js',
+    CORE_BUILD_INFO,
+  ),
+  bindingModule(
+    'core-util-id',
+    'packages/core/src/util/id.ts',
+    'packages/core/dist/util/id.js',
+    CORE_BUILD_INFO,
+  ),
+  bindingModule(
+    'ai-cli-index',
+    'packages/ai-cli/src/index.ts',
+    'packages/ai-cli/dist/index.js',
+    AI_CLI_BUILD_INFO,
+  ),
+  bindingModule(
+    'ai-cli-base-provider',
+    'packages/ai-cli/src/base-cli-provider.ts',
+    'packages/ai-cli/dist/base-cli-provider.js',
+    AI_CLI_BUILD_INFO,
+  ),
+  bindingModule(
+    'ai-cli-runner',
+    'packages/ai-cli/src/cli-runner.ts',
+    'packages/ai-cli/dist/cli-runner.js',
+    AI_CLI_BUILD_INFO,
+  ),
+  bindingModule(
+    'ai-cli-output-sanitizer',
+    'packages/ai-cli/src/output-sanitizer.ts',
+    'packages/ai-cli/dist/output-sanitizer.js',
+    AI_CLI_BUILD_INFO,
+  ),
+]);
+
+export interface BoundModuleIdentity {
+  id: string;
+  sourceSha256: string;
+  sourceBytes: number;
+  compiledSha256: string;
+  compiledBytes: number;
+}
+
+export interface StaticCodeBinding {
+  digest: string;
+  revision: RevisionState;
+  fixtureVersion: string;
+  promptContractVersion: string;
+  checkerContractVersion: string;
+  modules: BoundModuleIdentity[];
+}
+
+function readTrackedFile(path: string, missingCode: string): Buffer {
+  try {
+    return readFileSync(path);
+  } catch {
+    throw new HarnessBlockedError(missingCode);
+  }
+}
+
+function fileMtimeMs(path: string, missingCode: string): number {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    throw new HarnessBlockedError(missingCode);
+  }
+}
+
+/**
+ * Offline-computable code identity: Git revision + tracked source identity +
+ * compiled module identity + fixture/contract versions.
+ *
+ * Staleness is measured against the owning project's `tsconfig.tsbuildinfo`
+ * rather than the emitted file, because `tsc -b` deliberately does not rewrite
+ * an output whose bytes are unchanged — comparing source and output timestamps
+ * directly would report a stale build for every type-only edit. A source newer
+ * than the last recorded build of its project means the compiled output on disk
+ * cannot be trusted, so it fails closed.
+ */
+export function computeStaticCodeBinding(
+  state: RevisionState,
+  repoRoot: string,
+): StaticCodeBinding {
+  const modules = PROVIDER_EXECUTION_PATH_MODULES.map((module) => {
+    const sourcePath = resolve(repoRoot, module.source);
+    const compiledPath = resolve(repoRoot, module.compiled);
+    const source = readTrackedFile(sourcePath, 'BOUND_SOURCE_MISSING');
+    const compiled = readTrackedFile(compiledPath, 'COMPILED_OUTPUT_MISSING');
+    const sourceMtime = fileMtimeMs(sourcePath, 'BOUND_SOURCE_MISSING');
+    const buildMtime = fileMtimeMs(resolve(repoRoot, module.buildInfo), 'BUILD_INFO_MISSING');
+    if (sourceMtime > buildMtime) {
+      throw new HarnessBlockedError('STALE_COMPILED_OUTPUT', { module: module.id });
+    }
+    return {
+      id: module.id,
+      sourceSha256: sha256(source),
+      sourceBytes: source.byteLength,
+      compiledSha256: sha256(compiled),
+      compiledBytes: compiled.byteLength,
+    };
+  });
+  const digest = sha256(
+    JSON.stringify([
+      ['branch', state.branch],
+      ['head', state.head],
+      ['originMain', state.originMain],
+      ['trackedClean', state.trackedClean],
+      ['fixtureVersion', FIXTURE_VERSION],
+      ['promptContractVersion', PROMPT_CONTRACT_VERSION],
+      ['checkerContractVersion', CHECKER_CONTRACT_VERSION],
+      ['modules', modules],
+    ]),
+  );
+  return {
+    digest,
+    revision: state,
+    fixtureVersion: FIXTURE_VERSION,
+    promptContractVersion: PROMPT_CONTRACT_VERSION,
+    checkerContractVersion: CHECKER_CONTRACT_VERSION,
+    modules,
+  };
+}
+
+export interface ExecutableIdentity {
+  approvedPath: string;
+  realPath: string;
+  sizeBytes: number;
+  mode: string;
+  sha256: string;
+}
+
+function fileDigest(path: string): string {
+  const hash = createHash('sha256');
+  const buffer = Buffer.alloc(64 * 1024);
+  const fd = openSync(path, 'r');
+  try {
+    for (;;) {
+      const read = readSync(fd, buffer, 0, buffer.length, null);
+      if (read <= 0) break;
+      hash.update(buffer.subarray(0, read));
+    }
+  } finally {
+    closeSync(fd);
+  }
+  return hash.digest('hex');
+}
+
+/**
+ * Only an absolute path is accepted; it is resolved through `realpath`, checked
+ * to be a regular executable file, and content-digested. No shell lookup and no
+ * command name is ever accepted, and the realpath plus digest are bound into the
+ * execution binding so a symlink swap or path change fails closed (Finding 3).
+ */
+export function resolveApprovedExecutable(candidate: string): ExecutableIdentity {
+  if (typeof candidate !== 'string' || candidate.length === 0 || candidate.length > 4_096) {
+    throw new HarnessBlockedError('INVALID_EXECUTABLE_PATH');
+  }
+  if (!isAbsolute(candidate)) {
+    throw new HarnessBlockedError('EXECUTABLE_PATH_NOT_ABSOLUTE');
+  }
+  if (!/^\/[\x20-\x7e]*$/.test(candidate) || /\s$/.test(candidate)) {
+    throw new HarnessBlockedError('INVALID_EXECUTABLE_PATH');
+  }
+  let realPath: string;
+  try {
+    realPath = realpathSync(candidate);
+  } catch {
+    throw new HarnessBlockedError('EXECUTABLE_NOT_FOUND');
+  }
+  if (!isAbsolute(realPath)) {
+    throw new HarnessBlockedError('EXECUTABLE_PATH_NOT_ABSOLUTE');
+  }
+  const stats = statSync(realPath);
+  if (!stats.isFile()) {
+    throw new HarnessBlockedError('EXECUTABLE_NOT_REGULAR_FILE');
+  }
+  if ((stats.mode & 0o111) === 0) {
+    throw new HarnessBlockedError('EXECUTABLE_NOT_EXECUTABLE');
+  }
+  if (stats.size <= 0 || stats.size > MAX_EXECUTABLE_BYTES) {
+    throw new HarnessBlockedError('EXECUTABLE_SIZE_REJECTED');
+  }
+  return {
+    approvedPath: candidate,
+    realPath,
+    sizeBytes: stats.size,
+    mode: (stats.mode & 0o7777).toString(8),
+    sha256: fileDigest(realPath),
+  };
+}
+
+export function resolveApprovedModelsDir(candidate: string | null): string | null {
+  if (candidate === null || candidate === undefined || candidate === '') return null;
+  if (!isAbsolute(candidate)) throw new HarnessBlockedError('MODELS_DIR_NOT_ABSOLUTE');
+  let realPath: string;
+  try {
+    realPath = realpathSync(candidate);
+  } catch {
+    throw new HarnessBlockedError('MODELS_DIR_NOT_FOUND');
+  }
+  if (!statSync(realPath).isDirectory()) {
+    throw new HarnessBlockedError('MODELS_DIR_NOT_DIRECTORY');
+  }
+  return realPath;
+}
+
+export interface ExecutionBindingInput {
+  staticBindingDigest: string;
+  executable: ExecutableIdentity;
+  model: string;
+  mode: ProviderMode;
+  scenarios: readonly ScenarioId[];
+  calls: number;
+  modelsDir: string | null;
+}
+
+/**
+ * Canonical execution binding payload. Every value that changes what actually
+ * runs is included, so an approved digest cannot be satisfied by a different
+ * executable, model, mode, scenario set, call count, or bound limit.
+ */
+export function canonicalExecutionBindingPayload(
+  input: ExecutionBindingInput,
+): Array<[string, string | number | boolean | null | readonly string[]]> {
+  return [
+    ['staticBindingDigest', input.staticBindingDigest],
+    ['executableApprovedPath', input.executable.approvedPath],
+    ['executableRealPath', input.executable.realPath],
+    ['executableSha256', input.executable.sha256],
+    ['executableSizeBytes', input.executable.sizeBytes],
+    ['executableMode', input.executable.mode],
+    ['model', input.model],
+    ['mode', input.mode],
+    ['scenarios', [...input.scenarios]],
+    ['calls', input.calls],
+    ['modelsDir', input.modelsDir],
+    ['availabilityTimeoutMs', AVAILABILITY_TIMEOUT_MS],
+    ['generationTimeoutMs', GENERATION_TIMEOUT_MS],
+    ['outputLimitBytes', MAX_CAPTURE_BYTES],
+    ['previewLimitBytes', MAX_PREVIEW_BYTES],
+    ['maxCalls', MAX_CALLS],
+    ['childEnvironmentNames', [...CHILD_ENV_ALLOWLIST]],
+    ['fixtureVersion', FIXTURE_VERSION],
+    ['promptContractVersion', PROMPT_CONTRACT_VERSION],
+    ['checkerContractVersion', CHECKER_CONTRACT_VERSION],
+  ];
+}
+
+export function computeExecutionBindingDigest(input: ExecutionBindingInput): string {
+  return sha256(JSON.stringify(canonicalExecutionBindingPayload(input)));
+}
+
+const HEX40 = /^[0-9a-f]{40}$/;
+const HEX64 = /^[0-9a-f]{64}$/;
+
+export function validateModel(model: string): void {
+  if (!/^[A-Za-z0-9._:/-]{1,200}$/.test(model)) {
+    throw new HarnessBlockedError('INVALID_MODEL');
+  }
+}
+
+export function validateCalls(calls: number): void {
+  if (!Number.isInteger(calls) || calls < 1 || calls > MAX_CALLS) {
+    throw new HarnessBlockedError('INVALID_CALL_COUNT');
+  }
+}
+
+export function assertStaticCodeBinding(
+  state: RevisionState,
+  config: Pick<HarnessConfig, 'repoRoot' | 'expectedHead' | 'expectedStaticBinding'>,
+): StaticCodeBinding {
+  if (!HEX40.test(config.expectedHead)) {
+    throw new HarnessBlockedError('MISSING_REVISION_BINDING');
+  }
+  if (!HEX64.test(config.expectedStaticBinding)) {
+    throw new HarnessBlockedError('MISSING_STATIC_BINDING');
+  }
+  if (
+    state.branch !== 'main' ||
+    state.head !== config.expectedHead ||
+    state.originMain !== config.expectedHead ||
+    !state.trackedClean
+  ) {
+    throw new HarnessBlockedError('REVISION_MISMATCH');
+  }
+  const binding = computeStaticCodeBinding(state, config.repoRoot);
+  if (binding.digest !== config.expectedStaticBinding) {
+    throw new HarnessBlockedError('STATIC_BINDING_MISMATCH');
+  }
+  return binding;
+}
+
+/**
+ * The expected digest is never trusted as evidence on its own: the harness
+ * always recomputes the canonical payload from what it observes and requires an
+ * exact match, so an arbitrary or copied digest cannot bypass validation.
+ */
+export function assertExecutionBinding(
+  observed: ExecutionBindingInput,
+  expectedExecutionBinding: string,
+): string {
+  if (!HEX64.test(expectedExecutionBinding)) {
+    throw new HarnessBlockedError('MISSING_EXECUTION_BINDING');
+  }
+  const digest = computeExecutionBindingDigest(observed);
+  if (digest !== expectedExecutionBinding) {
+    throw new HarnessBlockedError('EXECUTION_BINDING_MISMATCH');
+  }
+  return digest;
+}
+
+export interface ApprovedExecution {
+  staticBinding: StaticCodeBinding;
+  executable: ExecutableIdentity;
+  modelsDir: string | null;
+  executionBinding: string;
+  mode: ProviderMode;
+  scenarios: readonly ScenarioId[];
+}
+
+// ---------------------------------------------------------------------------
+// Finding 4 — generation-time pull/download detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Download/pull markers matched against a case- and ANSI-normalized stream with
+ * a carry-over tail, so a marker split across chunk boundaries is still caught.
+ */
+export const DOWNLOAD_MARKER_PATTERNS: readonly RegExp[] = Object.freeze([
+  /pulling manifest/,
+  /pulling\s+[0-9a-f]{6,}/,
+  /\bpulling\b/,
+  /\bdownloading\b/,
+  /download complete/,
+  /\bfetching\b/,
+  /verifying sha256?/,
+  /verifying digest/,
+  /writing manifest/,
+  /removing any unused layers/,
+  /\bmodel\b.{0,80}\bnot found\b.{0,160}\bpull/,
+  /try pulling it first/,
+  /\b\d{1,3}%.{0,40}[kmgt]i?b\/s/,
+  /[▏▎▍▌▋▊▉█░▒▓]{3,}/,
+  /\b\d{1,3}%\s*[|▕]/,
+]);
+
+const SCANNER_CARRY_CHARS = 160;
+
+export class DownloadMarkerScanner {
+  private carry = '';
+  private markerIndex: number | null = null;
+
+  /** Returns true the first time a marker is observed. */
+  scan(chunk: string): boolean {
+    if (this.markerIndex !== null) return false;
+    // No trim: a leading/trailing space is meaningful when a marker spans chunks.
+    const normalized = stripTerminalControl(chunk).toLowerCase().replace(/\s+/g, ' ');
+    const window = this.carry + normalized;
+    for (let index = 0; index < DOWNLOAD_MARKER_PATTERNS.length; index += 1) {
+      const pattern = DOWNLOAD_MARKER_PATTERNS[index];
+      if (pattern && pattern.test(window)) {
+        this.markerIndex = index;
+        this.carry = '';
+        return true;
+      }
+    }
+    this.carry = window.slice(Math.max(0, window.length - SCANNER_CARRY_CHARS));
+    return false;
+  }
+
+  get detected(): boolean {
+    return this.markerIndex !== null;
+  }
+
+  get marker(): number | null {
+    return this.markerIndex;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Finding 3 + 6 — isolated child environment and process lifecycle
+// ---------------------------------------------------------------------------
+
+export interface ChildSandbox {
+  root: string;
+  home: string;
+  work: string;
+}
+
+/**
+ * A fresh OS-temp sandbox per child. HOME is an empty harness-owned directory,
+ * never the real user HOME; the working directory is outside the repository.
+ */
+export function createChildSandbox(): ChildSandbox {
+  const root = mkdtempSync(join(realpathSync(tmpdir()), CHILD_SANDBOX_PREFIX));
+  const home = join(root, 'home');
+  const work = join(root, 'work');
+  mkdirSync(home, { recursive: true });
+  mkdirSync(work, { recursive: true });
+  return { root, home, work };
+}
+
+export function removeChildSandbox(sandbox: ChildSandbox): void {
+  rmSync(sandbox.root, { recursive: true, force: true, maxRetries: 2 });
+}
+
+/**
+ * The child environment is synthesized, not inherited. PATH is intentionally
+ * absent: the harness spawns an absolute realpath with `shell: false`, so no
+ * executable lookup is required. `OLLAMA_MODELS` is the only opt-in escape
+ * hatch for model inventory, and it must be an approved absolute directory bound
+ * into the execution binding — a real HOME is never forwarded.
+ */
+export function buildChildEnvironment(runtime: {
+  home: string;
+  tmp: string;
+  modelsDir?: string | null;
+}): Readonly<Record<string, string>> {
+  const child: Record<string, string> = {
+    NO_COLOR: '1',
+    CLICOLOR: '0',
+    CLICOLOR_FORCE: '0',
+    LANG: 'C.UTF-8',
+    LC_ALL: 'C.UTF-8',
+    HOME: runtime.home,
+    TMPDIR: runtime.tmp,
+  };
+  if (runtime.modelsDir) child.OLLAMA_MODELS = runtime.modelsDir;
+  const allowed = new Set<string>(CHILD_ENV_ALLOWLIST);
+  for (const name of Object.keys(child)) {
+    if (!allowed.has(name)) throw new HarnessBlockedError('INVALID_CHILD_ENVIRONMENT');
+  }
+  return Object.freeze(child);
+}
+
+type SpawnLike = (
+  command: string,
+  args: readonly string[],
+  options: SpawnOptions,
+) => ChildProcess;
+
+export interface ProcessAdapterHooks {
+  spawnFn?: SpawnLike;
+  createSandbox?: () => ChildSandbox;
+  removeSandbox?: (sandbox: ChildSandbox) => void;
+  killGraceMs?: number;
+}
+
+const boundedErrorCode = (error: unknown): string => {
+  const code = (error as { code?: unknown } | null | undefined)?.code;
+  return typeof code === 'string' && /^[A-Z][A-Z0-9_]{1,30}$/.test(code)
+    ? code
+    : 'CHILD_STDIN_WRITE_FAILED';
+};
+
+export class NodeProcessAdapter implements ProcessAdapter {
+  constructor(private readonly hooks: ProcessAdapterHooks = {}) {}
+
+  async run(request: ProcessRequest): Promise<ProcessResult> {
+    const spawnFn = this.hooks.spawnFn ?? (spawn as unknown as SpawnLike);
+    const createSandbox = this.hooks.createSandbox ?? createChildSandbox;
+    const removeSandbox = this.hooks.removeSandbox ?? removeChildSandbox;
+    const killGraceMs = this.hooks.killGraceMs ?? KILL_GRACE_MS;
+    const started = Date.now();
+    const sandbox = createSandbox();
+
+    return await new Promise<ProcessResult>((settle) => {
+      const stdoutHash = createHash('sha256');
+      const stderrHash = createHash('sha256');
+      const stdoutDecoder = new StringDecoder('utf8');
+      const stderrDecoder = new StringDecoder('utf8');
+      const scanner = new DownloadMarkerScanner();
+      let stdout = '';
+      let stderr = '';
+      let stdoutBytes = 0;
+      let stderrBytes = 0;
+      let timedOut = false;
+      let outputLimited = false;
+      let stdinFailed = false;
+      let stdinErrorCode: string | null = null;
+      let killRequested = false;
+      let killEscalated = false;
+      let settled = false;
+      let timeoutTimer: NodeJS.Timeout | undefined;
+      let forceKillTimer: NodeJS.Timeout | undefined;
+      let child: ChildProcess | undefined;
+
+      const cleanupSandbox = (): boolean => {
+        try {
+          removeSandbox(sandbox);
+          return false;
+        } catch {
+          return true;
+        }
+      };
+
+      const blocked = (): boolean => outputLimited || scanner.detected;
+
+      const emit = (
+        overrides: Partial<ProcessResult> & Pick<ProcessResult, 'code' | 'signal'>,
+      ): void => {
+        if (settled) return;
+        settled = true;
+        if (timeoutTimer) clearTimeout(timeoutTimer);
+        if (forceKillTimer) clearTimeout(forceKillTimer);
+        child?.stdout?.removeAllListeners();
+        child?.stderr?.removeAllListeners();
+        child?.stdin?.removeAllListeners();
+        child?.removeAllListeners();
+        const tempCleanupFailed = cleanupSandbox();
+        settle({
+          stdout: blocked() ? '' : stdout,
+          stderr: blocked() ? '' : stderr,
+          stdoutBytes,
+          stderrBytes,
+          stdoutSha256: stdoutHash.digest('hex'),
+          stderrSha256: stderrHash.digest('hex'),
+          timedOut,
+          outputLimited,
+          downloadDetected: scanner.detected,
+          downloadMarkerIndex: scanner.marker,
+          stdinFailed,
+          stdinErrorCode,
+          spawnFailed: false,
+          killEscalated,
+          tempCleanupFailed,
+          durationMs: Date.now() - started,
+          ...overrides,
+        });
+      };
+
+      const terminate = (): void => {
+        if (killRequested || !child) return;
+        killRequested = true;
+        try {
+          child.kill('SIGTERM');
+        } catch {
+          /* already gone */
+        }
+        forceKillTimer = setTimeout(() => {
+          killEscalated = true;
+          try {
+            child?.kill('SIGKILL');
+          } catch {
+            /* already gone */
+          }
+        }, killGraceMs);
+        forceKillTimer.unref?.();
+      };
+
+      try {
+        child = spawnFn(request.executablePath, [...request.args], {
+          cwd: sandbox.work,
+          env: {
+            ...buildChildEnvironment({
+              home: sandbox.home,
+              tmp: sandbox.root,
+              modelsDir: request.modelsDir ?? null,
+            }),
+          },
+          shell: false,
+          stdio: ['pipe', 'pipe', 'pipe'],
+          windowsHide: true,
+        });
+      } catch {
+        settled = true;
+        const tempCleanupFailed = cleanupSandbox();
+        settle({
+          code: null,
+          signal: null,
+          stdout: '',
+          stderr: '',
+          stdoutBytes: 0,
+          stderrBytes: 0,
+          stdoutSha256: stdoutHash.digest('hex'),
+          stderrSha256: stderrHash.digest('hex'),
+          timedOut: false,
+          outputLimited: false,
+          downloadDetected: false,
+          downloadMarkerIndex: null,
+          stdinFailed: false,
+          stdinErrorCode: null,
+          spawnFailed: true,
+          killEscalated: false,
+          tempCleanupFailed,
+          durationMs: Date.now() - started,
+        });
+        return;
+      }
+
+      const append = (stream: 'stdout' | 'stderr', chunk: Buffer): void => {
+        if (settled) return;
+        const hash = stream === 'stdout' ? stdoutHash : stderrHash;
+        const decoder = stream === 'stdout' ? stdoutDecoder : stderrDecoder;
+        hash.update(chunk);
+        if (stream === 'stdout') stdoutBytes += chunk.byteLength;
+        else stderrBytes += chunk.byteLength;
+        const text = decoder.write(chunk);
+        if (scanner.scan(text)) {
+          stdout = '';
+          stderr = '';
+          terminate();
+          return;
+        }
+        if (blocked()) return;
+        if (stream === 'stdout') stdout += text;
+        else stderr += text;
+        const captured = stream === 'stdout' ? stdoutBytes : stderrBytes;
+        if (captured > request.maxCaptureBytes) {
+          outputLimited = true;
+          stdout = '';
+          stderr = '';
+          terminate();
+        }
+      };
+
+      child.stdout?.on('data', (chunk: Buffer) => append('stdout', chunk));
+      child.stderr?.on('data', (chunk: Buffer) => append('stderr', chunk));
+      child.on('error', () => {
+        emit({ code: null, signal: null, spawnFailed: true, stdout: '', stderr: '' });
+      });
+      child.on('close', (code: number | null, signal: NodeJS.Signals | null) => {
+        // Deferred one macrotask so a pending stdin EPIPE (child exited before
+        // consuming stdin) is recorded before the result is emitted.
+        setImmediate(() => emit({ code, signal: signal ?? null }));
+      });
+
+      timeoutTimer = setTimeout(() => {
+        timedOut = true;
+        terminate();
+      }, request.timeoutMs);
+      timeoutTimer.unref?.();
+
+      const stdin = child.stdin;
+      if (!stdin) {
+        stdinFailed = true;
+        stdinErrorCode = 'CHILD_STDIN_UNAVAILABLE';
+        terminate();
+        return;
+      }
+      stdin.on('error', (error: unknown) => {
+        if (stdinFailed) return;
+        stdinFailed = true;
+        stdinErrorCode = boundedErrorCode(error);
+        terminate();
+      });
+      if (request.input.length > 0) {
+        stdin.write(request.input, (error) => {
+          if (!error || stdinFailed) return;
+          stdinFailed = true;
+          stdinErrorCode = boundedErrorCode(error);
+          terminate();
+        });
+      }
+      try {
+        stdin.end();
+      } catch (error) {
+        if (!stdinFailed) {
+          stdinFailed = true;
+          stdinErrorCode = boundedErrorCode(error);
+          terminate();
+        }
+      }
+    });
+  }
+}
+
+export function boundedProcessMetadata(
+  result: ProcessResult,
+): Readonly<Record<string, string | number | boolean | null>> {
+  return Object.freeze({
+    exitCode: result.code,
+    signal: result.signal,
+    timedOut: result.timedOut,
+    stdoutBytes: result.stdoutBytes,
+    stderrBytes: result.stderrBytes,
+    stdoutSha256: result.stdoutSha256,
+    stderrSha256: result.stderrSha256,
+    downloadMarkerIndex: result.downloadMarkerIndex,
+    stdinErrorCode: result.stdinErrorCode,
+    killEscalated: result.killEscalated,
+    tempCleanupFailed: result.tempCleanupFailed,
+  });
+}
+
+/**
+ * Converts unsafe process outcomes into BLOCKED verdicts before any output can
+ * reach a preview. Download detection is checked first because it is the most
+ * specific violation.
+ */
+export function assertProcessResultSafe(result: ProcessResult): void {
+  const metadata = boundedProcessMetadata(result);
+  if (result.downloadDetected) {
+    throw new HarnessBlockedError('MODEL_DOWNLOAD_DETECTED', metadata);
+  }
+  if (result.spawnFailed) {
+    throw new HarnessBlockedError('PROVIDER_SPAWN_FAILED', metadata);
+  }
+  if (result.outputLimited) {
+    throw new HarnessBlockedError('OUTPUT_LIMIT_EXCEEDED', metadata);
+  }
+  if (result.stdinFailed) {
+    throw new HarnessBlockedError('CHILD_STDIN_FAILED', metadata);
+  }
+}
+
+export function toCliRunner(
+  adapter: ProcessAdapter,
+  approved: { executablePath: string; modelsDir: string | null },
+): CliRunner {
+  return async (
+    bin: string,
+    args: string[],
+    options: CliRunOptions,
+  ): Promise<CliRunResult> => {
+    if (bin !== approved.executablePath) {
+      throw new HarnessBlockedError('EXECUTABLE_MISMATCH');
+    }
+    const result = await adapter.run({
+      executablePath: approved.executablePath,
+      args,
+      input: options.input,
+      timeoutMs: options.timeoutMs,
+      maxCaptureBytes: MAX_CAPTURE_BYTES,
+      modelsDir: approved.modelsDir,
+    });
+    assertProcessResultSafe(result);
+    return {
+      code: result.code,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      timedOut: result.timedOut,
+    };
   };
 }
 
@@ -740,71 +1891,100 @@ export class ProviderSemanticHarness {
     private readonly revisionInspector: RevisionInspector,
   ) {}
 
-  validateConfig(config: HarnessConfig): ReturnType<typeof computeRevisionBinding> {
-    validateNonSecretConfig(config.bin, config.model, config.calls);
+  /** Offline: fixtures + Git revision + tracked source and compiled identity. */
+  validateStaticCode(
+    config: Pick<HarnessConfig, 'repoRoot' | 'expectedHead' | 'expectedStaticBinding'>,
+  ): StaticCodeBinding {
     validateFixtures();
-    return assertRevisionBinding(this.revisionInspector.inspect(), config);
+    return assertStaticCodeBinding(this.revisionInspector.inspect(), config);
+  }
+
+  /** Confirms the approved execution binding immediately before any spawn. */
+  approveExecution(
+    config: HarnessConfig,
+    mode: ProviderMode,
+    scenarios: readonly ScenarioId[],
+  ): ApprovedExecution {
+    validateModel(config.model);
+    if (mode !== 'probe-provider') validateCalls(config.calls);
+    const staticBinding = this.validateStaticCode(config);
+    const executable = resolveApprovedExecutable(config.executablePath);
+    const modelsDir = resolveApprovedModelsDir(config.modelsDir);
+    const executionBinding = assertExecutionBinding(
+      {
+        staticBindingDigest: staticBinding.digest,
+        executable,
+        model: config.model,
+        mode,
+        scenarios,
+        calls: mode === 'probe-provider' ? 0 : config.calls,
+        modelsDir,
+      },
+      config.expectedExecutionBinding,
+    );
+    return { staticBinding, executable, modelsDir, executionBinding, mode, scenarios };
+  }
+
+  private async checkInventory(approved: ApprovedExecution, model: string): Promise<void> {
+    const base = {
+      executablePath: approved.executable.realPath,
+      input: '',
+      timeoutMs: AVAILABILITY_TIMEOUT_MS,
+      maxCaptureBytes: MAX_CAPTURE_BYTES,
+      modelsDir: approved.modelsDir,
+    };
+    const version = await this.processAdapter.run({ ...base, args: ['--version'] });
+    assertProcessResultSafe(version);
+    if (version.code !== 0 || version.timedOut) {
+      throw new HarnessBlockedError('PROVIDER_UNAVAILABLE', boundedProcessMetadata(version));
+    }
+    const inventory = await this.processAdapter.run({ ...base, args: ['list'] });
+    assertProcessResultSafe(inventory);
+    if (inventory.code !== 0 || inventory.timedOut) {
+      throw new HarnessBlockedError(
+        'MODEL_INVENTORY_UNAVAILABLE',
+        boundedProcessMetadata(inventory),
+      );
+    }
+    if (!inventoryContainsModel(inventory.stdout, model)) {
+      throw new HarnessBlockedError('MODEL_NOT_INSTALLED');
+    }
   }
 
   async probeProvider(config: HarnessConfig): Promise<{
     providerAvailable: boolean;
     modelInstalled: boolean;
+    executionBinding: string;
   }> {
-    this.validateConfig(config);
-    const env = buildAllowlistedEnvironment(config.parentEnv);
-    const version = await this.processAdapter.run({
-      bin: config.bin,
-      args: ['--version'],
-      cwd: tmpdir(),
-      input: '',
-      timeoutMs: AVAILABILITY_TIMEOUT_MS,
-      env,
-      maxCaptureBytes: MAX_CAPTURE_BYTES,
-    });
-    if (
-      version.code !== 0 ||
-      version.timedOut ||
-      version.outputLimited
-    ) {
-      throw new HarnessBlockedError('PROVIDER_UNAVAILABLE');
-    }
-    const inventory = await this.processAdapter.run({
-      bin: config.bin,
-      args: ['list'],
-      cwd: tmpdir(),
-      input: '',
-      timeoutMs: AVAILABILITY_TIMEOUT_MS,
-      env,
-      maxCaptureBytes: MAX_CAPTURE_BYTES,
-    });
-    if (
-      inventory.code !== 0 ||
-      inventory.timedOut ||
-      inventory.outputLimited
-    ) {
-      throw new HarnessBlockedError('MODEL_INVENTORY_UNAVAILABLE');
-    }
-    const modelInstalled = inventoryContainsModel(inventory.stdout, config.model);
-    if (!modelInstalled) throw new HarnessBlockedError('MODEL_NOT_INSTALLED');
-    return { providerAvailable: true, modelInstalled };
+    const approved = this.approveExecution(config, 'probe-provider', []);
+    await this.checkInventory(approved, config.model);
+    return {
+      providerAvailable: true,
+      modelInstalled: true,
+      executionBinding: approved.executionBinding,
+    };
   }
 
   async run(
     config: HarnessConfig,
+    mode: Extract<ProviderMode, 'run' | 'run-all'>,
     scenarioIds: readonly ScenarioId[],
   ): Promise<EvidenceRecord[]> {
-    await this.probeProvider(config);
-    const childEnv = buildAllowlistedEnvironment(config.parentEnv);
-    const provider = new OllamaCliProvider({
-      bin: config.bin,
-      model: config.model,
-      runner: toCliRunner(this.processAdapter, childEnv),
-      timeoutMs: GENERATION_TIMEOUT_MS,
-    });
+    const approved = this.approveExecution(config, mode, scenarioIds);
     const fixtures = scenarioIds.map((id) => {
       const fixture = SEMANTIC_SCENARIOS.find((item) => item.id === id);
       if (!fixture) throw new HarnessBlockedError('UNKNOWN_SCENARIO');
       return fixture;
+    });
+    await this.checkInventory(approved, config.model);
+    const provider = new OllamaCliProvider({
+      bin: approved.executable.realPath,
+      model: config.model,
+      runner: toCliRunner(this.processAdapter, {
+        executablePath: approved.executable.realPath,
+        modelsDir: approved.modelsDir,
+      }),
+      timeoutMs: GENERATION_TIMEOUT_MS,
     });
     const records: EvidenceRecord[] = [];
     for (const fixture of fixtures) {
@@ -816,13 +1996,12 @@ export class ProviderSemanticHarness {
           timeoutMs: GENERATION_TIMEOUT_MS,
         });
         const exitCode = Number(result.raw?.exitCode);
-        const requestPromptSha = sha256(request.prompt);
         const audit = result.audit ?? {};
         const auditValid =
           audit.model === config.model &&
           JSON.stringify(audit.sanitizedCommand) ===
             JSON.stringify(['ollama', 'run', config.model]) &&
-          audit.promptSha256 === requestPromptSha &&
+          audit.promptSha256 === sha256(request.prompt) &&
           audit.captureMode === 'pipe' &&
           audit.colorDisabled === true &&
           audit.outputSanitized === true;
@@ -846,7 +2025,13 @@ export class ProviderSemanticHarness {
         });
         records.push(record);
         if (record.automatedVerdict === 'BLOCKED') {
-          throw new HarnessBlockedError('PROMPT_LEAK_DETECTED');
+          throw new HarnessBlockedError('PROMPT_LEAK_DETECTED', {
+            scenarioId: record.scenarioId,
+            callOrdinal: record.callOrdinal,
+            leakCategory: record.leakCategory,
+            responseBytes: record.responseBytes,
+            responseSha256: record.responseSha256,
+          });
         }
       }
     }

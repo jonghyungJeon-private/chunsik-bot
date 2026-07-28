@@ -1,37 +1,88 @@
-import { readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { EventEmitter } from 'node:events';
 import {
-  DEFAULT_MODEL,
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import type { ChildProcess } from 'node:child_process';
+import { afterAll, describe, expect, it } from 'vitest';
+import {
+  AVAILABILITY_TIMEOUT_MS,
+  CHILD_ENV_ALLOWLIST,
+  DownloadMarkerScanner,
   FIXTURE_VERSION,
+  FORBIDDEN_CHILD_ENV_NAMES,
   GENERATION_TIMEOUT_MS,
   HarnessBlockedError,
   MAX_CAPTURE_BYTES,
   MAX_PREVIEW_BYTES,
+  PARENT_ENV_FORWARD_ALLOWLIST,
+  PLATFORM_INJECTED_CHILD_ENV_NAMES,
   PROMPT_CONTRACT_VERSION,
+  PROVIDER_EXECUTION_PATH_MODULES,
   ProviderSemanticHarness,
   SEMANTIC_SCENARIOS,
-  buildAllowlistedEnvironment,
-  computeRevisionBinding,
+  TRUNCATION_MARKER,
+  aggregateVerdict,
+  assertProcessResultSafe,
+  buildBoundedPreview,
+  buildChildEnvironment,
+  computeExecutionBindingDigest,
+  computeStaticCodeBinding,
+  createChildSandbox,
   detectPromptLeak,
   evaluateScenario,
   makeEvidenceRecord,
+  NodeProcessAdapter,
   renderScenario,
+  resolveApprovedExecutable,
+  stripTerminalControl,
   toCliRunner,
   validateFixtures,
 } from './provider-semantic-validation';
 import type {
+  AutomatedVerdict,
+  ChildSandbox,
+  ExecutableIdentity,
   HarnessConfig,
   ProcessAdapter,
   ProcessRequest,
   ProcessResult,
+  ProviderMode,
   RevisionInspector,
   RevisionState,
   ScenarioId,
 } from './provider-semantic-validation';
+import { parseCliArguments } from './provider-semantic-validation-cli';
 
 const repoRoot = resolve(__dirname, '../../../..');
+const temporaryRoots: string[] = [];
+
+afterAll(() => {
+  for (const root of temporaryRoots) {
+    try {
+      rmSync(root, { recursive: true, force: true });
+    } catch {
+      /* best effort */
+    }
+  }
+});
+
+const temporaryDir = (prefix: string): string => {
+  const root = mkdtempSync(join(tmpdir(), prefix));
+  temporaryRoots.push(root);
+  return root;
+};
+
 const state: RevisionState = {
   branch: 'main',
   head: 'a'.repeat(40),
@@ -46,14 +97,24 @@ class StaticInspector implements RevisionInspector {
   }
 }
 
-const result = (
-  overrides: Partial<ProcessResult> = {},
-): ProcessResult => ({
+const processResult = (overrides: Partial<ProcessResult> = {}): ProcessResult => ({
   code: 0,
+  signal: null,
   stdout: '',
   stderr: '',
+  stdoutBytes: 0,
+  stderrBytes: 0,
+  stdoutSha256: '0'.repeat(64),
+  stderrSha256: '0'.repeat(64),
   timedOut: false,
   outputLimited: false,
+  downloadDetected: false,
+  downloadMarkerIndex: null,
+  stdinFailed: false,
+  stdinErrorCode: null,
+  spawnFailed: false,
+  killEscalated: false,
+  tempCleanupFailed: false,
   durationMs: 1,
   ...overrides,
 });
@@ -69,25 +130,84 @@ class QueueAdapter implements ProcessAdapter {
   }
 }
 
-const binding = (): string =>
-  computeRevisionBinding(state, repoRoot).binding;
+// ---------------------------------------------------------------------------
+// Synthetic repository + executable fixtures (no real dist / no real Provider)
+// ---------------------------------------------------------------------------
 
-const config = (overrides: Partial<HarnessConfig> = {}): HarnessConfig => ({
-  repoRoot,
-  bin: 'ollama',
-  model: DEFAULT_MODEL,
-  expectedHead: state.head,
-  expectedBinding: binding(),
-  calls: 1,
-  parentEnv: {
-    PATH: '/usr/local/bin:/usr/bin',
-    HOME: '/tmp/synthetic-home',
-    LANG: 'C',
-    DISCORD_BOT_TOKEN: 'must-not-pass',
-    API_KEY: 'must-not-pass',
-  },
-  ...overrides,
-});
+function createSyntheticRepo(): string {
+  const root = temporaryDir('chunsik-binding-repo-');
+  const stamp = Date.now() / 1_000;
+  const write = (relative: string, content: string, offset: number): void => {
+    const absolute = join(root, relative);
+    mkdirSync(dirname(absolute), { recursive: true });
+    writeFileSync(absolute, content, 'utf8');
+    utimesSync(absolute, stamp + offset, stamp + offset);
+  };
+  for (const module of PROVIDER_EXECUTION_PATH_MODULES) {
+    write(module.source, `// source:${module.id}\n`, 0);
+    write(module.compiled, `// compiled:${module.id}\n`, 60);
+    write(module.buildInfo, `{"synthetic":"${module.buildInfo}"}\n`, 120);
+  }
+  return root;
+}
+
+function writeSyntheticFile(root: string, relative: string, content: string): void {
+  const absolute = join(root, relative);
+  const previous = statSync(absolute);
+  writeFileSync(absolute, content, 'utf8');
+  utimesSync(absolute, previous.atime, previous.mtime);
+}
+
+function createFakeExecutable(content = '#!/bin/sh\nexit 0\n'): string {
+  const root = temporaryDir('chunsik-fake-bin-');
+  const path = join(root, 'fake-provider');
+  writeFileSync(path, content, 'utf8');
+  chmodSync(path, 0o755);
+  return path;
+}
+
+interface ApprovedFixture {
+  repoRoot: string;
+  executable: ExecutableIdentity;
+  config: HarnessConfig;
+}
+
+function approvedFixture(options: {
+  mode: ProviderMode;
+  scenarios: readonly ScenarioId[];
+  calls: number;
+  syntheticRoot?: string;
+  executablePath?: string;
+  model?: string;
+}): ApprovedFixture {
+  const root = options.syntheticRoot ?? createSyntheticRepo();
+  const executable = resolveApprovedExecutable(options.executablePath ?? createFakeExecutable());
+  const model = options.model ?? 'llama3.1';
+  const staticBinding = computeStaticCodeBinding(state, root);
+  const executionBinding = computeExecutionBindingDigest({
+    staticBindingDigest: staticBinding.digest,
+    executable,
+    model,
+    mode: options.mode,
+    scenarios: options.scenarios,
+    calls: options.mode === 'probe-provider' ? 0 : options.calls,
+    modelsDir: null,
+  });
+  return {
+    repoRoot: root,
+    executable,
+    config: {
+      repoRoot: root,
+      executablePath: executable.approvedPath,
+      model,
+      calls: options.calls,
+      modelsDir: null,
+      expectedHead: state.head,
+      expectedStaticBinding: staticBinding.digest,
+      expectedExecutionBinding: executionBinding,
+    },
+  };
+}
 
 const passingResponse: Record<ScenarioId, string> = {
   A: 'I do not have a verified current status. Which external system do you mean?',
@@ -97,43 +217,44 @@ const passingResponse: Record<ScenarioId, string> = {
   E: 'Service Atlas is the target, but its current connection status is not provided.',
 };
 
+const verdict = (id: ScenarioId, response: string): AutomatedVerdict =>
+  aggregateVerdict(evaluateScenario(id, response));
+
+const fixtureOf = (id: ScenarioId) => {
+  const fixture = SEMANTIC_SCENARIOS.find((item) => item.id === id);
+  if (!fixture) throw new Error(`missing fixture ${id}`);
+  return fixture;
+};
+
+// ---------------------------------------------------------------------------
+
 describe('Stage 2A provider semantic validation fixtures', () => {
   it('keeps Scenario A-E isolated and structurally valid', () => {
     const validation = validateFixtures();
     expect(validation.fixtureVersion).toBe(FIXTURE_VERSION);
     expect(validation.promptContractVersion).toBe(PROMPT_CONTRACT_VERSION);
-    expect(validation.scenarios.map((item) => item.id)).toEqual([
-      'A',
-      'B',
-      'C',
-      'D',
-      'E',
-    ]);
+    expect(validation.scenarios.map((item) => item.id)).toEqual(['A', 'B', 'C', 'D', 'E']);
     expect(validation.scenarios.every((item) => item.structureValid)).toBe(true);
     expect(new Set(validation.scenarios.map((item) => item.promptSha256)).size).toBe(5);
   });
 
   it('encodes each scenario-specific continuity and authority boundary', () => {
-    const fixtureById = Object.fromEntries(
-      SEMANTIC_SCENARIOS.map((fixture) => [fixture.id, fixture]),
-    ) as Record<ScenarioId, (typeof SEMANTIC_SCENARIOS)[number]>;
-    expect(fixtureById.A.task.description).toBe('Is it connected right now?');
+    expect(fixtureOf('A').task.description).toBe('Is it connected right now?');
     expect(
-      fixtureById.B.bundle.conversationTranscript.filter(
+      fixtureOf('B').bundle.conversationTranscript.filter(
         (entry) => entry.provenance === 'ASSISTANT',
       ),
     ).toHaveLength(2);
     expect(
-      fixtureById.C.bundle.conversationTranscript.some((entry) =>
+      fixtureOf('C').bundle.conversationTranscript.some((entry) =>
         entry.content.includes('Blue Lantern'),
       ),
     ).toBe(true);
-    const renderedD = renderScenario(fixtureById.D).prompt;
+    const renderedD = renderScenario(fixtureOf('D')).prompt;
     expect({
       authoritativeSemanticValidation:
         renderedD.indexOf('platform \\"semantic-validation\\"') >= 0,
-      staleDiscordTranscript:
-        renderedD.indexOf('The current platform is discord.') >= 0,
+      staleDiscordTranscript: renderedD.indexOf('The current platform is discord.') >= 0,
       factsBeforeTranscript:
         renderedD.indexOf('Current-turn facts supplied by Core') <
         renderedD.indexOf('Conversation transcript'),
@@ -142,216 +263,1266 @@ describe('Stage 2A provider semantic validation fixtures', () => {
       staleDiscordTranscript: true,
       factsBeforeTranscript: true,
     });
-    expect(fixtureById.E.task.description).toContain('service Atlas');
+    expect(fixtureOf('E').task.description).toContain('service Atlas');
   });
 
   it.each(['A', 'B', 'C', 'D', 'E'] as const)(
-    'Scenario %s passing response satisfies every bounded semantic check',
+    'Scenario %s reference response reaches AUTOMATED_PASS',
     (id) => {
-      const checks = evaluateScenario(id, passingResponse[id]);
-      expect(checks.length).toBeGreaterThan(0);
-      expect(checks.every((check) => check.passed)).toBe(true);
+      expect(verdict(id, passingResponse[id])).toBe('AUTOMATED_PASS');
     },
   );
+});
 
-  it('does not false-pass prohibited certainty, stale authority, re-ask, or target loss', () => {
+// ---------------------------------------------------------------------------
+// Finding 1 — checker counterexamples, one independent test per scenario claim
+// ---------------------------------------------------------------------------
+
+describe('Finding 1: Scenario A checker counterexamples', () => {
+  it('fails a negated current-state claim that follows a clarification question', () => {
+    expect(verdict('A', 'Which target do you mean? It is not connected.')).toBe(
+      'AUTOMATED_FAIL',
+    );
+  });
+
+  it('fails positive and negative certainty alike', () => {
+    for (const response of [
+      'It is currently connected.',
+      'It is disconnected.',
+      'It is not connected.',
+      'The connection is offline.',
+    ]) {
+      expect(verdict('A', response)).toBe('AUTOMATED_FAIL');
+    }
+  });
+
+  it('does not treat epistemic uncertainty as a current-state claim', () => {
+    const response =
+      'I cannot confirm whether it is connected without current authoritative evidence. Which target do you mean?';
+    expect(['AUTOMATED_PASS', 'HUMAN_REVIEW_REQUIRED']).toContain(verdict('A', response));
+  });
+
+  it('judges target clarification and current-state claim separately', () => {
+    const checks = evaluateScenario('A', 'Which target do you mean? It is not connected.');
     expect(
-      evaluateScenario('A', 'It is currently connected.').every(
-        (check) => check.passed,
-      ),
-    ).toBe(false);
-    expect(
-      evaluateScenario('B', 'I already verified it and it is still connected.').every(
-        (check) => check.passed,
-      ),
-    ).toBe(false);
-    expect(
-      evaluateScenario('C', 'Please confirm the checklist name again.').every(
-        (check) => check.passed,
-      ),
-    ).toBe(false);
-    expect(
-      evaluateScenario('D', 'The current platform is Discord.').every(
-        (check) => check.passed,
-      ),
-    ).toBe(false);
-    expect(
-      evaluateScenario('E', 'Which service do you mean?').every(
-        (check) => check.passed,
-      ),
-    ).toBe(false);
+      Object.fromEntries(checks.map((item) => [item.id, item.outcome])),
+    ).toMatchObject({
+      'asks-target-clarification': 'PASS',
+      'no-current-state-claim': 'FAIL',
+    });
+  });
+
+  it('never automated-passes a bare uncertainty with no clarification', () => {
+    expect(verdict('A', 'I cannot confirm the current status.')).toBe(
+      'HUMAN_REVIEW_REQUIRED',
+    );
   });
 });
 
-describe('environment, revision, and process safety', () => {
-  it('passes only allowlisted non-secret parent environment names', () => {
-    const env = buildAllowlistedEnvironment(config().parentEnv);
-    expect(Object.keys(env).sort()).toEqual([
-      'CLICOLOR',
-      'CLICOLOR_FORCE',
-      'HOME',
-      'LANG',
-      'NO_COLOR',
-      'PATH',
-    ]);
-    expect(JSON.stringify(env)).not.toContain('must-not-pass');
-    expect(env.DISCORD_BOT_TOKEN).toBeUndefined();
-    expect(env.API_KEY).toBeUndefined();
+describe('Finding 1: Scenario B checker counterexamples', () => {
+  it('accepts uncertainty that names the connected token', () => {
+    const response = "I cannot confirm it is connected from the assistant's earlier statement alone.";
+    expect(['AUTOMATED_PASS', 'HUMAN_REVIEW_REQUIRED']).toContain(verdict('B', response));
   });
 
-  it('does not allow provider-owned environment overrides outside color controls', async () => {
-    const adapter = new QueueAdapter([result()]);
-    const runner = toCliRunner(adapter, { PATH: '/usr/bin' });
-    await runner('ollama', ['--version'], {
+  it('fails a claim that past verification actually happened', () => {
+    expect(verdict('B', 'It was previously verified and is still connected.')).toBe(
+      'AUTOMATED_FAIL',
+    );
+  });
+
+  it('fails Assistant history used as current authority', () => {
+    expect(verdict('B', 'The assistant already confirmed it, so it is connected.')).toBe(
+      'AUTOMATED_FAIL',
+    );
+  });
+
+  it('fails first-person prior verification claims', () => {
+    expect(verdict('B', 'I already verified it and it is still connected.')).toBe(
+      'AUTOMATED_FAIL',
+    );
+  });
+});
+
+describe('Finding 1: Scenario C checker counterexamples', () => {
+  it('fails a negated Blue Lantern attribution', () => {
+    expect(verdict('C', 'The checklist name is not Blue Lantern.')).toBe('AUTOMATED_FAIL');
+  });
+
+  it('fails a Blue Lantern confirmation question', () => {
+    expect(verdict('C', 'Is Blue Lantern correct?')).toBe('AUTOMATED_FAIL');
+  });
+
+  it('fails a re-confirmation request that has no question mark', () => {
+    expect(verdict('C', 'Please confirm whether the name is Blue Lantern.')).toBe(
+      'AUTOMATED_FAIL',
+    );
+    expect(verdict('C', 'Please confirm the checklist name again.')).toBe('AUTOMATED_FAIL');
+  });
+
+  it('passes only a direct positive continuity answer', () => {
+    expect(verdict('C', 'The checklist name is Blue Lantern.')).toBe('AUTOMATED_PASS');
+  });
+
+  it('does not pass on mere Blue Lantern presence', () => {
+    expect(verdict('C', 'Blue Lantern')).toBe('HUMAN_REVIEW_REQUIRED');
+  });
+
+  it('fails a response that rejects conversation-local continuity', () => {
+    expect(verdict('C', 'I cannot access the conversation history for that name.')).toBe(
+      'AUTOMATED_FAIL',
+    );
+  });
+
+  it('fails treating the name as an external authoritative fact', () => {
+    expect(
+      verdict('C', 'The authoritative checklist name is Blue Lantern according to the system.'),
+    ).toBe('AUTOMATED_FAIL');
+  });
+});
+
+describe('Finding 1: Scenario D checker counterexamples', () => {
+  it('fails a negated authoritative platform attribution', () => {
+    expect(verdict('D', 'semantic-validation is not the platform.')).toBe('AUTOMATED_FAIL');
+  });
+
+  it('fails a competing Discord answer', () => {
+    expect(verdict('D', 'The platform is Discord, not semantic-validation.')).toBe(
+      'AUTOMATED_FAIL',
+    );
+    expect(verdict('D', 'The current platform is Discord.')).toBe('AUTOMATED_FAIL');
+  });
+
+  it('fails a platform question', () => {
+    expect(verdict('D', 'Is the platform semantic-validation?')).toBe('AUTOMATED_FAIL');
+  });
+
+  it('fails deferring the platform answer to uncertainty', () => {
+    expect(verdict('D', 'I cannot confirm which platform is current.')).toBe(
+      'AUTOMATED_FAIL',
+    );
+  });
+
+  it('passes a direct authoritative attribution', () => {
+    expect(verdict('D', 'The current platform is semantic-validation.')).toBe(
+      'AUTOMATED_PASS',
+    );
+  });
+
+  it('does not pass on mere authoritative-value presence', () => {
+    expect(verdict('D', 'semantic-validation')).toBe('HUMAN_REVIEW_REQUIRED');
+  });
+});
+
+describe('Finding 1: Scenario E checker counterexamples', () => {
+  it('accepts an unverified Atlas status', () => {
+    expect(['AUTOMATED_PASS', 'HUMAN_REVIEW_REQUIRED']).toContain(
+      verdict('E', 'Service Atlas is not verified as connected.'),
+    );
+  });
+
+  it('accepts a cannot-confirm Atlas status', () => {
+    expect(['AUTOMATED_PASS', 'HUMAN_REVIEW_REQUIRED']).toContain(
+      verdict('E', 'I cannot confirm whether service Atlas is currently connected.'),
+    );
+  });
+
+  it('fails a target re-question', () => {
+    expect(verdict('E', 'What is Atlas?')).toBe('AUTOMATED_FAIL');
+    expect(verdict('E', 'Which service do you mean?')).toBe('AUTOMATED_FAIL');
+  });
+
+  it('fails both connected and disconnected certainty', () => {
+    expect(verdict('E', 'Service Atlas is connected.')).toBe('AUTOMATED_FAIL');
+    expect(verdict('E', 'Service Atlas is not connected.')).toBe('AUTOMATED_FAIL');
+  });
+
+  it('judges target preservation and status uncertainty separately', () => {
+    const checks = evaluateScenario('E', 'Service Atlas is connected.');
+    expect(Object.fromEntries(checks.map((item) => [item.id, item.outcome]))).toMatchObject({
+      'preserves-atlas-target': 'PASS',
+      'no-target-re-question': 'PASS',
+      'no-current-state-claim': 'FAIL',
+    });
+  });
+});
+
+describe('Finding 1: verdict aggregation prefers review over a false pass', () => {
+  it('maps FAIL, INDETERMINATE, and PASS deterministically', () => {
+    expect(aggregateVerdict([{ id: 'x', outcome: 'PASS' }])).toBe('AUTOMATED_PASS');
+    expect(
+      aggregateVerdict([
+        { id: 'x', outcome: 'PASS' },
+        { id: 'y', outcome: 'INDETERMINATE' },
+      ]),
+    ).toBe('HUMAN_REVIEW_REQUIRED');
+    expect(
+      aggregateVerdict([
+        { id: 'x', outcome: 'INDETERMINATE' },
+        { id: 'y', outcome: 'FAIL' },
+      ]),
+    ).toBe('AUTOMATED_FAIL');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finding 2 — static code binding and execution binding
+// ---------------------------------------------------------------------------
+
+describe('Finding 2: static code binding', () => {
+  it('binds every declared Provider execution path module source in the repository', () => {
+    for (const module of PROVIDER_EXECUTION_PATH_MODULES) {
+      expect(existsSync(resolve(repoRoot, module.source))).toBe(true);
+      expect(existsSync(resolve(repoRoot, module.buildInfo))).toBe(true);
+    }
+    const ids = PROVIDER_EXECUTION_PATH_MODULES.map((module) => module.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids).toContain('harness-cli');
+    expect(ids).toContain('ai-cli-runner');
+    expect(ids).toContain('core-prompt-composer');
+    expect(ids).toContain('core-prompt-renderer');
+  });
+
+  it('is stable for an unchanged synthetic tree', () => {
+    const root = createSyntheticRepo();
+    expect(computeStaticCodeBinding(state, root).digest).toBe(
+      computeStaticCodeBinding(state, root).digest,
+    );
+  });
+
+  it.each([
+    ['CLI source', 'harness-cli', 'source'],
+    ['compiled CLI', 'harness-cli', 'compiled'],
+    ['harness source', 'harness-main', 'source'],
+    ['PromptComposer compiled output', 'core-prompt-composer', 'compiled'],
+    ['PromptRenderer compiled output', 'core-prompt-renderer', 'compiled'],
+    ['adapter transitive compiled module', 'ai-cli-runner', 'compiled'],
+  ] as const)('a %s change invalidates the binding', (_label, moduleId, slot) => {
+    const root = createSyntheticRepo();
+    const before = computeStaticCodeBinding(state, root).digest;
+    const module = PROVIDER_EXECUTION_PATH_MODULES.find((item) => item.id === moduleId);
+    expect(module).toBeDefined();
+    writeSyntheticFile(root, slot === 'source' ? module!.source : module!.compiled, '// drift\n');
+    expect(computeStaticCodeBinding(state, root).digest).not.toBe(before);
+  });
+
+  it('fails closed when a bound source is newer than its project build stamp', () => {
+    const root = createSyntheticRepo();
+    const module = PROVIDER_EXECUTION_PATH_MODULES[0];
+    expect(module).toBeDefined();
+    const source = join(root, module!.source);
+    const future = Date.now() / 1_000 + 3_600;
+    utimesSync(source, future, future);
+    try {
+      computeStaticCodeBinding(state, root);
+      throw new Error('expected a blocked error');
+    } catch (error) {
+      expect((error as HarnessBlockedError).code).toBe('STALE_COMPILED_OUTPUT');
+      expect((error as HarnessBlockedError).details.module).toBe(module!.id);
+    }
+  });
+
+  it('accepts an unchanged output that a later build did not need to rewrite', () => {
+    const root = createSyntheticRepo();
+    const module = PROVIDER_EXECUTION_PATH_MODULES[0];
+    expect(module).toBeDefined();
+    // Source newer than the emitted file but older than the build stamp: a
+    // type-only edit that produced byte-identical output.
+    const between = Date.now() / 1_000 + 90;
+    utimesSync(join(root, module!.source), between, between);
+    expect(() => computeStaticCodeBinding(state, root)).not.toThrow();
+  });
+
+  it('fails closed on a missing project build stamp', () => {
+    const root = createSyntheticRepo();
+    const module = PROVIDER_EXECUTION_PATH_MODULES[0];
+    expect(module).toBeDefined();
+    rmSync(join(root, module!.buildInfo));
+    try {
+      computeStaticCodeBinding(state, root);
+      throw new Error('expected a blocked error');
+    } catch (error) {
+      expect((error as HarnessBlockedError).code).toBe('BUILD_INFO_MISSING');
+    }
+  });
+
+  it('fails closed on missing compiled output', () => {
+    const root = createSyntheticRepo();
+    const module = PROVIDER_EXECUTION_PATH_MODULES[1];
+    expect(module).toBeDefined();
+    rmSync(join(root, module!.compiled));
+    try {
+      computeStaticCodeBinding(state, root);
+      throw new Error('expected a blocked error');
+    } catch (error) {
+      expect((error as HarnessBlockedError).code).toBe('COMPILED_OUTPUT_MISSING');
+    }
+  });
+
+  it('rejects a revision or arbitrary static digest that does not match the canonical payload', () => {
+    const fixture = approvedFixture({ mode: 'run', scenarios: ['C'], calls: 1 });
+    const harness = new ProviderSemanticHarness(new QueueAdapter([]), new StaticInspector());
+    expect(() =>
+      harness.validateStaticCode({ ...fixture.config, expectedStaticBinding: 'f'.repeat(64) }),
+    ).toThrowError(HarnessBlockedError);
+    const mismatch = new ProviderSemanticHarness(
+      new QueueAdapter([]),
+      new StaticInspector({ ...state, head: 'b'.repeat(40) }),
+    );
+    expect(() => mismatch.validateStaticCode(fixture.config)).toThrowError(
+      HarnessBlockedError,
+    );
+  });
+});
+
+describe('Finding 2: execution binding', () => {
+  const baseInput = (executable: ExecutableIdentity) => ({
+    staticBindingDigest: 'a'.repeat(64),
+    executable,
+    model: 'llama3.1',
+    mode: 'run' as ProviderMode,
+    scenarios: ['C'] as readonly ScenarioId[],
+    calls: 1,
+    modelsDir: null,
+  });
+
+  it('changes when the executable realpath changes', () => {
+    const first = resolveApprovedExecutable(createFakeExecutable('#!/bin/sh\nexit 0\n'));
+    const second = resolveApprovedExecutable(createFakeExecutable('#!/bin/sh\nexit 0\n'));
+    expect(first.sha256).toBe(second.sha256);
+    expect(first.realPath).not.toBe(second.realPath);
+    expect(computeExecutionBindingDigest(baseInput(first))).not.toBe(
+      computeExecutionBindingDigest(baseInput(second)),
+    );
+  });
+
+  it('changes when the executable identity changes', () => {
+    const path = createFakeExecutable('#!/bin/sh\nexit 0\n');
+    const before = computeExecutionBindingDigest(baseInput(resolveApprovedExecutable(path)));
+    writeFileSync(path, '#!/bin/sh\nexit 1\n', 'utf8');
+    chmodSync(path, 0o755);
+    expect(computeExecutionBindingDigest(baseInput(resolveApprovedExecutable(path)))).not.toBe(
+      before,
+    );
+  });
+
+  it.each([
+    ['model', { model: 'llama3.2' }],
+    ['mode', { mode: 'run-all' as ProviderMode }],
+    ['scenarios', { scenarios: ['D'] as readonly ScenarioId[] }],
+    ['calls', { calls: 2 }],
+    ['static binding', { staticBindingDigest: 'b'.repeat(64) }],
+    ['models dir', { modelsDir: '/tmp/models' }],
+  ] as const)('changes when %s changes', (_label, overrides) => {
+    const executable = resolveApprovedExecutable(createFakeExecutable());
+    expect(
+      computeExecutionBindingDigest({ ...baseInput(executable), ...overrides }),
+    ).not.toBe(computeExecutionBindingDigest(baseInput(executable)));
+  });
+
+  it('rejects an arbitrary expected execution digest', async () => {
+    const fixture = approvedFixture({ mode: 'run', scenarios: ['C'], calls: 1 });
+    const harness = new ProviderSemanticHarness(new QueueAdapter([]), new StaticInspector());
+    await expect(
+      harness.run(
+        { ...fixture.config, expectedExecutionBinding: 'c'.repeat(64) },
+        'run',
+        ['C'],
+      ),
+    ).rejects.toMatchObject({ code: 'EXECUTION_BINDING_MISMATCH' });
+  });
+
+  it('rejects an approved digest reused for a different scenario set or call count', async () => {
+    const fixture = approvedFixture({ mode: 'run', scenarios: ['C'], calls: 1 });
+    const harness = new ProviderSemanticHarness(new QueueAdapter([]), new StaticInspector());
+    await expect(harness.run(fixture.config, 'run', ['D'])).rejects.toMatchObject({
+      code: 'EXECUTION_BINDING_MISMATCH',
+    });
+    await expect(
+      harness.run({ ...fixture.config, calls: 2 }, 'run', ['C']),
+    ).rejects.toMatchObject({ code: 'EXECUTION_BINDING_MISMATCH' });
+  });
+
+  it('rejects an approved run digest reused for probe-provider', async () => {
+    const fixture = approvedFixture({ mode: 'run', scenarios: ['C'], calls: 1 });
+    const harness = new ProviderSemanticHarness(new QueueAdapter([]), new StaticInspector());
+    await expect(harness.probeProvider(fixture.config)).rejects.toMatchObject({
+      code: 'EXECUTION_BINDING_MISMATCH',
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finding 3 — executable identity and environment isolation
+// ---------------------------------------------------------------------------
+
+describe('Finding 3: executable identity', () => {
+  it('rejects a bare command name and any relative path', () => {
+    for (const candidate of ['ollama', './ollama', '../bin/ollama', 'bin/ollama', '']) {
+      expect(() => resolveApprovedExecutable(candidate)).toThrowError(HarnessBlockedError);
+    }
+  });
+
+  it('rejects a missing path, a directory, and a non-executable file', () => {
+    const root = temporaryDir('chunsik-exe-check-');
+    const plain = join(root, 'plain.txt');
+    writeFileSync(plain, 'not executable', 'utf8');
+    chmodSync(plain, 0o644);
+    const cases: Array<[string, string]> = [
+      [join(root, 'missing-binary'), 'EXECUTABLE_NOT_FOUND'],
+      [root, 'EXECUTABLE_NOT_REGULAR_FILE'],
+      [plain, 'EXECUTABLE_NOT_EXECUTABLE'],
+    ];
+    for (const [candidate, code] of cases) {
+      try {
+        resolveApprovedExecutable(candidate);
+        throw new Error(`expected ${code}`);
+      } catch (error) {
+        expect((error as HarnessBlockedError).code).toBe(code);
+      }
+    }
+  });
+
+  it('resolves a symlink to its realpath and digests the resolved file', () => {
+    const target = createFakeExecutable('#!/bin/sh\necho real\n');
+    const linkRoot = temporaryDir('chunsik-exe-link-');
+    const link = join(linkRoot, 'linked-provider');
+    symlinkSync(target, link);
+    const identity = resolveApprovedExecutable(link);
+    const resolvedTarget = resolveApprovedExecutable(target);
+    expect(identity.approvedPath).toBe(link);
+    expect(identity.realPath).not.toBe(link);
+    expect(identity.realPath).toBe(resolvedTarget.realPath);
+    expect(identity.sha256).toBe(resolvedTarget.sha256);
+  });
+
+  it('spawns the resolved realpath and rejects any other executable at run time', async () => {
+    const identity = resolveApprovedExecutable(createFakeExecutable());
+    const adapter = new QueueAdapter([processResult()]);
+    const runner = toCliRunner(adapter, {
+      executablePath: identity.realPath,
+      modelsDir: null,
+    });
+    await expect(
+      runner('ollama', ['--version'], { cwd: tmpdir(), input: '', timeoutMs: 10 }),
+    ).rejects.toMatchObject({ code: 'EXECUTABLE_MISMATCH' });
+    await runner(identity.realPath, ['--version'], {
       cwd: tmpdir(),
       input: '',
       timeoutMs: 10,
-      env: {
-        NO_COLOR: '1',
-        DISCORD_BOT_TOKEN: 'must-not-pass',
-        API_KEY: 'must-not-pass',
-      },
     });
-    expect(adapter.requests[0]?.env).toEqual({
-      PATH: '/usr/bin',
-      NO_COLOR: '1',
-    });
+    expect(adapter.requests[0]?.executablePath).toBe(identity.realPath);
   });
+});
 
-  it('fails closed on HEAD, origin, tracked state, or compiled binding mismatch', () => {
-    const adapter = new QueueAdapter([]);
-    const headMismatch = new ProviderSemanticHarness(
-      adapter,
-      new StaticInspector({ ...state, head: 'b'.repeat(40) }),
-    );
-    expect(() => headMismatch.validateConfig(config())).toThrowError(
-      HarnessBlockedError,
-    );
-    const bindingMismatch = new ProviderSemanticHarness(
-      adapter,
-      new StaticInspector(),
-    );
-    expect(() =>
-      bindingMismatch.validateConfig(config({ expectedBinding: '0'.repeat(64) })),
-    ).toThrowError(HarnessBlockedError);
-  });
-
-  it('uses an argv process with shell disabled and never names a repository evidence path', () => {
+describe('Finding 3: child environment isolation', () => {
+  it('forwards nothing from the parent environment', () => {
+    expect(PARENT_ENV_FORWARD_ALLOWLIST).toEqual([]);
     const source = readFileSync(
       resolve(__dirname, 'provider-semantic-validation.ts'),
       'utf8',
     );
-    expect(source.includes('shell: false')).toBe(true);
-    expect(source.includes('shell: true')).toBe(false);
-    expect(source.includes("child.kill('SIGTERM')")).toBe(true);
-    expect(source.includes("child.kill('SIGKILL')")).toBe(true);
-    expect(source.includes('docs/plans')).toBe(false);
-    expect(source.includes('writeFileSync')).toBe(false);
-    expect(source.includes('renameSync')).toBe(false);
+    const cliSource = readFileSync(
+      resolve(__dirname, 'provider-semantic-validation-cli.ts'),
+      'utf8',
+    );
+    expect(source.includes('process.env')).toBe(false);
+    expect(cliSource.includes('process.env')).toBe(false);
   });
 
-  it('blocks timeout, non-zero inventory, and oversized probe output', async () => {
-    for (const blockedResult of [
-      result({ code: null, timedOut: true }),
-      result({ code: 2 }),
-      result({ code: 1, outputLimited: true }),
-    ]) {
-      const adapter = new QueueAdapter([blockedResult]);
-      const harness = new ProviderSemanticHarness(adapter, new StaticInspector());
-      await expect(harness.probeProvider(config())).rejects.toBeInstanceOf(
-        HarnessBlockedError,
-      );
-      expect(adapter.requests).toHaveLength(1);
-    }
-  });
-
-  it('blocks generation when the configured model is absent from inventory', async () => {
-    const adapter = new QueueAdapter([
-      result({ stdout: 'ollama version synthetic' }),
-      result({ stdout: 'NAME ID SIZE\nother-model:latest abc 1GB' }),
-    ]);
-    const harness = new ProviderSemanticHarness(adapter, new StaticInspector());
-    await expect(harness.run(config(), ['C'])).rejects.toMatchObject({
-      code: 'MODEL_NOT_INSTALLED',
+  it('builds only allowlisted names and never a forbidden one', () => {
+    const env = buildChildEnvironment({
+      home: '/tmp/sandbox/home',
+      tmp: '/tmp/sandbox',
+      modelsDir: '/tmp/models',
     });
-    expect(adapter.requests.map((request) => request.args)).toEqual([
-      ['--version'],
-      ['list'],
-    ]);
+    expect(Object.keys(env).sort()).toEqual([...CHILD_ENV_ALLOWLIST].sort());
+    for (const name of FORBIDDEN_CHILD_ENV_NAMES) {
+      expect(Object.prototype.hasOwnProperty.call(env, name)).toBe(false);
+    }
+    expect(env.HOME).toBe('/tmp/sandbox/home');
+    expect(env.OLLAMA_MODELS).toBe('/tmp/models');
   });
 
-  it('uses stdin, temp cwd, separate argv, bounded capture, and no automatic retry', async () => {
-    const adapter = new QueueAdapter([
-      result({ stdout: 'ollama version synthetic' }),
-      result({ stdout: 'NAME ID SIZE\nllama3.1:latest abc 1GB' }),
-      result({ stdout: passingResponse.C }),
-    ]);
-    const harness = new ProviderSemanticHarness(adapter, new StaticInspector());
-    const records = await harness.run(config({ calls: 1 }), ['C']);
-    expect(records).toHaveLength(1);
-    expect(adapter.requests).toHaveLength(3);
-    const generation = adapter.requests[2];
-    expect(generation?.args).toEqual(['run', 'llama3.1']);
-    expect(generation?.input.length).toBeGreaterThan(0);
-    expect(generation?.args.join(' ')).not.toContain(generation?.input ?? '');
-    expect(generation?.cwd).toBe(tmpdir());
-    expect(generation?.timeoutMs).toBe(GENERATION_TIMEOUT_MS);
-    expect(generation?.maxCaptureBytes).toBe(MAX_CAPTURE_BYTES);
+  it('omits PATH and OLLAMA_MODELS when no models directory is approved', () => {
+    const env = buildChildEnvironment({ home: '/tmp/h', tmp: '/tmp' });
+    expect(Object.prototype.hasOwnProperty.call(env, 'PATH')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(env, 'OLLAMA_MODELS')).toBe(false);
   });
 
-  it('does not retry a non-zero generation result', async () => {
-    const adapter = new QueueAdapter([
-      result({ stdout: 'ollama version synthetic' }),
-      result({ stdout: 'NAME ID SIZE\nllama3.1:latest abc 1GB' }),
-      result({ code: 7, stderr: 'synthetic failure' }),
-    ]);
-    const harness = new ProviderSemanticHarness(adapter, new StaticInspector());
-    await expect(harness.run(config({ calls: 2 }), ['A'])).rejects.toBeDefined();
-    expect(adapter.requests).toHaveLength(3);
-  });
-
-  it('blocks an empty Provider response', async () => {
-    const adapter = new QueueAdapter([
-      result({ stdout: 'ollama version synthetic' }),
-      result({ stdout: 'NAME ID SIZE\nllama3.1:latest abc 1GB' }),
-      result({ stdout: '   ' }),
-    ]);
-    const harness = new ProviderSemanticHarness(adapter, new StaticInspector());
-    await expect(harness.run(config(), ['A'])).rejects.toBeDefined();
+  it('gives a real child no PATH, no real HOME, and a repository-external cwd', async () => {
+    const script =
+      'const k=Object.keys(process.env).sort();process.stdout.write(JSON.stringify({keys:k,home:process.env.HOME,cwd:process.cwd()}));';
+    const adapter = new NodeProcessAdapter();
+    const result = await adapter.run({
+      executablePath: process.execPath,
+      args: ['-e', script],
+      input: '',
+      timeoutMs: 20_000,
+      maxCaptureBytes: MAX_CAPTURE_BYTES,
+      modelsDir: null,
+    });
+    expect(result.code).toBe(0);
+    const observed = JSON.parse(result.stdout) as {
+      keys: string[];
+      home: string;
+      cwd: string;
+    };
+    expect(observed.keys).not.toContain('PATH');
+    for (const name of FORBIDDEN_CHILD_ENV_NAMES) {
+      expect(observed.keys).not.toContain(name);
+    }
+    const acceptable = [...CHILD_ENV_ALLOWLIST, ...PLATFORM_INJECTED_CHILD_ENV_NAMES];
+    for (const name of observed.keys) {
+      expect(acceptable).toContain(name);
+    }
+    expect(observed.keys).toContain('HOME');
+    expect(observed.home.startsWith(repoRoot)).toBe(false);
+    expect(observed.cwd.startsWith(repoRoot)).toBe(false);
   });
 });
 
-describe('bounded evidence and prompt leakage guard', () => {
-  const scenarioC = SEMANTIC_SCENARIOS.find((fixture) => fixture.id === 'C')!;
-  const prompt = renderScenario(scenarioC).prompt;
+// ---------------------------------------------------------------------------
+// Finding 4 — generation-time pull/download prevention
+// ---------------------------------------------------------------------------
 
-  it('emits bounded metadata without the prompt, transcript, background, or raw stderr', () => {
+describe('Finding 4: download marker detection', () => {
+  it.each([
+    'pulling manifest',
+    'pulling 4f2b1c9a0e88',
+    'downloading model layer',
+    'verifying sha256 digest',
+    'writing manifest',
+    'fetching layers',
+  ])('detects %s', (marker) => {
+    const scanner = new DownloadMarkerScanner();
+    expect(scanner.scan(`${marker}\n`)).toBe(true);
+    expect(scanner.detected).toBe(true);
+    expect(typeof scanner.marker).toBe('number');
+  });
+
+  it('detects a marker split across chunk boundaries', () => {
+    const scanner = new DownloadMarkerScanner();
+    expect(scanner.scan('pull')).toBe(false);
+    expect(scanner.scan('ing manifest\n')).toBe(true);
+  });
+
+  it('detects a marker split mid-word across chunks', () => {
+    const scanner = new DownloadMarkerScanner();
+    expect(scanner.scan('verifying sh')).toBe(false);
+    expect(scanner.scan('a256 digest')).toBe(true);
+  });
+
+  it('detects an ANSI-wrapped and case-varied marker', () => {
+    const scanner = new DownloadMarkerScanner();
+    expect(scanner.scan('[1mPULLING MANIFEST[0m\r')).toBe(true);
+  });
+
+  it('detects a layer progress bar', () => {
+    const scanner = new DownloadMarkerScanner();
+    expect(scanner.scan('████████░░░░ 42% 12MB/s')).toBe(true);
+  });
+
+  it('ignores ordinary generation prose', () => {
+    const scanner = new DownloadMarkerScanner();
+    expect(scanner.scan('The release checklist name is Blue Lantern.')).toBe(false);
+    expect(scanner.detected).toBe(false);
+  });
+
+  it('blocks a fake child that emits a stderr marker and still exits zero', async () => {
+    const script = 'process.stderr.write("pulling manifest\\n");process.exit(0);';
+    const adapter = new NodeProcessAdapter();
+    const result = await adapter.run({
+      executablePath: process.execPath,
+      args: ['-e', script],
+      input: '',
+      timeoutMs: 20_000,
+      maxCaptureBytes: MAX_CAPTURE_BYTES,
+      modelsDir: null,
+    });
+    expect(result.downloadDetected).toBe(true);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toBe('');
+    expect(result.stderrBytes).toBeGreaterThan(0);
+    expect(result.stderrSha256).toHaveLength(64);
+    expect(() => assertProcessResultSafe(result)).toThrowError(HarnessBlockedError);
+  });
+
+  it('blocks a fake child that emits a stdout marker in split chunks', async () => {
+    const script =
+      'process.stdout.write("pull");setTimeout(()=>{process.stdout.write("ing manifest\\n");},10);setTimeout(()=>process.exit(0),400);';
+    const adapter = new NodeProcessAdapter();
+    const result = await adapter.run({
+      executablePath: process.execPath,
+      args: ['-e', script],
+      input: '',
+      timeoutMs: 20_000,
+      maxCaptureBytes: MAX_CAPTURE_BYTES,
+      modelsDir: null,
+    });
+    expect(result.downloadDetected).toBe(true);
+    expect(result.stdout).toBe('');
+  });
+
+  it('blocks generation that starts downloading after a clean inventory precheck', async () => {
+    const fixture = approvedFixture({ mode: 'run', scenarios: ['C'], calls: 1 });
+    const adapter = new QueueAdapter([
+      processResult({ stdout: 'ollama version synthetic' }),
+      processResult({ stdout: 'NAME ID SIZE\nllama3.1:latest abc 1GB' }),
+      processResult({
+        code: 0,
+        downloadDetected: true,
+        downloadMarkerIndex: 0,
+        stderrBytes: 42,
+      }),
+    ]);
+    const harness = new ProviderSemanticHarness(adapter, new StaticInspector());
+    await expect(harness.run(fixture.config, 'run', ['C'])).rejects.toMatchObject({
+      code: 'MODEL_DOWNLOAD_DETECTED',
+    });
+    expect(adapter.requests).toHaveLength(3);
+  });
+
+  it('emits only bounded metadata for a blocked download', async () => {
+    const fixture = approvedFixture({ mode: 'run', scenarios: ['C'], calls: 1 });
+    const adapter = new QueueAdapter([
+      processResult({ stdout: 'ollama version synthetic' }),
+      processResult({ stdout: 'NAME ID SIZE\nllama3.1:latest abc 1GB' }),
+      processResult({
+        code: 0,
+        downloadDetected: true,
+        downloadMarkerIndex: 2,
+        stdoutBytes: 11,
+        stdoutSha256: '1'.repeat(64),
+      }),
+    ]);
+    const harness = new ProviderSemanticHarness(adapter, new StaticInspector());
+    try {
+      await harness.run(fixture.config, 'run', ['C']);
+      throw new Error('expected a blocked error');
+    } catch (error) {
+      const blocked = error as HarnessBlockedError;
+      expect(blocked.code).toBe('MODEL_DOWNLOAD_DETECTED');
+      expect(Object.keys(blocked.details).sort()).toEqual([
+        'downloadMarkerIndex',
+        'exitCode',
+        'killEscalated',
+        'signal',
+        'stderrBytes',
+        'stderrSha256',
+        'stdinErrorCode',
+        'stdoutBytes',
+        'stdoutSha256',
+        'tempCleanupFailed',
+        'timedOut',
+      ]);
+      expect(JSON.stringify(blocked.details)).not.toContain('pulling');
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finding 5 — aggregate transcript / background leak detection
+// ---------------------------------------------------------------------------
+
+describe('Finding 5: aggregate transcript and background leak detection', () => {
+  const scenarioB = fixtureOf('B');
+  const scenarioA = fixtureOf('A');
+  const scenarioC = fixtureOf('C');
+  const promptB = renderScenario(scenarioB).prompt;
+  const promptC = renderScenario(scenarioC).prompt;
+  const promptA = renderScenario(scenarioA).prompt;
+  const entriesB = scenarioB.bundle.conversationTranscript.map((entry) => entry.content);
+
+  it('detects the full aggregate of four short transcript entries', () => {
+    const echo = entriesB.join(' ');
+    expect(detectPromptLeak(promptB, echo, scenarioB).detected).toBe(true);
+  });
+
+  it('detects a whitespace-normalized aggregate echo', () => {
+    const echo = entriesB.join('    \t  ');
+    expect(detectPromptLeak(promptB, echo, scenarioB).detected).toBe(true);
+  });
+
+  it('detects an aggregate echo with line breaks removed', () => {
+    const echo = entriesB.join('\n').replace(/\n/g, '');
+    expect(detectPromptLeak(promptB, echo, scenarioB).detected).toBe(true);
+  });
+
+  it('detects several short entries echoed with a prefix and suffix removed', () => {
+    const echo = `Summary: ${entriesB.slice(0, 3).join(' ')}`;
+    expect(detectPromptLeak(promptB, echo, scenarioB).detected).toBe(true);
+  });
+
+  it('detects a punctuation- and case-mangled aggregate echo', () => {
+    const echo = entriesB.join(' ').toUpperCase().replace(/[.?,]/g, '');
+    expect(detectPromptLeak(promptB, echo, scenarioB).detected).toBe(true);
+  });
+
+  it('detects a project background aggregate echo', () => {
+    const echo = scenarioA.bundle.backgroundResources
+      .map((entry) => entry.content)
+      .join(' ')
+      .replace(/\n/g, ' ');
+    expect(detectPromptLeak(promptA, echo, scenarioA).detected).toBe(true);
+  });
+
+  it('detects a full prompt echo and a long prompt fragment', () => {
+    expect(detectPromptLeak(promptC, promptC, scenarioC).category).toBe('PROMPT_EXACT_ECHO');
+    expect(
+      detectPromptLeak(promptC, `prefix ${promptC.slice(0, 400)} suffix`, scenarioC).detected,
+    ).toBe(true);
+  });
+
+  it('allows repeated harmless short phrases', () => {
+    expect(
+      detectPromptLeak(promptB, 'Understood. Understood. Understood. Okay. Yes.', scenarioB)
+        .detected,
+    ).toBe(false);
+  });
+
+  it('does not flag any reference passing response as a leak', () => {
+    for (const id of ['A', 'B', 'C', 'D', 'E'] as const) {
+      const fixture = fixtureOf(id);
+      const verdictForId = detectPromptLeak(
+        renderScenario(fixture).prompt,
+        passingResponse[id],
+        fixture,
+      );
+      expect(verdictForId).toEqual({ detected: false, category: null });
+    }
+  });
+
+  it('emits no preview and no raw diff for a detected leak', () => {
+    const echo = entriesB.join(' ');
     const record = makeEvidenceRecord({
-      scenario: scenarioC,
+      scenario: scenarioB,
       callOrdinal: 1,
       head: state.head,
-      model: DEFAULT_MODEL,
-      prompt,
-      response: passingResponse.C,
+      model: 'llama3.1',
+      prompt: promptB,
+      response: echo,
       durationMs: 5,
       exitCode: 0,
     });
+    expect(record.automatedVerdict).toBe('BLOCKED');
+    expect(record.promptLeakDetected).toBe(true);
+    expect(record.leakCategory).not.toBeNull();
+    expect(record.responsePreview).toBeUndefined();
     const serialized = JSON.stringify(record);
-    expect(record.automatedVerdict).toBe('AUTOMATED_PASS');
-    expect(record.humanVerdict).toBe('PENDING');
-    expect(serialized.includes('# System')).toBe(false);
-    expect(serialized.includes('conversationTranscript')).toBe(false);
-    expect(serialized.includes('stderr')).toBe(false);
-    expect(serialized.includes(prompt)).toBe(false);
+    expect(serialized.includes(echo)).toBe(false);
+    expect(serialized.includes('Please check the external connection')).toBe(false);
+    expect(record.responseSha256).toHaveLength(64);
+    expect(record.responseBytes).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finding 6 — child process lifecycle
+// ---------------------------------------------------------------------------
+
+class FakeStdin extends EventEmitter {
+  writeCallbackError: NodeJS.ErrnoException | null = null;
+  endError: NodeJS.ErrnoException | null = null;
+  readonly chunks: string[] = [];
+
+  write(chunk: unknown, callback?: (error?: Error | null) => void): boolean {
+    this.chunks.push(String(chunk));
+    if (callback) callback(this.writeCallbackError);
+    return true;
+  }
+
+  end(): void {
+    if (this.endError) throw this.endError;
+  }
+}
+
+class FakeChild extends EventEmitter {
+  readonly stdout = new EventEmitter();
+  readonly stderr = new EventEmitter();
+  readonly stdin = new FakeStdin();
+  readonly signals: string[] = [];
+
+  kill(signal?: string): boolean {
+    this.signals.push(signal ?? 'SIGTERM');
+    return true;
+  }
+}
+
+const delay = (ms: number): Promise<void> =>
+  new Promise((settle) => {
+    setTimeout(settle, ms);
   });
 
-  it('masks secret-like previews and limits them to 1,200 UTF-8 bytes', () => {
+interface FakeHarnessProcess {
+  child: FakeChild;
+  adapter: NodeProcessAdapter;
+  sandboxes: ChildSandbox[];
+  removals: ChildSandbox[];
+}
+
+function fakeProcess(options: { killGraceMs?: number; removeThrows?: boolean } = {}): FakeHarnessProcess {
+  const child = new FakeChild();
+  const sandboxes: ChildSandbox[] = [];
+  const removals: ChildSandbox[] = [];
+  const adapter = new NodeProcessAdapter({
+    spawnFn: () => child as unknown as ChildProcess,
+    createSandbox: () => {
+      const root = temporaryDir('chunsik-fake-sandbox-');
+      const sandbox: ChildSandbox = {
+        root,
+        home: join(root, 'home'),
+        work: join(root, 'work'),
+      };
+      mkdirSync(sandbox.home, { recursive: true });
+      mkdirSync(sandbox.work, { recursive: true });
+      sandboxes.push(sandbox);
+      return sandbox;
+    },
+    removeSandbox: (sandbox) => {
+      removals.push(sandbox);
+      if (options.removeThrows) throw new Error('cleanup failed');
+      rmSync(sandbox.root, { recursive: true, force: true });
+    },
+    ...(options.killGraceMs === undefined ? {} : { killGraceMs: options.killGraceMs }),
+  });
+  return { child, adapter, sandboxes, removals };
+}
+
+const fakeRequest = (overrides: Partial<ProcessRequest> = {}): ProcessRequest => ({
+  executablePath: '/usr/local/bin/fake-provider',
+  args: ['run', 'llama3.1'],
+  input: 'prompt',
+  timeoutMs: 5_000,
+  maxCaptureBytes: 64,
+  modelsDir: null,
+  ...overrides,
+});
+
+describe('Finding 6: child process lifecycle', () => {
+  it('reports a synchronous spawn failure without leaving a sandbox behind', async () => {
+    const removals: ChildSandbox[] = [];
+    const adapter = new NodeProcessAdapter({
+      spawnFn: () => {
+        throw new Error('spawn refused');
+      },
+      createSandbox: () => {
+        const root = temporaryDir('chunsik-spawn-fail-');
+        const sandbox = { root, home: join(root, 'home'), work: join(root, 'work') };
+        mkdirSync(sandbox.home, { recursive: true });
+        mkdirSync(sandbox.work, { recursive: true });
+        return sandbox;
+      },
+      removeSandbox: (sandbox) => {
+        removals.push(sandbox);
+        rmSync(sandbox.root, { recursive: true, force: true });
+      },
+    });
+    const result = await adapter.run(fakeRequest());
+    expect(result.spawnFailed).toBe(true);
+    expect(result.code).toBeNull();
+    expect(removals).toHaveLength(1);
+    expect(existsSync(removals[0]!.root)).toBe(false);
+  });
+
+  it('reports an asynchronous spawn error for a missing absolute executable', async () => {
+    const adapter = new NodeProcessAdapter();
+    const result = await adapter.run(
+      fakeRequest({
+        executablePath: join(tmpdir(), 'chunsik-definitely-missing-binary'),
+        input: '',
+        timeoutMs: 5_000,
+      }),
+    );
+    expect(result.spawnFailed).toBe(true);
+    expect(result.stdout).toBe('');
+  });
+
+  it('records a bounded stdin error code and terminates the child', async () => {
+    const { child, adapter } = fakeProcess({ killGraceMs: 5 });
+    const promise = adapter.run(fakeRequest());
+    child.stdin.emit('error', Object.assign(new Error('broken pipe'), { code: 'EPIPE' }));
+    child.emit('close', null, 'SIGTERM');
+    const result = await promise;
+    expect(result.stdinFailed).toBe(true);
+    expect(result.stdinErrorCode).toBe('EPIPE');
+    expect(child.signals[0]).toBe('SIGTERM');
+    expect(JSON.stringify(result)).not.toContain('broken pipe');
+  });
+
+  it('records a write-callback failure as a bounded code', async () => {
+    const { child, adapter } = fakeProcess({ killGraceMs: 5 });
+    child.stdin.writeCallbackError = Object.assign(new Error('gone'), { code: 'EPIPE' });
+    const promise = adapter.run(fakeRequest());
+    child.emit('close', 0, null);
+    const result = await promise;
+    expect(result.stdinFailed).toBe(true);
+    expect(result.stdinErrorCode).toBe('EPIPE');
+  });
+
+  it('classifies an unrecognizable stdin error with a bounded fallback code', async () => {
+    const { child, adapter } = fakeProcess({ killGraceMs: 5 });
+    const promise = adapter.run(fakeRequest());
+    child.stdin.emit('error', new Error('unhelpful internal detail'));
+    child.emit('close', null, 'SIGTERM');
+    const result = await promise;
+    expect(result.stdinErrorCode).toBe('CHILD_STDIN_WRITE_FAILED');
+    expect(JSON.stringify(result)).not.toContain('unhelpful internal detail');
+  });
+
+  it('escalates a timeout from SIGTERM to SIGKILL', async () => {
+    const { child, adapter } = fakeProcess({ killGraceMs: 10 });
+    const promise = adapter.run(fakeRequest({ timeoutMs: 5 }));
+    await delay(60);
+    expect(child.signals).toEqual(['SIGTERM', 'SIGKILL']);
+    child.emit('close', null, 'SIGKILL');
+    const result = await promise;
+    expect(result.timedOut).toBe(true);
+    expect(result.killEscalated).toBe(true);
+    expect(result.signal).toBe('SIGKILL');
+  });
+
+  it('stops at SIGTERM when the child exits inside the grace period', async () => {
+    const { child, adapter } = fakeProcess({ killGraceMs: 1_000 });
+    const promise = adapter.run(fakeRequest({ timeoutMs: 5 }));
+    await delay(30);
+    expect(child.signals).toEqual(['SIGTERM']);
+    child.emit('close', null, 'SIGTERM');
+    const result = await promise;
+    expect(result.timedOut).toBe(true);
+    expect(result.killEscalated).toBe(false);
+  });
+
+  it('kills on an output limit, stops accumulating, and keeps no oversized content', async () => {
+    const { child, adapter } = fakeProcess({ killGraceMs: 10 });
+    const promise = adapter.run(fakeRequest({ maxCaptureBytes: 16 }));
+    child.stdout.emit('data', Buffer.from('a'.repeat(64)));
+    child.stdout.emit('data', Buffer.from('b'.repeat(64)));
+    await delay(40);
+    expect(child.signals).toEqual(['SIGTERM', 'SIGKILL']);
+    child.emit('close', null, 'SIGKILL');
+    const result = await promise;
+    expect(result.outputLimited).toBe(true);
+    expect(result.stdout).toBe('');
+    expect(result.stdoutBytes).toBe(128);
+    expect(result.stdoutSha256).toHaveLength(64);
+    expect(JSON.stringify(result)).not.toContain('aaaa');
+  });
+
+  it('reports a signal-only exit', async () => {
+    const { child, adapter } = fakeProcess();
+    const promise = adapter.run(fakeRequest());
+    child.emit('close', null, 'SIGSEGV');
+    const result = await promise;
+    expect(result.code).toBeNull();
+    expect(result.signal).toBe('SIGSEGV');
+  });
+
+  it('clears every listener and timer once settled', async () => {
+    const { child, adapter } = fakeProcess();
+    const promise = adapter.run(fakeRequest());
+    child.emit('close', 0, null);
+    await promise;
+    expect(child.listenerCount('close')).toBe(0);
+    expect(child.listenerCount('error')).toBe(0);
+    expect(child.stdout.listenerCount('data')).toBe(0);
+    expect(child.stderr.listenerCount('data')).toBe(0);
+    expect(child.stdin.listenerCount('error')).toBe(0);
+  });
+
+  it('creates an independent sandbox per child and removes it', async () => {
+    const { child, adapter, sandboxes, removals } = fakeProcess();
+    const first = adapter.run(fakeRequest());
+    child.emit('close', 0, null);
+    await first;
+    const second = adapter.run(fakeRequest());
+    child.emit('close', 0, null);
+    await second;
+    expect(sandboxes).toHaveLength(2);
+    expect(sandboxes[0]!.root).not.toBe(sandboxes[1]!.root);
+    expect(removals).toHaveLength(2);
+    for (const sandbox of sandboxes) {
+      expect(existsSync(sandbox.root)).toBe(false);
+      expect(sandbox.root.startsWith(repoRoot)).toBe(false);
+    }
+  });
+
+  it('reports a cleanup failure as a bounded warning without repository mutation', async () => {
+    const { child, adapter } = fakeProcess({ removeThrows: true });
+    const promise = adapter.run(fakeRequest());
+    child.emit('close', 0, null);
+    const result = await promise;
+    expect(result.tempCleanupFailed).toBe(true);
+    expect(JSON.stringify(result)).not.toContain('cleanup failed');
+  });
+
+  it('uses a real per-child sandbox outside the repository', async () => {
+    const sandbox = createChildSandbox();
+    expect(sandbox.root.startsWith(repoRoot)).toBe(false);
+    expect(existsSync(sandbox.home)).toBe(true);
+    expect(existsSync(sandbox.work)).toBe(true);
+    rmSync(sandbox.root, { recursive: true, force: true });
+  });
+
+  it('never retries a non-zero generation result', async () => {
+    const fixture = approvedFixture({ mode: 'run', scenarios: ['A'], calls: 2 });
+    const adapter = new QueueAdapter([
+      processResult({ stdout: 'ollama version synthetic' }),
+      processResult({ stdout: 'NAME ID SIZE\nllama3.1:latest abc 1GB' }),
+      processResult({ code: 7, stderr: 'synthetic failure' }),
+    ]);
+    const harness = new ProviderSemanticHarness(adapter, new StaticInspector());
+    await expect(harness.run(fixture.config, 'run', ['A'])).rejects.toBeDefined();
+    expect(adapter.requests).toHaveLength(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finding 7 — CLI parser
+// ---------------------------------------------------------------------------
+
+describe('Finding 7: CLI parser is fail-closed for every mode', () => {
+  const code = (argv: readonly string[]): string => {
+    try {
+      parseCliArguments(argv);
+      return 'ACCEPTED';
+    } catch (error) {
+      return error instanceof HarnessBlockedError ? error.code : 'UNCLASSIFIED_ERROR';
+    }
+  };
+
+  it('accepts help only as the sole argument', () => {
+    expect(parseCliArguments(['--help']).kind).toBe('help');
+    expect(parseCliArguments(['-h']).kind).toBe('help');
+    expect(code(['--help', '--mode', 'validate-config'])).toBe('HELP_MUST_BE_SOLE_ARGUMENT');
+  });
+
+  it('accepts one leading package-manager separator and rejects any later one', () => {
+    expect(parseCliArguments(['--', '--help']).kind).toBe('help');
+    expect(parseCliArguments(['--', '--mode', 'validate-config']).mode).toBe('validate-config');
+    expect(code(['--mode', 'validate-config', '--'])).toBe('UNKNOWN_OPTION');
+    expect(code(['--', '--', '--mode', 'validate-config'])).toBe('UNKNOWN_OPTION');
+  });
+
+  it('accepts the offline modes with no other option', () => {
+    expect(parseCliArguments(['--mode', 'validate-config']).mode).toBe('validate-config');
+    expect(parseCliArguments(['--mode', 'validate-fixtures']).mode).toBe('validate-fixtures');
+  });
+
+  it.each([
+    [['--mode', 'run-all', '--scenario', 'Z'], 'INVALID_SCENARIO'],
+    [['--mode', 'validate-config', '--model', 'llama3.1'], 'IRRELEVANT_OPTION'],
+    [['--mode', 'validate-fixtures', '--calls', '1'], 'IRRELEVANT_OPTION'],
+    [['--mode', 'run', '--scenario', 'A', '--scenario', 'B'], 'DUPLICATE_OPTION'],
+    [['--mode', 'run', '--calls', '2', '--calls', '3'], 'DUPLICATE_OPTION'],
+    [['unknown', '--foo'], 'POSITIONAL_ARGUMENT_REJECTED'],
+    [['--mode', 'validate-config', '--foo', 'bar'], 'UNKNOWN_OPTION'],
+    [['--mode'], 'MISSING_OPTION_VALUE'],
+    [['--mode', 'validate-config', '--calls'], 'MISSING_OPTION_VALUE'],
+    [['--mode=validate-config'], 'OPTION_VALUE_FORM_UNSUPPORTED'],
+    [['--mod', 'validate-config'], 'UNKNOWN_OPTION'],
+    [['--scenario', 'A'], 'MISSING_MODE'],
+    [['--mode', 'nonsense'], 'INVALID_MODE'],
+    [['-x', 'y'], 'UNKNOWN_OPTION'],
+    [['--mode', 'validate-config', 'stray'], 'POSITIONAL_ARGUMENT_REJECTED'],
+  ] as const)('rejects %j with %s', (argv, expected) => {
+    expect(code([...argv])).toBe(expected);
+  });
+
+  it('rejects malformed, zero, negative, and over-limit call counts', () => {
+    const base = [
+      '--mode',
+      'run-all',
+      '--bin',
+      '/usr/local/bin/ollama',
+      '--model',
+      'llama3.1',
+      '--expected-head',
+      'a'.repeat(40),
+      '--expected-static-binding',
+      'b'.repeat(64),
+      '--expected-execution-binding',
+      'c'.repeat(64),
+    ];
+    expect(code([...base, '--calls', 'two'])).toBe('MALFORMED_INTEGER');
+    expect(code([...base, '--calls', '-1'])).toBe('MALFORMED_INTEGER');
+    expect(code([...base, '--calls', '0'])).toBe('INVALID_CALL_COUNT');
+    expect(code([...base, '--calls', '3'])).toBe('INVALID_CALL_COUNT');
+    expect(code([...base, '--calls', '2'])).toBe('ACCEPTED');
+  });
+
+  it('rejects a relative or command-name executable and a bad digest shape', () => {
+    const base = [
+      '--mode',
+      'probe-provider',
+      '--model',
+      'llama3.1',
+      '--expected-head',
+      'a'.repeat(40),
+      '--expected-static-binding',
+      'b'.repeat(64),
+      '--expected-execution-binding',
+      'c'.repeat(64),
+    ];
+    expect(code([...base, '--bin', 'ollama'])).toBe('OPTION_PATH_NOT_ABSOLUTE');
+    expect(code([...base, '--bin', './ollama'])).toBe('OPTION_PATH_NOT_ABSOLUTE');
+    expect(code([...base, '--bin', '/usr/local/bin/ollama'])).toBe('ACCEPTED');
+    expect(
+      code([
+        '--mode',
+        'probe-provider',
+        '--bin',
+        '/usr/local/bin/ollama',
+        '--model',
+        'llama3.1',
+        '--expected-head',
+        'zz',
+        '--expected-static-binding',
+        'b'.repeat(64),
+        '--expected-execution-binding',
+        'c'.repeat(64),
+      ]),
+    ).toBe('MALFORMED_SHA40');
+  });
+
+  it('requires every strict binding option before a Provider mode is accepted', () => {
+    expect(
+      code([
+        '--mode',
+        'run',
+        '--scenario',
+        'A',
+        '--calls',
+        '1',
+        '--bin',
+        '/usr/local/bin/ollama',
+        '--model',
+        'llama3.1',
+      ]),
+    ).toBe('MISSING_REQUIRED_OPTION');
+  });
+
+  it('enforces the plan-execution option shape per target mode', () => {
+    const base = ['--mode', 'plan-execution', '--bin', '/usr/local/bin/ollama', '--model', 'llama3.1'];
+    expect(code([...base, '--for-mode', 'probe-provider'])).toBe('ACCEPTED');
+    expect(code([...base, '--for-mode', 'probe-provider', '--calls', '1'])).toBe(
+      'IRRELEVANT_OPTION',
+    );
+    expect(code([...base, '--for-mode', 'run', '--calls', '1'])).toBe(
+      'MISSING_REQUIRED_OPTION',
+    );
+    expect(code([...base, '--for-mode', 'run', '--scenario', 'A', '--calls', '1'])).toBe(
+      'ACCEPTED',
+    );
+    expect(code([...base, '--for-mode', 'run-all', '--scenario', 'A', '--calls', '1'])).toBe(
+      'IRRELEVANT_OPTION',
+    );
+    expect(code([...base, '--for-mode', 'validate-config'])).toBe('INVALID_TARGET_MODE');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finding 8 — UTF-8 preview and ANSI/OSC sanitization
+// ---------------------------------------------------------------------------
+
+describe('Finding 8: terminal sanitization', () => {
+  it('removes ANSI CSI colour sequences', () => {
+    expect(stripTerminalControl('[31mred[0m text')).toBe('red text');
+  });
+
+  it('removes OSC title sequences terminated by BEL and by ST', () => {
+    expect(stripTerminalControl(']0;window titlebody')).toBe('body');
+    expect(stripTerminalControl(']0;title\\body')).toBe('body');
+  });
+
+  it('removes standalone escapes, C1 controls, and DEL', () => {
+    expect(stripTerminalControl('a(Bb31mcd e')).toBe('abcde');
+  });
+
+  it('applies the documented CR policy and keeps LF and TAB', () => {
+    expect(stripTerminalControl('a\r\nb\rc\td')).toBe('a\nbc\td');
+  });
+
+  it('removes an escape sequence reassembled across chunk boundaries', () => {
+    const chunks = ['[3', '1mred[', '0m'];
+    expect(stripTerminalControl(chunks.join(''))).toBe('red');
+  });
+});
+
+describe('Finding 8: bounded UTF-8 preview', () => {
+  const previewBytes = (value: string): number => Buffer.byteLength(value, 'utf8');
+
+  it('keeps a preview at or below the limit untruncated', () => {
+    for (const size of [1_199, 1_200]) {
+      const result = buildBoundedPreview('a'.repeat(size));
+      expect(result.truncated).toBe(false);
+      expect(previewBytes(result.preview)).toBe(size);
+    }
+  });
+
+  it('truncates one byte over the limit and keeps the marker inside the budget', () => {
+    const result = buildBoundedPreview('a'.repeat(1_201));
+    expect(result.truncated).toBe(true);
+    expect(previewBytes(result.preview)).toBeLessThanOrEqual(MAX_PREVIEW_BYTES);
+    expect(result.preview.endsWith(TRUNCATION_MARKER)).toBe(true);
+  });
+
+  it('never splits a Hangul character mid-byte', () => {
+    const result = buildBoundedPreview('가'.repeat(500));
+    expect(result.truncated).toBe(true);
+    expect(previewBytes(result.preview)).toBeLessThanOrEqual(MAX_PREVIEW_BYTES);
+    expect(result.preview).not.toContain('�');
+    expect(Buffer.from(result.preview, 'utf8').toString('utf8')).toBe(result.preview);
+  });
+
+  it('never splits an emoji surrogate pair at the byte budget', () => {
+    const result = buildBoundedPreview('a'.repeat(1_186) + '😀'.repeat(20));
+    expect(result.truncated).toBe(true);
+    expect(previewBytes(result.preview)).toBeLessThanOrEqual(MAX_PREVIEW_BYTES);
+    expect(result.preview).not.toContain('�');
+    expect(Buffer.from(result.preview, 'utf8').toString('utf8')).toBe(result.preview);
+  });
+
+  it('strips ANSI colour, OSC titles, and carriage-return progress before bounding', () => {
+    const result = buildBoundedPreview(
+      ']0;ollama[32m 10%\r 40%\r done[0m',
+    );
+    expect(result.preview).toBe(' 10% 40% done');
+    expect(result.truncated).toBe(false);
+  });
+
+  it('re-applies the byte limit after secret masking shortens the text', () => {
+    const secret = `sk-${'A'.repeat(400)}`;
+    const result = buildBoundedPreview(`${secret} tail`);
+    expect(result.preview).not.toContain(secret);
+    expect(result.preview).toContain('***redacted***');
+    expect(result.truncated).toBe(false);
+    expect(previewBytes(result.preview)).toBeLessThanOrEqual(MAX_PREVIEW_BYTES);
+  });
+
+  it('re-applies the byte limit after secret masking lengthens the text', () => {
+    const masked = buildBoundedPreview(`${'sk-abcdefgh '.repeat(120)}`);
+    expect(previewBytes(masked.preview)).toBeLessThanOrEqual(MAX_PREVIEW_BYTES);
+    expect(masked.truncated).toBe(true);
+  });
+
+  it('does not create new replacement characters from a malformed input buffer', () => {
+    const malformed = Buffer.from([0xff, 0xfe, 0x41, 0x42]).toString('utf8');
+    const result = buildBoundedPreview(malformed);
+    const count = (value: string): number => (value.match(/�/g) ?? []).length;
+    expect(count(result.preview)).toBeLessThanOrEqual(count(malformed));
+    expect(result.preview).toContain('AB');
+  });
+
+  it('bounds and masks the evidence preview without emitting the prompt', () => {
+    const scenarioC = fixtureOf('C');
+    const prompt = renderScenario(scenarioC).prompt;
     const fakeSecret = `sk-${'A'.repeat(40)}`;
     const record = makeEvidenceRecord({
       scenario: scenarioC,
       callOrdinal: 1,
       head: state.head,
-      model: DEFAULT_MODEL,
+      model: 'llama3.1',
       prompt,
       response: `${passingResponse.C} ${fakeSecret} ${'가'.repeat(800)}`,
       durationMs: 5,
@@ -359,29 +1530,94 @@ describe('bounded evidence and prompt leakage guard', () => {
     });
     expect(record.responsePreview).not.toContain(fakeSecret);
     expect(record.responsePreview).toContain('***redacted***');
-    expect(Buffer.byteLength(record.responsePreview ?? '', 'utf8')).toBeLessThanOrEqual(
-      MAX_PREVIEW_BYTES,
-    );
+    expect(previewBytes(record.responsePreview ?? '')).toBeLessThanOrEqual(MAX_PREVIEW_BYTES);
     expect(record.previewTruncated).toBe(true);
+    const serialized = JSON.stringify(record);
+    expect(serialized.includes('# System')).toBe(false);
+    expect(serialized.includes('conversationTranscript')).toBe(false);
+    expect(serialized.includes('stderr')).toBe(false);
+    expect(serialized.includes(prompt)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// End-to-end harness behaviour under the approved binding
+// ---------------------------------------------------------------------------
+
+describe('harness execution under an approved binding', () => {
+  it('uses stdin, separate argv, bounded capture, and the approved realpath', async () => {
+    const fixture = approvedFixture({ mode: 'run', scenarios: ['C'], calls: 1 });
+    const adapter = new QueueAdapter([
+      processResult({ stdout: 'ollama version synthetic' }),
+      processResult({ stdout: 'NAME ID SIZE\nllama3.1:latest abc 1GB' }),
+      processResult({ stdout: passingResponse.C }),
+    ]);
+    const harness = new ProviderSemanticHarness(adapter, new StaticInspector());
+    const records = await harness.run(fixture.config, 'run', ['C']);
+    expect(records).toHaveLength(1);
+    expect(records[0]?.automatedVerdict).toBe('AUTOMATED_PASS');
+    expect(adapter.requests.map((request) => request.args)).toEqual([
+      ['--version'],
+      ['list'],
+      ['run', 'llama3.1'],
+    ]);
+    const generation = adapter.requests[2];
+    expect(generation?.executablePath).toBe(fixture.executable.realPath);
+    expect(generation?.input.length).toBeGreaterThan(0);
+    expect(generation?.args.join(' ')).not.toContain(generation?.input ?? '');
+    expect(generation?.timeoutMs).toBe(GENERATION_TIMEOUT_MS);
+    expect(generation?.maxCaptureBytes).toBe(MAX_CAPTURE_BYTES);
+    expect(adapter.requests[0]?.timeoutMs).toBe(AVAILABILITY_TIMEOUT_MS);
   });
 
-  it('blocks exact or long-substring prompt echo without emitting a response preview', () => {
-    expect(detectPromptLeak(prompt, prompt, scenarioC)).toBe(true);
-    const echoed = `prefix ${prompt.slice(0, 240)} suffix`;
-    expect(detectPromptLeak(prompt, echoed, scenarioC)).toBe(true);
-    const record = makeEvidenceRecord({
-      scenario: scenarioC,
-      callOrdinal: 1,
-      head: state.head,
-      model: DEFAULT_MODEL,
-      prompt,
-      response: echoed,
-      durationMs: 5,
-      exitCode: 0,
+  it('blocks when the configured model is absent from inventory', async () => {
+    const fixture = approvedFixture({ mode: 'run', scenarios: ['C'], calls: 1 });
+    const adapter = new QueueAdapter([
+      processResult({ stdout: 'ollama version synthetic' }),
+      processResult({ stdout: 'NAME ID SIZE\nother-model:latest abc 1GB' }),
+    ]);
+    const harness = new ProviderSemanticHarness(adapter, new StaticInspector());
+    await expect(harness.run(fixture.config, 'run', ['C'])).rejects.toMatchObject({
+      code: 'MODEL_NOT_INSTALLED',
     });
-    expect(record.automatedVerdict).toBe('BLOCKED');
-    expect(record.promptLeakDetected).toBe(true);
-    expect(record.responsePreview).toBeUndefined();
-    expect(JSON.stringify(record).includes(echoed)).toBe(false);
+    expect(adapter.requests).toHaveLength(2);
+  });
+
+  it('blocks a timed out, non-zero, or oversized probe', async () => {
+    for (const [blocked, expected] of [
+      [processResult({ code: null, timedOut: true }), 'PROVIDER_UNAVAILABLE'],
+      [processResult({ code: 2 }), 'PROVIDER_UNAVAILABLE'],
+      [processResult({ code: 1, outputLimited: true }), 'OUTPUT_LIMIT_EXCEEDED'],
+    ] as const) {
+      const fixture = approvedFixture({ mode: 'probe-provider', scenarios: [], calls: 1 });
+      const adapter = new QueueAdapter([blocked]);
+      const harness = new ProviderSemanticHarness(adapter, new StaticInspector());
+      await expect(harness.probeProvider(fixture.config)).rejects.toMatchObject({
+        code: expected,
+      });
+      expect(adapter.requests).toHaveLength(1);
+    }
+  });
+
+  it('blocks an empty Provider response', async () => {
+    const fixture = approvedFixture({ mode: 'run', scenarios: ['A'], calls: 1 });
+    const adapter = new QueueAdapter([
+      processResult({ stdout: 'ollama version synthetic' }),
+      processResult({ stdout: 'NAME ID SIZE\nllama3.1:latest abc 1GB' }),
+      processResult({ stdout: '   ' }),
+    ]);
+    const harness = new ProviderSemanticHarness(adapter, new StaticInspector());
+    await expect(harness.run(fixture.config, 'run', ['A'])).rejects.toBeDefined();
+  });
+
+  it('uses an argv process with shell disabled and never names a repository evidence path', () => {
+    const source = readFileSync(resolve(__dirname, 'provider-semantic-validation.ts'), 'utf8');
+    expect(source.includes('shell: false')).toBe(true);
+    expect(source.includes('shell: true')).toBe(false);
+    expect(source.includes("child.kill('SIGTERM')")).toBe(true);
+    expect(source.includes("child?.kill('SIGKILL')")).toBe(true);
+    expect(source.includes('docs/plans')).toBe(false);
+    expect(source.includes('writeFileSync')).toBe(false);
+    expect(source.includes('renameSync')).toBe(false);
   });
 });
