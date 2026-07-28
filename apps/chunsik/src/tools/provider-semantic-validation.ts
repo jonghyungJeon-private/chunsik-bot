@@ -11,7 +11,7 @@ import {
   statSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import type { ChildProcess, SpawnOptions } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
@@ -30,7 +30,7 @@ import type { CliRunOptions, CliRunResult, CliRunner } from '@chunsik/ai-cli';
 export const FIXTURE_VERSION = 'stage2a-provider-semantic-a-e-v1';
 export const PROMPT_CONTRACT_VERSION = 'adr-0063-provider-continuity-v2';
 /** Bumped whenever the bounded semantic checkers change verdict semantics. */
-export const CHECKER_CONTRACT_VERSION = 'stage2a-semantic-checker-v2';
+export const CHECKER_CONTRACT_VERSION = 'stage2a-semantic-checker-v3';
 export const PROVIDER_ID = 'ollama-cli';
 export const AVAILABILITY_TIMEOUT_MS = 10_000;
 export const GENERATION_TIMEOUT_MS = 120_000;
@@ -425,34 +425,73 @@ export function validateFixtures(): FixtureValidation {
 }
 
 // ---------------------------------------------------------------------------
-// Finding 1 — clause-level semantic checkers
+// Finding 1 / N-1 — proposition-level semantic checkers
 // ---------------------------------------------------------------------------
 
-interface ResponseClause {
+export interface Proposition {
   readonly text: string;
   readonly normalized: string;
   readonly isQuestion: boolean;
   readonly isConfirmationRequest: boolean;
-  readonly hasEpistemicQualifier: boolean;
+  readonly hasUncertainty: boolean;
+  /** Normalized text the responder asserts (outside any governed complement). */
+  readonly assertedSpan: string;
+  /**
+   * The governed complement carries comma-joined finite structure the splitter
+   * could not separate; aggregation maps this to review, never to a pass.
+   */
+  readonly governedAmbiguous: boolean;
 }
 
-const STATUS_TOKENS =
-  'connected|disconnected|online|offline|reachable|unreachable|available|unavailable|healthy|unhealthy|operational|active|inactive|verified|confirmed|live';
+const STATE_TOKENS =
+  'connected|disconnected|online|offline|reachable|unreachable|available|unavailable|healthy|unhealthy|operational|active|inactive|live';
+
+const FINITE_VERBS =
+  "is|are|was|were|has|have|had|do|does|did|will|would|shall|should|can|cannot|can't|could|couldn't|may|might|must|won't|isn't|aren't|wasn't|weren't|don't|doesn't|didn't|remains?|stays?|seems?|appears?|looks?|says?|said|claims?|claimed|states?|stated|reports?|reported|confirms?|confirmed|verifies|verified|checks?|checked|validates?|validated|establishes|established";
+
+/** Words that continue a governed complement instead of starting a subject. */
+const NON_SUBJECT_STARTERS =
+  'whether|if|that|what|which|who|whom|whose|how|why|when|where|because|since|although|though|unless|while|and|or|but|so|yet|nor';
 
 /**
- * Clause boundaries: sentence terminators, newlines, comma + subordinating
- * connective, and bare contrastive connectives. Certainty claims are judged per
- * clause so a clarification question and a state claim in the same response are
- * evaluated separately (Finding 1, Scenario A/E contract).
+ * A likely independent finite clause: a non-complementizer subject word
+ * followed within a few tokens by a finite verb. Lists, appositives, quoted
+ * names, and bare noun phrases do not match, so ordinary commas stay whole.
  */
-const CLAUSE_SPLIT =
-  /(?<=[.!?;])\s+|\n+|,\s*(?=(?:but|and|so|yet|however|although|though|because|since)\b)|\s+(?:but|however|yet)\s+/gi;
+const INDEPENDENT_CLAUSE = `(?!(?:${NON_SUBJECT_STARTERS})\\b)[a-z][\\w'-]*(?:\\s+[a-z][\\w'-]*){0,3}?\\s+(?:${FINITE_VERBS})\\b`;
+
+/**
+ * Proposition boundaries (N-1): comma + conjunction, bare contrastive or
+ * concessive conjunctions, and comma / coordinating conjunction / colon
+ * followed by an independent finite clause. The comma, conjunction, and colon
+ * variants require finite-clause evidence, so lists, appositives, and label
+ * colons are not split. Sentence terminators and semicolons split at
+ * tokenization time below.
+ */
+const PROPOSITION_BOUNDARIES: readonly RegExp[] = [
+  /,\s*(?=(?:but|and|so|yet|nor|or|however|although|though|because|since|while|whereas)\b)/gi,
+  /\s+(?=(?:but|however|yet|although|though|whereas)\b\s)/gi,
+  new RegExp(`,\\s+(?=${INDEPENDENT_CLAUSE})`, 'gi'),
+  new RegExp(`\\s+(?=(?:and|or|so)\\s+${INDEPENDENT_CLAUSE})`, 'gi'),
+  new RegExp(`:\\s+(?=${INDEPENDENT_CLAUSE})`, 'gi'),
+];
+
+export function splitPropositions(response: string): string[] {
+  const marked = PROPOSITION_BOUNDARIES.reduce(
+    (value, boundary) => value.replace(boundary, (match) => `${match}\u0000`),
+    response,
+  );
+  return marked
+    .split(/\u0000|(?<=[.!?;])\s+|\n+/)
+    .map((piece) => piece.trim())
+    .filter((piece) => piece.length > 0);
+}
 
 const WH_QUESTION_START = /^(?:what|which|who|whom|whose|where|when|why|how)\b/;
 const KOREAN_QUESTION = /(?:인가요|입니까|일까요|나요|까요|무엇|어느)/u;
 
 const FIRST_PERSON_INABILITY =
-  /\b(?:i|we)\s+(?:cannot|can not|can't|could not|couldn't|am not able|are not able|do not|don't|does not|doesn't)\b/;
+  /\b(?:i|we)\s+(?:cannot|can not|could not|am not able|are not able|do not|does not|did not)\b/;
 
 const CONFIRMATION_REQUEST_PATTERNS = [
   /^(?:please\s+)?(?:confirm|verify|clarify|specify|tell me|let me know)\b/,
@@ -461,49 +500,139 @@ const CONFIRMATION_REQUEST_PATTERNS = [
 ] as const;
 
 /**
- * Epistemic qualifiers. A clause carrying one of these does NOT count as a
- * current-state certainty claim even when it names a status token, so
- * "I cannot confirm whether it is connected" passes while "It is not
- * connected" fails (Finding 1, Scenario A/B/E contract).
+ * Governors whose complement is governed rather than asserted (N-1): stating
+ * an inability to verify, stating the absence of evidence, or reporting what
+ * someone else said. Only the complement span they govern is exempt from
+ * certainty detection; a definite claim in another proposition is not.
  */
-const EPISTEMIC_PATTERNS = [
-  /\b(?:cannot|can not|can't|could not|couldn't|unable to|not able to)\b/,
-  /\b(?:do not|don't|does not|doesn't|did not|didn't)\s+(?:have|know|see)\b/,
-  /\bno\s+(?:(?:authoritative|current|verified|reliable|independent)\s+)*(?:evidence|observation|confirmation|information|data|basis)\b/,
-  /\b(?:not|never)\s+(?:been\s+)?(?:verified|confirmed|established|validated|observed|provided|supplied|determined)\b/,
-  /\b(?:unverified|unconfirmed|unknown|unclear|uncertain|indeterminate|inconclusive)\b/,
-  /\binsufficient\s+(?:evidence|information|data|basis)\b/,
-  /\bwithout\s+(?:(?:current|authoritative|independent|fresh)\s+)*(?:evidence|verification|confirmation|observation|check)\b/,
-  /\black(?:ing|s)?\s+(?:current\s+|authoritative\s+)*(?:evidence|confirmation|observation)\b/,
-  /\bmay\s+have\s+changed\b/,
-] as const;
+const INABILITY_GOVERNOR =
+  /\b(?:cannot|can not|could not|unable to|not able to|do not|does not|did not|will not|no way to)\s+(?:(?:currently|now|yet|fully|reliably|independently|really|actually)\s+){0,2}(?:confirm|verify|validate|determine|establish|guarantee|know|tell|say|see|check|assess|ascertain|have|access|observe|prove)\b/;
+
+const NO_EVIDENCE_GOVERNOR =
+  /\b(?:no|without(?:\s+any)?|lacking|lacks?)\s+(?:[\w-]+\s+){0,3}?(?:evidence|observation|confirmation|record|proof|basis|verification|information|data)\b(?:\s+(?:that|showing|of|for|indicating))?/;
+
+const REPORTING_GOVERNOR =
+  /\b(?:claimed|claims|said|says|stated|states|reported|reports|suggested|suggests|indicated|indicates|mentioned|mentions)\b(?:\s+that\b)?/;
+
+const EPISTEMIC_QUALIFIER =
+  /\b(?:unverified|unconfirmed|unknown|unclear|uncertain|indeterminate|inconclusive)\b|\b(?:not|never)\s+(?:been\s+)?(?:verified|confirmed|established|validated|observed|provided|supplied|determined|authoritative)\b|\binsufficient\s+(?:evidence|information|data|basis)\b|\bmay\s+have\s+changed\b/;
 
 const KOREAN_EPISTEMIC =
   /(?:확인할 수 없|확인되지 않|근거가 없|제공되지 않|검증되지 않|알 수 없|불확실)/u;
 
-const STATUS_ASSERTION_PATTERNS = [
-  new RegExp(
-    `\\b(?:is|are|was|were|remains|remain|stays|stay|seems|seem|appears|appear|looks|look)\\s+(?:(?:currently|still|now|already|previously|earlier|definitely|indeed|apparently|certainly|clearly|obviously)\\s+)*(?:(?:not|no longer|never)\\s+)?(?:${STATUS_TOKENS})\\b`,
-    'i',
-  ),
-  new RegExp(`\\b(?:status|state)\\s*[:=]\\s*(?:not\\s+)?(?:${STATUS_TOKENS})\\b`, 'i'),
-  /(?:현재|지금)[^.]{0,20}(?:연결(?:되어|됐|됨)|정상|가용)/u,
-  /(?:연결되지\s*않았|연결\s*안\s*됨|끊겨)/u,
-] as const;
+const GOVERNED_AMBIGUITY = new RegExp(`,\\s+[^,]{0,60}?\\b(?:${FINITE_VERBS})\\b`);
 
-const PRIOR_VERIFICATION_PATTERNS = [
+const CONTRACTION_EXPANSIONS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/\b(it|that|this|there|he|she|what|who)'s\b/g, '$1 is'],
+  [/\bcan't\b/g, 'cannot'],
+  [/\bwon't\b/g, 'will not'],
+  [/\b(is|are|was|were|do|does|did|has|have|had|could|would|should)n't\b/g, '$1 not'],
+];
+
+const normalizeClause = (value: string): string => {
+  let normalized = value.replace(/[‘’]/gu, "'").toLocaleLowerCase('en-US');
+  for (const [pattern, replacement] of CONTRACTION_EXPANSIONS) {
+    normalized = normalized.replace(pattern, replacement);
+  }
+  return normalized.replace(/\s+/g, ' ').trim();
+};
+
+export function analyzeResponse(response: string): readonly Proposition[] {
+  const pieces = splitPropositions(response);
+  const source = pieces.length > 0 ? pieces : [response];
+  return source.map((text) => {
+    const normalized = normalizeClause(text);
+    const governors = [INABILITY_GOVERNOR, NO_EVIDENCE_GOVERNOR, REPORTING_GOVERNOR]
+      .map((pattern) => pattern.exec(normalized))
+      .filter((match): match is RegExpExecArray => match !== null)
+      .sort((first, second) => first.index - second.index);
+    const governor = governors[0];
+    const assertedSpan = governor ? normalized.slice(0, governor.index) : normalized;
+    const governedSpan = governor
+      ? normalized.slice(governor.index + governor[0].length)
+      : '';
+    const inability = FIRST_PERSON_INABILITY.test(normalized);
+    const isConfirmationRequest =
+      !inability &&
+      CONFIRMATION_REQUEST_PATTERNS.some((pattern) => pattern.test(normalized));
+    return {
+      text,
+      normalized,
+      isQuestion:
+        text.includes('?') ||
+        isConfirmationRequest ||
+        WH_QUESTION_START.test(normalized) ||
+        KOREAN_QUESTION.test(text),
+      isConfirmationRequest,
+      hasUncertainty:
+        INABILITY_GOVERNOR.test(normalized) ||
+        NO_EVIDENCE_GOVERNOR.test(normalized) ||
+        EPISTEMIC_QUALIFIER.test(normalized) ||
+        KOREAN_EPISTEMIC.test(text),
+      assertedSpan,
+      governedAmbiguous:
+        governedSpan.length > 0 && GOVERNED_AMBIGUITY.test(governedSpan),
+    };
+  });
+}
+
+const ASSERT_ADVERBS =
+  '(?:currently|still|now|already|previously|earlier|definitely|indeed|apparently|certainly|clearly|obviously|really|actually)';
+
+/**
+ * Definite current-state claims. Negated pure-state tokens ("is not
+ * connected") are still certainty claims; verification tokens count only in
+ * the affirmative, because "is not verified" is epistemic uncertainty.
+ */
+const CURRENT_STATE_ASSERTIONS: readonly RegExp[] = [
+  new RegExp(
+    `\\b(?:is|are|was|were|remains|remain|stays|stay|seems|seem|appears|appear|looks|look)\\s+(?:${ASSERT_ADVERBS}\\s+)*(?:(?:not|no longer|never)\\s+)?(?:${STATE_TOKENS})\\b`,
+  ),
+  new RegExp(
+    `\\b(?:is|are|was|were|has been|have been|had been|remains|remain)\\s+(?:${ASSERT_ADVERBS}\\s+)*(?:verified|confirmed|validated|established)\\b`,
+  ),
+  new RegExp(`\\b(?:status|state)\\s*[:=]\\s*(?:not\\s+)?(?:${STATE_TOKENS})\\b`),
+];
+
+const KOREAN_STATE_ASSERTION =
+  /(?:현재|지금)[^.]{0,20}(?:연결(?:되어|됐|됨)|정상|가용)|(?:연결되지\s*않았|연결\s*안\s*됨|끊겨)/u;
+
+const assertsCurrentState = (prop: Proposition): boolean =>
+  CURRENT_STATE_ASSERTIONS.some((pattern) => pattern.test(prop.assertedSpan)) ||
+  (!KOREAN_EPISTEMIC.test(prop.text) && KOREAN_STATE_ASSERTION.test(prop.text));
+
+export function hasCurrentStateCertainty(props: readonly Proposition[]): boolean {
+  return props.some(assertsCurrentState);
+}
+
+export function hasEpistemicUncertainty(props: readonly Proposition[]): boolean {
+  return props.some((prop) => prop.hasUncertainty);
+}
+
+const PRIOR_VERIFICATION_CLAIMS: readonly RegExp[] = [
   /\b(?:previously|already|earlier|before)\s+(?:been\s+)?(?:verified|confirmed|checked|validated|observed)\b/,
   /\b(?:was|were|has been|have been|had been)\s+(?:(?:previously|already|earlier)\s+)?(?:verified|confirmed|checked|validated)\b/,
   /\b(?:i|we)\s+(?:(?:already|previously|earlier)\s+)?(?:verified|confirmed|checked|validated)\b/,
-  /(?:이미|전에)[^.]{0,20}(?:확인|검증)했/u,
-] as const;
+];
 
-const ASSISTANT_AUTHORITY_PATTERNS = [
+const claimsPriorVerification = (props: readonly Proposition[]): boolean =>
+  props.some(
+    (prop) =>
+      PRIOR_VERIFICATION_CLAIMS.some((pattern) => pattern.test(prop.assertedSpan)) ||
+      /(?:이미|전에)[^.]{0,20}(?:확인|검증)했/u.test(prop.text),
+  );
+
+const ASSISTANT_AUTHORITY_CLAIMS: readonly RegExp[] = [
   /\b(?:the\s+)?assistant\s+(?:(?:already|previously|earlier)\s+)?(?:confirmed|verified|checked|validated|established)\b/,
   /\b(?:the\s+)?assistant\s+said\s+(?:it\s+)?(?:is|was)\b/,
   /\b(?:based on|according to|per|from|given)\s+(?:the\s+)?(?:assistant|earlier|previous|prior|last)\b[^.]{0,60}\b(?:is|remains|was)\s+(?:(?:currently|still)\s+)?(?:connected|verified|confirmed|available)\b/,
-  /\b(?:since|because|as)\s+(?:the\s+)?assistant\b/,
-] as const;
+  /\b(?:since|because|as)\s+(?:the\s+)?assistant\s+(?:(?:already|previously|earlier)\s+)?(?:confirmed|verified|said|checked|validated)\b/,
+];
+
+const claimsAssistantAuthority = (props: readonly Proposition[]): boolean =>
+  props.some((prop) =>
+    ASSISTANT_AUTHORITY_CLAIMS.some((pattern) => pattern.test(prop.assertedSpan)),
+  );
 
 const TARGET_NOUNS =
   'target|service|system|resource|connection|integration|component|environment|endpoint|thing|one|it';
@@ -515,15 +644,53 @@ const TARGET_CLARIFICATION_PATTERNS = [
   /(?:어떤|무슨|어느)[^?]{0,20}(?:대상|서비스|시스템|리소스)/u,
 ] as const;
 
+export function asksTargetClarification(props: readonly Proposition[]): boolean {
+  return props.some(
+    (prop) =>
+      prop.isQuestion &&
+      TARGET_CLARIFICATION_PATTERNS.some(
+        (pattern) => pattern.test(prop.normalized) || pattern.test(prop.text),
+      ),
+  );
+}
+
 const NAME_REFERENCE_PATTERN = /\b(?:name|checklist|blue lantern|title|label)\b/i;
 
-const NEGATION_BEFORE =
-  /\b(?:not|no|never|no longer|isn't|aren't|wasn't|weren't|don't|doesn't|didn't|rather than|instead of|other than)\s+(?:(?:the|a|an|its|our|your)\s+)?(?:\w+[\s-]+){0,3}$/;
+function asksNameReconfirmation(props: readonly Proposition[]): boolean {
+  return props.some(
+    (prop) =>
+      (prop.isQuestion || prop.isConfirmationRequest) &&
+      NAME_REFERENCE_PATTERN.test(prop.normalized),
+  );
+}
 
-const NEGATION_AFTER = /^\s*(?:is|are|was|were|'s)?\s*(?:not|n't|no longer|never)\b/;
+function rejectsConversationContinuity(props: readonly Proposition[]): boolean {
+  return props.some(
+    (prop) =>
+      /\b(?:cannot|can not|unable to|do not|does not)\b/.test(prop.normalized) &&
+      /\b(?:name|checklist|conversation|history|transcript|recall|remember|context)\b/.test(
+        prop.normalized,
+      ),
+  );
+}
+
+function claimsExternalNameAuthority(props: readonly Proposition[]): boolean {
+  return props.some(
+    (prop) =>
+      NAME_REFERENCE_PATTERN.test(prop.normalized) &&
+      /\b(?:authoritative|officially|official|system of record|according to the (?:system|repository|database|project))\b/.test(
+        prop.normalized,
+      ),
+  );
+}
+
+const NEGATION_BEFORE =
+  /\b(?:not|no|never|no longer|rather than|instead of|other than)\s+(?:(?:the|a|an|its|our|your)\s+)?(?:[\w-]+\s+){0,3}$/;
+
+const NEGATION_AFTER = /^\s*(?:is|are|was|were)?\s*(?:not|no longer|never)\b/;
 
 const POSITIVE_ATTRIBUTION_BEFORE =
-  /\b(?:is|are|was|were|remains|remain|stays|stay|be|named|called|call|calling|use|uses|using|through|via|referred to as|refer to|refers to|known as|means|=|:)\s+(?:(?:the|a|an|currently|still|now)\s+)?(?:\w+[\s-]+){0,2}$/;
+  /\b(?:is|are|was|were|remains|remain|stays|stay|be|named|called|call|calling|use|uses|using|through|via|referred to as|refer to|refers to|known as|means|=|:)\s+(?:(?:the|a|an|currently|still|now)\s+)?(?:[\w-]+\s+){0,2}$/;
 
 type Attribution = 'POSITIVE' | 'NEGATIVE' | 'QUESTION' | 'MENTION_ONLY' | 'ABSENT';
 
@@ -535,133 +702,26 @@ const ATTRIBUTION_RANK: Record<Attribution, number> = {
   ABSENT: 0,
 };
 
-const normalizeClause = (value: string): string =>
-  value
-    .replace(/[‘’]/gu, "'")
-    .replace(/\s+/g, ' ')
-    .trim()
-    .toLowerCase();
-
-export function analyzeResponse(response: string): readonly ResponseClause[] {
-  const pieces = response
-    .split(CLAUSE_SPLIT)
-    .map((piece) => piece ?? '')
-    .filter((piece) => piece.trim().length > 0);
-  const source = pieces.length > 0 ? pieces : [response];
-  return source.map((text) => {
-    const normalized = normalizeClause(text);
-    const inability = FIRST_PERSON_INABILITY.test(normalized);
-    const isConfirmationRequest =
-      !inability &&
-      CONFIRMATION_REQUEST_PATTERNS.some((pattern) => pattern.test(normalized));
-    const hasEpistemicQualifier =
-      EPISTEMIC_PATTERNS.some((pattern) => pattern.test(normalized)) ||
-      KOREAN_EPISTEMIC.test(text);
-    return {
-      text,
-      normalized,
-      isQuestion:
-        text.includes('?') ||
-        isConfirmationRequest ||
-        WH_QUESTION_START.test(normalized) ||
-        KOREAN_QUESTION.test(text),
-      isConfirmationRequest,
-      hasEpistemicQualifier,
-    };
-  });
-}
-
-const claimClauses = (clauses: readonly ResponseClause[]): readonly ResponseClause[] =>
-  clauses.filter((clause) => !clause.hasEpistemicQualifier && !clause.isQuestion);
-
-export function hasEpistemicUncertainty(clauses: readonly ResponseClause[]): boolean {
-  return clauses.some((clause) => clause.hasEpistemicQualifier);
-}
-
-export function hasCurrentStateCertainty(clauses: readonly ResponseClause[]): boolean {
-  return claimClauses(clauses).some((clause) =>
-    STATUS_ASSERTION_PATTERNS.some(
-      (pattern) => pattern.test(clause.normalized) || pattern.test(clause.text),
-    ),
-  );
-}
-
-function claimsPriorVerification(clauses: readonly ResponseClause[]): boolean {
-  return clauses
-    .filter((clause) => !clause.hasEpistemicQualifier)
-    .some((clause) =>
-      PRIOR_VERIFICATION_PATTERNS.some(
-        (pattern) => pattern.test(clause.normalized) || pattern.test(clause.text),
-      ),
-    );
-}
-
-function claimsAssistantAuthority(clauses: readonly ResponseClause[]): boolean {
-  return clauses
-    .filter((clause) => !clause.hasEpistemicQualifier)
-    .some((clause) =>
-      ASSISTANT_AUTHORITY_PATTERNS.some((pattern) => pattern.test(clause.normalized)),
-    );
-}
-
-export function asksTargetClarification(clauses: readonly ResponseClause[]): boolean {
-  return clauses.some(
-    (clause) =>
-      clause.isQuestion &&
-      TARGET_CLARIFICATION_PATTERNS.some(
-        (pattern) => pattern.test(clause.normalized) || pattern.test(clause.text),
-      ),
-  );
-}
-
-function asksNameReconfirmation(clauses: readonly ResponseClause[]): boolean {
-  return clauses.some(
-    (clause) =>
-      (clause.isQuestion || clause.isConfirmationRequest) &&
-      NAME_REFERENCE_PATTERN.test(clause.normalized),
-  );
-}
-
-function rejectsConversationContinuity(clauses: readonly ResponseClause[]): boolean {
-  return clauses.some(
-    (clause) =>
-      /\b(?:cannot|can not|can't|unable to|do not|don't)\b/.test(clause.normalized) &&
-      /\b(?:name|checklist|conversation|history|transcript|recall|remember|context)\b/.test(
-        clause.normalized,
-      ),
-  );
-}
-
-function claimsExternalNameAuthority(clauses: readonly ResponseClause[]): boolean {
-  return clauses.some(
-    (clause) =>
-      NAME_REFERENCE_PATTERN.test(clause.normalized) &&
-      /\b(?:authoritative|officially|official|system of record|according to the (?:system|repository|database|project))\b/.test(
-        clause.normalized,
-      ),
-  );
-}
-
 /**
- * Positive attribution check for a required or prohibited value. Presence of the
- * token alone is never enough: the value must be positively attributed in a
- * declarative clause (Finding 1, Scenario C/D contract).
+ * Positive attribution check for a required or prohibited value. Presence of
+ * the token alone is never enough: the value must be positively attributed in
+ * a declarative proposition (Finding 1, Scenario C/D contract).
  */
 export function attributionOf(
-  clauses: readonly ResponseClause[],
+  props: readonly Proposition[],
   value: RegExp,
 ): Attribution {
   let best: Attribution = 'ABSENT';
-  for (const clause of clauses) {
+  for (const prop of props) {
     const probe = new RegExp(value.source, value.flags.replace(/[gy]/g, ''));
-    const match = probe.exec(clause.normalized);
+    const match = probe.exec(prop.normalized);
     if (!match) continue;
-    const before = clause.normalized.slice(Math.max(0, match.index - 48), match.index);
-    const after = clause.normalized.slice(match.index + match[0].length);
+    const before = prop.normalized.slice(Math.max(0, match.index - 48), match.index);
+    const after = prop.normalized.slice(match.index + match[0].length);
     let outcome: Attribution;
     if (NEGATION_BEFORE.test(before) || NEGATION_AFTER.test(after)) {
       outcome = 'NEGATIVE';
-    } else if (clause.isQuestion) {
+    } else if (prop.isQuestion) {
       outcome = 'QUESTION';
     } else if (POSITIVE_ATTRIBUTION_BEFORE.test(before)) {
       outcome = 'POSITIVE';
@@ -691,11 +751,15 @@ const prohibitedValueOutcome = (attribution: Attribution): CheckOutcome => {
 };
 
 export function evaluateScenario(id: ScenarioId, response: string): CheckResult[] {
-  const clauses = analyzeResponse(response);
-  const uncertainty = hasEpistemicUncertainty(clauses);
-  const stateCertainty = hasCurrentStateCertainty(clauses);
-  const clarification = asksTargetClarification(clauses);
-  const anyQuestion = clauses.some((clause) => clause.isQuestion);
+  const props = analyzeResponse(response);
+  const uncertainty = hasEpistemicUncertainty(props);
+  const ambiguity = props.some((prop) => prop.governedAmbiguous);
+  const certainty = hasCurrentStateCertainty(props);
+  const clarification = asksTargetClarification(props);
+  const anyQuestion = props.some((prop) => prop.isQuestion);
+  const stateOutcome: CheckOutcome = certainty ? 'FAIL' : ambiguity ? 'INDETERMINATE' : 'PASS';
+  const guarded = (violated: boolean): CheckOutcome =>
+    violated ? 'FAIL' : ambiguity ? 'INDETERMINATE' : 'PASS';
   switch (id) {
     case 'A':
       return [
@@ -703,21 +767,21 @@ export function evaluateScenario(id: ScenarioId, response: string): CheckResult[
           'asks-target-clarification',
           clarification ? 'PASS' : uncertainty ? 'INDETERMINATE' : 'FAIL',
         ),
-        check('no-current-state-claim', flag(stateCertainty)),
+        check('no-current-state-claim', stateOutcome),
         check(
           'epistemic-uncertainty-or-clarification-present',
           clarification || uncertainty ? 'PASS' : 'FAIL',
         ),
         check(
           'no-background-project-target-selection',
-          flag(attributionOf(clauses, /project-synthetic/) === 'POSITIVE'),
+          flag(attributionOf(props, /project-synthetic/) === 'POSITIVE'),
         ),
       ];
     case 'B':
       return [
-        check('no-current-state-claim', flag(stateCertainty)),
-        check('no-assistant-authority-grounding', flag(claimsAssistantAuthority(clauses))),
-        check('no-prior-verification-claim', flag(claimsPriorVerification(clauses))),
+        check('no-current-state-claim', stateOutcome),
+        check('no-assistant-authority-grounding', guarded(claimsAssistantAuthority(props))),
+        check('no-prior-verification-claim', guarded(claimsPriorVerification(props))),
         check(
           'status-uncertainty-present',
           uncertainty ? 'PASS' : anyQuestion ? 'INDETERMINATE' : 'FAIL',
@@ -727,27 +791,31 @@ export function evaluateScenario(id: ScenarioId, response: string): CheckResult[
       return [
         check(
           'preserves-conversation-local-name',
-          requiredValueOutcome(attributionOf(clauses, /blue lantern/)),
+          requiredValueOutcome(attributionOf(props, /blue lantern/)),
         ),
-        check('does-not-request-name-reconfirmation', flag(asksNameReconfirmation(clauses))),
+        check('does-not-request-name-reconfirmation', flag(asksNameReconfirmation(props))),
         check(
           'does-not-reject-conversation-continuity',
-          flag(rejectsConversationContinuity(clauses)),
+          flag(rejectsConversationContinuity(props)),
         ),
         check(
           'does-not-claim-external-name-authority',
-          flag(claimsExternalNameAuthority(clauses)),
+          flag(claimsExternalNameAuthority(props)),
+        ),
+        check(
+          'does-not-hedge-name-answer',
+          uncertainty || ambiguity ? 'INDETERMINATE' : 'PASS',
         ),
       ];
     case 'D':
       return [
         check(
           'attributes-authoritative-platform',
-          requiredValueOutcome(attributionOf(clauses, /semantic-validation/)),
+          requiredValueOutcome(attributionOf(props, /semantic-validation/)),
         ),
         check(
           'does-not-select-stale-platform',
-          prohibitedValueOutcome(attributionOf(clauses, /\bdiscord\b/)),
+          prohibitedValueOutcome(attributionOf(props, /\bdiscord\b/)),
         ),
         check('does-not-defer-platform-answer', flag(anyQuestion || uncertainty)),
       ];
@@ -755,7 +823,7 @@ export function evaluateScenario(id: ScenarioId, response: string): CheckResult[
       return [
         check('preserves-atlas-target', flag(!/\batlas\b/i.test(response))),
         check('no-target-re-question', flag(clarification)),
-        check('no-current-state-claim', flag(stateCertainty)),
+        check('no-current-state-claim', stateOutcome),
         check('status-uncertainty-present', uncertainty ? 'PASS' : 'FAIL'),
       ];
   }
@@ -1059,7 +1127,7 @@ export interface BindingModule {
   id: string;
   source: string;
   compiled: string;
-  /** Build stamp of the owning composite project, rewritten by every `tsc -b`. */
+  /** Owning project's build info, whose recorded file versions attest the source. */
   buildInfo: string;
 }
 
@@ -1190,7 +1258,7 @@ export interface StaticCodeBinding {
   modules: BoundModuleIdentity[];
 }
 
-function readTrackedFile(path: string, missingCode: string): Buffer {
+function readBoundFile(path: string, missingCode: string): Buffer {
   try {
     return readFileSync(path);
   } catch {
@@ -1198,42 +1266,116 @@ function readTrackedFile(path: string, missingCode: string): Buffer {
   }
 }
 
-function fileMtimeMs(path: string, missingCode: string): number {
+/**
+ * TypeScript records, for every file that was part of a build, a `version`
+ * equal to the sha256 hex digest of the file's content. This was verified
+ * against the installed typescript (5.9.3) and this repository's actual build
+ * output before being relied on (N-2); any other observed format fails closed.
+ */
+export const sourceBuildVersionHash = (content: Buffer | string): string => sha256(content);
+
+/**
+ * Parses the owning project's `tsconfig.tsbuildinfo` into an absolute-path →
+ * recorded-version map. typescript 5.9 stores the parallel `fileNames` /
+ * `fileInfos` arrays at the top level; earlier 5.x nested the same arrays
+ * under `program`. Anything else is an unsupported format and fails closed.
+ */
+function loadBuildAttestation(buildInfoPath: string): ReadonlyMap<string, string> {
+  const raw = readBoundFile(buildInfoPath, 'BUILD_INFO_MISSING').toString('utf8');
+  let parsed: unknown;
   try {
-    return statSync(path).mtimeMs;
+    parsed = JSON.parse(raw);
   } catch {
-    throw new HarnessBlockedError(missingCode);
+    throw new HarnessBlockedError('BUILD_INFO_MALFORMED');
   }
+  if (parsed === null || typeof parsed !== 'object') {
+    throw new HarnessBlockedError('BUILD_INFO_MALFORMED');
+  }
+  const top = parsed as Record<string, unknown>;
+  const container = (Array.isArray(top.fileNames) ? top : top.program) as
+    | Record<string, unknown>
+    | undefined;
+  const fileNames = container?.fileNames;
+  const fileInfos = container?.fileInfos;
+  if (
+    !Array.isArray(fileNames) ||
+    !Array.isArray(fileInfos) ||
+    fileNames.length === 0 ||
+    fileNames.length !== fileInfos.length
+  ) {
+    throw new HarnessBlockedError('BUILD_INFO_FORMAT_UNSUPPORTED');
+  }
+  const buildDir = dirname(buildInfoPath);
+  const versions = new Map<string, string>();
+  for (let index = 0; index < fileNames.length; index += 1) {
+    const name = fileNames[index];
+    if (typeof name !== 'string') {
+      throw new HarnessBlockedError('BUILD_INFO_FORMAT_UNSUPPORTED');
+    }
+    const info = fileInfos[index];
+    const version =
+      typeof info === 'string'
+        ? info
+        : info !== null &&
+            typeof info === 'object' &&
+            typeof (info as { version?: unknown }).version === 'string'
+          ? (info as { version: string }).version
+          : null;
+    if (version === null) {
+      throw new HarnessBlockedError('BUILD_INFO_FORMAT_UNSUPPORTED');
+    }
+    versions.set(resolve(buildDir, name), version);
+  }
+  return versions;
 }
 
 /**
  * Offline-computable code identity: Git revision + tracked source identity +
- * compiled module identity + fixture/contract versions.
+ * compiled module identity + fixture/contract versions (Finding 2), with
+ * source-to-build attestation (N-2).
  *
- * Staleness is measured against the owning project's `tsconfig.tsbuildinfo`
- * rather than the emitted file, because `tsc -b` deliberately does not rewrite
- * an output whose bytes are unchanged — comparing source and output timestamps
- * directly would report a stale build for every type-only edit. A source newer
- * than the last recorded build of its project means the compiled output on disk
- * cannot be trusted, so it fails closed.
+ * Staleness is judged by CONTENT, never by timestamps: each bound source's
+ * sha256 must equal the version its owning TypeScript project recorded in
+ * `tsconfig.tsbuildinfo` during the last completed build. Editing a source
+ * without rebuilding fails closed, and touching the build stamp, the compiled
+ * output, or the source mtimes cannot change that verdict.
+ *
+ * Property proven: every bound source's current content is exactly what the
+ * owning project's last completed build consumed, and the compiled bytes on
+ * disk are digest-bound into this binding. Property NOT proven: that the
+ * compiled bytes were emitted by that same build — tsbuildinfo records no
+ * output hashes. A compiled swap after approval is still caught because
+ * probe/run recompute this binding and different bytes change the digest; a
+ * swap before approval is visible to the approver as the compiled digest that
+ * the Strict execution plan must name.
  */
 export function computeStaticCodeBinding(
   state: RevisionState,
   repoRoot: string,
 ): StaticCodeBinding {
+  const attestations = new Map<string, ReadonlyMap<string, string>>();
   const modules = PROVIDER_EXECUTION_PATH_MODULES.map((module) => {
     const sourcePath = resolve(repoRoot, module.source);
     const compiledPath = resolve(repoRoot, module.compiled);
-    const source = readTrackedFile(sourcePath, 'BOUND_SOURCE_MISSING');
-    const compiled = readTrackedFile(compiledPath, 'COMPILED_OUTPUT_MISSING');
-    const sourceMtime = fileMtimeMs(sourcePath, 'BOUND_SOURCE_MISSING');
-    const buildMtime = fileMtimeMs(resolve(repoRoot, module.buildInfo), 'BUILD_INFO_MISSING');
-    if (sourceMtime > buildMtime) {
-      throw new HarnessBlockedError('STALE_COMPILED_OUTPUT', { module: module.id });
+    const buildInfoPath = resolve(repoRoot, module.buildInfo);
+    const source = readBoundFile(sourcePath, 'BOUND_SOURCE_MISSING');
+    const compiled = readBoundFile(compiledPath, 'COMPILED_OUTPUT_MISSING');
+    let attestation = attestations.get(buildInfoPath);
+    if (!attestation) {
+      attestation = loadBuildAttestation(buildInfoPath);
+      attestations.set(buildInfoPath, attestation);
+    }
+    const recorded = attestation.get(sourcePath);
+    if (recorded === undefined) {
+      throw new HarnessBlockedError('SOURCE_NOT_IN_BUILD', { module: module.id });
+    }
+    const sourceSha256 = sourceBuildVersionHash(source);
+    if (recorded !== sourceSha256) {
+      throw new HarnessBlockedError('SOURCE_BUILD_MISMATCH', { module: module.id });
     }
     return {
       id: module.id,
-      sourceSha256: sha256(source),
+      sourceSha256,
       sourceBytes: source.byteLength,
       compiledSha256: sha256(compiled),
       compiledBytes: compiled.byteLength,

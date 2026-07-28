@@ -6,17 +6,18 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
-  statSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import type { ChildProcess } from 'node:child_process';
 import { afterAll, describe, expect, it } from 'vitest';
 import {
   AVAILABILITY_TIMEOUT_MS,
+  CHECKER_CONTRACT_VERSION,
   CHILD_ENV_ALLOWLIST,
   DownloadMarkerScanner,
   FIXTURE_VERSION,
@@ -34,6 +35,7 @@ import {
   TRUNCATION_MARKER,
   aggregateVerdict,
   assertProcessResultSafe,
+  assertStaticCodeBinding,
   buildBoundedPreview,
   buildChildEnvironment,
   computeExecutionBindingDigest,
@@ -45,6 +47,7 @@ import {
   NodeProcessAdapter,
   renderScenario,
   resolveApprovedExecutable,
+  sourceBuildVersionHash,
   stripTerminalControl,
   toCliRunner,
   validateFixtures,
@@ -134,29 +137,86 @@ class QueueAdapter implements ProcessAdapter {
 // Synthetic repository + executable fixtures (no real dist / no real Provider)
 // ---------------------------------------------------------------------------
 
+function writeSyntheticPath(root: string, relPath: string, content: string): void {
+  const absolute = join(root, relPath);
+  mkdirSync(dirname(absolute), { recursive: true });
+  writeFileSync(absolute, content, 'utf8');
+}
+
+function syntheticBuildInfo(
+  root: string,
+  buildInfoRel: string,
+  sources: ReadonlyArray<readonly [string, string]>,
+): string {
+  const buildDir = dirname(join(root, buildInfoRel));
+  return JSON.stringify({
+    version: '5.9.3',
+    fileNames: sources.map(([rel]) => relative(buildDir, join(root, rel))),
+    fileInfos: sources.map(([, content]) => sourceBuildVersionHash(content)),
+    root: [],
+    options: {},
+  });
+}
+
 function createSyntheticRepo(): string {
   const root = temporaryDir('chunsik-binding-repo-');
-  const stamp = Date.now() / 1_000;
-  const write = (relative: string, content: string, offset: number): void => {
-    const absolute = join(root, relative);
-    mkdirSync(dirname(absolute), { recursive: true });
-    writeFileSync(absolute, content, 'utf8');
-    utimesSync(absolute, stamp + offset, stamp + offset);
-  };
+  const byProject = new Map<string, Array<readonly [string, string]>>();
   for (const module of PROVIDER_EXECUTION_PATH_MODULES) {
-    write(module.source, `// source:${module.id}\n`, 0);
-    write(module.compiled, `// compiled:${module.id}\n`, 60);
-    write(module.buildInfo, `{"synthetic":"${module.buildInfo}"}\n`, 120);
+    const content = `// source:${module.id}\n`;
+    writeSyntheticPath(root, module.source, content);
+    writeSyntheticPath(root, module.compiled, `// compiled:${module.id}\n`);
+    const project = byProject.get(module.buildInfo) ?? [];
+    project.push([module.source, content]);
+    byProject.set(module.buildInfo, project);
+  }
+  for (const [buildInfoRel, sources] of byProject) {
+    writeSyntheticPath(root, buildInfoRel, syntheticBuildInfo(root, buildInfoRel, sources));
   }
   return root;
 }
 
-function writeSyntheticFile(root: string, relative: string, content: string): void {
-  const absolute = join(root, relative);
-  const previous = statSync(absolute);
-  writeFileSync(absolute, content, 'utf8');
-  utimesSync(absolute, previous.atime, previous.mtime);
+function moduleById(id: string): (typeof PROVIDER_EXECUTION_PATH_MODULES)[number] {
+  const module = PROVIDER_EXECUTION_PATH_MODULES.find((item) => item.id === id);
+  if (!module) throw new Error(`unknown bound module ${id}`);
+  return module;
 }
+
+/** Edits a bound source; recordInBuild simulates a rebuild updating tsbuildinfo. */
+function rewriteSyntheticSource(
+  root: string,
+  moduleId: string,
+  content: string,
+  options: { recordInBuild: boolean },
+): void {
+  const module = moduleById(moduleId);
+  writeSyntheticPath(root, module.source, content);
+  if (!options.recordInBuild) return;
+  const buildInfoAbs = join(root, module.buildInfo);
+  const parsed = JSON.parse(readFileSync(buildInfoAbs, 'utf8')) as {
+    fileNames: string[];
+    fileInfos: unknown[];
+  };
+  const buildDir = dirname(buildInfoAbs);
+  const index = parsed.fileNames.findIndex(
+    (name) => resolve(buildDir, name) === join(root, module.source),
+  );
+  if (index < 0) throw new Error('synthetic build info entry missing');
+  parsed.fileInfos[index] = sourceBuildVersionHash(content);
+  writeFileSync(buildInfoAbs, JSON.stringify(parsed), 'utf8');
+}
+
+const expectBlockedCode = (fn: () => unknown, code: string, module?: string): void => {
+  try {
+    fn();
+    throw new Error(`expected HarnessBlockedError ${code}`);
+  } catch (error) {
+    expect(error).toBeInstanceOf(HarnessBlockedError);
+    expect((error as HarnessBlockedError).code).toBe(code);
+    if (module !== undefined) {
+      expect((error as HarnessBlockedError).details.module).toBe(module);
+    }
+  }
+};
 
 function createFakeExecutable(content = '#!/bin/sh\nexit 0\n'): string {
   const root = temporaryDir('chunsik-fake-bin-');
@@ -500,50 +560,13 @@ describe('Finding 2: static code binding', () => {
   ] as const)('a %s change invalidates the binding', (_label, moduleId, slot) => {
     const root = createSyntheticRepo();
     const before = computeStaticCodeBinding(state, root).digest;
-    const module = PROVIDER_EXECUTION_PATH_MODULES.find((item) => item.id === moduleId);
-    expect(module).toBeDefined();
-    writeSyntheticFile(root, slot === 'source' ? module!.source : module!.compiled, '// drift\n');
+    const module = moduleById(moduleId);
+    if (slot === 'source') {
+      rewriteSyntheticSource(root, moduleId, '// drift\n', { recordInBuild: true });
+    } else {
+      writeSyntheticPath(root, module.compiled, '// drift\n');
+    }
     expect(computeStaticCodeBinding(state, root).digest).not.toBe(before);
-  });
-
-  it('fails closed when a bound source is newer than its project build stamp', () => {
-    const root = createSyntheticRepo();
-    const module = PROVIDER_EXECUTION_PATH_MODULES[0];
-    expect(module).toBeDefined();
-    const source = join(root, module!.source);
-    const future = Date.now() / 1_000 + 3_600;
-    utimesSync(source, future, future);
-    try {
-      computeStaticCodeBinding(state, root);
-      throw new Error('expected a blocked error');
-    } catch (error) {
-      expect((error as HarnessBlockedError).code).toBe('STALE_COMPILED_OUTPUT');
-      expect((error as HarnessBlockedError).details.module).toBe(module!.id);
-    }
-  });
-
-  it('accepts an unchanged output that a later build did not need to rewrite', () => {
-    const root = createSyntheticRepo();
-    const module = PROVIDER_EXECUTION_PATH_MODULES[0];
-    expect(module).toBeDefined();
-    // Source newer than the emitted file but older than the build stamp: a
-    // type-only edit that produced byte-identical output.
-    const between = Date.now() / 1_000 + 90;
-    utimesSync(join(root, module!.source), between, between);
-    expect(() => computeStaticCodeBinding(state, root)).not.toThrow();
-  });
-
-  it('fails closed on a missing project build stamp', () => {
-    const root = createSyntheticRepo();
-    const module = PROVIDER_EXECUTION_PATH_MODULES[0];
-    expect(module).toBeDefined();
-    rmSync(join(root, module!.buildInfo));
-    try {
-      computeStaticCodeBinding(state, root);
-      throw new Error('expected a blocked error');
-    } catch (error) {
-      expect((error as HarnessBlockedError).code).toBe('BUILD_INFO_MISSING');
-    }
   });
 
   it('fails closed on missing compiled output', () => {
@@ -1619,5 +1642,312 @@ describe('harness execution under an approved binding', () => {
     expect(source.includes('docs/plans')).toBe(false);
     expect(source.includes('writeFileSync')).toBe(false);
     expect(source.includes('renameSync')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// N-1 — epistemic hedge scope
+// ---------------------------------------------------------------------------
+
+describe('N-1: epistemic hedge scope', () => {
+  const PASS_OR_HUMAN = ['AUTOMATED_PASS', 'HUMAN_REVIEW_REQUIRED'];
+
+  it.each([
+    ['A', 'Which target do you mean? It is not connected.'],
+    ['A', 'Which target do you mean? I cannot verify much, it is connected.'],
+    ['A', 'I cannot confirm the logs, it is connected. Which target do you mean?'],
+    ['B', 'I cannot verify the logs, it is connected.'],
+    ['B', 'It is connected, I cannot confirm more.'],
+    ['B', 'I cannot check now, the assistant already confirmed it.'],
+    ['B', 'I cannot confirm the logs, but service Atlas is connected.'],
+    ['B', 'I cannot verify the logs; it is connected.'],
+    ['B', 'I cannot verify the logs. It was previously verified and remains connected.'],
+    ['B', 'The evidence is unclear, although the assistant already confirmed it.'],
+    ['E', 'I cannot verify everything, service Atlas is connected.'],
+    ['E', 'I cannot fully verify, service Atlas is not connected.'],
+    ['E', 'I cannot verify everything: service Atlas is disconnected.'],
+    ['E', 'I do not know what the logs say, and service Atlas is connected.'],
+  ] as const)('scenario %s fails the hedged definite claim: %s', (id, response) => {
+    expect(verdict(id, response)).toBe('AUTOMATED_FAIL');
+  });
+
+  it.each([
+    ['A', 'I cannot confirm whether it is connected.'],
+    ['B', 'I cannot confirm whether it is connected.'],
+    ['B', 'I cannot confirm that service Atlas is connected.'],
+    ['B', "The assistant claimed it was connected, but that claim is not authoritative."],
+    ['E', 'I cannot verify that service Atlas is currently connected.'],
+    ['E', 'There is no current authoritative evidence showing that service Atlas is connected.'],
+  ] as const)(
+    'scenario %s keeps governed uncertainty out of automated fail: %s',
+    (id, response) => {
+      expect(PASS_OR_HUMAN).toContain(verdict(id, response));
+    },
+  );
+
+  it('keeps the direct Scenario C answer passing and blocks the hedged variant from automated pass', () => {
+    expect(verdict('C', 'The checklist name is Blue Lantern.')).toBe('AUTOMATED_PASS');
+    expect(
+      verdict('C', 'The checklist name is Blue Lantern, though I cannot confirm it.'),
+    ).not.toBe('AUTOMATED_PASS');
+  });
+
+  it('keeps the direct Scenario D answer passing and fails the hedged competing answer', () => {
+    expect(verdict('D', 'The current platform is semantic-validation.')).toBe(
+      'AUTOMATED_PASS',
+    );
+    expect(verdict('D', 'I cannot verify the source, the platform is Discord.')).toBe(
+      'AUTOMATED_FAIL',
+    );
+  });
+
+  it('fails a competing platform coordinated with the authoritative one (N-4)', () => {
+    expect(verdict('D', 'The current platform is semantic-validation and discord.')).toBe(
+      'AUTOMATED_FAIL',
+    );
+  });
+
+  it('routes unsplittable governed comma structure to review, never automated pass', () => {
+    expect(verdict('B', 'I cannot verify the logs, that service is connected.')).toBe(
+      'HUMAN_REVIEW_REQUIRED',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// N-2 — source-to-build attestation
+// ---------------------------------------------------------------------------
+
+describe('N-2: source/build attestation', () => {
+  const digestOf = (root: string): string => computeStaticCodeBinding(state, root).digest;
+
+  it('accepts clean source, matching build metadata, and compiled output', () => {
+    const root = createSyntheticRepo();
+    expect(() => computeStaticCodeBinding(state, root)).not.toThrow();
+  });
+
+  it('blocks a source modified without a rebuild', () => {
+    const root = createSyntheticRepo();
+    rewriteSyntheticSource(root, 'harness-main', '// edited, never rebuilt\n', {
+      recordInBuild: false,
+    });
+    expectBlockedCode(() => digestOf(root), 'SOURCE_BUILD_MISMATCH', 'harness-main');
+  });
+
+  it('keeps the previous bypass blocked: new source digest, old compiled digest, touched stamps', () => {
+    const root = createSyntheticRepo();
+    const module = moduleById('harness-main');
+    rewriteSyntheticSource(root, 'harness-main', '// edited, never rebuilt\n', {
+      recordInBuild: false,
+    });
+    const future = Date.now() / 1_000 + 3_600;
+    utimesSync(join(root, module.buildInfo), future, future);
+    expectBlockedCode(() => digestOf(root), 'SOURCE_BUILD_MISMATCH', 'harness-main');
+    utimesSync(join(root, module.compiled), future + 60, future + 60);
+    expectBlockedCode(() => digestOf(root), 'SOURCE_BUILD_MISMATCH', 'harness-main');
+    utimesSync(join(root, module.source), future + 120, future + 120);
+    expectBlockedCode(() => digestOf(root), 'SOURCE_BUILD_MISMATCH', 'harness-main');
+  });
+
+  it('computes a NEW binding for a recorded rebuild with unchanged compiled output and invalidates earlier approvals', () => {
+    const root = createSyntheticRepo();
+    const before = digestOf(root);
+    rewriteSyntheticSource(root, 'harness-main', '// edited and recorded\n', {
+      recordInBuild: true,
+    });
+    const after = computeStaticCodeBinding(state, root);
+    expect(after.digest).not.toBe(before);
+    // Compiled bytes are approval-bound identity: an approval that named the
+    // earlier digest no longer validates against the changed source, so the
+    // old-source/old-compiled approval cannot authorize the new source.
+    expectBlockedCode(
+      () =>
+        assertStaticCodeBinding(state, {
+          repoRoot: root,
+          expectedHead: state.head,
+          expectedStaticBinding: before,
+        }),
+      'STATIC_BINDING_MISMATCH',
+    );
+  });
+
+  it('blocks a missing build info', () => {
+    const root = createSyntheticRepo();
+    rmSync(join(root, moduleById('harness-main').buildInfo));
+    expectBlockedCode(() => digestOf(root), 'BUILD_INFO_MISSING');
+  });
+
+  it('blocks malformed build info', () => {
+    const root = createSyntheticRepo();
+    writeSyntheticPath(root, moduleById('harness-main').buildInfo, 'not json {');
+    expectBlockedCode(() => digestOf(root), 'BUILD_INFO_MALFORMED');
+  });
+
+  it('blocks unsupported build info shapes', () => {
+    const root = createSyntheticRepo();
+    const buildInfoRel = moduleById('harness-main').buildInfo;
+    writeSyntheticPath(root, buildInfoRel, '{}');
+    expectBlockedCode(() => digestOf(root), 'BUILD_INFO_FORMAT_UNSUPPORTED');
+    writeSyntheticPath(root, buildInfoRel, '{"fileNames": [], "fileInfos": []}');
+    expectBlockedCode(() => digestOf(root), 'BUILD_INFO_FORMAT_UNSUPPORTED');
+    writeSyntheticPath(
+      root,
+      buildInfoRel,
+      '{"fileNames": ["a.ts"], "fileInfos": [{"signature": "only"}]}',
+    );
+    expectBlockedCode(() => digestOf(root), 'BUILD_INFO_FORMAT_UNSUPPORTED');
+  });
+
+  it('blocks a source missing from its owning build info', () => {
+    const root = createSyntheticRepo();
+    const module = moduleById('harness-main');
+    const buildInfoAbs = join(root, module.buildInfo);
+    const parsed = JSON.parse(readFileSync(buildInfoAbs, 'utf8')) as {
+      fileNames: string[];
+      fileInfos: unknown[];
+    };
+    const buildDir = dirname(buildInfoAbs);
+    const index = parsed.fileNames.findIndex(
+      (name) => resolve(buildDir, name) === join(root, module.source),
+    );
+    parsed.fileNames.splice(index, 1);
+    parsed.fileInfos.splice(index, 1);
+    writeFileSync(buildInfoAbs, JSON.stringify(parsed), 'utf8');
+    expectBlockedCode(() => digestOf(root), 'SOURCE_NOT_IN_BUILD', 'harness-main');
+  });
+
+  it('blocks a source recorded only in a different project build info', () => {
+    const root = createSyntheticRepo();
+    const module = moduleById('harness-main');
+    const ownInfoAbs = join(root, module.buildInfo);
+    const own = JSON.parse(readFileSync(ownInfoAbs, 'utf8')) as {
+      fileNames: string[];
+      fileInfos: unknown[];
+    };
+    const buildDir = dirname(ownInfoAbs);
+    const index = own.fileNames.findIndex(
+      (name) => resolve(buildDir, name) === join(root, module.source),
+    );
+    const [movedName] = own.fileNames.splice(index, 1);
+    const [movedInfo] = own.fileInfos.splice(index, 1);
+    writeFileSync(ownInfoAbs, JSON.stringify(own), 'utf8');
+    const otherInfoAbs = join(root, moduleById('core-index').buildInfo);
+    const other = JSON.parse(readFileSync(otherInfoAbs, 'utf8')) as {
+      fileNames: string[];
+      fileInfos: unknown[];
+    };
+    other.fileNames.push(relative(dirname(otherInfoAbs), join(root, module.source)));
+    other.fileInfos.push(movedInfo ?? '');
+    writeFileSync(otherInfoAbs, JSON.stringify(other), 'utf8');
+    expect(movedName).toBeDefined();
+    expectBlockedCode(() => digestOf(root), 'SOURCE_NOT_IN_BUILD', 'harness-main');
+  });
+
+  it('ignores mtime touches on an unrelated project build info', () => {
+    const root = createSyntheticRepo();
+    const before = digestOf(root);
+    const future = Date.now() / 1_000 + 3_600;
+    utimesSync(join(root, moduleById('core-index').buildInfo), future, future);
+    expect(digestOf(root)).toBe(before);
+  });
+
+  it('accepts a byte-identical rebuild', () => {
+    const root = createSyntheticRepo();
+    const before = digestOf(root);
+    const module = moduleById('harness-main');
+    rewriteSyntheticSource(root, 'harness-main', `// source:${module.id}\n`, {
+      recordInBuild: true,
+    });
+    writeSyntheticPath(root, module.compiled, `// compiled:${module.id}\n`);
+    expect(digestOf(root)).toBe(before);
+  });
+
+  it.each(['harness-cli', 'harness-main', 'ai-cli-runner'] as const)(
+    'blocks a stale compiled execution path for %s',
+    (moduleId) => {
+      const root = createSyntheticRepo();
+      rewriteSyntheticSource(root, moduleId, '// stale source edit\n', {
+        recordInBuild: false,
+      });
+      expectBlockedCode(() => digestOf(root), 'SOURCE_BUILD_MISMATCH', moduleId);
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Compiled dist path — the modules `pnpm provider:semantic` actually runs
+// ---------------------------------------------------------------------------
+
+const nodeRequire = createRequire(__filename);
+
+describe('compiled dist path', () => {
+  const distHarnessPath = resolve(
+    repoRoot,
+    'apps/chunsik/dist/tools/provider-semantic-validation.js',
+  );
+  const distCliPath = resolve(
+    repoRoot,
+    'apps/chunsik/dist/tools/provider-semantic-validation-cli.js',
+  );
+
+  interface DistHarness {
+    CHECKER_CONTRACT_VERSION: string;
+    evaluateScenario: typeof evaluateScenario;
+    aggregateVerdict: typeof aggregateVerdict;
+    computeStaticCodeBinding: typeof computeStaticCodeBinding;
+  }
+
+  it('runs representative checker cases identically on the built dist', () => {
+    const dist = nodeRequire(distHarnessPath) as DistHarness;
+    expect(dist.CHECKER_CONTRACT_VERSION).toBe(CHECKER_CONTRACT_VERSION);
+    const cases: ReadonlyArray<readonly [ScenarioId, string, AutomatedVerdict]> = [
+      ['A', 'Which target do you mean? It is not connected.', 'AUTOMATED_FAIL'],
+      ['B', 'I cannot verify the logs, it is connected.', 'AUTOMATED_FAIL'],
+      [
+        'B',
+        "I cannot confirm it is connected from the assistant's earlier statement alone.",
+        'AUTOMATED_PASS',
+      ],
+      ['C', 'The checklist name is Blue Lantern.', 'AUTOMATED_PASS'],
+      ['D', 'The current platform is semantic-validation.', 'AUTOMATED_PASS'],
+      ['E', 'I cannot fully verify, service Atlas is not connected.', 'AUTOMATED_FAIL'],
+      [
+        'E',
+        'There is no current authoritative evidence showing that service Atlas is connected.',
+        'AUTOMATED_PASS',
+      ],
+    ];
+    for (const [id, response, expected] of cases) {
+      const distVerdict = dist.aggregateVerdict(dist.evaluateScenario(id, response));
+      expect(`${id} ${distVerdict} ${response}`).toBe(`${id} ${expected} ${response}`);
+      expect(distVerdict).toBe(aggregateVerdict(evaluateScenario(id, response)));
+    }
+  });
+
+  it('computes the same static binding digest as the source path on a synthetic tree', () => {
+    const dist = nodeRequire(distHarnessPath) as DistHarness;
+    const root = createSyntheticRepo();
+    expect(dist.computeStaticCodeBinding(state, root).digest).toBe(
+      computeStaticCodeBinding(state, root).digest,
+    );
+  });
+
+  it('accepts the freshly built real repository tree', () => {
+    expect(() => computeStaticCodeBinding(state, repoRoot)).not.toThrow();
+  });
+
+  it('smoke-tests the compiled CLI parser', () => {
+    const distCli = nodeRequire(distCliPath) as {
+      parseCliArguments: typeof parseCliArguments;
+    };
+    expect(distCli.parseCliArguments(['--mode', 'validate-config']).mode).toBe(
+      'validate-config',
+    );
+    try {
+      distCli.parseCliArguments(['--foo', 'bar']);
+      throw new Error('expected rejection');
+    } catch (error) {
+      expect((error as { code?: string }).code).toBe('UNKNOWN_OPTION');
+    }
   });
 });
