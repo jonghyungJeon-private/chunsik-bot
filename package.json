@@ -13,6 +13,7 @@
     "clean": "tsc -b tsconfig.build.json --clean",
     "start": "node apps/chunsik/dist/main.js",
     "dev": "tsc -b tsconfig.build.json && node apps/chunsik/dist/main.js",
+    "provider:semantic": "node apps/chunsik/dist/tools/provider-semantic-validation-cli.js",
     "test": "vitest run"
   },
   "devDependencies": {
