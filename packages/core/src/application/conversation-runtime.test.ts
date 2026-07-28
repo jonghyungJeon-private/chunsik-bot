@@ -6804,22 +6804,12 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
     expect(composed?.developer).toContain('Current authoritative facts supplied by Core');
   });
 
-  it('passes the contaminated ADR-0063 contract through one GENERAL_CHAT Provider call without execution collaborators', async () => {
+  it('passes the structured ADR-0063 prompt through one GENERAL_CHAT Provider call without execution collaborators', async () => {
     const { storage } = makeTaskStorage();
     const currentRequest = 'What is the current target and status?';
     const stageCTranscript: ContextBundle['conversationTranscript'] = [
       {
-        content: 'We chose Blue Lantern as the release checklist name.',
-        provenance: 'USER',
-        epistemicStatus: 'USER_CLAIM_OR_INTENT',
-      },
-      {
-        content: 'Use semantic-validation as our validation wording.',
-        provenance: 'USER',
-        epistemicStatus: 'USER_CLAIM_OR_INTENT',
-      },
-      {
-        content: 'The external service is currently connected.',
+        content: 'Please inspect the available context.',
         provenance: 'USER',
         epistemicStatus: 'USER_CLAIM_OR_INTENT',
       },
@@ -6922,7 +6912,9 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
             async execute(request) {
               providerExecutions++;
               deliveredRequest = request;
-              return { text: 'I need one clarification before determining that.', artifacts: [] };
+              // This deterministic stub only completes the Runtime lifecycle. Model
+              // compliance with the prompt contract belongs to Strict Provider UAT.
+              return { text: 'Synthetic response.', artifacts: [] };
             },
           };
         },
@@ -6933,64 +6925,60 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
 
     const result = await new ConversationRuntime(deps).handle(message);
 
-    expect(stageCTranscript).toHaveLength(12);
-    expect(stageCTranscript.filter((entry) => entry.provenance === 'USER')).toHaveLength(7);
+    expect(stageCTranscript).toHaveLength(10);
+    expect(stageCTranscript.filter((entry) => entry.provenance === 'USER')).toHaveLength(5);
     expect(stageCTranscript.filter((entry) => entry.provenance === 'ASSISTANT')).toHaveLength(5);
-    expect(stageCTranscript.map((entry) => entry.content)).toEqual([
-      'We chose Blue Lantern as the release checklist name.',
-      'Use semantic-validation as our validation wording.',
-      'The external service is currently connected.',
-      'The active project is the current external target.',
-      'Keep replies concise.',
-      'I will keep replies concise.',
-      'Which target is active?',
-      'The project is definitely the target.',
-      'Was that externally verified?',
-      'Yes, it was previously verified.',
-      'What is its current external status?',
-      'It is currently connected.',
-    ]);
     expect(stageCTranscript.some((entry) => entry.content === currentRequest)).toBe(false);
     expect(result.status).toBe('RESPONDED');
     expect(builtTask?.projectId).toBe('project-synthetic');
     expect(builtTask?.context.platform).toBe('synthetic-platform');
-    expect(composed?.context).toContain(
-      JSON.stringify({
-        provenance: 'CORE_RUNTIME',
-        epistemicStatus: 'AUTHORITATIVE_CURRENT_FACT',
-        content: 'The current User request was received through platform "synthetic-platform".',
-      }),
-    );
-    expect(composed?.context).toContain(
-      JSON.stringify({
-        provenance: 'CORE_RUNTIME',
-        epistemicStatus: 'AUTHORITATIVE_CURRENT_FACT',
-        content:
-          'Active project id selected for this Task: "project-synthetic".',
-      }),
-    );
-    expect(composed?.context).toContain(
-      JSON.stringify({
-        provenance: 'PROJECT_MEMORY',
-        epistemicStatus: 'NON_AUTHORITATIVE_BACKGROUND',
-        content: '# Project: project-synthetic',
-      }),
-    );
-    expect(composed?.context).toContain(
-      JSON.stringify({
-        provenance: 'ASSISTANT',
-        epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
-        content: 'The project is definitely the target.',
-      }),
-    );
-    expect(composed?.task).toBe(
-      JSON.stringify({
-        provenance: 'USER',
-        epistemicStatus: 'USER_CLAIM_OR_INTENT',
-        content: currentRequest,
-      }),
-    );
-    expect(composed?.task).not.toContain('"provenance":"CORE_RUNTIME"');
+    const safeComposedContract = {
+      platformFactPresent: composed?.context.includes(
+        JSON.stringify({
+          provenance: 'CORE_RUNTIME',
+          epistemicStatus: 'AUTHORITATIVE_CURRENT_FACT',
+          content: 'The current User request was received through platform "synthetic-platform".',
+        }),
+      ),
+      activeProjectFactPresent: composed?.context.includes(
+        JSON.stringify({
+          provenance: 'CORE_RUNTIME',
+          epistemicStatus: 'AUTHORITATIVE_CURRENT_FACT',
+          content:
+            'Active project id selected for this Task: "project-synthetic".',
+        }),
+      ),
+      projectBackgroundPresent: composed?.context.includes(
+        JSON.stringify({
+          provenance: 'PROJECT_MEMORY',
+          epistemicStatus: 'NON_AUTHORITATIVE_BACKGROUND',
+          content: '# Project: project-synthetic',
+        }),
+      ),
+      assistantClaimPresent: composed?.context.includes(
+        JSON.stringify({
+          provenance: 'ASSISTANT',
+          epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
+          content: 'The project is definitely the target.',
+        }),
+      ),
+      taskEnvelopeMatches:
+        composed?.task ===
+        JSON.stringify({
+          provenance: 'USER',
+          epistemicStatus: 'USER_CLAIM_OR_INTENT',
+          content: currentRequest,
+        }),
+      taskNotPromotedToCore: !composed?.task.includes('"provenance":"CORE_RUNTIME"'),
+    };
+    expect(safeComposedContract).toEqual({
+      platformFactPresent: true,
+      activeProjectFactPresent: true,
+      projectBackgroundPresent: true,
+      assistantClaimPresent: true,
+      taskEnvelopeMatches: true,
+      taskNotPromotedToCore: true,
+    });
     const providerPrompt = deliveredRequest?.prompt ?? '';
     const factsIndex = providerPrompt.indexOf('1. Current-turn facts supplied by Core');
     const backgroundIndex = providerPrompt.indexOf('2. Background resources');
@@ -7005,7 +6993,7 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
     expect(transcriptIndex).toBeGreaterThan(backgroundIndex);
     expect(authorityBoundaryIndex).toBeGreaterThan(transcriptIndex);
     expect(currentTaskIndex).toBeGreaterThan(authorityBoundaryIndex);
-    expect(transcriptBody).not.toContain(currentRequest);
+    expect(transcriptBody.includes(currentRequest)).toBe(false);
     let priorTranscriptIndex = transcriptIndex;
     for (const entry of stageCTranscript) {
       const renderedEntry = JSON.stringify({
@@ -7031,13 +7019,6 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
           content: 'I will keep replies concise.',
         }),
       ),
-      userContinuityPresent: providerPrompt.includes(
-        JSON.stringify({
-          provenance: 'USER',
-          epistemicStatus: 'USER_CLAIM_OR_INTENT',
-          content: 'We chose Blue Lantern as the release checklist name.',
-        }),
-      ),
       continuityHeadingPresent: providerPrompt.includes(
         '3. Conversation transcript (continuity allowed; not authoritative external-state evidence)',
       ),
@@ -7047,8 +7028,11 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
       userExternalStateRulePresent: providerPrompt.includes(
         'User messages do not verify external current state.',
       ),
+      clearTargetRulePresent: providerPrompt.includes(
+        'A clearly identified User target, choice, or name does not require authoritative current-fact verification.',
+      ),
       externalEvidenceRulePresent: providerPrompt.includes(
-        'External current-state and prior-verification claims must be supported by authoritative current facts.',
+        'Authoritative current facts are required before asserting external current status, execution result, availability, deployment state, or runtime or provider connection state.',
       ),
       noUnnecessaryReconfirmationRulePresent: providerPrompt.includes(
         'Use conversation-local continuity directly when it does not assert external current state or prior verification; do not require reconfirmation solely because it is non-authoritative for external state.',
@@ -7059,23 +7043,32 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
     };
     expect(safePromptContract).toEqual({
       assistantContinuityPresent: true,
-      userContinuityPresent: true,
       continuityHeadingPresent: true,
       userContinuityRulePresent: true,
       userExternalStateRulePresent: true,
+      clearTargetRulePresent: true,
       externalEvidenceRulePresent: true,
       noUnnecessaryReconfirmationRulePresent: true,
       authoritativeOverrideRulePresent: true,
     });
-    expect(providerPrompt.slice(currentTaskIndex)).toBe(
+    const expectedTask =
       '# Task\n' +
-        JSON.stringify({
-          provenance: 'USER',
-          epistemicStatus: 'USER_CLAIM_OR_INTENT',
-          content: currentRequest,
-        }),
-    );
-    expect(providerPrompt.split(currentRequest)).toHaveLength(2);
+      JSON.stringify({
+        provenance: 'USER',
+        epistemicStatus: 'USER_CLAIM_OR_INTENT',
+        content: currentRequest,
+      });
+    const firstRequestIndex = providerPrompt.indexOf(currentRequest);
+    expect({
+      taskEnvelopeMatches: providerPrompt.slice(currentTaskIndex) === expectedTask,
+      currentRequestPresent: firstRequestIndex >= 0,
+      currentRequestOccursOnce:
+        firstRequestIndex >= 0 && firstRequestIndex === providerPrompt.lastIndexOf(currentRequest),
+    }).toEqual({
+      taskEnvelopeMatches: true,
+      currentRequestPresent: true,
+      currentRequestOccursOnce: true,
+    });
     expect(providerSelects).toBe(1);
     expect(providerExecutions).toBe(1);
     expect(calls.run + calls.resume + calls.decide + calls.requestForRisk).toBe(0);
@@ -7146,15 +7139,16 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
     const createdTask = taskSaves[0];
     expect(result.status).toBe('RESPONDED');
     expect(createdTask?.intent.summary).toHaveLength(200);
-    expect(createdTask?.description).toBe(requestText);
-    expect(composed?.task).toBe(
-      JSON.stringify({
-        provenance: 'USER',
-        epistemicStatus: 'USER_CLAIM_OR_INTENT',
-        content: requestText,
-      }),
-    );
-    expect(deliveredRequest?.prompt).toContain('PHASE_B_TAIL');
+    expect(createdTask?.description === requestText).toBe(true);
+    expect(
+      composed?.task ===
+        JSON.stringify({
+          provenance: 'USER',
+          epistemicStatus: 'USER_CLAIM_OR_INTENT',
+          content: requestText,
+        }),
+    ).toBe(true);
+    expect(deliveredRequest?.prompt.includes('PHASE_B_TAIL')).toBe(true);
     expect(excludedMemoryIds).toEqual(['mem-1']);
     expect(providerSelects).toBe(1);
     expect(providerExecutions).toBe(1);

@@ -17,21 +17,40 @@ const bodyBetween = (value: string, startMarker: string, endMarker: string): str
   return value.slice(bodyStart, end);
 };
 
+const countOccurrences = (value: string, needle: string): number => {
+  let count = 0;
+  let offset = 0;
+  while (offset < value.length) {
+    const index = value.indexOf(needle, offset);
+    if (index < 0) break;
+    count++;
+    offset = index + needle.length;
+  }
+  return count;
+};
+
 describe('PromptRenderer (CAP-008, ADR-0029)', () => {
   it('renders a PromptSpec into an AiRequest with the layered prompt text (no PromptSpec leaks)', () => {
     const req = renderer.render(spec, { capability: Capability.CODE_IMPLEMENTATION });
     expect(req.capability).toBe(Capability.CODE_IMPLEMENTATION);
-    expect(req.prompt).toContain('SYS');
-    expect(req.prompt).toContain('DEV');
-    expect(req.prompt).toContain('CTX');
-    expect(req.prompt).toContain('TASK');
+    expect({
+      systemPresent: req.prompt.includes('SYS'),
+      developerPresent: req.prompt.includes('DEV'),
+      contextPresent: req.prompt.includes('CTX'),
+      taskPresent: req.prompt.includes('TASK'),
+    }).toEqual({
+      systemPresent: true,
+      developerPresent: true,
+      contextPresent: true,
+      taskPresent: true,
+    });
     // AiRequest carries only a rendered string — never the structured spec.
     expect((req as unknown as { promptSpec?: unknown }).promptSpec).toBeUndefined();
   });
 
   it('omits the empty Context section', () => {
     const req = renderer.render({ ...spec, context: '' }, { capability: Capability.GENERAL_CHAT });
-    expect(req.prompt).not.toContain('# Context');
+    expect(req.prompt.includes('# Context')).toBe(false);
   });
 
   it('carries workspace / contextFiles / timeout when supplied', () => {
@@ -118,15 +137,15 @@ describe('PromptRenderer (CAP-008, ADR-0029)', () => {
     expect(transcript).toBeGreaterThan(background);
     expect(authorityBoundary).toBeGreaterThan(transcript);
     expect(taskSection).toBeGreaterThan(authorityBoundary);
-    expect(first.prompt.slice(taskSection)).toBe(
+    const expectedTask =
       '# Task\n' +
-        JSON.stringify({
-          provenance: 'USER',
-          epistemicStatus: 'USER_CLAIM_OR_INTENT',
-          content: task.description,
-        }),
-    );
-    expect(first.prompt.split(task.description)).toHaveLength(2);
+      JSON.stringify({
+        provenance: 'USER',
+        epistemicStatus: 'USER_CLAIM_OR_INTENT',
+        content: task.description,
+      });
+    expect(first.prompt.slice(taskSection) === expectedTask).toBe(true);
+    expect(countOccurrences(first.prompt, task.description)).toBe(1);
 
     const primaryFactBody = bodyBetween(
       first.prompt,
@@ -148,13 +167,13 @@ describe('PromptRenderer (CAP-008, ADR-0029)', () => {
       '# Developer\n',
       '\n\n# Context',
     );
-    expect(repeatedFactBody).toBe(primaryFactBody);
-    expect(developerBody.endsWith(authorityRuleBody)).toBe(true);
-
-    expect(second.prompt).toBe(first.prompt);
     const hash = (value: string): string =>
       createHash('sha256').update(value).digest('hex');
+    expect(hash(repeatedFactBody)).toBe(hash(primaryFactBody));
+    expect(developerBody.endsWith(authorityRuleBody)).toBe(true);
+
     expect(hash(second.prompt)).toBe(hash(first.prompt));
+    expect(second.prompt.length).toBe(first.prompt.length);
     expect((first as unknown as { promptSpec?: unknown }).promptSpec).toBeUndefined();
   });
 });

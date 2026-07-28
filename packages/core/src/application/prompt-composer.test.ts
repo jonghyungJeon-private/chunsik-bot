@@ -59,6 +59,18 @@ const subsectionBody = (section: string, title: string): string => {
   return section.slice(bodyStart, next < 0 ? section.length : next);
 };
 
+type PromptEntry = {
+  provenance: string;
+  epistemicStatus: string;
+  content: string;
+};
+
+const entriesFromSection = (context: string, title: string): PromptEntry[] =>
+  sectionBody(context, title)
+    .split('\n')
+    .filter((line) => line.startsWith('{'))
+    .map((line) => JSON.parse(line) as PromptEntry);
+
 describe('PromptComposer (ADR-0063 precedence contract)', () => {
   const composer = new PromptComposer();
 
@@ -488,7 +500,13 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
       'Do not copy, confirm, or restate an external current-state conclusion solely from Assistant history.',
     );
     expect(authorityRules).toContain(
-      'When authoritative current facts do not establish an external target or status requested by the User, ask one concise clarifying question.',
+      'Interpret target meaning from the current User task and conversation continuity.',
+    );
+    expect(authorityRules).toContain(
+      'A clearly identified User target, choice, or name does not require authoritative current-fact verification.',
+    );
+    expect(authorityRules).toContain(
+      'Ask one concise clarifying question only when target meaning is genuinely ambiguous, conflicting, or incomplete.',
     );
     expect(authorityRules).toContain(
       'Do not claim prior confirmation or prior verification based solely on Assistant transcript.',
@@ -500,7 +518,13 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
       'User messages do not verify external current state.',
     );
     expect(authorityRules).toContain(
-      'External current-state and prior-verification claims must be supported by authoritative current facts.',
+      'Missing authoritative current facts does not by itself require reconfirming a clear User target.',
+    );
+    expect(authorityRules).toContain(
+      'Authoritative current facts are required before asserting external current status, execution result, availability, deployment state, or runtime or provider connection state.',
+    );
+    expect(authorityRules).toContain(
+      'Prior-verification claims must be supported by authoritative current facts.',
     );
     expect(authorityRules).toContain(
       'Use conversation-local continuity directly when it does not assert external current state or prior verification; do not require reconfirmation solely because it is non-authoritative for external state.',
@@ -510,12 +534,117 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
     );
   });
 
-  it('keeps conversation-local continuity usable while external-state claims retain their original authority', () => {
+  // These scenarios verify deterministic prompt composition only. Whether a model
+  // follows the rendered contract remains a separately approved Strict Provider UAT.
+  it('Scenario A: keeps external state unverified when only transcript claims a status', () => {
     const spec = composer.compose(
       mkTask(Capability.GENERAL_CHAT, {
-        platform: 'semantic-validation',
-        projectId: 'external-resource',
-        requestText: 'What checklist name and validation wording did we choose?',
+        platform: 'synthetic-platform',
+        requestText: 'What is the external service current status?',
+      }),
+      {
+        taskId: 't1',
+        backgroundResources: [],
+        conversationTranscript: [
+          {
+            content: 'The external service was connected.',
+            provenance: 'ASSISTANT',
+            epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
+          },
+        ],
+      },
+    );
+
+    const facts = entriesFromSection(
+      spec.context,
+      '1. Current-turn facts supplied by Core',
+    );
+    const transcript = entriesFromSection(
+      spec.context,
+      '3. Conversation transcript (continuity allowed; not authoritative external-state evidence)',
+    );
+    const authorityRules = subsectionBody(
+      sectionBody(spec.context, '4. Current-turn authority decision boundary'),
+      'Mandatory inference constraints',
+    );
+
+    expect(facts.every((entry) => entry.provenance === 'CORE_RUNTIME')).toBe(true);
+    expect(
+      facts.every((entry) => entry.epistemicStatus === 'AUTHORITATIVE_CURRENT_FACT'),
+    ).toBe(true);
+    expect(facts.some((entry) => entry.content.includes('connected'))).toBe(false);
+    expect(transcript).toEqual([
+      {
+        provenance: 'ASSISTANT',
+        epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
+        content: 'The external service was connected.',
+      },
+    ]);
+    expect({
+      requiresAuthoritativeExternalTruth: authorityRules.includes(
+        'Authoritative current facts are required before asserting external current status',
+      ),
+      forbidsInventedStatus: authorityRules.includes(
+        'Do not invent external status absent from current Core facts.',
+      ),
+    }).toEqual({
+      requiresAuthoritativeExternalTruth: true,
+      forbidsInventedStatus: true,
+    });
+  });
+
+  it('Scenario B: keeps an Assistant status claim outside authoritative current facts', () => {
+    const assistantClaim = 'The provider is currently connected.';
+    const spec = composer.compose(
+      mkTask(Capability.GENERAL_CHAT, {
+        platform: 'synthetic-platform',
+        requestText: 'Is the provider connected?',
+      }),
+      {
+        taskId: 't1',
+        backgroundResources: [],
+        conversationTranscript: [
+          {
+            content: assistantClaim,
+            provenance: 'ASSISTANT',
+            epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
+          },
+        ],
+      },
+    );
+
+    const facts = entriesFromSection(
+      spec.context,
+      '1. Current-turn facts supplied by Core',
+    );
+    const transcript = entriesFromSection(
+      spec.context,
+      '3. Conversation transcript (continuity allowed; not authoritative external-state evidence)',
+    );
+    const authoritativeCopies = facts.filter((entry) => entry.content === assistantClaim);
+
+    expect(transcript).toEqual([
+      {
+        provenance: 'ASSISTANT',
+        epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
+        content: assistantClaim,
+      },
+    ]);
+    expect(authoritativeCopies).toHaveLength(0);
+    expect(
+      facts.some(
+        (entry) =>
+          entry.epistemicStatus === 'AUTHORITATIVE_CURRENT_FACT' &&
+          entry.content.includes('provider is currently connected'),
+      ),
+    ).toBe(false);
+  });
+
+  it('Scenario C: preserves Blue Lantern as a conversation-local User choice without forced reconfirmation', () => {
+    const spec = composer.compose(
+      mkTask(Capability.GENERAL_CHAT, {
+        platform: 'synthetic-platform',
+        requestText: 'Continue with the checklist name we chose.',
       }),
       {
         taskId: 't1',
@@ -526,26 +655,57 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
             provenance: 'USER',
             epistemicStatus: 'USER_CLAIM_OR_INTENT',
           },
-          {
-            content: 'Keep replies concise.',
-            provenance: 'USER',
-            epistemicStatus: 'USER_CLAIM_OR_INTENT',
-          },
-          {
-            content: 'The external service is connected.',
-            provenance: 'ASSISTANT',
-            epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
-          },
-          {
-            content: 'The external service is connected.',
-            provenance: 'USER',
-            epistemicStatus: 'USER_CLAIM_OR_INTENT',
-          },
-          {
-            content: 'Use semantic-validation as our validation wording.',
-            provenance: 'USER',
-            epistemicStatus: 'USER_CLAIM_OR_INTENT',
-          },
+        ],
+      },
+    );
+
+    const transcript = entriesFromSection(
+      spec.context,
+      '3. Conversation transcript (continuity allowed; not authoritative external-state evidence)',
+    );
+    const authorityRules = subsectionBody(
+      sectionBody(spec.context, '4. Current-turn authority decision boundary'),
+      'Mandatory inference constraints',
+    );
+
+    expect(transcript).toEqual([
+      {
+        provenance: 'USER',
+        epistemicStatus: 'USER_CLAIM_OR_INTENT',
+        content: 'We chose Blue Lantern as the checklist name.',
+      },
+    ]);
+    expect({
+      usesConversationContinuity: authorityRules.includes(
+        'Interpret target meaning from the current User task and conversation continuity.',
+      ),
+      preservesClearUserChoice: authorityRules.includes(
+        'A clearly identified User target, choice, or name does not require authoritative current-fact verification.',
+      ),
+      noAutomaticReconfirmation: authorityRules.includes(
+        'Missing authoritative current facts does not by itself require reconfirming a clear User target.',
+      ),
+      externalTruthStillSeparate: authorityRules.includes(
+        'User messages do not verify external current state.',
+      ),
+    }).toEqual({
+      usesConversationContinuity: true,
+      preservesClearUserChoice: true,
+      noAutomaticReconfirmation: true,
+      externalTruthStillSeparate: true,
+    });
+  });
+
+  it('Scenario D: orders authoritative semantic-validation facts ahead of conflicting Assistant history', () => {
+    const spec = composer.compose(
+      mkTask(Capability.GENERAL_CHAT, {
+        platform: 'semantic-validation',
+        requestText: 'Which platform received this request?',
+      }),
+      {
+        taskId: 't1',
+        backgroundResources: [],
+        conversationTranscript: [
           {
             content: 'The current platform is discord.',
             provenance: 'ASSISTANT',
@@ -555,77 +715,46 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
       },
     );
 
-    expect(spec.context).toContain(
-      envelope(
-        'USER',
-        'USER_CLAIM_OR_INTENT',
-        'We chose Blue Lantern as the checklist name.',
-      ),
-    );
-    expect(spec.context).toContain(
-      envelope('USER', 'USER_CLAIM_OR_INTENT', 'Keep replies concise.'),
-    );
-    expect(spec.context).toContain(
-      envelope(
-        'ASSISTANT',
-        'ASSISTANT_NON_AUTHORITATIVE',
-        'The external service is connected.',
-      ),
-    );
-    expect(spec.context).toContain(
-      envelope(
-        'USER',
-        'USER_CLAIM_OR_INTENT',
-        'The external service is connected.',
-      ),
-    );
-    expect(spec.context).toContain(
-      envelope(
-        'USER',
-        'USER_CLAIM_OR_INTENT',
-        'Use semantic-validation as our validation wording.',
-      ),
-    );
-    expect(spec.context).toContain(
-      envelope(
-        'ASSISTANT',
-        'ASSISTANT_NON_AUTHORITATIVE',
-        'The current platform is discord.',
-      ),
-    );
-    expect(spec.context).toContain(
-      envelope(
-        'CORE_RUNTIME',
-        'AUTHORITATIVE_CURRENT_FACT',
-        'The current User request was received through platform "semantic-validation".',
-      ),
-    );
-    expect(spec.context).toContain(
-      envelope(
-        'CORE_RUNTIME',
-        'AUTHORITATIVE_CURRENT_FACT',
-        'Active project id selected for this Task: "external-resource".',
-      ),
-    );
-
-    const authorityBoundary = sectionBody(
+    const facts = entriesFromSection(
       spec.context,
+      '1. Current-turn facts supplied by Core',
+    );
+    const transcript = entriesFromSection(
+      spec.context,
+      '3. Conversation transcript (continuity allowed; not authoritative external-state evidence)',
+    );
+    const authoritativePlatformFact = facts.find((entry) =>
+      entry.content.includes('received through platform'),
+    );
+    const factIndex = spec.context.indexOf(
+      '1. Current-turn facts supplied by Core',
+    );
+    const transcriptIndex = spec.context.indexOf('3. Conversation transcript');
+    const boundaryIndex = spec.context.indexOf(
       '4. Current-turn authority decision boundary',
     );
-    const authorityRules = subsectionBody(
-      authorityBoundary,
-      'Mandatory inference constraints',
-    );
-    expect(authorityRules).toContain(
-      'Use conversation-local continuity directly when it does not assert external current state or prior verification',
-    );
-    expect(authorityRules).toContain(
-      'User messages do not verify external current state.',
-    );
-    expect(authorityRules).toContain(
-      'Current authoritative facts supplied by Core override contradictory or stale transcript for external current state.',
-    );
-    expect(spec.developer.endsWith(authorityRules)).toBe(true);
+
+    expect(authoritativePlatformFact).toEqual({
+      provenance: 'CORE_RUNTIME',
+      epistemicStatus: 'AUTHORITATIVE_CURRENT_FACT',
+      content: 'The current User request was received through platform "semantic-validation".',
+    });
+    expect(transcript).toEqual([
+      {
+        provenance: 'ASSISTANT',
+        epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
+        content: 'The current platform is discord.',
+      },
+    ]);
+    expect(facts.some((entry) => entry.content.includes('platform "discord"'))).toBe(false);
+    expect(factIndex).toBeGreaterThanOrEqual(0);
+    expect(transcriptIndex).toBeGreaterThan(factIndex);
+    expect(boundaryIndex).toBeGreaterThan(transcriptIndex);
+    expect(
+      spec.developer.includes(
+        'Current authoritative facts supplied by Core override contradictory or stale transcript for external current state.',
+      ),
+    ).toBe(true);
   });
 
   it('does not introduce a typed absence-of-evidence fact for GENERAL_CHAT', () => {
