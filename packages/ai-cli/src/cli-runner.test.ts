@@ -145,6 +145,8 @@ interface StartConfig {
   args?: string[];
   /** Use the production temp-dir implementation instead of the recording wrapper. */
   productionTempDir?: boolean;
+  /** Make the observation hook throw AFTER recording, to prove it is isolated. */
+  hookThrows?: Error;
 }
 
 interface StartedRun {
@@ -228,7 +230,10 @@ function startRun(config: StartConfig = {}): StartedRun {
     ...tempHooks,
     parentEnv: config.parentEnv ?? PARENT_WITH_SECRETS,
     timers,
-    onContainment: (snapshot) => snapshots.push(snapshot),
+    onContainment: (snapshot) => {
+      snapshots.push(snapshot);
+      if (config.hookThrows) throw config.hookThrows;
+    },
     spawnFn: (bin, args, options) => {
       spawns.push({ bin, args, options });
       if (config.spawnThrows) throw config.spawnThrows;
@@ -1061,7 +1066,7 @@ describe('contained CLI runner: failure projection', () => {
     expect(result.stderr).toBe('warn');
   });
 
-  it('projects a normal non-zero exit and a normal success unchanged', async () => {
+  it('projects a normal non-zero exit and a normal success unchanged (baseline)', async () => {
     const failing = startRun();
     failing.child?.stdout.emit('data', Buffer.from('some output', 'utf8'));
     failing.child?.stderr.emit('data', Buffer.from('some warning', 'utf8'));
@@ -1077,5 +1082,202 @@ describe('contained CLI runner: failure projection', () => {
     ok.child?.stdout.emit('data', Buffer.from('the answer', 'utf8'));
     const success = await closeWith(ok, 0);
     expect(success).toEqual({ code: 0, stdout: 'the answer', stderr: '', timedOut: false });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// `onContainment` is a PURE OBSERVATION seam: a throwing observer must be fully
+// isolated from the execution lifecycle.
+// ---------------------------------------------------------------------------
+
+const HOOK_SECRET_FRAGMENTS = [
+  'ghp_secret-token',
+  '/Users/tester/.secrets/provider',
+  'password=hunter2',
+] as const;
+
+/** A hook error carrying every fragment that must never reach a result. */
+const throwingHook = (): Error =>
+  new Error(`observation hook exploded: ${HOOK_SECRET_FRAGMENTS.join(' ')}`);
+
+/** One reusable child lifecycle, so a normal hook and a throwing hook are comparable. */
+type Lifecycle = (run: StartedRun) => Promise<CliRunResult>;
+
+const successLifecycle: Lifecycle = (run) => {
+  run.child?.stdout.emit('data', Buffer.from('the complete answer', 'utf8'));
+  run.child?.stderr.emit('data', Buffer.from('a warning', 'utf8'));
+  return closeWith(run, 0);
+};
+
+const timeoutLifecycle: Lifecycle = (run) => {
+  run.child?.stdout.emit('data', Buffer.from('partial answer', 'utf8'));
+  run.child?.stderr.emit('data', Buffer.from('slow', 'utf8'));
+  run.timers.fire(run.timers.timeout);
+  return closeWith(run, null);
+};
+
+const overflowLifecycle: Lifecycle = (run) => {
+  run.child?.stdout.emit('data', Buffer.alloc(MAX_STDOUT_CAPTURE_BYTES + 1, 0x61));
+  return closeWith(run, null);
+};
+
+interface Watched<T> {
+  value: T;
+  uncaught: unknown[];
+}
+
+/** Records any uncaught exception / unhandled rejection raised while `body` runs. */
+async function watchUncaught<T>(body: () => Promise<T>): Promise<Watched<T>> {
+  const uncaught: unknown[] = [];
+  const record = (error: unknown): void => {
+    uncaught.push(error);
+  };
+  process.on('uncaughtException', record);
+  process.on('unhandledRejection', record);
+  try {
+    const value = await body();
+    await tick(); // let any deferred throw surface before we stop watching
+    return { value, uncaught };
+  } finally {
+    process.off('uncaughtException', record);
+    process.off('unhandledRejection', record);
+  }
+}
+
+describe('contained CLI runner: observation hook isolation', () => {
+  it('resolves normally when the observation hook throws (no uncaught, no rejection)', async () => {
+    const run = startRun({ hookThrows: throwingHook() });
+    let rejected = false;
+    const watched = await watchUncaught(() =>
+      successLifecycle(run).catch((error: unknown) => {
+        rejected = true;
+        throw error;
+      }),
+    );
+    expect(rejected).toBe(false);
+    expect(watched.uncaught).toEqual([]);
+    expect(watched.value).toEqual({
+      code: 0,
+      stdout: 'the complete answer',
+      stderr: 'a warning',
+      timedOut: false,
+    });
+    expect(run.snapshots).toHaveLength(1); // the hook really did run, and really did throw
+  });
+
+  it('produces an identical result with a normal hook and a throwing hook', async () => {
+    const normal = await successLifecycle(startRun());
+    const throwing = await successLifecycle(startRun({ hookThrows: throwingHook() }));
+    expect(throwing).toEqual(normal);
+  });
+
+  it('still attempts cleanup exactly once when the hook throws', async () => {
+    const run = startRun({ hookThrows: throwingHook() });
+    await successLifecycle(run);
+    expect(run.removed).toEqual(run.created);
+    expect(run.removed).toHaveLength(1);
+    expect(only(run).cleanupAttempts).toBe(1);
+    expect(existsSync(run.created[0] ?? '')).toBe(false);
+  });
+
+  it('sends no signal on a successful path when the hook throws', async () => {
+    const run = startRun({ hookThrows: throwingHook() });
+    await successLifecycle(run);
+    expect(run.child?.signals).toEqual([]);
+    expect(only(run).terminationRequests).toBe(0);
+  });
+
+  it('leaves a timeout lifecycle unchanged when the hook throws', async () => {
+    const normalRun = startRun({ timeoutMs: 1_000 });
+    const normal = await timeoutLifecycle(normalRun);
+    const throwingRun = startRun({ timeoutMs: 1_000, hookThrows: throwingHook() });
+    const throwing = await timeoutLifecycle(throwingRun);
+    expect(throwing).toEqual(normal);
+    expect(throwing.timedOut).toBe(true);
+    expect(throwing.stdout).toBe('partial answer');
+    expect(throwing.stderr).toBe('slow');
+    expect(throwingRun.child?.signals).toEqual(normalRun.child?.signals);
+    expect(throwingRun.child?.signals).toEqual(['SIGTERM']);
+    expect(only(throwingRun).cleanupAttempts).toBe(only(normalRun).cleanupAttempts);
+    expect(only(throwingRun).terminationRequests).toBe(1);
+  });
+
+  it('leaves an overflow containment failure unchanged when the hook throws', async () => {
+    const normalRun = startRun();
+    const normal = await overflowLifecycle(normalRun);
+    const throwingRun = startRun({ hookThrows: throwingHook() });
+    const throwing = await overflowLifecycle(throwingRun);
+    expect(throwing).toEqual(normal);
+    expect(throwing).toEqual({
+      code: null,
+      stdout: '',
+      stderr: 'Provider process exceeded the stdout capture limit.',
+      timedOut: false,
+    });
+    expect(throwingRun.child?.signals).toEqual(['SIGTERM']);
+    expect(only(throwingRun).stdoutDecodeCalls).toBe(0);
+    expect(only(throwingRun).terminationRequests).toBe(1);
+  });
+
+  it('leaves a spawn failure unchanged when the hook throws', async () => {
+    const normal = await startRun({ spawnThrows: new Error('spawn boom') }).result;
+    const throwingRun = startRun({ spawnThrows: new Error('spawn boom'), hookThrows: throwingHook() });
+    const throwing = await throwingRun.result;
+    expect(throwing).toEqual(normal);
+    expect(throwing).toEqual({
+      code: null,
+      stdout: '',
+      stderr: 'Failed to start provider process.',
+      timedOut: false,
+    });
+    expect(throwingRun.removed).toEqual(throwingRun.created);
+  });
+
+  it('never exposes the hook error, on any lifecycle', async () => {
+    const lifecycles: Array<[string, Lifecycle, StartConfig]> = [
+      ['success', successLifecycle, {}],
+      ['timeout', timeoutLifecycle, { timeoutMs: 1_000 }],
+      ['overflow', overflowLifecycle, {}],
+      ['spawn failure', (run) => run.result, { spawnThrows: new Error('spawn boom') }],
+      ['cleanup failure', successLifecycle, { removeThrows: true }],
+    ];
+    for (const [, lifecycle, config] of lifecycles) {
+      const run = startRun({ ...config, hookThrows: throwingHook() });
+      const result = await lifecycle(run);
+      const serialized = JSON.stringify(result);
+      for (const fragment of HOOK_SECRET_FRAGMENTS) {
+        expect(serialized).not.toContain(fragment);
+      }
+      expect(serialized).not.toContain('observation hook exploded');
+      if (config.removeThrows) rmSync(run.created[0] ?? '', { recursive: true, force: true });
+    }
+  });
+
+  it('settles exactly once after a hook throw, ignoring every late event', async () => {
+    const run = startRun({ hookThrows: throwingHook(), timeoutMs: 1_000 });
+    const result = await successLifecycle(run);
+    const before = { ...result };
+    let thenCount = 0;
+    void run.result.then(() => {
+      thenCount += 1;
+    });
+    run.child?.stdout.emit('data', Buffer.from('late stdout', 'utf8'));
+    run.child?.stderr.emit('data', Buffer.from('late stderr', 'utf8'));
+    run.child?.emit('close', 1, null);
+    run.child?.emit('error', new Error('late error'));
+    run.timers.fire(run.timers.timeout);
+    run.timers.fire(run.timers.grace); // never armed on this path — a no-op
+    await tick();
+    expect(result).toEqual(before);
+    expect(thenCount).toBe(1); // resolved exactly once
+    expect(run.snapshots).toHaveLength(1); // settle entered exactly once
+    expect(run.removed).toHaveLength(1); // cleanup attempted exactly once
+    expect(run.child?.signals).toEqual([]);
+  });
+
+  it('hands the hook a frozen snapshot (a pure observation seam)', async () => {
+    const run = startRun();
+    await successLifecycle(run);
+    expect(Object.isFrozen(only(run))).toBe(true);
   });
 });

@@ -353,8 +353,10 @@ export function createContainedCliRunner(hooks: ContainedRunnerHooks = {}): CliR
         if (settled) return;
         settled = true;
         finalize(); // must run first: it decides `cleanupFailed`
+        // The result is computed BEFORE the observation hook runs, so nothing the hook
+        // does can change what the caller receives.
         const result = finishResult(code);
-        hooks.onContainment?.({
+        const snapshot: ContainmentSnapshot = Object.freeze({
           stdoutBytes,
           stderrBytes,
           stdoutDecodeCalls,
@@ -362,6 +364,14 @@ export function createContainedCliRunner(hooks: ContainedRunnerHooks = {}): CliR
           terminationRequests,
           cleanupAttempts,
         });
+        try {
+          hooks.onContainment?.(snapshot);
+        } catch {
+          // `onContainment` is a PURE OBSERVATION seam: a throwing observer must never
+          // affect the execution lifecycle. The throw is swallowed here — not projected
+          // as a containment failure, not added to stderr, not logged, not retried, and
+          // never allowed to leave the promise unresolved.
+        }
         resolve(result);
       };
 
