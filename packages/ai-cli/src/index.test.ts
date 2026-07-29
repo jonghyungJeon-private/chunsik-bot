@@ -331,13 +331,19 @@ class FakeSpawnedChild extends EventEmitter {
 }
 
 /** A contained runner whose child immediately emits `stdout` and closes with `code`. */
-function containedProbe(stdout: string, code: number | null = 0): ContainedProbe {
+function containedProbe(
+  stdout: string,
+  code: number | null = 0,
+  options: { removeThrows?: boolean } = {},
+): ContainedProbe {
   const spawns: ContainedProbe['spawns'] = [];
   const stdinWrites: string[] = [];
   const runner = createContainedCliRunner({
     parentEnv: FAKE_PARENT_ENV,
     createTempDir: () => FAKE_TEMP_DIR,
-    removeTempDir: () => undefined,
+    removeTempDir: () => {
+      if (options.removeThrows) throw new Error(`cannot remove ${FAKE_TEMP_DIR}`);
+    },
     spawnFn: (bin, args, options) => {
       spawns.push({ bin, args, options });
       const child = new FakeSpawnedChild(stdinWrites);
@@ -491,6 +497,39 @@ describe('Provider regression through the contained runner', () => {
       }),
     ).rejects.toBeInstanceOf(AiProviderError);
     expect(bad.spawns).toHaveLength(1);
+  });
+
+  it('a sandbox cleanup failure never becomes an application success for either provider', async () => {
+    // The child exits 0 with real output, but the runner-owned sandbox could not be
+    // removed — a containment failure. No adapter may turn that into a success.
+    const claudeProbe = containedProbe('a complete answer', 0, { removeThrows: true });
+    await expect(
+      new ClaudeCliProvider('claude', { runner: claudeProbe.runner }).execute({
+        capability: Capability.GENERAL_CHAT,
+        prompt: PROMPT,
+      }),
+    ).rejects.toMatchObject({ kind: AiFailureKind.UNAVAILABLE });
+
+    const ollamaProbe = containedProbe('a complete proposal', 0, { removeThrows: true });
+    await expect(
+      new OllamaCliProvider({ runner: ollamaProbe.runner }).execute({
+        capability: Capability.CODE_IMPLEMENTATION,
+        prompt: PROMPT,
+      }),
+    ).rejects.toBeInstanceOf(AiProviderError);
+
+    // The generic reason reaches the adapter; the provider output and the sandbox path
+    // do not.
+    const raw = await containedProbe('a complete answer', 0, { removeThrows: true }).runner(
+      'claude',
+      ['-p'],
+      { cwd: '/neutral', input: PROMPT, timeoutMs: 1_000 },
+    );
+    expect(raw.code).toBeNull();
+    expect(raw.stdout).toBe('');
+    expect(raw.stderr).toBe('Failed to clean up the provider process sandbox.');
+    expect(raw.stderr).not.toContain(FAKE_TEMP_DIR);
+    expect(raw.stderr).not.toContain('a complete answer');
   });
 
   it('exposes only the allow-listed inherited names (contract documented in one place)', () => {

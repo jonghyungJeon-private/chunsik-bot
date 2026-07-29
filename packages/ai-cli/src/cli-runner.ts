@@ -83,19 +83,20 @@ export const CALLER_ENV_ALLOWLIST = ['NO_COLOR', 'CLICOLOR', 'CLICOLOR_FORCE'] a
 const CALLER_ENV_ALLOWED = new Set<string>(CALLER_ENV_ALLOWLIST);
 
 /**
- * Bounded, generic diagnostic reasons. None of them embeds captured output, an
- * environment name or value, a prompt, or a filesystem path.
+ * Bounded, GENERIC containment-failure reasons. None embeds captured output, a raw
+ * OS error message, an environment name or value, a prompt, or a filesystem path.
+ * Generic classification is deliberately preferred over masking a raw message: a
+ * spawn error can carry the executable path, the user's HOME, or a token-shaped
+ * fragment, and no regex is a sound boundary for that.
  */
-const DISALLOWED_ENV_REASON = 'cli runner refused a provider environment name that is not allow-listed';
-const TEMP_CREATE_FAILED_REASON = 'cli runner could not create its temporary directory';
-const TEMP_CLEANUP_FAILED_REASON = 'cli runner could not remove its temporary directory';
-const STDOUT_OVERFLOW_REASON = 'cli runner stopped the child: stdout exceeded the capture limit';
-const STDERR_OVERFLOW_REASON = 'cli runner stopped the child: stderr exceeded the capture limit';
-const STDIN_UNAVAILABLE_REASON = 'cli runner could not open the child stdin stream';
-const STDIN_DELIVERY_REASON = 'cli runner could not deliver the prompt to the child stdin stream';
-
-/** Upper bound on a spawn-error message copied into the diagnostic stderr. */
-const MAX_SPAWN_ERROR_CHARS = 300;
+const REASON_ENV_REJECTED = 'Refused a provider environment variable that is not allow-listed.';
+const REASON_SANDBOX_CREATE = 'Failed to prepare the provider process sandbox.';
+const REASON_SANDBOX_CLEANUP = 'Failed to clean up the provider process sandbox.';
+const REASON_SPAWN = 'Failed to start provider process.';
+const REASON_STDOUT_OVERFLOW = 'Provider process exceeded the stdout capture limit.';
+const REASON_STDERR_OVERFLOW = 'Provider process exceeded the stderr capture limit.';
+const REASON_STDIN_UNAVAILABLE = 'Failed to open the provider process input stream.';
+const REASON_STDIN_DELIVERY = 'Failed to deliver the prompt to the provider process.';
 
 export type ChildEnvironment =
   | { readonly ok: true; readonly env: Record<string, string> }
@@ -123,7 +124,7 @@ export function buildChildEnvironment(
   if (callerEnv) {
     for (const name of Object.keys(callerEnv)) {
       if (!CALLER_ENV_ALLOWED.has(name)) {
-        return { ok: false, reason: DISALLOWED_ENV_REASON };
+        return { ok: false, reason: REASON_ENV_REJECTED };
       }
       const value = callerEnv[name];
       if (typeof value === 'string') env[name] = value;
@@ -138,13 +139,46 @@ export function buildChildEnvironment(
 
 type SpawnLike = (command: string, args: readonly string[], options: SpawnOptions) => ChildProcess;
 
-/** Test seams. Production always uses the real defaults; no behaviour is branched on them. */
+/** Minimal timer handle shape; `NodeJS.Timeout` satisfies it structurally. */
+export interface TimerHandle {
+  unref?: () => void;
+}
+
+/** Injectable scheduler so lifecycle ordering can be tested without real timers. */
+export interface RunnerTimers {
+  setTimeout: (handler: () => void, ms: number) => TimerHandle;
+  clearTimeout: (timer: TimerHandle) => void;
+}
+
+const defaultTimers: RunnerTimers = {
+  setTimeout: (handler, ms) => setTimeout(handler, ms) as unknown as TimerHandle,
+  clearTimeout: (timer) => clearTimeout(timer as unknown as NodeJS.Timeout),
+};
+
+/**
+ * Internal containment counters, surfaced ONLY through the optional test hook.
+ * They are deliberately absent from {@link CliRunResult} — the public runner
+ * contract is unchanged.
+ */
+export interface ContainmentSnapshot {
+  readonly stdoutBytes: number;
+  readonly stderrBytes: number;
+  readonly stdoutDecodeCalls: number;
+  readonly stderrDecodeCalls: number;
+  readonly terminationRequests: number;
+  readonly cleanupAttempts: number;
+}
+
+/** Test seams. Production always uses the real defaults; no behaviour branches on them. */
 export interface ContainedRunnerHooks {
   spawnFn?: SpawnLike;
   createTempDir?: () => string;
   removeTempDir?: (dir: string) => void;
   killGraceMs?: number;
   parentEnv?: NodeJS.ProcessEnv;
+  timers?: RunnerTimers;
+  /** Observation only — called once, immediately before the promise resolves. */
+  onContainment?: (snapshot: ContainmentSnapshot) => void;
 }
 
 function createChildTempDir(): string {
@@ -154,11 +188,6 @@ function createChildTempDir(): string {
 function removeChildTempDir(dir: string): void {
   rmSync(dir, { recursive: true, force: true, maxRetries: 2 });
 }
-
-const boundedSpawnError = (error: unknown): string => {
-  const message = error instanceof Error ? error.message : String(error);
-  return sanitizeTerminalOutput(message).slice(0, MAX_SPAWN_ERROR_CHARS);
-};
 
 type StdinFailure = 'none' | 'unavailable' | 'delivery';
 
@@ -170,18 +199,23 @@ type StdinFailure = 'none' | 'unavailable' | 'delivery';
  *    {@link INHERITED_ENV_ALLOWLIST} + a runner-owned `TMPDIR` + the caller's
  *    {@link CALLER_ENV_ALLOWLIST} names; any other caller name is refused BEFORE spawn.
  *  - **Runner-owned temporary directory** per child, created under OS temp (never inside
- *    the repository) and removed once the child has settled. A cleanup failure is
- *    reported as a bounded diagnostic, never silently swallowed.
- *  - **Independent per-stream BYTE bounds** (not character counts). Exceeding one stops
- *    accumulating, stops the child (SIGTERM → grace → SIGKILL), and returns a bounded
- *    generic failure — never a success and never the oversized content.
+ *    the repository), attempted for removal exactly once. A cleanup failure is a
+ *    CONTAINMENT FAILURE, never a success carrying provider output.
+ *  - **Independent per-stream BYTE bounds** (not character counts). A chunk that would
+ *    breach a bound is never decoded and never partially kept; the stream is dropped,
+ *    the child is stopped once (SIGTERM → grace → SIGKILL), and the run fails closed.
  *  - **UTF-8-safe streaming** via one `StringDecoder` per stream (never shared), flushed
  *    on close, so a multi-byte sequence split across chunks is restored correctly.
+ *  - **Close wins over the timeout.** Observing `close` synchronously freezes
+ *    `closeObserved`, clears both timers, and disarms every signal path; only the RESULT
+ *    PROJECTION is deferred one macrotask, purely to observe a late stdin EPIPE.
  *  - **Single-settle + single-finalize**: the promise resolves once AND timers, listeners,
  *    and the temporary directory are released exactly once.
+ *  - **Generic failure classification.** Every containment failure returns a bounded
+ *    generic reason — never a raw OS error message, path, or captured output.
  *  - **Diagnostic-only sanitation**: a successful `stdout` is passed through byte-for-byte
  *    (the provider adapters own response-text sanitation); terminal control sequences are
- *    stripped only from the diagnostic `stderr`/failure preview.
+ *    stripped only from the diagnostic `stderr`.
  *
  * There is **no retry** at this layer — not for a spawn failure, not for a timeout, not
  * for a non-zero exit. Retry is a future Loop control-policy concern.
@@ -191,6 +225,7 @@ export function createContainedCliRunner(hooks: ContainedRunnerHooks = {}): CliR
   const createTempDir = hooks.createTempDir ?? createChildTempDir;
   const removeTempDir = hooks.removeTempDir ?? removeChildTempDir;
   const killGraceMs = hooks.killGraceMs ?? KILL_GRACE_MS;
+  const timers = hooks.timers ?? defaultTimers;
   const parentEnvOf = (): NodeJS.ProcessEnv => hooks.parentEnv ?? process.env;
 
   return (bin, args, options) =>
@@ -200,26 +235,21 @@ export function createContainedCliRunner(hooks: ContainedRunnerHooks = {}): CliR
         temporaryDirectory = createTempDir();
       } catch {
         // Nothing was spawned and nothing was created: fail closed immediately.
-        resolve({ code: null, stdout: '', stderr: TEMP_CREATE_FAILED_REASON, timedOut: false });
+        resolve({ code: null, stdout: '', stderr: REASON_SANDBOX_CREATE, timedOut: false });
         return;
       }
 
       const childEnv = buildChildEnvironment(parentEnvOf(), temporaryDirectory, options.env);
       if (!childEnv.ok) {
-        let cleanupReason = '';
+        let refusedReason = childEnv.reason;
         try {
           removeTempDir(temporaryDirectory);
         } catch {
-          cleanupReason = `\n${TEMP_CLEANUP_FAILED_REASON}`;
+          refusedReason = REASON_SANDBOX_CLEANUP;
         }
         // Refused before any process exists — `code: null` keeps the providers'
         // existing "could not run" mapping (UNAVAILABLE).
-        resolve({
-          code: null,
-          stdout: '',
-          stderr: `${childEnv.reason}${cleanupReason}`,
-          timedOut: false,
-        });
+        resolve({ code: null, stdout: '', stderr: refusedReason, timedOut: false });
         return;
       }
 
@@ -229,36 +259,63 @@ export function createContainedCliRunner(hooks: ContainedRunnerHooks = {}): CliR
       let stderr = '';
       let stdoutBytes = 0;
       let stderrBytes = 0;
+      let stdoutDecodeCalls = 0;
+      let stderrDecodeCalls = 0;
+      let terminationRequests = 0;
+      let cleanupAttempts = 0;
       let stdoutOverflowed = false;
       let stderrOverflowed = false;
       let timedOut = false;
-      let spawnFailure: string | null = null;
+      let spawnFailed = false;
       let stdinFailure: StdinFailure = 'none';
       let cleanupFailed = false;
+      let closeObserved = false;
       let killRequested = false;
+      let killEscalated = false;
       let settled = false;
       let finalized = false;
-      let timeoutTimer: NodeJS.Timeout | undefined;
-      let forceKillTimer: NodeJS.Timeout | undefined;
+      let timeoutTimer: TimerHandle | undefined;
+      let forceKillTimer: TimerHandle | undefined;
       let child: ChildProcess | undefined;
 
-      const overflowed = (): boolean => stdoutOverflowed || stderrOverflowed;
+      /**
+       * Any condition that makes this run a containment failure. Once true, no further
+       * chunk may be counted, decoded, or accumulated.
+       */
+      const containmentFailed = (): boolean =>
+        spawnFailed || stdoutOverflowed || stderrOverflowed || stdinFailure !== 'none';
+
+      const clearTimers = (): void => {
+        if (timeoutTimer) {
+          timers.clearTimeout(timeoutTimer);
+          timeoutTimer = undefined;
+        }
+        if (forceKillTimer) {
+          timers.clearTimeout(forceKillTimer);
+          forceKillTimer = undefined;
+        }
+      };
 
       /**
        * Releases every child-lifecycle resource EXACTLY once — timers, stream and
        * process listeners, and the runner-owned temporary directory. Deliberately
        * separate from `settled`: resolving the promise once is not the same as
-       * releasing resources once.
+       * releasing resources once. Re-entrancy is impossible: `finalized` is set
+       * BEFORE the cleanup attempt, so a throwing cleanup cannot re-enter.
        */
       const finalize = (): void => {
         if (finalized) return;
         finalized = true;
-        if (timeoutTimer) clearTimeout(timeoutTimer);
-        if (forceKillTimer) clearTimeout(forceKillTimer);
+        clearTimers();
         child?.stdout?.removeAllListeners();
         child?.stderr?.removeAllListeners();
         child?.stdin?.removeAllListeners();
         child?.removeAllListeners();
+        // A ChildProcess with no 'error' listener turns a late emit into an UNHANDLED
+        // error event, which would crash the host process. One swallowing listener is
+        // retained on purpose: after settling, a late error can change nothing.
+        child?.on('error', () => undefined);
+        cleanupAttempts += 1;
         try {
           removeTempDir(temporaryDirectory);
         } catch {
@@ -266,69 +323,72 @@ export function createContainedCliRunner(hooks: ContainedRunnerHooks = {}): CliR
         }
       };
 
-      const withDiagnostics = (reason: string): string =>
-        cleanupFailed ? `${reason}\n${TEMP_CLEANUP_FAILED_REASON}` : reason;
+      const failClosed = (reason: string): CliRunResult => ({
+        code: null,
+        stdout: '',
+        stderr: reason,
+        timedOut: false,
+      });
 
       const finishResult = (code: number | null): CliRunResult => {
-        if (spawnFailure !== null) {
-          return { code: null, stdout: '', stderr: withDiagnostics(spawnFailure), timedOut };
-        }
-        if (overflowed()) {
-          // Bounded generic failure: the oversized content is dropped, never echoed.
-          return {
-            code: null,
-            stdout: '',
-            stderr: withDiagnostics(stdoutOverflowed ? STDOUT_OVERFLOW_REASON : STDERR_OVERFLOW_REASON),
-            timedOut: false,
-          };
-        }
-        if (stdinFailure !== 'none') {
-          return {
-            code: null,
-            stdout: '',
-            stderr: withDiagnostics(
-              stdinFailure === 'unavailable' ? STDIN_UNAVAILABLE_REASON : STDIN_DELIVERY_REASON,
-            ),
-            timedOut: false,
-          };
-        }
-        // Success/normal-exit path: `stdout` is returned untouched (the provider
+        // Containment failures first: each returns the same shape with a bounded
+        // generic reason, and NEVER carries provider output or a real exit code.
+        if (spawnFailed) return failClosed(REASON_SPAWN);
+        if (stdoutOverflowed) return failClosed(REASON_STDOUT_OVERFLOW);
+        if (stderrOverflowed) return failClosed(REASON_STDERR_OVERFLOW);
+        if (stdinFailure === 'unavailable') return failClosed(REASON_STDIN_UNAVAILABLE);
+        if (stdinFailure === 'delivery') return failClosed(REASON_STDIN_DELIVERY);
+        // A sandbox that could not be removed is a containment failure even when the
+        // child exited 0: provider data may still be on disk, so the run must not be
+        // reported as an application success. Ordered BEFORE the timeout projection so
+        // a cleanup failure is never reported as a timeout.
+        if (cleanupFailed) return failClosed(REASON_SANDBOX_CLEANUP);
+        // Timeout and normal exit share one projection: the observed exit code plus the
+        // bounded output captured so far. `stdout` is returned untouched (the provider
         // adapters own response-text semantics); only the diagnostic stream is sanitized.
-        const diagnostic = sanitizeTerminalOutput(stderr);
-        return {
-          code,
-          stdout,
-          stderr: cleanupFailed
-            ? [diagnostic, TEMP_CLEANUP_FAILED_REASON].filter((part) => part.length > 0).join('\n')
-            : diagnostic,
-          timedOut,
-        };
+        return { code, stdout, stderr: sanitizeTerminalOutput(stderr), timedOut };
       };
 
       const settle = (code: number | null): void => {
         if (settled) return;
         settled = true;
         finalize(); // must run first: it decides `cleanupFailed`
-        resolve(finishResult(code));
+        const result = finishResult(code);
+        hooks.onContainment?.({
+          stdoutBytes,
+          stderrBytes,
+          stdoutDecodeCalls,
+          stderrDecodeCalls,
+          terminationRequests,
+          cleanupAttempts,
+        });
+        resolve(result);
       };
 
-      const terminate = (): void => {
-        if (killRequested || !child) return;
+      /**
+       * Requests termination at most once: SIGTERM, then SIGKILL after the grace
+       * period. Disarmed the instant `close` is observed, so no signal is ever sent
+       * to an already-exited child (and a late grace callback is a no-op).
+       */
+      const requestTermination = (): void => {
+        if (killRequested || closeObserved || !child) return;
         killRequested = true;
+        terminationRequests += 1;
         try {
           child.kill('SIGTERM');
         } catch {
           /* already gone */
         }
-        forceKillTimer = setTimeout(() => {
+        forceKillTimer = timers.setTimeout(() => {
+          // A late or repeated grace callback must never signal again.
+          if (closeObserved || settled || killEscalated) return;
+          killEscalated = true;
           try {
             child?.kill('SIGKILL');
           } catch {
             /* already gone */
           }
         }, killGraceMs);
-        // A child that exits inside the grace period clears this timer via finalize(),
-        // so SIGKILL is never sent.
         forceKillTimer.unref?.();
       };
 
@@ -340,22 +400,24 @@ export function createContainedCliRunner(hooks: ContainedRunnerHooks = {}): CliR
           stdio: ['pipe', 'pipe', 'pipe'],
           windowsHide: true,
         });
-      } catch (error) {
-        spawnFailure = boundedSpawnError(error);
+      } catch {
+        // Raw Error.message is deliberately discarded: it can carry the executable
+        // path, the user's HOME, or a secret-shaped fragment.
+        spawnFailed = true;
         settle(null);
         return;
       }
 
       const append = (stream: 'stdout' | 'stderr', chunk: Buffer): void => {
-        if (settled) return;
         const isStdout = stream === 'stdout';
+        // Gate BEFORE any counting or decoding: a settled run, an already-overflowed
+        // stream, or any containment failure must leave every counter untouched.
+        if (settled || (isStdout ? stdoutOverflowed : stderrOverflowed) || containmentFailed()) return;
         const limit = isStdout ? MAX_STDOUT_CAPTURE_BYTES : MAX_STDERR_CAPTURE_BYTES;
         const total = (isStdout ? stdoutBytes : stderrBytes) + chunk.byteLength;
-        if (isStdout) stdoutBytes = total;
-        else stderrBytes = total;
-        // Decode even when discarding, so the per-stream decoder state stays consistent.
-        const text = (isStdout ? stdoutDecoder : stderrDecoder).write(chunk);
         if (total > limit) {
+          // The breaching chunk is NEVER handed to the decoder and never partially
+          // kept, so malformed or oversized bytes cannot reach a result string.
           if (isStdout) {
             stdoutOverflowed = true;
             stdout = '';
@@ -363,38 +425,54 @@ export function createContainedCliRunner(hooks: ContainedRunnerHooks = {}): CliR
             stderrOverflowed = true;
             stderr = '';
           }
-          terminate();
+          requestTermination();
           return;
         }
-        if (overflowed()) return;
-        if (isStdout) stdout += text;
-        else stderr += text;
+        if (isStdout) {
+          stdoutBytes = total;
+          stdoutDecodeCalls += 1;
+          stdout += stdoutDecoder.write(chunk);
+        } else {
+          stderrBytes = total;
+          stderrDecodeCalls += 1;
+          stderr += stderrDecoder.write(chunk);
+        }
       };
 
       child.stdout?.on('data', (chunk: Buffer) => append('stdout', chunk));
       child.stderr?.on('data', (chunk: Buffer) => append('stderr', chunk));
 
-      child.on('error', (error: unknown) => {
-        if (spawnFailure === null) spawnFailure = boundedSpawnError(error);
+      child.on('error', () => {
+        // Close wins: once the child has exited, a late `error` must not override the
+        // observed exit code or turn a normal exit into a spawn failure.
+        if (closeObserved) return;
+        // Raw Error.message deliberately discarded (see the spawn catch above).
+        spawnFailed = true;
         settle(null);
       });
 
       /**
-       * Flush both decoders at stream end. The trailing bytes were already counted
-       * when their chunk arrived, so the tails are appended WITHOUT re-counting.
+       * Flush both decoders at stream end. Trailing bytes were already counted when
+       * their chunk arrived, so the tails are appended WITHOUT re-counting — and never
+       * at all once the run is a containment failure.
        */
       const flushDecoders = (): void => {
         const stdoutTail = stdoutDecoder.end();
         const stderrTail = stderrDecoder.end();
-        if (overflowed()) return;
+        if (containmentFailed()) return;
         if (stdoutTail.length > 0) stdout += stdoutTail;
         if (stderrTail.length > 0) stderr += stderrTail;
       };
 
       child.on('close', (code: number | null) => {
-        // Deferred one macrotask so a pending stdin EPIPE (a child that exited before
-        // consuming the prompt) is recorded BEFORE the result is shaped — otherwise an
-        // undelivered prompt could be reported as a successful response.
+        // SYNCHRONOUS on close: freeze `closeObserved`, disarm both timers, and with
+        // them every remaining signal path. A late timeout callback can no longer set
+        // `timedOut`, and a late grace callback can no longer send SIGKILL.
+        closeObserved = true;
+        clearTimers();
+        // Only the RESULT PROJECTION is deferred, and only so a late stdin EPIPE (a
+        // child that exited before consuming the prompt) is observed first — otherwise
+        // an undelivered prompt could be reported as a successful response.
         setImmediate(() => {
           if (settled) return;
           flushDecoders();
@@ -402,29 +480,34 @@ export function createContainedCliRunner(hooks: ContainedRunnerHooks = {}): CliR
         });
       });
 
-      timeoutTimer = setTimeout(() => {
+      timeoutTimer = timers.setTimeout(() => {
+        if (closeObserved || settled) return; // a normal exit is never a timeout
         timedOut = true;
-        terminate();
+        requestTermination();
       }, options.timeoutMs);
       timeoutTimer.unref?.();
 
       const stdin = child.stdin;
       if (!stdin) {
         stdinFailure = 'unavailable';
-        terminate();
+        requestTermination();
         return;
       }
       /** An EPIPE while delivering nothing (an availability probe) is harmless. */
       const recordStdinFailure = (): void => {
         if (stdinFailure !== 'none' || options.input.length === 0) return;
         stdinFailure = 'delivery';
-        terminate();
+        requestTermination();
       };
       stdin.on('error', recordStdinFailure);
       if (options.input.length > 0) {
-        stdin.write(options.input, (error) => {
-          if (error) recordStdinFailure();
-        });
+        try {
+          stdin.write(options.input, (error) => {
+            if (error) recordStdinFailure();
+          });
+        } catch {
+          recordStdinFailure(); // synchronous write throw
+        }
       }
       try {
         stdin.end();
@@ -434,7 +517,7 @@ export function createContainedCliRunner(hooks: ContainedRunnerHooks = {}): CliR
     });
 }
 
-/** Default runner: the contained runner with production spawn/temp behaviour. */
+/** Default runner: the contained runner with production spawn/temp/timer behaviour. */
 export const defaultCliRunner: CliRunner = createContainedCliRunner();
 
 const SECRET_PATTERNS: RegExp[] = [
