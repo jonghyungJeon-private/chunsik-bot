@@ -1615,39 +1615,219 @@ export const DOWNLOAD_MARKER_PATTERNS: readonly RegExp[] = Object.freeze([
   /\bdownloading\b/,
   /download complete/,
   /\bfetching\b/,
-  /verifying sha256?/,
+  /verifying sha(?:256)?\b/,
   /verifying digest/,
   /writing manifest/,
   /removing any unused layers/,
-  /\bmodel\b.{0,80}\bnot found\b.{0,160}\bpull/,
+  /\bmodel\b.{0,80}\bnot found\b.{0,160}\bpull\b/,
   /try pulling it first/,
   /\b\d{1,3}%.{0,40}[kmgt]i?b\/s/,
   /[▏▎▍▌▋▊▉█░▒▓]{3,}/,
   /\b\d{1,3}%\s*[|▕]/,
 ]);
 
-const SCANNER_CARRY_CHARS = 160;
+/**
+ * Longest bounded marker:
+ * `model` (5) + first gap (80) + `not found` (9) + second gap (160) + `pull` (4).
+ * Word boundaries consume no characters. Retaining this full normalized span
+ * makes matching invariant for every split point without buffering raw output.
+ */
+export const MAX_DOWNLOAD_MARKER_NORMALIZED_SPAN = 5 + 80 + 9 + 160 + 4;
+const MAX_DOWNLOAD_MARKER_RIGHT_CONTEXT = ' request'.length;
+const DOWNLOAD_MATCHER_HISTORY_CHARS =
+  MAX_DOWNLOAD_MARKER_NORMALIZED_SPAN + MAX_DOWNLOAD_MARKER_RIGHT_CONTEXT;
+
+type TerminalStreamState =
+  | 'TEXT'
+  | 'ESCAPE'
+  | 'ESC_INTERMEDIATE'
+  | 'CSI'
+  | 'OSC'
+  | 'OSC_ESC';
+
+/**
+ * Stateful terminal-control removal plus case/whitespace normalization.
+ * Incomplete CSI/OSC/ESC sequences remain parser state across chunks and are
+ * discarded by finish(), never emitted as trusted text.
+ */
+class StreamingTerminalNormalizer {
+  private state: TerminalStreamState = 'TEXT';
+  private previousWasSpace = false;
+
+  push(chunk: string): string {
+    let output = '';
+    const emit = (value: string): void => {
+      if (/\s/u.test(value)) {
+        if (!this.previousWasSpace) output += ' ';
+        this.previousWasSpace = true;
+        return;
+      }
+      output += value.toLocaleLowerCase('en-US');
+      this.previousWasSpace = false;
+    };
+
+    for (let index = 0; index < chunk.length; ) {
+      const value = chunk[index];
+      if (value === undefined) break;
+      const code = chunk.charCodeAt(index);
+
+      if (this.state === 'CSI') {
+        if (code >= 0x40 && code <= 0x7e) {
+          this.state = 'TEXT';
+          index += 1;
+          continue;
+        }
+        if (code >= 0x20 && code <= 0x3f) {
+          index += 1;
+          continue;
+        }
+        this.state = 'TEXT';
+        continue;
+      }
+
+      if (this.state === 'OSC') {
+        if (code === BEL || code === C1_ST) {
+          this.state = 'TEXT';
+        } else if (code === ESC) {
+          this.state = 'OSC_ESC';
+        }
+        index += 1;
+        continue;
+      }
+
+      if (this.state === 'OSC_ESC') {
+        if (code === 0x5c || code === BEL || code === C1_ST) {
+          this.state = 'TEXT';
+        } else if (code !== ESC) {
+          this.state = 'OSC';
+        }
+        index += 1;
+        continue;
+      }
+
+      if (this.state === 'ESC_INTERMEDIATE') {
+        if (code >= 0x20 && code <= 0x2f) {
+          index += 1;
+          continue;
+        }
+        if (code >= 0x30 && code <= 0x7e) {
+          this.state = 'TEXT';
+          index += 1;
+          continue;
+        }
+        this.state = 'TEXT';
+        continue;
+      }
+
+      if (this.state === 'ESCAPE') {
+        if (code === 0x5b) {
+          this.state = 'CSI';
+          index += 1;
+          continue;
+        }
+        if (code === 0x5d) {
+          this.state = 'OSC';
+          index += 1;
+          continue;
+        }
+        if (code >= 0x20 && code <= 0x2f) {
+          this.state = 'ESC_INTERMEDIATE';
+          index += 1;
+          continue;
+        }
+        if (code >= 0x30 && code <= 0x7e) {
+          this.state = 'TEXT';
+          index += 1;
+          continue;
+        }
+        this.state = 'TEXT';
+        continue;
+      }
+
+      if (code === ESC) {
+        this.state = 'ESCAPE';
+        index += 1;
+        continue;
+      }
+      if (code === C1_CSI) {
+        this.state = 'CSI';
+        index += 1;
+        continue;
+      }
+      if (code === C1_OSC) {
+        this.state = 'OSC';
+        index += 1;
+        continue;
+      }
+      if (code === 0x0d) {
+        // Treat progress redraws as a conservative token boundary. This keeps
+        // detection identical whether CR and the following text share a chunk.
+        emit(' ');
+        index += 1;
+        continue;
+      }
+      const allowedWhitespace = code === 0x09 || code === 0x0a;
+      const control =
+        (!allowedWhitespace && code < 0x20) ||
+        code === 0x7f ||
+        (code >= 0x80 && code <= 0x9f);
+      if (!control) emit(value);
+      index += 1;
+    }
+    return output;
+  }
+
+  finish(): string {
+    this.state = 'TEXT';
+    return '';
+  }
+}
 
 export class DownloadMarkerScanner {
-  private carry = '';
+  private history = '';
   private markerIndex: number | null = null;
+  private readonly normalizer = new StreamingTerminalNormalizer();
+
+  private match(normalized: string, final: boolean): boolean {
+    const window = this.history + normalized;
+    for (let index = 0; index < DOWNLOAD_MARKER_PATTERNS.length; index += 1) {
+      const pattern = DOWNLOAD_MARKER_PATTERNS[index];
+      const match = pattern?.exec(window);
+      if (!match) continue;
+      if (index === 10) {
+        const suffix = window.slice(match.index + match[0].length);
+        const token = suffix.startsWith(' ') ? suffix.slice(1) : null;
+        if (token !== null && /^request\b/.test(token)) continue;
+        if (
+          !final &&
+          (suffix.length === 0 ||
+            (token !== null && 'request'.startsWith(token)))
+        ) {
+          // `pull` is a marker, but `pull request` is harmless. Delay only this
+          // bounded right-context decision until the token or EOF completes.
+          continue;
+        }
+      }
+      this.markerIndex = index;
+      this.history = '';
+      return true;
+    }
+    this.history = window.slice(
+      Math.max(0, window.length - DOWNLOAD_MATCHER_HISTORY_CHARS),
+    );
+    return false;
+  }
 
   /** Returns true the first time a marker is observed. */
   scan(chunk: string): boolean {
     if (this.markerIndex !== null) return false;
-    // No trim: a leading/trailing space is meaningful when a marker spans chunks.
-    const normalized = stripTerminalControl(chunk).toLowerCase().replace(/\s+/g, ' ');
-    const window = this.carry + normalized;
-    for (let index = 0; index < DOWNLOAD_MARKER_PATTERNS.length; index += 1) {
-      const pattern = DOWNLOAD_MARKER_PATTERNS[index];
-      if (pattern && pattern.test(window)) {
-        this.markerIndex = index;
-        this.carry = '';
-        return true;
-      }
-    }
-    this.carry = window.slice(Math.max(0, window.length - SCANNER_CARRY_CHARS));
-    return false;
+    return this.match(this.normalizer.push(chunk), false);
+  }
+
+  /** Discards an incomplete terminal sequence at EOF and finalizes detection. */
+  finish(): boolean {
+    if (this.markerIndex !== null) return false;
+    return this.match(this.normalizer.finish(), true);
   }
 
   get detected(): boolean {
@@ -1751,7 +1931,8 @@ export class NodeProcessAdapter implements ProcessAdapter {
       const stderrHash = createHash('sha256');
       const stdoutDecoder = new StringDecoder('utf8');
       const stderrDecoder = new StringDecoder('utf8');
-      const scanner = new DownloadMarkerScanner();
+      const stdoutScanner = new DownloadMarkerScanner();
+      const stderrScanner = new DownloadMarkerScanner();
       let stdout = '';
       let stderr = '';
       let stdoutBytes = 0;
@@ -1776,7 +1957,11 @@ export class NodeProcessAdapter implements ProcessAdapter {
         }
       };
 
-      const blocked = (): boolean => outputLimited || scanner.detected;
+      const downloadDetected = (): boolean =>
+        stdoutScanner.detected || stderrScanner.detected;
+      const downloadMarkerIndex = (): number | null =>
+        stdoutScanner.marker ?? stderrScanner.marker;
+      const blocked = (): boolean => outputLimited || downloadDetected();
 
       const emit = (
         overrides: Partial<ProcessResult> & Pick<ProcessResult, 'code' | 'signal'>,
@@ -1799,8 +1984,8 @@ export class NodeProcessAdapter implements ProcessAdapter {
           stderrSha256: stderrHash.digest('hex'),
           timedOut,
           outputLimited,
-          downloadDetected: scanner.detected,
-          downloadMarkerIndex: scanner.marker,
+          downloadDetected: downloadDetected(),
+          downloadMarkerIndex: downloadMarkerIndex(),
           stdinFailed,
           stdinErrorCode,
           spawnFailed: false,
@@ -1878,6 +2063,7 @@ export class NodeProcessAdapter implements ProcessAdapter {
         if (stream === 'stdout') stdoutBytes += chunk.byteLength;
         else stderrBytes += chunk.byteLength;
         const text = decoder.write(chunk);
+        const scanner = stream === 'stdout' ? stdoutScanner : stderrScanner;
         if (scanner.scan(text)) {
           stdout = '';
           stderr = '';
@@ -1904,7 +2090,13 @@ export class NodeProcessAdapter implements ProcessAdapter {
       child.on('close', (code: number | null, signal: NodeJS.Signals | null) => {
         // Deferred one macrotask so a pending stdin EPIPE (child exited before
         // consuming stdin) is recorded before the result is emitted.
-        setImmediate(() => emit({ code, signal: signal ?? null }));
+        setImmediate(() => {
+          stdoutScanner.scan(stdoutDecoder.end());
+          stderrScanner.scan(stderrDecoder.end());
+          stdoutScanner.finish();
+          stderrScanner.finish();
+          emit({ code, signal: signal ?? null });
+        });
       });
 
       timeoutTimer = setTimeout(() => {

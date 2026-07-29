@@ -25,6 +25,7 @@ import {
   GENERATION_TIMEOUT_MS,
   HarnessBlockedError,
   MAX_CAPTURE_BYTES,
+  MAX_DOWNLOAD_MARKER_NORMALIZED_SPAN,
   MAX_PREVIEW_BYTES,
   PARENT_ENV_FORWARD_ALLOWLIST,
   PLATFORM_INJECTED_CHILD_ENV_NAMES,
@@ -809,6 +810,50 @@ describe('Finding 3: child environment isolation', () => {
 // Finding 4 — generation-time pull/download prevention
 // ---------------------------------------------------------------------------
 
+const detectedFor = (chunks: readonly string[]): boolean => {
+  const scanner = new DownloadMarkerScanner();
+  for (const chunk of chunks) scanner.scan(chunk);
+  scanner.finish();
+  return scanner.detected;
+};
+
+const deterministicChunks = (value: string, seed: number): string[] => {
+  const chunks: string[] = [];
+  let offset = 0;
+  let state = seed >>> 0;
+  while (offset < value.length) {
+    state = (state * 1_664_525 + 1_013_904_223) >>> 0;
+    const size = 1 + (state % 17);
+    chunks.push(value.slice(offset, offset + size));
+    offset += size;
+  }
+  return chunks;
+};
+
+const expectChunkInvariant = (value: string, expected = true): void => {
+  expect(detectedFor([value])).toBe(expected);
+  for (let split = 0; split <= value.length; split += 1) {
+    expect(detectedFor([value.slice(0, split), value.slice(split)])).toBe(expected);
+  }
+  const oneThird = Math.floor(value.length / 3);
+  const twoThirds = Math.floor((value.length * 2) / 3);
+  expect(
+    detectedFor([
+      value.slice(0, oneThird),
+      value.slice(oneThird, twoThirds),
+      value.slice(twoThirds),
+    ]),
+  ).toBe(expected);
+  expect(detectedFor([...value])).toBe(expected);
+  for (const seed of [1, 7, 42, 0x5eed]) {
+    expect(detectedFor(deterministicChunks(value, seed))).toBe(expected);
+  }
+};
+
+const firstGap = ` ${'x'.repeat(78)} `;
+const secondGap = ` ${'y'.repeat(158)} `;
+const maximumCompositeMarker = `model${firstGap}not found${secondGap}pull`;
+
 describe('Finding 4: download marker detection', () => {
   it.each([
     'pulling manifest',
@@ -844,6 +889,88 @@ describe('Finding 4: download marker detection', () => {
   it('detects a layer progress bar', () => {
     const scanner = new DownloadMarkerScanner();
     expect(scanner.scan('████████░░░░ 42% 12MB/s')).toBe(true);
+  });
+
+  it('derives enough normalized history for the maximum bounded composite marker', () => {
+    expect(maximumCompositeMarker).toHaveLength(MAX_DOWNLOAD_MARKER_NORMALIZED_SPAN);
+    expectChunkInvariant(maximumCompositeMarker);
+  });
+
+  it('keeps every supported marker family chunk-boundary invariant', () => {
+    for (const marker of [
+      'pulling manifest',
+      'pulling 4f2b1c9a0e88',
+      'downloading model layer',
+      'download complete',
+      'fetching layers',
+      'verifying sha',
+      'verifying sha256',
+      'verifying digest',
+      'writing manifest',
+      'removing any unused layers',
+      'try pulling it first',
+      '42% 12MiB/s',
+      '████',
+      '42% |',
+    ]) {
+      expectChunkInvariant(marker);
+    }
+  });
+
+  it('normalizes split CSI and OSC sequences inside marker words', () => {
+    for (const marker of [
+      'pu[31mlling manifest',
+      'pulling mani[1;32mfest',
+      'verifying [33msha256',
+      'writing mani[0mfest',
+      'pu]0;hiddenlling manifest',
+      'verifying ]0;hidden\\sha256',
+    ]) {
+      expectChunkInvariant(marker);
+    }
+  });
+
+  it('discards an incomplete terminal sequence at EOF', () => {
+    const scanner = new DownloadMarkerScanner();
+    expect(scanner.scan('ordinary output]0;unterminated title')).toBe(false);
+    expect(scanner.finish()).toBe(false);
+    expect(scanner.detected).toBe(false);
+  });
+
+  it('normalizes case, whitespace, CR progress, and mixed controls invariantly', () => {
+    for (const marker of [
+      'PULLING\t  MANIFEST',
+      'pulling\nmanifest',
+      'pulling\rmanifest',
+      'pulling\r\nmanifest',
+      'VERifying \u0000\u0008SHA256',
+    ]) {
+      expectChunkInvariant(marker);
+    }
+  });
+
+  it('does not extend either bounded composite gap', () => {
+    const tooWideFirst = `model ${'x'.repeat(79)} not found${secondGap}pull`;
+    const tooWideSecond = `model${firstGap}not found ${'y'.repeat(159)} pull`;
+    expectChunkInvariant(tooWideFirst, false);
+    expectChunkInvariant(tooWideSecond, false);
+  });
+
+  it('retains the bounded pull-request right context without losing a real marker', () => {
+    expectChunkInvariant(`${maximumCompositeMarker} request`, false);
+    expectChunkInvariant(`${maximumCompositeMarker} reqx`);
+    expectChunkInvariant(`${maximumCompositeMarker} requested`);
+  });
+
+  it('keeps conservative direct-marker behavior explicit for harmless prose', () => {
+    for (const text of [
+      'The model documentation was not found in the pull request.',
+      'The deployment is verifying a local checksum.',
+      'The UI is writing a manifest description.',
+    ]) {
+      expectChunkInvariant(text, false);
+    }
+    expectChunkInvariant('Fetching is disabled in this harness.');
   });
 
   it('ignores ordinary generation prose', () => {
@@ -1123,6 +1250,46 @@ const fakeRequest = (overrides: Partial<ProcessRequest> = {}): ProcessRequest =>
 });
 
 describe('Finding 6: child process lifecycle', () => {
+  it.each(['stdout', 'stderr'] as const)(
+    'blocks a maximum composite marker from fake-child %s even on exit zero',
+    async (stream) => {
+      const { child, adapter } = fakeProcess({ killGraceMs: 5 });
+      const promise = adapter.run(fakeRequest());
+      const target = stream === 'stdout' ? child.stdout : child.stderr;
+      target.emit('data', Buffer.from(maximumCompositeMarker.slice(0, 180)));
+      target.emit('data', Buffer.from(maximumCompositeMarker.slice(180)));
+      child.emit('close', 0, null);
+      const result = await promise;
+      expect(result.downloadDetected).toBe(true);
+      expect(result.stdout).toBe('');
+      expect(result.stderr).toBe('');
+      expect(child.signals).toContain('SIGTERM');
+    },
+  );
+
+  it('blocks a fake child whose in-word CSI sequence is split across chunks', async () => {
+    const { child, adapter } = fakeProcess();
+    const promise = adapter.run(fakeRequest());
+    child.stdout.emit('data', Buffer.from('pu['));
+    child.stdout.emit('data', Buffer.from('31mlling manifest'));
+    child.emit('close', 0, null);
+    const result = await promise;
+    expect(result.downloadDetected).toBe(true);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toBe('');
+    expect(child.signals).toContain('SIGTERM');
+  });
+
+  it('does not create a marker by concatenating stdout with stderr', async () => {
+    const { child, adapter } = fakeProcess();
+    const promise = adapter.run(fakeRequest());
+    child.stdout.emit('data', Buffer.from('pull'));
+    child.stderr.emit('data', Buffer.from('ing manifest'));
+    child.emit('close', 0, null);
+    const result = await promise;
+    expect(result.downloadDetected).toBe(false);
+  });
+
   it('reports a synchronous spawn failure without leaving a sandbox behind', async () => {
     const removals: ChildSandbox[] = [];
     const adapter = new NodeProcessAdapter({
@@ -1892,6 +2059,8 @@ describe('compiled dist path', () => {
 
   interface DistHarness {
     CHECKER_CONTRACT_VERSION: string;
+    DownloadMarkerScanner: typeof DownloadMarkerScanner;
+    MAX_DOWNLOAD_MARKER_NORMALIZED_SPAN: number;
     evaluateScenario: typeof evaluateScenario;
     aggregateVerdict: typeof aggregateVerdict;
     computeStaticCodeBinding: typeof computeStaticCodeBinding;
@@ -1921,6 +2090,23 @@ describe('compiled dist path', () => {
       const distVerdict = dist.aggregateVerdict(dist.evaluateScenario(id, response));
       expect(`${id} ${distVerdict} ${response}`).toBe(`${id} ${expected} ${response}`);
       expect(distVerdict).toBe(aggregateVerdict(evaluateScenario(id, response)));
+    }
+  });
+
+  it('runs long composite and partial-ANSI markers on the built dist', () => {
+    const dist = nodeRequire(distHarnessPath) as DistHarness;
+    expect(dist.MAX_DOWNLOAD_MARKER_NORMALIZED_SPAN).toBe(
+      MAX_DOWNLOAD_MARKER_NORMALIZED_SPAN,
+    );
+    for (const chunks of [
+      [...maximumCompositeMarker],
+      ['pu[', '31mlling manifest'],
+      ['verifying ]0;hidden', '\\sha256'],
+    ]) {
+      const scanner = new dist.DownloadMarkerScanner();
+      for (const chunk of chunks) scanner.scan(chunk);
+      scanner.finish();
+      expect(scanner.detected).toBe(true);
     }
   });
 
