@@ -1,8 +1,11 @@
 import { createHash } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
+import type { ChildProcess, SpawnOptions } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import { AiFailureKind, AiProviderError, ArtifactKind, Capability, NotImplementedError } from '@chunsik/core';
 import { ClaudeCliProvider, CodexCliProvider, OllamaCliProvider, maskSecrets } from './index';
+import { INHERITED_ENV_ALLOWLIST, createContainedCliRunner } from './cli-runner';
 import type { CliRunOptions, CliRunner, CliRunResult } from './cli-runner';
 
 const PROMPT = 'do the thing';
@@ -270,6 +273,228 @@ describe('OllamaCliProvider (CAP-009, ADR-0030) — suggest-only local code gene
       (c) => c.capability === Capability.CODE_IMPLEMENTATION,
     );
     expect(code?.priority).toBeLessThan(claudeCode?.priority ?? 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Provider regression through the CONTAINED runner. No real Claude/Codex/Ollama
+// process is ever spawned: `spawnFn` is injected and the child is a fake.
+// ---------------------------------------------------------------------------
+
+const FAKE_PARENT_ENV: NodeJS.ProcessEnv = {
+  PATH: '/usr/bin:/bin',
+  HOME: '/Users/tester',
+  LANG: 'en_US.UTF-8',
+  ANTHROPIC_API_KEY: 'parent-api-key',
+  GITHUB_TOKEN: 'parent-token',
+  DISCORD_BOT_TOKEN: 'parent-bot-token',
+  NODE_OPTIONS: '--require /parent/preload.js',
+  HTTPS_PROXY: 'http://proxy:8080',
+  OLLAMA_HOST: 'http://elsewhere:11434',
+};
+
+const FAKE_TEMP_DIR = '/fake/runner-owned-tmp';
+
+interface ContainedProbe {
+  runner: CliRunner;
+  spawns: Array<{ bin: string; args: readonly string[]; options: SpawnOptions }>;
+  stdinWrites: string[];
+}
+
+/** Minimal stand-in for a spawned child: records stdin writes, emits nothing on its own. */
+class FakeSpawnedChild extends EventEmitter {
+  readonly stdout = new EventEmitter();
+  readonly stderr = new EventEmitter();
+  readonly stdin: EventEmitter & {
+    write: (data: string, callback?: (error?: Error | null) => void) => boolean;
+    end: () => void;
+  };
+
+  constructor(stdinWrites: string[]) {
+    super();
+    const stdin = new EventEmitter() as EventEmitter & {
+      write: (data: string, callback?: (error?: Error | null) => void) => boolean;
+      end: () => void;
+    };
+    stdin.write = (data, callback) => {
+      stdinWrites.push(data);
+      callback?.(null);
+      return true;
+    };
+    stdin.end = () => undefined;
+    this.stdin = stdin;
+  }
+
+  kill(): boolean {
+    return true;
+  }
+}
+
+/** A contained runner whose child immediately emits `stdout` and closes with `code`. */
+function containedProbe(stdout: string, code: number | null = 0): ContainedProbe {
+  const spawns: ContainedProbe['spawns'] = [];
+  const stdinWrites: string[] = [];
+  const runner = createContainedCliRunner({
+    parentEnv: FAKE_PARENT_ENV,
+    createTempDir: () => FAKE_TEMP_DIR,
+    removeTempDir: () => undefined,
+    spawnFn: (bin, args, options) => {
+      spawns.push({ bin, args, options });
+      const child = new FakeSpawnedChild(stdinWrites);
+      setImmediate(() => {
+        if (stdout.length > 0) child.stdout.emit('data', Buffer.from(stdout, 'utf8'));
+        child.emit('close', code, null);
+      });
+      return child as unknown as ChildProcess;
+    },
+  });
+  return { runner, spawns, stdinWrites };
+}
+
+describe('Provider regression through the contained runner', () => {
+  it('Claude keeps its executable/args/stdin/cwd contract and passes NO caller env', async () => {
+    const probe = containedProbe('  hi there  ');
+    const res = await new ClaudeCliProvider('claude', { runner: probe.runner }).execute({
+      capability: Capability.GENERAL_CHAT,
+      prompt: PROMPT,
+    });
+    expect(probe.spawns).toHaveLength(1);
+    expect(probe.spawns[0]?.bin).toBe('claude');
+    expect(probe.spawns[0]?.args).toEqual(['-p']);
+    expect(probe.spawns[0]?.options.cwd).toBe(tmpdir()); // Claude's neutral-cwd contract
+    expect(probe.spawns[0]?.options.shell).toBe(false);
+    expect(probe.stdinWrites).toEqual([PROMPT]); // prompt on stdin, never argv
+    expect(res.text).toBe('hi there');
+    expect(res.artifacts?.[0]?.kind).toBe(ArtifactKind.MARKDOWN_REPORT);
+  });
+
+  it('Claude keeps its HOME/authentication environment while parent secrets are dropped', async () => {
+    const probe = containedProbe('ok');
+    await new ClaudeCliProvider('claude', { runner: probe.runner }).execute({
+      capability: Capability.GENERAL_CHAT,
+      prompt: PROMPT,
+    });
+    const env = (probe.spawns[0]?.options.env ?? {}) as Record<string, string>;
+    // Claude passes no `options.env`, so the child gets the inherited allow-list + TMPDIR only.
+    expect(Object.keys(env).sort()).toEqual(['HOME', 'LANG', 'PATH', 'TMPDIR']);
+    expect(env.HOME).toBe('/Users/tester'); // OAuth / global config still reachable
+    expect(env.PATH).toBe('/usr/bin:/bin');
+    expect(env.TMPDIR).toBe(FAKE_TEMP_DIR);
+    for (const forbidden of [
+      'ANTHROPIC_API_KEY',
+      'GITHUB_TOKEN',
+      'DISCORD_BOT_TOKEN',
+      'NODE_OPTIONS',
+      'HTTPS_PROXY',
+      'OLLAMA_HOST',
+    ]) {
+      expect(env[forbidden]).toBeUndefined();
+    }
+  });
+
+  it('Claude keeps its existing error mapping through the contained runner', async () => {
+    // non-zero exit is still classified before empty output (unchanged precedence)
+    await expect(
+      new ClaudeCliProvider('claude', { runner: containedProbe('', 2).runner }).execute({
+        capability: Capability.GENERAL_CHAT,
+        prompt: PROMPT,
+      }),
+    ).rejects.toMatchObject({ kind: AiFailureKind.EXECUTION_FAILED });
+    // exit 0 with nothing on stdout is still EMPTY_OUTPUT
+    await expect(
+      new ClaudeCliProvider('claude', { runner: containedProbe('   ', 0).runner }).execute({
+        capability: Capability.GENERAL_CHAT,
+        prompt: PROMPT,
+      }),
+    ).rejects.toMatchObject({ kind: AiFailureKind.EMPTY_OUTPUT });
+    const authProbe = createContainedCliRunner({
+      parentEnv: FAKE_PARENT_ENV,
+      createTempDir: () => FAKE_TEMP_DIR,
+      removeTempDir: () => undefined,
+      spawnFn: () => {
+        throw new Error('spawn claude ENOENT');
+      },
+    });
+    await expect(
+      new ClaudeCliProvider('claude', { runner: authProbe }).execute({
+        capability: Capability.GENERAL_CHAT,
+        prompt: PROMPT,
+      }),
+    ).rejects.toMatchObject({ kind: AiFailureKind.UNAVAILABLE });
+  });
+
+  it('Ollama keeps `run <model>`, stdin, colour env, and neutral cwd', async () => {
+    const probe = containedProbe('  proposed change  ');
+    const res = await new OllamaCliProvider({ runner: probe.runner }).execute({
+      capability: Capability.CODE_IMPLEMENTATION,
+      prompt: PROMPT,
+      workspace: { id: 'w1', rootPath: '/repo/should-not-be-used', kind: 'local-clone' },
+    });
+    expect(probe.spawns[0]?.bin).toBe('ollama');
+    expect(probe.spawns[0]?.args).toEqual(['run', 'llama3.1']);
+    expect(probe.spawns[0]?.options.cwd).toBe(tmpdir()); // neutral cwd preserved
+    expect(probe.spawns[0]?.options.cwd).not.toBe('/repo/should-not-be-used');
+    expect(probe.stdinWrites).toEqual([PROMPT]);
+    const env = (probe.spawns[0]?.options.env ?? {}) as Record<string, string>;
+    expect(env.NO_COLOR).toBe('1');
+    expect(env.CLICOLOR).toBe('0');
+    expect(env.CLICOLOR_FORCE).toBe('0');
+    expect(env.HOME).toBe('/Users/tester'); // model inventory location preserved
+    expect(env.TMPDIR).toBe(FAKE_TEMP_DIR);
+    expect(env.OLLAMA_HOST).toBeUndefined();
+    expect(env.OLLAMA_MODEL).toBeUndefined();
+    expect(res.text).toBe('proposed change');
+    expect(res.audit?.model).toBe('llama3.1');
+  });
+
+  it('Ollama output sanitation still owns response text (the runner does not pre-strip stdout)', async () => {
+    const framed = `${String.fromCharCode(0x1b)}[K## 결과${String.fromCharCode(0x00)}`;
+    const probe = containedProbe(framed);
+    const res = await new OllamaCliProvider({ runner: probe.runner }).execute({
+      capability: Capability.GENERAL_CHAT,
+      prompt: PROMPT,
+    });
+    expect(res.text).toBe('## 결과'); // sanitized by the adapter, exactly as before
+  });
+
+  it('Codex spawns no process at all', async () => {
+    let spawnCalls = 0;
+    // Codex holds no runner by construction; this contained runner exists only to
+    // prove that nothing in the Codex path can reach a spawn.
+    createContainedCliRunner({
+      spawnFn: () => {
+        spawnCalls += 1;
+        return new EventEmitter() as unknown as ChildProcess;
+      },
+    });
+    const codex = new CodexCliProvider('codex');
+    await expect(
+      codex.execute({ capability: Capability.CODE_IMPLEMENTATION, prompt: PROMPT }),
+    ).rejects.toBeInstanceOf(NotImplementedError);
+    await expect(codex.isAvailable()).rejects.toBeInstanceOf(NotImplementedError);
+    expect(spawnCalls).toBe(0);
+  });
+
+  it('never retries: exactly one spawn per provider call, for success and for failure', async () => {
+    const ok = containedProbe('fine');
+    await new OllamaCliProvider({ runner: ok.runner }).execute({
+      capability: Capability.GENERAL_CHAT,
+      prompt: PROMPT,
+    });
+    expect(ok.spawns).toHaveLength(1);
+
+    const bad = containedProbe('', 1);
+    await expect(
+      new OllamaCliProvider({ runner: bad.runner }).execute({
+        capability: Capability.GENERAL_CHAT,
+        prompt: PROMPT,
+      }),
+    ).rejects.toBeInstanceOf(AiProviderError);
+    expect(bad.spawns).toHaveLength(1);
+  });
+
+  it('exposes only the allow-listed inherited names (contract documented in one place)', () => {
+    expect([...INHERITED_ENV_ALLOWLIST]).toEqual(['PATH', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE']);
   });
 });
 
