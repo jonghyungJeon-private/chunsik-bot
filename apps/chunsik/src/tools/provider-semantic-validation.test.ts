@@ -1054,9 +1054,13 @@ describe('Finding 4: download marker detection', () => {
       const blocked = error as HarnessBlockedError;
       expect(blocked.code).toBe('MODEL_DOWNLOAD_DETECTED');
       expect(Object.keys(blocked.details).sort()).toEqual([
+        'callOrdinal',
+        'commandCategory',
         'downloadMarkerIndex',
         'exitCode',
         'killEscalated',
+        'phase',
+        'scenarioId',
         'signal',
         'stderrBytes',
         'stderrSha256',
@@ -1066,6 +1070,14 @@ describe('Finding 4: download marker detection', () => {
         'tempCleanupFailed',
         'timedOut',
       ]);
+      // Attribution is additive: the original bounded metadata is preserved.
+      expect(blocked.details).toMatchObject({
+        phase: 'GENERATION',
+        commandCategory: 'GENERATION',
+        scenarioId: 'C',
+        callOrdinal: 1,
+        downloadMarkerIndex: 2,
+      });
       expect(JSON.stringify(blocked.details)).not.toContain('pulling');
     }
   });
@@ -1594,6 +1606,207 @@ describe('sandbox cleanup failure fails closed on every provider path', () => {
     expect(() => assertProcessResultSafe(processResult())).not.toThrow();
     expect(() => assertProcessResultSafe(processResult({ timedOut: true }))).not.toThrow();
     expect(() => assertProcessResultSafe(processResult({ code: 7 }))).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bounded structural failure attribution
+// ---------------------------------------------------------------------------
+
+describe('bounded failure attribution', () => {
+  const RAW_OUTPUT = 'RAW-PROVIDER-OUTPUT-MUST-NOT-LEAK';
+  const versionOk = (): ProcessResult =>
+    processResult({ stdout: 'ollama version synthetic' });
+  const inventoryOk = (): ProcessResult =>
+    processResult({ stdout: 'NAME ID SIZE\nllama3.1:latest abc 1GB' });
+  const overflow = (): ProcessResult =>
+    processResult({
+      code: null,
+      signal: 'SIGTERM',
+      stdout: RAW_OUTPUT,
+      stderr: RAW_OUTPUT,
+      outputLimited: true,
+      stdoutBytes: MAX_CAPTURE_BYTES + 1,
+      stdoutSha256: '2'.repeat(64),
+    });
+
+  const blockedFrom = async (promise: Promise<unknown>): Promise<HarnessBlockedError> => {
+    try {
+      await promise;
+    } catch (error) {
+      return error as HarnessBlockedError;
+    }
+    throw new Error('expected a blocked error');
+  };
+
+  it('attributes a --version overflow to the inventory version command', async () => {
+    const fixture = approvedFixture({ mode: 'probe-provider', scenarios: [], calls: 1 });
+    const harness = new ProviderSemanticHarness(
+      new QueueAdapter([overflow()]),
+      new StaticInspector(),
+    );
+    const blocked = await blockedFrom(harness.probeProvider(fixture.config));
+    expect(blocked.code).toBe('OUTPUT_LIMIT_EXCEEDED');
+    expect(blocked.details).toMatchObject({
+      phase: 'INVENTORY',
+      commandCategory: 'VERSION',
+      scenarioId: null,
+      callOrdinal: null,
+    });
+  });
+
+  it('attributes a list overflow to the inventory list command', async () => {
+    const fixture = approvedFixture({ mode: 'probe-provider', scenarios: [], calls: 1 });
+    const harness = new ProviderSemanticHarness(
+      new QueueAdapter([versionOk(), overflow()]),
+      new StaticInspector(),
+    );
+    const blocked = await blockedFrom(harness.probeProvider(fixture.config));
+    expect(blocked.code).toBe('OUTPUT_LIMIT_EXCEEDED');
+    expect(blocked.details).toMatchObject({
+      phase: 'INVENTORY',
+      commandCategory: 'INVENTORY',
+      scenarioId: null,
+      callOrdinal: null,
+    });
+  });
+
+  it('attributes a scenario A call 1 generation overflow', async () => {
+    const fixture = approvedFixture({ mode: 'run', scenarios: ['A'], calls: 1 });
+    const harness = new ProviderSemanticHarness(
+      new QueueAdapter([versionOk(), inventoryOk(), overflow()]),
+      new StaticInspector(),
+    );
+    const blocked = await blockedFrom(harness.run(fixture.config, 'run', ['A']));
+    expect(blocked.code).toBe('OUTPUT_LIMIT_EXCEEDED');
+    expect(blocked.details).toMatchObject({
+      phase: 'GENERATION',
+      commandCategory: 'GENERATION',
+      scenarioId: 'A',
+      callOrdinal: 1,
+    });
+  });
+
+  it('attributes a scenario E call 2 generation overflow during run-all', async () => {
+    const scenarios: ScenarioId[] = ['A', 'B', 'C', 'D', 'E'];
+    const fixture = approvedFixture({ mode: 'run-all', scenarios, calls: 2 });
+    const queue: ProcessResult[] = [versionOk(), inventoryOk()];
+    for (const id of scenarios) {
+      for (let ordinal = 1; ordinal <= 2; ordinal += 1) {
+        queue.push(
+          id === 'E' && ordinal === 2
+            ? overflow()
+            : processResult({ stdout: passingResponse[id] }),
+        );
+      }
+    }
+    const harness = new ProviderSemanticHarness(
+      new QueueAdapter(queue),
+      new StaticInspector(),
+    );
+    const blocked = await blockedFrom(harness.run(fixture.config, 'run-all', scenarios));
+    expect(blocked.code).toBe('OUTPUT_LIMIT_EXCEEDED');
+    expect(blocked.details).toMatchObject({
+      phase: 'GENERATION',
+      commandCategory: 'GENERATION',
+      scenarioId: 'E',
+      callOrdinal: 2,
+    });
+  });
+
+  it('never exposes raw Provider output in attributed evidence', async () => {
+    const fixture = approvedFixture({ mode: 'run', scenarios: ['A'], calls: 1 });
+    const harness = new ProviderSemanticHarness(
+      new QueueAdapter([versionOk(), inventoryOk(), overflow()]),
+      new StaticInspector(),
+    );
+    const blocked = await blockedFrom(harness.run(fixture.config, 'run', ['A']));
+    const serialized = JSON.stringify(blocked.details);
+    expect(serialized).not.toContain(RAW_OUTPUT);
+    expect(serialized).not.toContain('llama3.1:latest');
+    expect(serialized).not.toContain('/usr/');
+    for (const value of Object.values(blocked.details)) {
+      expect(['string', 'number', 'boolean', 'object']).toContain(typeof value);
+    }
+  });
+
+  it('keeps a cleanup failure bounded, fail-closed and attributed', async () => {
+    const fixture = approvedFixture({ mode: 'probe-provider', scenarios: [], calls: 1 });
+    const harness = new ProviderSemanticHarness(
+      new QueueAdapter([
+        processResult({ stdout: 'ollama version synthetic', tempCleanupFailed: true }),
+      ]),
+      new StaticInspector(),
+    );
+    const blocked = await blockedFrom(harness.probeProvider(fixture.config));
+    expect(blocked.code).toBe('SANDBOX_CLEANUP_FAILED');
+    expect(blocked.details).toMatchObject({
+      tempCleanupFailed: true,
+      phase: 'INVENTORY',
+      commandCategory: 'VERSION',
+    });
+    expect(JSON.stringify(blocked.details)).not.toContain('cleanup failed');
+  });
+
+  it('preserves violation precedence when attribution is attached', async () => {
+    const fixture = approvedFixture({ mode: 'run', scenarios: ['A'], calls: 1 });
+    const harness = new ProviderSemanticHarness(
+      new QueueAdapter([
+        versionOk(),
+        inventoryOk(),
+        processResult({
+          downloadDetected: true,
+          downloadMarkerIndex: 4,
+          outputLimited: true,
+          stdinFailed: true,
+          tempCleanupFailed: true,
+        }),
+      ]),
+      new StaticInspector(),
+    );
+    const blocked = await blockedFrom(harness.run(fixture.config, 'run', ['A']));
+    // Download stays the most specific violation; attribution does not reorder it.
+    expect(blocked.code).toBe('MODEL_DOWNLOAD_DETECTED');
+    expect(blocked.details).toMatchObject({
+      downloadMarkerIndex: 4,
+      phase: 'GENERATION',
+      scenarioId: 'A',
+      callOrdinal: 1,
+    });
+  });
+
+  it('leaves the successful probe and run-all contracts unchanged', async () => {
+    const probeFixture = approvedFixture({
+      mode: 'probe-provider',
+      scenarios: [],
+      calls: 1,
+    });
+    const probe = new ProviderSemanticHarness(
+      new QueueAdapter([versionOk(), inventoryOk()]),
+      new StaticInspector(),
+    );
+    await expect(probe.probeProvider(probeFixture.config)).resolves.toMatchObject({
+      providerAvailable: true,
+      modelInstalled: true,
+    });
+
+    const scenarios: ScenarioId[] = ['A', 'B', 'C', 'D', 'E'];
+    const runFixture = approvedFixture({ mode: 'run-all', scenarios, calls: 2 });
+    const queue: ProcessResult[] = [versionOk(), inventoryOk()];
+    for (const id of scenarios) {
+      for (let ordinal = 1; ordinal <= 2; ordinal += 1) {
+        queue.push(processResult({ stdout: passingResponse[id] }));
+      }
+    }
+    const runAll = new ProviderSemanticHarness(
+      new QueueAdapter(queue),
+      new StaticInspector(),
+    );
+    const records = await runAll.run(runFixture.config, 'run-all', scenarios);
+    expect(records).toHaveLength(10);
+    expect(records.map((record) => record.automatedVerdict)).toEqual(
+      Array.from({ length: 10 }, () => 'AUTOMATED_PASS'),
+    );
   });
 });
 
@@ -2194,6 +2407,7 @@ describe('compiled dist path', () => {
     evaluateScenario: typeof evaluateScenario;
     aggregateVerdict: typeof aggregateVerdict;
     computeStaticCodeBinding: typeof computeStaticCodeBinding;
+    ProviderSemanticHarness: typeof ProviderSemanticHarness;
   }
 
   it('runs representative checker cases identically on the built dist', () => {
@@ -2250,6 +2464,42 @@ describe('compiled dist path', () => {
 
   it('accepts the freshly built real repository tree', () => {
     expect(() => computeStaticCodeBinding(state, repoRoot)).not.toThrow();
+  });
+
+  it('attributes bounded failures identically on the built dist', async () => {
+    const dist = nodeRequire(distHarnessPath) as DistHarness;
+    const cases: ReadonlyArray<
+      readonly [ProcessResult[], Record<string, string | number | null>]
+    > = [
+      [
+        [processResult({ outputLimited: true })],
+        { phase: 'INVENTORY', commandCategory: 'VERSION', scenarioId: null, callOrdinal: null },
+      ],
+      [
+        [processResult({ stdout: 'ollama version synthetic' }), processResult({ outputLimited: true })],
+        {
+          phase: 'INVENTORY',
+          commandCategory: 'INVENTORY',
+          scenarioId: null,
+          callOrdinal: null,
+        },
+      ],
+    ];
+    for (const [queue, expected] of cases) {
+      const fixture = approvedFixture({ mode: 'probe-provider', scenarios: [], calls: 1 });
+      const harness = new dist.ProviderSemanticHarness(
+        new QueueAdapter(queue),
+        new StaticInspector(),
+      );
+      try {
+        await harness.probeProvider(fixture.config);
+        throw new Error('expected a blocked error');
+      } catch (error) {
+        const blocked = error as HarnessBlockedError;
+        expect(blocked.code).toBe('OUTPUT_LIMIT_EXCEEDED');
+        expect(blocked.details).toMatchObject(expected);
+      }
+    }
   });
 
   it('smoke-tests the compiled CLI parser', () => {

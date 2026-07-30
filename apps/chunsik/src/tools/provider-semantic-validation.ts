@@ -2229,6 +2229,78 @@ function inventoryContainsModel(inventory: string, model: string): boolean {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Bounded structural failure attribution
+// ---------------------------------------------------------------------------
+
+export type FailurePhase = 'INVENTORY' | 'GENERATION';
+export type FailureCommandCategory = 'VERSION' | 'INVENTORY' | 'GENERATION';
+
+/**
+ * Closed, deterministic description of WHERE a child failure happened. Every
+ * value is a fixed enum member, a known scenario id, a committed call ordinal,
+ * or null — never derived from child output — so attaching it to BLOCKED
+ * evidence cannot leak Provider stdout/stderr, prompts, responses or argv.
+ */
+export interface FailureAttribution {
+  phase: FailurePhase;
+  commandCategory: FailureCommandCategory;
+  scenarioId: ScenarioId | null;
+  callOrdinal: number | null;
+}
+
+const VERSION_ATTRIBUTION: FailureAttribution = Object.freeze({
+  phase: 'INVENTORY',
+  commandCategory: 'VERSION',
+  scenarioId: null,
+  callOrdinal: null,
+});
+
+const INVENTORY_ATTRIBUTION: FailureAttribution = Object.freeze({
+  phase: 'INVENTORY',
+  commandCategory: 'INVENTORY',
+  scenarioId: null,
+  callOrdinal: null,
+});
+
+const generationAttribution = (
+  scenarioId: ScenarioId,
+  callOrdinal: number,
+): FailureAttribution =>
+  Object.freeze({
+    phase: 'GENERATION',
+    commandCategory: 'GENERATION',
+    scenarioId,
+    callOrdinal,
+  });
+
+/**
+ * Enriches a blocked failure with structural attribution, preserving the
+ * original code, the original bounded metadata and therefore the original
+ * precedence and cause classification. A specific failure is never replaced by
+ * a generic attribution failure, and an already-attributed error keeps the
+ * innermost (most precise) attribution.
+ */
+export function attributeHarnessFailure(
+  error: unknown,
+  attribution: FailureAttribution,
+): unknown {
+  if (!(error instanceof HarnessBlockedError)) return error;
+  if (Object.prototype.hasOwnProperty.call(error.details, 'phase')) return error;
+  return new HarnessBlockedError(error.code, { ...error.details, ...attribution });
+}
+
+async function withFailureAttribution<T>(
+  attribution: FailureAttribution,
+  operation: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    throw attributeHarnessFailure(error, attribution);
+  }
+}
+
 export class ProviderSemanticHarness {
   constructor(
     private readonly processAdapter: ProcessAdapter,
@@ -2277,22 +2349,26 @@ export class ProviderSemanticHarness {
       maxCaptureBytes: MAX_CAPTURE_BYTES,
       modelsDir: approved.modelsDir,
     };
-    const version = await this.processAdapter.run({ ...base, args: ['--version'] });
-    assertProcessResultSafe(version);
-    if (version.code !== 0 || version.timedOut) {
-      throw new HarnessBlockedError('PROVIDER_UNAVAILABLE', boundedProcessMetadata(version));
-    }
-    const inventory = await this.processAdapter.run({ ...base, args: ['list'] });
-    assertProcessResultSafe(inventory);
-    if (inventory.code !== 0 || inventory.timedOut) {
-      throw new HarnessBlockedError(
-        'MODEL_INVENTORY_UNAVAILABLE',
-        boundedProcessMetadata(inventory),
-      );
-    }
-    if (!inventoryContainsModel(inventory.stdout, model)) {
-      throw new HarnessBlockedError('MODEL_NOT_INSTALLED');
-    }
+    await withFailureAttribution(VERSION_ATTRIBUTION, async () => {
+      const version = await this.processAdapter.run({ ...base, args: ['--version'] });
+      assertProcessResultSafe(version);
+      if (version.code !== 0 || version.timedOut) {
+        throw new HarnessBlockedError('PROVIDER_UNAVAILABLE', boundedProcessMetadata(version));
+      }
+    });
+    await withFailureAttribution(INVENTORY_ATTRIBUTION, async () => {
+      const inventory = await this.processAdapter.run({ ...base, args: ['list'] });
+      assertProcessResultSafe(inventory);
+      if (inventory.code !== 0 || inventory.timedOut) {
+        throw new HarnessBlockedError(
+          'MODEL_INVENTORY_UNAVAILABLE',
+          boundedProcessMetadata(inventory),
+        );
+      }
+      if (!inventoryContainsModel(inventory.stdout, model)) {
+        throw new HarnessBlockedError('MODEL_NOT_INSTALLED');
+      }
+    });
   }
 
   async probeProvider(config: HarnessConfig): Promise<{
@@ -2334,49 +2410,54 @@ export class ProviderSemanticHarness {
     for (const fixture of fixtures) {
       const request = renderScenario(fixture);
       for (let callOrdinal = 1; callOrdinal <= config.calls; callOrdinal += 1) {
-        const started = Date.now();
-        const result = await provider.execute({
-          ...request,
-          timeoutMs: GENERATION_TIMEOUT_MS,
-        });
-        const exitCode = Number(result.raw?.exitCode);
-        const audit = result.audit ?? {};
-        const auditValid =
-          audit.model === config.model &&
-          JSON.stringify(audit.sanitizedCommand) ===
-            JSON.stringify(['ollama', 'run', config.model]) &&
-          audit.promptSha256 === sha256(request.prompt) &&
-          audit.captureMode === 'pipe' &&
-          audit.colorDisabled === true &&
-          audit.outputSanitized === true;
-        if (
-          !Number.isInteger(exitCode) ||
-          exitCode !== 0 ||
-          !result.text.trim() ||
-          !auditValid
-        ) {
-          throw new HarnessBlockedError('INVALID_PROVIDER_RESULT');
-        }
-        const record = makeEvidenceRecord({
-          scenario: fixture,
-          callOrdinal,
-          head: config.expectedHead,
-          model: config.model,
-          prompt: request.prompt,
-          response: result.text,
-          durationMs: Date.now() - started,
-          exitCode,
-        });
-        records.push(record);
-        if (record.automatedVerdict === 'BLOCKED') {
-          throw new HarnessBlockedError('PROMPT_LEAK_DETECTED', {
-            scenarioId: record.scenarioId,
-            callOrdinal: record.callOrdinal,
-            leakCategory: record.leakCategory,
-            responseBytes: record.responseBytes,
-            responseSha256: record.responseSha256,
-          });
-        }
+        await withFailureAttribution(
+          generationAttribution(fixture.id, callOrdinal),
+          async () => {
+            const started = Date.now();
+            const result = await provider.execute({
+              ...request,
+              timeoutMs: GENERATION_TIMEOUT_MS,
+            });
+            const exitCode = Number(result.raw?.exitCode);
+            const audit = result.audit ?? {};
+            const auditValid =
+              audit.model === config.model &&
+              JSON.stringify(audit.sanitizedCommand) ===
+                JSON.stringify(['ollama', 'run', config.model]) &&
+              audit.promptSha256 === sha256(request.prompt) &&
+              audit.captureMode === 'pipe' &&
+              audit.colorDisabled === true &&
+              audit.outputSanitized === true;
+            if (
+              !Number.isInteger(exitCode) ||
+              exitCode !== 0 ||
+              !result.text.trim() ||
+              !auditValid
+            ) {
+              throw new HarnessBlockedError('INVALID_PROVIDER_RESULT');
+            }
+            const record = makeEvidenceRecord({
+              scenario: fixture,
+              callOrdinal,
+              head: config.expectedHead,
+              model: config.model,
+              prompt: request.prompt,
+              response: result.text,
+              durationMs: Date.now() - started,
+              exitCode,
+            });
+            records.push(record);
+            if (record.automatedVerdict === 'BLOCKED') {
+              throw new HarnessBlockedError('PROMPT_LEAK_DETECTED', {
+                scenarioId: record.scenarioId,
+                callOrdinal: record.callOrdinal,
+                leakCategory: record.leakCategory,
+                responseBytes: record.responseBytes,
+                responseSha256: record.responseSha256,
+              });
+            }
+          },
+        );
       }
     }
     return records;
