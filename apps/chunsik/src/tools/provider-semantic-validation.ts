@@ -760,13 +760,30 @@ function claimsExternalNameAuthority(props: readonly Proposition[]): boolean {
   );
 }
 
+/**
+ * Negation must tolerate the same opening quotation mark that
+ * POSITIVE_ATTRIBUTION_BEFORE tolerates (Sprint 2A-E3, M3). Negation is tested
+ * first, so if only the positive pattern were quote-tolerant a quoted denial
+ * ("the checklist is not \"Blue Lantern\"") would invert into an attribution.
+ */
 const NEGATION_BEFORE =
-  /\b(?:not|no|never|no longer|rather than|instead of|other than)\s+(?:(?:the|a|an|its|our|your)\s+)?(?:[\w-]+\s+){0,3}$/;
+  /\b(?:not|no|never|no longer|rather than|instead of|other than)\s+(?:(?:the|a|an|its|our|your)\s+)?(?:[\w-]+\s+){0,3}(?:["'“]\s*)?$/;
 
 const NEGATION_AFTER = /^\s*(?:is|are|was|were)?\s*(?:not|no longer|never)\b/;
 
+/**
+ * Attribution verbs, optionally followed by a determiner and a short noun
+ * phrase, immediately before the value being attributed.
+ *
+ * Sprint 2A-E3 (M3) adds two things the harness's own fixtures require:
+ * the choosing/naming verb family (`chose … as the name`), and tolerance for an
+ * opening quotation mark directly before the value. The prompt presents these
+ * values quoted (`"semantic-validation"`), so an answer that follows the prompt
+ * faithfully quotes them too — without this the quote broke the `$` anchor and
+ * a correct positive attribution was demoted to MENTION_ONLY.
+ */
 const POSITIVE_ATTRIBUTION_BEFORE =
-  /\b(?:is|are|was|were|remains|remain|stays|stay|be|named|called|call|calling|use|uses|using|through|via|referred to as|refer to|refers to|known as|means|=|:)\s+(?:(?:the|a|an|currently|still|now)\s+)?(?:[\w-]+\s+){0,2}$/;
+  /\b(?:is|are|was|were|remains|remain|stays|stay|be|named|called|call|calling|choose|chooses|chose|pick|picks|picked|select|selects|selected|use|uses|using|through|via|referred to as|refer to|refers to|known as|means|=|:)\s+(?:(?:the|a|an|currently|still|now)\s+)?(?:[\w-]+\s+){0,2}(?:["'“]\s*)?$/;
 
 type Attribution = 'POSITIVE' | 'NEGATIVE' | 'QUESTION' | 'MENTION_ONLY' | 'ABSENT';
 

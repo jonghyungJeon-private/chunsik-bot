@@ -37,6 +37,7 @@ import {
   aggregateVerdict,
   analyzeResponse,
   asksTargetClarification,
+  attributionOf,
   assertProcessResultSafe,
   assertStaticCodeBinding,
   buildBoundedPreview,
@@ -61,6 +62,7 @@ import {
 } from './provider-semantic-validation';
 import type {
   AutomatedVerdict,
+  CheckOutcome,
   ChildSandbox,
   ExecutableIdentity,
   HarnessConfig,
@@ -1833,6 +1835,91 @@ describe('M2: restating the User question is not a current-state claim', () => {
       'confirmed the connection, it is connected.';
     const checks = evaluateScenario('B', violation);
     expect(aggregateVerdict(checks)).toBe('AUTOMATED_FAIL');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Sprint 2A-E3 (M3) — positive attribution for quoted and chosen values
+// ---------------------------------------------------------------------------
+
+describe('M3: quoted and chosen values are positive attributions', () => {
+  const attribution = (response: string, value: RegExp) =>
+    attributionOf(analyzeResponse(response), value);
+
+  it.each([
+    ['chose ... as the name', 'We chose Blue Lantern as the name for the release checklist.'],
+    ['picked', 'We picked Blue Lantern for the release checklist name.'],
+    ['selected', 'The team selected Blue Lantern as the checklist name.'],
+  ])('recognizes the choosing verb family (%s)', (_label, response) => {
+    expect(attribution(response, /blue lantern/)).toBe('POSITIVE');
+  });
+
+  it.each([
+    ['double quoted', 'Your request was received through the "semantic-validation" platform.'],
+    ['single quoted', "Your request was received through the 'semantic-validation' platform."],
+    ['curly quoted', 'Your request was received through the “semantic-validation” platform.'],
+  ])('recognizes a quoted value as attributed (%s)', (_label, response) => {
+    expect(attribution(response, /semantic-validation/)).toBe('POSITIVE');
+  });
+
+  it('keeps unquoted baselines positive', () => {
+    expect(attribution('The release checklist name is Blue Lantern.', /blue lantern/)).toBe(
+      'POSITIVE',
+    );
+    expect(
+      attribution('This request was received through semantic-validation.', /semantic-validation/),
+    ).toBe('POSITIVE');
+  });
+
+  it.each([
+    ['double quoted', 'The checklist is not "Blue Lantern".'],
+    ['single quoted', "The checklist is not 'Blue Lantern'."],
+    ['curly quoted', 'The checklist is not “Blue Lantern”.'],
+    ['unquoted', 'The checklist is not Blue Lantern.'],
+  ])('keeps a quoted denial negative rather than inverting it (%s)', (_label, response) => {
+    // Negation is evaluated before attribution: if only the positive pattern
+    // tolerated the quote, a denial would be read as an attribution.
+    expect(attribution(response, /blue lantern/)).toBe('NEGATIVE');
+  });
+
+  it('keeps a quoted prohibited-value denial negative', () => {
+    expect(attribution('We are not using "discord".', /\bdiscord\b/)).toBe('NEGATIVE');
+  });
+
+  it('does not promote negation, questions, or bare mentions', () => {
+    expect(attribution('The checklist is not Blue Lantern.', /blue lantern/)).toBe('NEGATIVE');
+    expect(attribution('Is the checklist called Blue Lantern?', /blue lantern/)).toBe('QUESTION');
+    expect(
+      attribution(
+        'Earlier messages came from discord and other places, but not now.',
+        /\bdiscord\b/,
+      ),
+    ).toBe('MENTION_ONLY');
+  });
+
+  it('keeps prohibited-value detection at least as strict', () => {
+    const stale = (response: string): CheckOutcome | undefined =>
+      evaluateScenario('D', response).find(
+        (check) => check.id === 'does-not-select-stale-platform',
+      )?.outcome;
+    // Unquoted violation was already caught; the quoted form now is too.
+    expect(stale('The current platform is discord.')).toBe('FAIL');
+    expect(stale('The current platform is "discord".')).toBe('FAIL');
+    // A bare mention stays indeterminate rather than becoming a false FAIL.
+    expect(stale('Earlier messages came from discord, but not this one.')).toBe(
+      'INDETERMINATE',
+    );
+  });
+
+  it('turns the Scenario C and D reference answers into deterministic passes', () => {
+    for (const [id, response] of [
+      ['C', passingResponse.C],
+      ['D', passingResponse.D],
+    ] as const) {
+      const checks = evaluateScenario(id, response);
+      expect(checks.every((check) => check.outcome !== 'INDETERMINATE')).toBe(true);
+      expect(aggregateVerdict(checks)).toBe('AUTOMATED_PASS');
+    }
   });
 });
 
