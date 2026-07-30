@@ -1437,13 +1437,31 @@ describe('Finding 6: child process lifecycle', () => {
     }
   });
 
-  it('reports a cleanup failure as a bounded warning without repository mutation', async () => {
+  it('records a cleanup failure without leaking the raw cleanup error', async () => {
     const { child, adapter } = fakeProcess({ removeThrows: true });
     const promise = adapter.run(fakeRequest());
     child.emit('close', 0, null);
     const result = await promise;
     expect(result.tempCleanupFailed).toBe(true);
     expect(JSON.stringify(result)).not.toContain('cleanup failed');
+  });
+
+  it('fails closed on a cleanup failure even when the child exited zero', async () => {
+    const { child, adapter } = fakeProcess({ removeThrows: true });
+    const promise = adapter.run(fakeRequest());
+    child.emit('close', 0, null);
+    const result = await promise;
+    expect(result.code).toBe(0);
+    try {
+      assertProcessResultSafe(result);
+      throw new Error('expected a blocked error');
+    } catch (error) {
+      const blocked = error as HarnessBlockedError;
+      expect(blocked).toBeInstanceOf(HarnessBlockedError);
+      expect(blocked.code).toBe('SANDBOX_CLEANUP_FAILED');
+      expect(blocked.details.tempCleanupFailed).toBe(true);
+      expect(JSON.stringify(blocked.details)).not.toContain('cleanup failed');
+    }
   });
 
   it('uses a real per-child sandbox outside the repository', async () => {
@@ -1464,6 +1482,118 @@ describe('Finding 6: child process lifecycle', () => {
     const harness = new ProviderSemanticHarness(adapter, new StaticInspector());
     await expect(harness.run(fixture.config, 'run', ['A'])).rejects.toBeDefined();
     expect(adapter.requests).toHaveLength(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Sandbox cleanup is a containment failure, not a warning
+// ---------------------------------------------------------------------------
+
+describe('sandbox cleanup failure fails closed on every provider path', () => {
+  const versionOk = (): ProcessResult =>
+    processResult({ stdout: 'ollama version synthetic' });
+  const inventoryOk = (): ProcessResult =>
+    processResult({ stdout: 'NAME ID SIZE\nllama3.1:latest abc 1GB' });
+
+  it('blocks probe-provider when the --version sandbox survives', async () => {
+    const fixture = approvedFixture({ mode: 'probe-provider', scenarios: [], calls: 1 });
+    const adapter = new QueueAdapter([
+      processResult({ stdout: 'ollama version synthetic', tempCleanupFailed: true }),
+    ]);
+    const harness = new ProviderSemanticHarness(adapter, new StaticInspector());
+    await expect(harness.probeProvider(fixture.config)).rejects.toMatchObject({
+      code: 'SANDBOX_CLEANUP_FAILED',
+    });
+    // The inventory call is never reached, so no PASS payload can be produced.
+    expect(adapter.requests).toHaveLength(1);
+  });
+
+  it('blocks probe-provider when the list sandbox survives', async () => {
+    const fixture = approvedFixture({ mode: 'probe-provider', scenarios: [], calls: 1 });
+    const adapter = new QueueAdapter([
+      versionOk(),
+      processResult({
+        stdout: 'NAME ID SIZE\nllama3.1:latest abc 1GB',
+        tempCleanupFailed: true,
+      }),
+    ]);
+    const harness = new ProviderSemanticHarness(adapter, new StaticInspector());
+    await expect(harness.probeProvider(fixture.config)).rejects.toMatchObject({
+      code: 'SANDBOX_CLEANUP_FAILED',
+    });
+    expect(adapter.requests).toHaveLength(2);
+  });
+
+  it('blocks run when a generation sandbox survives', async () => {
+    const fixture = approvedFixture({ mode: 'run', scenarios: ['A'], calls: 1 });
+    const adapter = new QueueAdapter([
+      versionOk(),
+      inventoryOk(),
+      processResult({ stdout: 'a synthetic answer', tempCleanupFailed: true }),
+    ]);
+    const harness = new ProviderSemanticHarness(adapter, new StaticInspector());
+    await expect(harness.run(fixture.config, 'run', ['A'])).rejects.toMatchObject({
+      code: 'SANDBOX_CLEANUP_FAILED',
+    });
+  });
+
+  it('blocks run-all before any scenario when the inventory sandbox survives', async () => {
+    const scenarios: ScenarioId[] = ['A', 'B', 'C', 'D', 'E'];
+    const fixture = approvedFixture({ mode: 'run-all', scenarios, calls: 1 });
+    const adapter = new QueueAdapter([
+      versionOk(),
+      processResult({
+        stdout: 'NAME ID SIZE\nllama3.1:latest abc 1GB',
+        tempCleanupFailed: true,
+      }),
+    ]);
+    const harness = new ProviderSemanticHarness(adapter, new StaticInspector());
+    await expect(harness.run(fixture.config, 'run-all', scenarios)).rejects.toMatchObject({
+      code: 'SANDBOX_CLEANUP_FAILED',
+    });
+    expect(adapter.requests).toHaveLength(2);
+  });
+
+  it('still returns a probe PASS when every sandbox is removed', async () => {
+    const fixture = approvedFixture({ mode: 'probe-provider', scenarios: [], calls: 1 });
+    const adapter = new QueueAdapter([versionOk(), inventoryOk()]);
+    const harness = new ProviderSemanticHarness(adapter, new StaticInspector());
+    await expect(harness.probeProvider(fixture.config)).resolves.toMatchObject({
+      providerAvailable: true,
+      modelInstalled: true,
+    });
+    expect(adapter.requests).toHaveLength(2);
+  });
+
+  it('keeps the more specific violation when cleanup also failed', () => {
+    for (const [result, expected] of [
+      [
+        processResult({ downloadDetected: true, tempCleanupFailed: true }),
+        'MODEL_DOWNLOAD_DETECTED',
+      ],
+      [
+        processResult({ spawnFailed: true, tempCleanupFailed: true }),
+        'PROVIDER_SPAWN_FAILED',
+      ],
+      [
+        processResult({ outputLimited: true, tempCleanupFailed: true }),
+        'OUTPUT_LIMIT_EXCEEDED',
+      ],
+      [processResult({ stdinFailed: true, tempCleanupFailed: true }), 'CHILD_STDIN_FAILED'],
+    ] as const) {
+      expect(() => assertProcessResultSafe(result)).toThrowError(HarnessBlockedError);
+      try {
+        assertProcessResultSafe(result);
+      } catch (error) {
+        expect((error as HarnessBlockedError).code).toBe(expected);
+      }
+    }
+  });
+
+  it('accepts a clean result and leaves timeout handling to the caller', () => {
+    expect(() => assertProcessResultSafe(processResult())).not.toThrow();
+    expect(() => assertProcessResultSafe(processResult({ timedOut: true }))).not.toThrow();
+    expect(() => assertProcessResultSafe(processResult({ code: 7 }))).not.toThrow();
   });
 });
 

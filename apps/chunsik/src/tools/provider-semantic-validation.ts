@@ -2161,6 +2161,13 @@ export function boundedProcessMetadata(
  * Converts unsafe process outcomes into BLOCKED verdicts before any output can
  * reach a preview. Download detection is checked first because it is the most
  * specific violation.
+ *
+ * Sandbox cleanup failure is a containment failure, not a warning: a child
+ * execution is only safe once its isolated sandbox has been removed, so a
+ * surviving sandbox blocks the result here rather than surfacing as metadata on
+ * a PASS. This is the single boundary every ProcessResult consumer passes
+ * through — `toCliRunner` (run / run-all generation) and both `checkInventory`
+ * probes — so no provider execution path can observe a leaked sandbox.
  */
 export function assertProcessResultSafe(result: ProcessResult): void {
   const metadata = boundedProcessMetadata(result);
@@ -2175,6 +2182,9 @@ export function assertProcessResultSafe(result: ProcessResult): void {
   }
   if (result.stdinFailed) {
     throw new HarnessBlockedError('CHILD_STDIN_FAILED', metadata);
+  }
+  if (result.tempCleanupFailed) {
+    throw new HarnessBlockedError('SANDBOX_CLEANUP_FAILED', metadata);
   }
 }
 
