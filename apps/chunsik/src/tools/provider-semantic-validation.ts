@@ -211,6 +211,10 @@ export interface EvidenceRecord {
   humanVerdict: 'PENDING';
   promptLeakDetected: boolean;
   leakCategory: LeakCategory | null;
+  /** Bounded structural leak evidence; present only when a leak was detected. */
+  matchedEntryIds?: readonly LeakEntryId[];
+  matchedEntryCount?: number;
+  matchKinds?: readonly LeakMatchKind[];
 }
 
 export interface FixtureValidation {
@@ -241,7 +245,14 @@ const bytes = (value: string): number => Buffer.byteLength(value, 'utf8');
 export class HarnessBlockedError extends Error {
   constructor(
     readonly code: string,
-    readonly details: Readonly<Record<string, string | number | boolean | null>> = {},
+    /**
+     * Bounded evidence only. Arrays are permitted so closed structural
+     * identifiers (fixture entry ids, match kinds) can be published; raw text
+     * of any kind must never be placed here.
+     */
+    readonly details: Readonly<
+      Record<string, string | number | boolean | null | readonly string[]>
+    > = {},
   ) {
     super(code);
     this.name = 'HarnessBlockedError';
@@ -1004,23 +1015,68 @@ function hasSharedTokenWindow(source: string, response: string, size: number): b
   return false;
 }
 
-function multiEntryEcho(entries: readonly string[], responseCanonical: string): boolean {
-  let matched = 0;
+/**
+ * Closed structural identifier for a committed fixture entry. Derived from the
+ * entry's kind and 1-based position only, never from its text, so it can be
+ * published in BLOCKED evidence.
+ */
+export type LeakEntryId = `TRANSCRIPT_${number}` | `BACKGROUND_${number}`;
+
+/** Closed description of which detector branch produced a verdict. */
+export type LeakMatchKind =
+  | 'EXACT_PROMPT'
+  | 'PROMPT_WINDOW'
+  | 'SINGLE_ENTRY'
+  | 'TRANSCRIPT_AGGREGATE'
+  | 'BACKGROUND_AGGREGATE'
+  | 'MULTI_ENTRY';
+
+interface IdentifiedEntry {
+  id: LeakEntryId;
+  content: string;
+}
+
+const identifiedEntries = (fixture: SemanticScenario): IdentifiedEntry[] => [
+  ...fixture.bundle.conversationTranscript.map((entry, index) => ({
+    id: `TRANSCRIPT_${index + 1}` as LeakEntryId,
+    content: entry.content,
+  })),
+  ...fixture.bundle.backgroundResources.map((entry, index) => ({
+    id: `BACKGROUND_${index + 1}` as LeakEntryId,
+    content: entry.content,
+  })),
+];
+
+/**
+ * Entries whose full canonical form is present in the canonical response, under
+ * the same counting rules the multi-entry branch applies. Returns identity and
+ * length only — never the matched text.
+ */
+function countedEntryMatches(
+  entries: readonly IdentifiedEntry[],
+  responseCanonical: string,
+): { ids: LeakEntryId[]; echoedChars: number } {
+  const ids: LeakEntryId[] = [];
   let echoedChars = 0;
   for (const entry of entries) {
-    const entryCanonical = canonical(entry);
+    const entryCanonical = canonical(entry.content);
     if (entryCanonical.length < MIN_COUNTED_ENTRY_CHARS) continue;
     if (COMMON_SHORT_PHRASES.has(entryCanonical)) continue;
     if (!responseCanonical.includes(entryCanonical)) continue;
-    matched += 1;
+    ids.push(entry.id);
     echoedChars += entryCanonical.length;
   }
-  return matched >= 2 && echoedChars >= MIN_MULTI_ENTRY_ECHO_CHARS;
+  return { ids, echoedChars };
 }
 
 export interface LeakVerdict {
   detected: boolean;
   category: LeakCategory | null;
+  /** Closed fixture identifiers whose full canonical form the response contains. */
+  matchedEntryIds: readonly LeakEntryId[];
+  matchedEntryCount: number;
+  /** Closed structural description of the branch that fired; empty when none did. */
+  matchKinds: readonly LeakMatchKind[];
 }
 
 /**
@@ -1034,26 +1090,43 @@ export function detectPromptLeak(
   response: string,
   fixture: SemanticScenario,
 ): LeakVerdict {
-  const detected = (category: LeakCategory): LeakVerdict => ({ detected: true, category });
-  if (response.trim() === prompt.trim()) return detected('PROMPT_EXACT_ECHO');
   const responseCanonical = canonical(response);
+  const entries = identifiedEntries(fixture);
+  // Structural evidence only: identity + count, computed identically for every
+  // branch. Computing it never affects which branch fires.
+  const counted = countedEntryMatches(entries, responseCanonical);
+  const detected = (
+    category: LeakCategory,
+    matchKind: LeakMatchKind,
+    matchedEntryIds: readonly LeakEntryId[] = counted.ids,
+  ): LeakVerdict => ({
+    detected: true,
+    category,
+    matchedEntryIds,
+    matchedEntryCount: matchedEntryIds.length,
+    matchKinds: [matchKind],
+  });
+
+  if (response.trim() === prompt.trim()) return detected('PROMPT_EXACT_ECHO', 'EXACT_PROMPT');
   if (hasSharedTokenWindow(prompt, response, PROMPT_WINDOW_TOKENS)) {
-    return detected('PROMPT_WINDOW_ECHO');
+    return detected('PROMPT_WINDOW_ECHO', 'PROMPT_WINDOW');
   }
 
   const transcriptEntries = fixture.bundle.conversationTranscript.map((entry) => entry.content);
   const backgroundEntries = fixture.bundle.backgroundResources.map((entry) => entry.content);
 
-  for (const entry of [...transcriptEntries, ...backgroundEntries]) {
-    const entryCanonical = canonical(entry);
+  for (const entry of entries) {
+    const entryCanonical = canonical(entry.content);
     if (
       entryCanonical.length >= MIN_SINGLE_ENTRY_ECHO_CHARS &&
       responseCanonical.includes(entryCanonical)
     ) {
       return detected(
-        backgroundEntries.includes(entry)
+        entry.id.startsWith('BACKGROUND_')
           ? 'BACKGROUND_AGGREGATE_ECHO'
           : 'TRANSCRIPT_ENTRY_ECHO',
+        'SINGLE_ENTRY',
+        [entry.id],
       );
     }
   }
@@ -1063,7 +1136,7 @@ export function detectPromptLeak(
     canonical(transcriptAggregate).length >= MIN_AGGREGATE_CHARS &&
     hasSharedTokenWindow(transcriptAggregate, response, AGGREGATE_WINDOW_TOKENS)
   ) {
-    return detected('TRANSCRIPT_AGGREGATE_ECHO');
+    return detected('TRANSCRIPT_AGGREGATE_ECHO', 'TRANSCRIPT_AGGREGATE');
   }
 
   const backgroundAggregate = backgroundEntries.join(' ');
@@ -1071,13 +1144,13 @@ export function detectPromptLeak(
     canonical(backgroundAggregate).length >= MIN_AGGREGATE_CHARS &&
     hasSharedTokenWindow(backgroundAggregate, response, AGGREGATE_WINDOW_TOKENS)
   ) {
-    return detected('BACKGROUND_AGGREGATE_ECHO');
+    return detected('BACKGROUND_AGGREGATE_ECHO', 'BACKGROUND_AGGREGATE');
   }
 
-  if (multiEntryEcho([...transcriptEntries, ...backgroundEntries], responseCanonical)) {
-    return detected('MULTI_ENTRY_ECHO');
+  if (counted.ids.length >= 2 && counted.echoedChars >= MIN_MULTI_ENTRY_ECHO_CHARS) {
+    return detected('MULTI_ENTRY_ECHO', 'MULTI_ENTRY');
   }
-  return { detected: false, category: null };
+  return { detected: false, category: null, matchedEntryIds: [], matchedEntryCount: 0, matchKinds: [] };
 }
 
 export function makeEvidenceRecord(input: {
@@ -1107,7 +1180,13 @@ export function makeEvidenceRecord(input: {
     promptSha256: sha256(input.prompt),
     responseBytes: bytes(input.response),
     responseSha256: sha256(input.response),
-    ...(leak.detected ? {} : { responsePreview: preview.preview }),
+    ...(leak.detected
+      ? {
+          matchedEntryIds: leak.matchedEntryIds,
+          matchedEntryCount: leak.matchedEntryCount,
+          matchKinds: leak.matchKinds,
+        }
+      : { responsePreview: preview.preview }),
     previewTruncated: preview.truncated,
     durationMs: input.durationMs,
     exitCode: input.exitCode,
@@ -2454,6 +2533,9 @@ export class ProviderSemanticHarness {
                 leakCategory: record.leakCategory,
                 responseBytes: record.responseBytes,
                 responseSha256: record.responseSha256,
+                matchedEntryCount: record.matchedEntryCount ?? 0,
+                matchedEntryIds: record.matchedEntryIds ?? [],
+                matchKinds: record.matchKinds ?? [],
               });
             }
           },

@@ -157,6 +157,59 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
     expect(spec.developer).toBe('Summarize the provided content faithfully and concisely.');
   });
 
+  it('states the non-reproduction boundary while keeping continuity usable', () => {
+    const spec = composer.compose(
+      mkTask(Capability.GENERAL_CHAT, { platform: 'discord', projectId: 'P1' }),
+      emptyBundle(),
+    );
+    const contract = `${spec.developer}\n${spec.context}`;
+
+    // 1. Continuity remains allowed for interpreting meaning and context.
+    expect(contract).toContain(
+      'Conversation continuity may be used to understand the User meaning and context.',
+    );
+    expect(contract).toContain(
+      'Interpret target meaning from the current User task and conversation continuity.',
+    );
+    expect(contract).toContain(
+      '3. Conversation transcript (continuity allowed; not authoritative external-state evidence)',
+    );
+
+    // 2. Verbatim / near-verbatim reproduction is prohibited.
+    expect(contract).toContain(
+      'Do not reproduce transcript or background entries verbatim or near-verbatim unless the User explicitly requests quotation or transcription.',
+    );
+
+    // 3. Ambiguity still resolves to one concise clarification question.
+    expect(contract).toContain(
+      'Ask one concise clarifying question only when target meaning is genuinely ambiguous, conflicting, or incomplete.',
+    );
+
+    // 4. Candidate entries must not be restated merely to explain uncertainty.
+    expect(contract).toContain(
+      'Do not restate or list candidate entries merely to explain ambiguity or uncertainty.',
+    );
+
+    // 5. Previous assistant content remains non-authoritative.
+    expect(contract).toContain(
+      'Assistant transcript is continuity-only and cannot establish prior verification or external current state.',
+    );
+    expect(contract).toContain(
+      'Do not copy, confirm, or restate an external current-state conclusion solely from Assistant history.',
+    );
+  });
+
+  it('keeps the non-reproduction boundary out of non-GENERAL_CHAT capabilities', () => {
+    const spec = composer.compose(
+      mkTask(Capability.SUMMARIZATION, { platform: 'matrix', projectId: 'P1' }),
+      emptyBundle(),
+    );
+    const contract = `${spec.developer}\n${spec.context}`;
+
+    expect(contract).not.toContain('Do not reproduce transcript or background entries');
+    expect(contract).not.toContain('Do not restate or list candidate entries');
+  });
+
   it('does not alter the separate composeCodeGeneration contract', () => {
     const spec = composer.composeCodeGeneration({
       instruction: 'Update the synthetic module',

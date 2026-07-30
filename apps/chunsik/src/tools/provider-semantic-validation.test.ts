@@ -1151,7 +1151,13 @@ describe('Finding 5: aggregate transcript and background leak detection', () => 
         passingResponse[id],
         fixture,
       );
-      expect(verdictForId).toEqual({ detected: false, category: null });
+      expect(verdictForId).toEqual({
+        detected: false,
+        category: null,
+        matchedEntryIds: [],
+        matchedEntryCount: 0,
+        matchKinds: [],
+      });
     }
   });
 
@@ -1606,6 +1612,217 @@ describe('sandbox cleanup failure fails closed on every provider path', () => {
     expect(() => assertProcessResultSafe(processResult())).not.toThrow();
     expect(() => assertProcessResultSafe(processResult({ timedOut: true }))).not.toThrow();
     expect(() => assertProcessResultSafe(processResult({ code: 7 }))).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MULTI_ENTRY_ECHO branch and bounded match metadata
+// ---------------------------------------------------------------------------
+
+describe('MULTI_ENTRY_ECHO branch emits bounded match metadata', () => {
+  const scenarioA = fixtureOf('A');
+  const promptA = renderScenario(scenarioA).prompt;
+  const entriesA = scenarioA.bundle.conversationTranscript.map((entry) => entry.content);
+  // Separator long enough to break the 10-token aggregate window without
+  // introducing any fixture text of its own.
+  const SEPARATOR = ' Regarding the current request I have no authoritative evidence so ';
+
+  const nonAdjacentEcho = (): string =>
+    `${entriesA[0]}${SEPARATOR}${entriesA[1]}`;
+
+  it('flags two distinct non-adjacent full entries as MULTI_ENTRY_ECHO', () => {
+    const verdict = detectPromptLeak(promptA, nonAdjacentEcho(), scenarioA);
+    expect(verdict.detected).toBe(true);
+    expect(verdict.category).toBe('MULTI_ENTRY_ECHO');
+  });
+
+  it('returns the exact bounded entry ids, count and closed match kind', () => {
+    const verdict = detectPromptLeak(promptA, nonAdjacentEcho(), scenarioA);
+    expect(verdict.matchedEntryIds).toEqual(['TRANSCRIPT_1', 'TRANSCRIPT_2']);
+    expect(verdict.matchedEntryCount).toBe(2);
+    expect(verdict.matchedEntryCount).toBe(verdict.matchedEntryIds.length);
+    expect(verdict.matchKinds).toEqual(['MULTI_ENTRY']);
+    for (const kind of verdict.matchKinds) {
+      expect([
+        'EXACT_PROMPT',
+        'PROMPT_WINDOW',
+        'SINGLE_ENTRY',
+        'TRANSCRIPT_AGGREGATE',
+        'BACKGROUND_AGGREGATE',
+        'MULTI_ENTRY',
+      ]).toContain(kind);
+    }
+  });
+
+  it('never carries matched text in the bounded metadata', () => {
+    const verdict = detectPromptLeak(promptA, nonAdjacentEcho(), scenarioA);
+    const serialized = JSON.stringify({
+      matchedEntryIds: verdict.matchedEntryIds,
+      matchedEntryCount: verdict.matchedEntryCount,
+      matchKinds: verdict.matchKinds,
+    });
+    for (const entry of [...entriesA, ...scenarioA.bundle.backgroundResources.map((e) => e.content)]) {
+      expect(serialized).not.toContain(entry.slice(0, 20));
+    }
+    for (const id of verdict.matchedEntryIds) {
+      expect(id).toMatch(/^(TRANSCRIPT|BACKGROUND)_\d+$/);
+    }
+  });
+
+  it('does not trigger on partial fragments of two entries', () => {
+    const fragments = `${entriesA[0]!.slice(0, 15)}${SEPARATOR}${entriesA[1]!.slice(0, 12)}`;
+    const verdict = detectPromptLeak(promptA, fragments, scenarioA);
+    expect(verdict.category).not.toBe('MULTI_ENTRY_ECHO');
+    expect(verdict.matchedEntryCount).toBe(0);
+  });
+
+  it('does not trigger on shared or common text alone', () => {
+    const verdict = detectPromptLeak(
+      promptA,
+      'connection connection connection earlier earlier time time that at an external.',
+      scenarioA,
+    );
+    expect(verdict.category).not.toBe('MULTI_ENTRY_ECHO');
+    expect(verdict.matchedEntryCount).toBe(0);
+  });
+
+  it('retains case, punctuation and whitespace normalization behavior', () => {
+    const mangled = `${entriesA[0]!.toUpperCase().replace(/[.?,]/g, '')}${SEPARATOR}` +
+      `${entriesA[1]!.toUpperCase().replace(/[.?,]/g, '')}`.replace(/ /g, '   \t ');
+    const verdict = detectPromptLeak(promptA, mangled, scenarioA);
+    expect(verdict.detected).toBe(true);
+    expect(verdict.matchedEntryIds).toEqual(['TRANSCRIPT_1', 'TRANSCRIPT_2']);
+  });
+
+  // Bounded metadata is published only for a detected leak, so the negative
+  // cases below assert no detection rather than a partial match list.
+  it('does not treat one matched entry as a multi-entry echo', () => {
+    const verdict = detectPromptLeak(promptA, `Context: ${entriesA[0]}`, scenarioA);
+    expect(verdict.detected).toBe(false);
+    expect(verdict.category).toBeNull();
+    expect(verdict.matchedEntryCount).toBeLessThan(2);
+  });
+
+  it('does not count repetition of one entry as two distinct entries', () => {
+    const repeated = `${entriesA[0]}${SEPARATOR}${entriesA[0]}${SEPARATOR}${entriesA[0]}`;
+    const verdict = detectPromptLeak(promptA, repeated, scenarioA);
+    expect(verdict.detected).toBe(false);
+    expect(verdict.category).toBeNull();
+    expect(verdict.matchedEntryCount).toBeLessThan(2);
+  });
+
+  it('keeps aggregate precedence when the same entries are adjacent', () => {
+    const verdict = detectPromptLeak(promptA, entriesA.join(' '), scenarioA);
+    expect(verdict.category).toBe('TRANSCRIPT_AGGREGATE_ECHO');
+    expect(verdict.matchKinds).toEqual(['TRANSCRIPT_AGGREGATE']);
+  });
+
+  it('keeps single-entry and exact-prompt precedence unchanged', () => {
+    const background = scenarioA.bundle.backgroundResources[0]!.content;
+    const single = detectPromptLeak(promptA, `Note: ${background}`, scenarioA);
+    expect(single.category).toBe('BACKGROUND_AGGREGATE_ECHO');
+    expect(single.matchKinds).toEqual(['SINGLE_ENTRY']);
+    expect(single.matchedEntryIds).toEqual(['BACKGROUND_1']);
+
+    const exact = detectPromptLeak(promptA, promptA, scenarioA);
+    expect(exact.category).toBe('PROMPT_EXACT_ECHO');
+    expect(exact.matchKinds).toEqual(['EXACT_PROMPT']);
+  });
+});
+
+describe('BLOCKED leak evidence stays bounded', () => {
+  const scenarioA = fixtureOf('A');
+  const entriesA = scenarioA.bundle.conversationTranscript.map((entry) => entry.content);
+  const SEPARATOR = ' Regarding the current request I have no authoritative evidence so ';
+
+  const blockedRecord = () =>
+    makeEvidenceRecord({
+      scenario: scenarioA,
+      callOrdinal: 2,
+      head: state.head,
+      model: 'llama3.1',
+      prompt: renderScenario(scenarioA).prompt,
+      response: `${entriesA[0]}${SEPARATOR}${entriesA[1]}`,
+      durationMs: 5,
+      exitCode: 0,
+    });
+
+  it('records the leak with bounded metadata and no preview', () => {
+    const record = blockedRecord();
+    expect(record.automatedVerdict).toBe('BLOCKED');
+    expect(record.leakCategory).toBe('MULTI_ENTRY_ECHO');
+    expect(record.matchedEntryIds).toEqual(['TRANSCRIPT_1', 'TRANSCRIPT_2']);
+    expect(record.matchedEntryCount).toBe(2);
+    expect(record.matchKinds).toEqual(['MULTI_ENTRY']);
+    expect(record.responsePreview).toBeUndefined();
+  });
+
+  it('excludes every forbidden evidence field and leaks no raw text', () => {
+    const record = blockedRecord();
+    const serialized = JSON.stringify(record);
+    for (const forbidden of [
+      'stdout',
+      'stderr',
+      'prompt"',
+      'response"',
+      'responsePreview',
+      'matchedText',
+      'matchedTokens',
+      'argv',
+      'environment',
+      'stack',
+      'cause',
+      'message',
+      'cleanupError',
+    ]) {
+      expect(serialized).not.toContain(forbidden);
+    }
+    for (const entry of entriesA) {
+      expect(serialized).not.toContain(entry.slice(0, 20));
+    }
+  });
+
+  it('keeps bounded attribution on the thrown blocked evidence', async () => {
+    const fixture = approvedFixture({ mode: 'run', scenarios: ['A'], calls: 2 });
+    const adapter = new QueueAdapter([
+      processResult({ stdout: 'ollama version synthetic' }),
+      processResult({ stdout: 'NAME ID SIZE\nllama3.1:latest abc 1GB' }),
+      processResult({ stdout: `${entriesA[0]}${SEPARATOR}${entriesA[1]}` }),
+    ]);
+    const harness = new ProviderSemanticHarness(adapter, new StaticInspector());
+    try {
+      await harness.run(fixture.config, 'run', ['A']);
+      throw new Error('expected a blocked error');
+    } catch (error) {
+      const blocked = error as HarnessBlockedError;
+      expect(blocked.code).toBe('PROMPT_LEAK_DETECTED');
+      expect(Object.keys(blocked.details).sort()).toEqual([
+        'callOrdinal',
+        'commandCategory',
+        'leakCategory',
+        'matchKinds',
+        'matchedEntryCount',
+        'matchedEntryIds',
+        'phase',
+        'responseBytes',
+        'responseSha256',
+        'scenarioId',
+      ]);
+      expect(blocked.details).toMatchObject({
+        phase: 'GENERATION',
+        commandCategory: 'GENERATION',
+        scenarioId: 'A',
+        callOrdinal: 1,
+        leakCategory: 'MULTI_ENTRY_ECHO',
+        matchedEntryCount: 2,
+        matchedEntryIds: ['TRANSCRIPT_1', 'TRANSCRIPT_2'],
+        matchKinds: ['MULTI_ENTRY'],
+      });
+      const serialized = JSON.stringify(blocked.details);
+      for (const entry of entriesA) {
+        expect(serialized).not.toContain(entry.slice(0, 20));
+      }
+    }
   });
 });
 
@@ -2408,6 +2625,8 @@ describe('compiled dist path', () => {
     aggregateVerdict: typeof aggregateVerdict;
     computeStaticCodeBinding: typeof computeStaticCodeBinding;
     ProviderSemanticHarness: typeof ProviderSemanticHarness;
+    detectPromptLeak: typeof detectPromptLeak;
+    renderScenario: typeof renderScenario;
   }
 
   it('runs representative checker cases identically on the built dist', () => {
@@ -2464,6 +2683,41 @@ describe('compiled dist path', () => {
 
   it('accepts the freshly built real repository tree', () => {
     expect(() => computeStaticCodeBinding(state, repoRoot)).not.toThrow();
+  });
+
+  it('applies the same prompt contract and leak evidence on the built dist', () => {
+    const dist = nodeRequire(distHarnessPath) as DistHarness;
+    const fixture = fixtureOf('A');
+    const distPrompt = dist.renderScenario(fixture).prompt;
+
+    // Prompt contract is compiled through the same core PromptComposer.
+    expect(distPrompt).toBe(renderScenario(fixture).prompt);
+    expect(distPrompt).toContain(
+      'Do not reproduce transcript or background entries verbatim or near-verbatim',
+    );
+    expect(distPrompt).toContain(
+      'Do not restate or list candidate entries merely to explain ambiguity or uncertainty.',
+    );
+    expect(distPrompt).toContain(
+      'Conversation continuity may be used to understand the User meaning and context.',
+    );
+
+    const entries = fixture.bundle.conversationTranscript.map((entry) => entry.content);
+    const echo =
+      `${entries[0]} Regarding the current request I have no authoritative evidence so ${entries[1]}`;
+    const distVerdict = dist.detectPromptLeak(distPrompt, echo, fixture);
+    const sourceVerdict = detectPromptLeak(distPrompt, echo, fixture);
+
+    // Unchanged detector behaviour, identical closed metadata.
+    expect(distVerdict).toEqual(sourceVerdict);
+    expect(distVerdict.category).toBe('MULTI_ENTRY_ECHO');
+    expect(distVerdict.matchKinds).toEqual(['MULTI_ENTRY']);
+    expect(distVerdict.matchedEntryIds).toEqual(['TRANSCRIPT_1', 'TRANSCRIPT_2']);
+    expect(distVerdict.matchedEntryCount).toBe(2);
+    const serialized = JSON.stringify(distVerdict);
+    for (const entry of entries) {
+      expect(serialized).not.toContain(entry.slice(0, 20));
+    }
   });
 
   it('attributes bounded failures identically on the built dist', async () => {
