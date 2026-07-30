@@ -487,6 +487,61 @@ const PROPOSITION_BOUNDARIES: readonly RegExp[] = [
   new RegExp(`:\\s+(?=${INDEPENDENT_CLAUSE})`, 'gi'),
 ];
 
+/** Below this width a short line is authored layout, not a mechanical wrap. */
+const MIN_SOFT_WRAP_WIDTH = 40;
+
+/**
+ * Repairs mechanical line wrapping in Provider CLI output before propositions
+ * are split (Sprint 2A-E1, M1).
+ *
+ * `ollama run` re-renders its output at a fixed terminal width. After ANSI
+ * stripping the text keeps hard newlines at that width, and the wrapped word is
+ * frequently duplicated across the break — either partially (`…hav` / `have …`)
+ * or in full (`…I'll` / `I'll …`). Because splitPropositions treats `\n` as a
+ * proposition boundary, such a break shreds one clause into several
+ * propositions and detaches a governor from the complement it governs, so a
+ * compliant answer is mis-scored.
+ *
+ * Only breaks whose preceding line sits at the response's own maximum line
+ * width are treated as wraps, so authored newlines and blank-line paragraph
+ * breaks survive untouched. Joining cannot hide a real sentence end, because
+ * splitPropositions still splits on `.!?;` after the join.
+ *
+ * This normalizes evaluator input only. Leak detection does not use it and is
+ * unaffected.
+ */
+export function repairSoftWrappedLines(response: string): string {
+  const lines = response.split('\n');
+  if (lines.length < 2) return response;
+  const width = Math.max(...lines.map((line) => line.length));
+  if (width < MIN_SOFT_WRAP_WIDTH) return response;
+
+  let repaired = '';
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? '';
+    const previous = lines[index - 1];
+    const continuesWrap =
+      index > 0 &&
+      previous !== undefined &&
+      previous.length === width &&
+      line.trim().length > 0;
+    if (!continuesWrap) {
+      repaired += index === 0 ? line : `\n${line}`;
+      continue;
+    }
+    const continuation = line.trimStart();
+    const firstWord = /^\S+/.exec(continuation)?.[0] ?? '';
+    const lastWord = /\S+$/.exec(repaired)?.[0] ?? '';
+    if (lastWord.length > 0 && firstWord.startsWith(lastWord)) {
+      // The wrapped word was re-emitted in full on the next line.
+      repaired = repaired.slice(0, repaired.length - lastWord.length) + continuation;
+    } else {
+      repaired += repaired.endsWith(' ') ? continuation : ` ${continuation}`;
+    }
+  }
+  return repaired;
+}
+
 export function splitPropositions(response: string): string[] {
   const marked = PROPOSITION_BOUNDARIES.reduce(
     (value, boundary) => value.replace(boundary, (match) => `${match}\u0000`),
@@ -549,8 +604,9 @@ const normalizeClause = (value: string): string => {
 };
 
 export function analyzeResponse(response: string): readonly Proposition[] {
-  const pieces = splitPropositions(response);
-  const source = pieces.length > 0 ? pieces : [response];
+  const repaired = repairSoftWrappedLines(response);
+  const pieces = splitPropositions(repaired);
+  const source = pieces.length > 0 ? pieces : [repaired];
   return source.map((text) => {
     const normalized = normalizeClause(text);
     const governors = [INABILITY_GOVERNOR, NO_EVIDENCE_GOVERNOR, REPORTING_GOVERNOR]
