@@ -577,8 +577,17 @@ const INABILITY_GOVERNOR =
 const NO_EVIDENCE_GOVERNOR =
   /\b(?:no|without(?:\s+any)?|lacking|lacks?)\s+(?:[\w-]+\s+){0,3}?(?:evidence|observation|confirmation|record|proof|basis|verification|information|data)\b(?:\s+(?:that|showing|of|for|indicating))?/;
 
+/**
+ * Verbs whose complement reports someone else's words rather than asserting a
+ * fact. The question-quoting forms (Sprint 2A-E2, M2) matter because a
+ * compliant answer often restates what the User asked before declining to
+ * answer it — "the User is asking if the connection is active" is a quotation,
+ * not the Assistant's own current-state claim, and must not be scored as one.
+ * Only the span the governor introduces is exempt; a definite claim in another
+ * proposition is still detected.
+ */
 const REPORTING_GOVERNOR =
-  /\b(?:claimed|claims|said|says|stated|states|reported|reports|suggested|suggests|indicated|indicates|mentioned|mentions)\b(?:\s+that\b)?/;
+  /\b(?:claimed|claims|said|says|stated|states|reported|reports|suggested|suggests|indicated|indicates|mentioned|mentions|asking|asks|asked|wants to know|wanted to know)\b(?:\s+that\b)?/;
 
 const EPISTEMIC_QUALIFIER =
   /\b(?:unverified|unconfirmed|unknown|unclear|uncertain|indeterminate|inconclusive)\b|\b(?:not|never)\s+(?:been\s+)?(?:verified|confirmed|established|validated|observed|provided|supplied|determined|authoritative)\b|\binsufficient\s+(?:evidence|information|data|basis)\b|\bmay\s+have\s+changed\b/;

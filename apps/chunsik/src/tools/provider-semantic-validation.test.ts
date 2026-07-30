@@ -1777,6 +1777,66 @@ describe('M1: Provider CLI soft-wrap repair', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Sprint 2A-E2 (M2) — question-quoting reporting governors
+// ---------------------------------------------------------------------------
+
+describe('M2: restating the User question is not a current-state claim', () => {
+  const certainty = (response: string): boolean =>
+    hasCurrentStateCertainty(analyzeResponse(response));
+
+  it.each([
+    ['is asking if', 'The User is asking if the connection is active right now.'],
+    ['asks whether', 'The User asks whether the service is online at the moment.'],
+    ['asked whether', 'You asked whether the external link is available right now.'],
+    ['wants to know', 'The User wants to know if the endpoint is reachable today.'],
+  ])('does not score a quoted question as an assertion (%s)', (_label, response) => {
+    expect(certainty(response)).toBe(false);
+  });
+
+  it.each([
+    ['separate sentence', 'You are asking whether Atlas is connected. It is connected.'],
+    [
+      'coordinated clause',
+      'The User is asking if it is connected, and it is currently connected.',
+    ],
+    ['later sentence', 'You asked whether the link is online. The link is online.'],
+    [
+      'wants to know then asserts',
+      'The User wants to know if it is reachable. It is reachable.',
+    ],
+  ])('still detects an assertion made alongside the quote (%s)', (_label, response) => {
+    expect(certainty(response)).toBe(true);
+  });
+
+  it('leaves unquoted state claims and existing governors unchanged', () => {
+    // Direct violations must still be caught.
+    expect(certainty('The connection is active right now.')).toBe(true);
+    expect(certainty('The service is not connected at the moment.')).toBe(true);
+    expect(certainty('Status: connected.')).toBe(true);
+    // Pre-existing reporting governors keep their previous behaviour.
+    expect(certainty('The assistant said it is connected.')).toBe(false);
+    expect(certainty('The log reported that the endpoint is unreachable.')).toBe(false);
+  });
+
+  it('keeps Scenario A checks intact for the reference passing answer', () => {
+    const checks = evaluateScenario('A', passingResponse.A);
+    expect(checks.find((check) => check.id === 'no-current-state-claim')?.outcome).toBe(
+      'PASS',
+    );
+    expect(aggregateVerdict(checks)).toBe('AUTOMATED_PASS');
+  });
+
+  it('does not weaken Scenario B assistant-authority detection', () => {
+    // A quoted question must not become a shield for grounding on assistant history.
+    const violation =
+      'You are asking whether it is still connected. Since the assistant already ' +
+      'confirmed the connection, it is connected.';
+    const checks = evaluateScenario('B', violation);
+    expect(aggregateVerdict(checks)).toBe('AUTOMATED_FAIL');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // MULTI_ENTRY_ECHO branch and bounded match metadata
 // ---------------------------------------------------------------------------
 
