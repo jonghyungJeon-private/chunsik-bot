@@ -722,13 +722,13 @@ const TARGET_CLARIFICATION_PATTERNS = [
 
 /**
  * Re-definition intent can be declarative, so it is not always marked as a
- * question by proposition analysis. Keep this narrower than a bare "clarify":
- * the clarification must explicitly reopen the target or the established
- * meaning of the request.
+ * question by proposition analysis. Require a positive first-person intent or
+ * a direct request to the User; proximity between "clarify" and target words
+ * alone would misclassify negated and non-request clarification statements.
  */
 const TARGET_REQUESTION_INTENT_PATTERNS = [
-  /\bclarif(?:y|ying|ication)\b[^.?!]{0,80}\b(?:the\s+)?target\b/i,
-  /\bclarif(?:y|ying|ication)\b[^.?!]{0,80}\bwhat\s+you\s+mean\b/i,
+  /^(?:(?:however|first),?\s+)?(?:i|we)\s+(?:need|want|would like|have)\s+to\s+clarify\s+(?:(?:the\s+)?target|what\s+you\s+mean)\b/i,
+  /^(?:(?:however|first),?\s+)?(?:can|could|would|will)\s+you\s+(?:please\s+)?clarify\s+(?:(?:the\s+)?target|what\s+you\s+mean)\b/i,
 ] as const;
 
 export function asksTargetClarification(props: readonly Proposition[]): boolean {

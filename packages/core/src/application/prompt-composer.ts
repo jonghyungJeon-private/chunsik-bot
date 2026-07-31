@@ -10,14 +10,14 @@ import type {
 import type { ProjectReadout } from '../ports';
 import { normalizePromptContextContent } from './prompt-content-normalizer';
 
-const CLEAR_TARGET_UNKNOWN_STATUS_RULE =
-  'When the User has clearly identified the target but authoritative current-status facts are absent: keep the identified target fixed; state directly that its current status is unknown, unavailable, or unverified; do not ask the User to redefine the target; do not ask the User to redefine ordinary status language such as "connected"; and do not infer current status from prior Assistant statements.';
+const CONVERSATION_CONTINUITY_AND_STATUS_RULE =
+  'Conversation-local User targets, choices, and names remain valid for continuity without reconfirmation, independently of authoritative current-status facts. When the User has clearly identified the target but authoritative current-status facts are absent: keep the identified target fixed; state directly that its current status is unknown, unavailable, or unverified; do not ask the User to redefine the target; do not ask the User to redefine ordinary status language such as "connected"; and do not infer current status from prior Assistant statements. Prior-verification claims require authoritative current facts.';
 
 const GENERAL_CHAT_AUTHORITY_RULES_BODY = [
   'Assistant transcript is continuity-only and cannot establish prior verification or external current state.',
   'An active project does not identify the target of the current request.',
   'An active project does not establish external connection status.',
-  CLEAR_TARGET_UNKNOWN_STATUS_RULE,
+  CONVERSATION_CONTINUITY_AND_STATUS_RULE,
   'Interpret target meaning from the current User task and conversation continuity.',
   'Ask one concise clarifying question only when target meaning is genuinely ambiguous, conflicting, or incomplete.',
   'Conversation continuity may be used to understand the User meaning and context.',

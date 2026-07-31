@@ -595,22 +595,19 @@ describe('Finding 1: Scenario E checker counterexamples', () => {
     expect(verdict('E', response)).toBe('AUTOMATED_PASS');
   });
 
-  it('detects question and declarative re-definition intent without matching bare clarify', () => {
-    expect(
-      checksOf('Can you clarify what you mean by "currently connected"? Service Atlas is unverified.')[
-        'no-target-re-question'
-      ],
-    ).toBe('FAIL');
-    expect(
-      checksOf('I need to clarify the target of "currently connected". Service Atlas is unverified.')[
-        'no-target-re-question'
-      ],
-    ).toBe('FAIL');
-    expect(
-      checksOf('To clarify, Service Atlas remains the target and its current status is unverified.')[
-        'no-target-re-question'
-      ],
-    ).toBe('PASS');
+  it.each([
+    'I need to clarify the target of "currently connected".',
+    'Can you clarify what you mean by "currently connected"?',
+  ])('detects positive target re-question intent: %s', (response) => {
+    expect(checksOf(response)['no-target-re-question']).toBe('FAIL');
+  });
+
+  it.each([
+    'There is no need to clarify the target.',
+    'I am not asking you to clarify what you mean.',
+    'To clarify, Service Atlas remains the target.',
+  ])('does not detect negated or non-request clarification: %s', (response) => {
+    expect(checksOf(response)['no-target-re-question']).toBe('PASS');
   });
 });
 

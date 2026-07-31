@@ -59,8 +59,8 @@ const subsectionBody = (section: string, title: string): string => {
   return section.slice(bodyStart, next < 0 ? section.length : next);
 };
 
-const CLEAR_TARGET_UNKNOWN_STATUS_RULE =
-  'When the User has clearly identified the target but authoritative current-status facts are absent: keep the identified target fixed; state directly that its current status is unknown, unavailable, or unverified; do not ask the User to redefine the target; do not ask the User to redefine ordinary status language such as "connected"; and do not infer current status from prior Assistant statements.';
+const CONVERSATION_CONTINUITY_AND_STATUS_RULE =
+  'Conversation-local User targets, choices, and names remain valid for continuity without reconfirmation, independently of authoritative current-status facts. When the User has clearly identified the target but authoritative current-status facts are absent: keep the identified target fixed; state directly that its current status is unknown, unavailable, or unverified; do not ask the User to redefine the target; do not ask the User to redefine ordinary status language such as "connected"; and do not infer current status from prior Assistant statements. Prior-verification claims require authoritative current facts.';
 
 type PromptEntry = {
   provenance: string;
@@ -197,7 +197,7 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
     expect(contract).toContain(
       'Assistant transcript is continuity-only and cannot establish prior verification or external current state.',
     );
-    expect(contract).toContain(CLEAR_TARGET_UNKNOWN_STATUS_RULE);
+    expect(contract).toContain(CONVERSATION_CONTINUITY_AND_STATUS_RULE);
   });
 
   it('keeps the non-reproduction boundary out of non-GENERAL_CHAT capabilities', () => {
@@ -550,7 +550,7 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
     expect(authorityRules).toContain(
       'An active project does not establish external connection status.',
     );
-    expect(authorityRules).toContain(CLEAR_TARGET_UNKNOWN_STATUS_RULE);
+    expect(authorityRules).toContain(CONVERSATION_CONTINUITY_AND_STATUS_RULE);
     expect(authorityRules).toContain(
       'Interpret target meaning from the current User task and conversation continuity.',
     );
@@ -573,7 +573,7 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
       'Current authoritative facts supplied by Core override contradictory or stale transcript for external current state.',
     );
     expect(authorityRules.split('\n')).toHaveLength(15);
-    expect(authorityRules.split(CLEAR_TARGET_UNKNOWN_STATUS_RULE)).toHaveLength(2);
+    expect(authorityRules.split(CONVERSATION_CONTINUITY_AND_STATUS_RULE)).toHaveLength(2);
     expect(authorityRules).not.toMatch(/\b(?:Atlas|Scenario E)\b/i);
   });
 
@@ -723,10 +723,10 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
         'Interpret target meaning from the current User task and conversation continuity.',
       ),
       preservesClearUserChoice: authorityRules.includes(
-        'keep the identified target fixed',
+        'Conversation-local User targets, choices, and names remain valid for continuity without reconfirmation',
       ),
       noAutomaticReconfirmation: authorityRules.includes(
-        'do not ask the User to redefine the target',
+        'independently of authoritative current-status facts',
       ),
       externalTruthStillSeparate: authorityRules.includes(
         'User messages do not verify external current state.',
@@ -738,6 +738,44 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
       externalTruthStillSeparate: true,
     });
   });
+
+  it.each([
+    ['target', 'Service Atlas is our conversation target.', 'Which target did we establish?'],
+    ['choice', 'We chose the concise release flow.', 'Which release flow did we choose?'],
+    ['name', 'We named the release checklist Blue Lantern.', 'What name did we choose?'],
+  ] as const)(
+    'preserves conversation-local %s continuity independently of status facts',
+    (_kind, content, requestText) => {
+      const spec = composer.compose(
+        mkTask(Capability.GENERAL_CHAT, { platform: 'synthetic-platform', requestText }),
+        {
+          taskId: 't1',
+          backgroundResources: [],
+          conversationTranscript: [
+            {
+              content,
+              provenance: 'USER',
+              epistemicStatus: 'USER_CLAIM_OR_INTENT',
+            },
+          ],
+        },
+      );
+      const authorityRules = subsectionBody(
+        sectionBody(spec.context, '4. Current-turn authority decision boundary'),
+        'Mandatory inference constraints',
+      );
+
+      expect(authorityRules).toContain(
+        'Conversation-local User targets, choices, and names remain valid for continuity without reconfirmation, independently of authoritative current-status facts.',
+      );
+      expect(authorityRules).toContain(
+        'Prior-verification claims require authoritative current facts.',
+      );
+      expect(spec.context).toContain(
+        envelope('USER', 'USER_CLAIM_OR_INTENT', content),
+      );
+    },
+  );
 
   it('Scenario D: orders authoritative semantic-validation facts ahead of conflicting Assistant history', () => {
     const spec = composer.compose(
