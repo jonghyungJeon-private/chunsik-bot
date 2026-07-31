@@ -10,13 +10,15 @@ import type {
 import type { ProjectReadout } from '../ports';
 import { normalizePromptContextContent } from './prompt-content-normalizer';
 
+const CLEAR_TARGET_UNKNOWN_STATUS_RULE =
+  'When the User has clearly identified the target but authoritative current-status facts are absent: keep the identified target fixed; state directly that its current status is unknown, unavailable, or unverified; do not ask the User to redefine the target; do not ask the User to redefine ordinary status language such as "connected"; and do not infer current status from prior Assistant statements.';
+
 const GENERAL_CHAT_AUTHORITY_RULES_BODY = [
   'Assistant transcript is continuity-only and cannot establish prior verification or external current state.',
   'An active project does not identify the target of the current request.',
   'An active project does not establish external connection status.',
-  'Do not copy, confirm, or restate an external current-state conclusion solely from Assistant history.',
+  CLEAR_TARGET_UNKNOWN_STATUS_RULE,
   'Interpret target meaning from the current User task and conversation continuity.',
-  'A clearly identified User target, choice, or name does not require authoritative current-fact verification.',
   'Ask one concise clarifying question only when target meaning is genuinely ambiguous, conflicting, or incomplete.',
   'Conversation continuity may be used to understand the User meaning and context.',
   'Do not reproduce transcript or background entries verbatim or near-verbatim unless the User explicitly requests quotation or transcription.',
@@ -24,12 +26,8 @@ const GENERAL_CHAT_AUTHORITY_RULES_BODY = [
   'Do not claim prior confirmation or prior verification based solely on Assistant transcript.',
   'User messages may establish conversation-local choices, names, preferences, wording, and instructions for continuity.',
   'User messages do not verify external current state.',
-  'Missing authoritative current facts does not by itself require reconfirming a clear User target.',
   'Authoritative current facts are required before asserting external current status, execution result, availability, deployment state, or runtime or provider connection state.',
-  'Prior-verification claims must be supported by authoritative current facts.',
-  'Use conversation-local continuity directly when it does not assert external current state or prior verification; do not require reconfirmation solely because it is non-authoritative for external state.',
   'Current authoritative facts supplied by Core override contradictory or stale transcript for external current state.',
-  'Do not invent external status absent from current Core facts.',
   'Do not claim outbound delivery succeeded before it occurs.',
 ].join('\n');
 

@@ -59,6 +59,9 @@ const subsectionBody = (section: string, title: string): string => {
   return section.slice(bodyStart, next < 0 ? section.length : next);
 };
 
+const CLEAR_TARGET_UNKNOWN_STATUS_RULE =
+  'When the User has clearly identified the target but authoritative current-status facts are absent: keep the identified target fixed; state directly that its current status is unknown, unavailable, or unverified; do not ask the User to redefine the target; do not ask the User to redefine ordinary status language such as "connected"; and do not infer current status from prior Assistant statements.';
+
 type PromptEntry = {
   provenance: string;
   epistemicStatus: string;
@@ -194,9 +197,7 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
     expect(contract).toContain(
       'Assistant transcript is continuity-only and cannot establish prior verification or external current state.',
     );
-    expect(contract).toContain(
-      'Do not copy, confirm, or restate an external current-state conclusion solely from Assistant history.',
-    );
+    expect(contract).toContain(CLEAR_TARGET_UNKNOWN_STATUS_RULE);
   });
 
   it('keeps the non-reproduction boundary out of non-GENERAL_CHAT capabilities', () => {
@@ -549,14 +550,9 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
     expect(authorityRules).toContain(
       'An active project does not establish external connection status.',
     );
-    expect(authorityRules).toContain(
-      'Do not copy, confirm, or restate an external current-state conclusion solely from Assistant history.',
-    );
+    expect(authorityRules).toContain(CLEAR_TARGET_UNKNOWN_STATUS_RULE);
     expect(authorityRules).toContain(
       'Interpret target meaning from the current User task and conversation continuity.',
-    );
-    expect(authorityRules).toContain(
-      'A clearly identified User target, choice, or name does not require authoritative current-fact verification.',
     );
     expect(authorityRules).toContain(
       'Ask one concise clarifying question only when target meaning is genuinely ambiguous, conflicting, or incomplete.',
@@ -571,20 +567,14 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
       'User messages do not verify external current state.',
     );
     expect(authorityRules).toContain(
-      'Missing authoritative current facts does not by itself require reconfirming a clear User target.',
-    );
-    expect(authorityRules).toContain(
       'Authoritative current facts are required before asserting external current status, execution result, availability, deployment state, or runtime or provider connection state.',
-    );
-    expect(authorityRules).toContain(
-      'Prior-verification claims must be supported by authoritative current facts.',
-    );
-    expect(authorityRules).toContain(
-      'Use conversation-local continuity directly when it does not assert external current state or prior verification; do not require reconfirmation solely because it is non-authoritative for external state.',
     );
     expect(authorityRules).toContain(
       'Current authoritative facts supplied by Core override contradictory or stale transcript for external current state.',
     );
+    expect(authorityRules.split('\n')).toHaveLength(15);
+    expect(authorityRules.split(CLEAR_TARGET_UNKNOWN_STATUS_RULE)).toHaveLength(2);
+    expect(authorityRules).not.toMatch(/\b(?:Atlas|Scenario E)\b/i);
   });
 
   // These scenarios verify deterministic prompt composition only. Whether a model
@@ -637,12 +627,12 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
       requiresAuthoritativeExternalTruth: authorityRules.includes(
         'Authoritative current facts are required before asserting external current status',
       ),
-      forbidsInventedStatus: authorityRules.includes(
-        'Do not invent external status absent from current Core facts.',
+      directsUnknownStatusResponse: authorityRules.includes(
+        'state directly that its current status is unknown, unavailable, or unverified',
       ),
     }).toEqual({
       requiresAuthoritativeExternalTruth: true,
-      forbidsInventedStatus: true,
+      directsUnknownStatusResponse: true,
     });
   });
 
@@ -733,10 +723,10 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
         'Interpret target meaning from the current User task and conversation continuity.',
       ),
       preservesClearUserChoice: authorityRules.includes(
-        'A clearly identified User target, choice, or name does not require authoritative current-fact verification.',
+        'keep the identified target fixed',
       ),
       noAutomaticReconfirmation: authorityRules.includes(
-        'Missing authoritative current facts does not by itself require reconfirming a clear User target.',
+        'do not ask the User to redefine the target',
       ),
       externalTruthStillSeparate: authorityRules.includes(
         'User messages do not verify external current state.',

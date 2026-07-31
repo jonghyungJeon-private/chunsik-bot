@@ -7029,13 +7029,13 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
         'User messages do not verify external current state.',
       ),
       clearTargetRulePresent: providerPrompt.includes(
-        'A clearly identified User target, choice, or name does not require authoritative current-fact verification.',
+        'When the User has clearly identified the target but authoritative current-status facts are absent:',
       ),
       externalEvidenceRulePresent: providerPrompt.includes(
         'Authoritative current facts are required before asserting external current status, execution result, availability, deployment state, or runtime or provider connection state.',
       ),
       noUnnecessaryReconfirmationRulePresent: providerPrompt.includes(
-        'Use conversation-local continuity directly when it does not assert external current state or prior verification; do not require reconfirmation solely because it is non-authoritative for external state.',
+        'do not ask the User to redefine ordinary status language such as "connected"',
       ),
       authoritativeOverrideRulePresent: providerPrompt.includes(
         'Current authoritative facts supplied by Core override contradictory or stale transcript for external current state.',
