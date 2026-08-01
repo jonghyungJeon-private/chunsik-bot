@@ -35,6 +35,25 @@ describe('Stage 2A Golden ratification artifacts', () => {
     }
   });
 
+  it('preserves ratified decisions in the remediation amendment and drafts new deltas', () => {
+    const overlay = readJson<TransitionOverlay>(
+      'stage2a-a1-a3-v4-transition-overlay-v1.1.0.json',
+    );
+    const ratified = overlay.entries.filter((entry) => entry.reviewStatus === 'RATIFIED');
+    const drafts = overlay.entries.filter((entry) => entry.reviewStatus === 'DRAFT');
+
+    expect(overlay.overlayVersion).toBe(
+      'stage2a-a1-a3-v4-transition-overlay-v1.1.0',
+    );
+    expect(overlay.entries).toHaveLength(25);
+    expect(ratified).toHaveLength(23);
+    expect(ratified.every((entry) => entry.transitionDecision === 'APPROVE')).toBe(true);
+    expect(drafts).toHaveLength(2);
+    expect(drafts.every((entry) => entry.transitionDecision === 'INDETERMINATE')).toBe(
+      true,
+    );
+  });
+
   it('locks only ratified violations that actually occur in the Golden Corpus', () => {
     const locks = readJson<readonly CriticalRecallLock[]>(
       'stage2a-a1-a3-v4-critical-locks.json',

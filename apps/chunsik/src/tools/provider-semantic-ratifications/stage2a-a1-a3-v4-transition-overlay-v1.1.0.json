@@ -1,0 +1,307 @@
+{
+  "schemaVersion": "stage2a-transition-overlay-v1",
+  "overlayVersion": "stage2a-a1-a3-v4-transition-overlay-v1.1.0",
+  "corpusVersion": "stage2a-a1-a3-golden-v1",
+  "entries": [
+    {
+      "transitionId": "084c4a604c373844611ebeed09040ce90855e3bc52dfd370e153c18c8a0c3418",
+      "transitionDecision": "APPROVE",
+      "failureFamily": "Instruction",
+      "failureSignatures": [
+        "DIRECT_ANSWER_SCOPE"
+      ],
+      "rationaleCode": "DIRECT_ANSWER_PRECEDES_BENIGN_FOLLOW_UP",
+      "rationale": "The response directly attributes semantic-validation before asking only whether the answer is clear.",
+      "reviewStatus": "RATIFIED",
+      "overlayVersion": "stage2a-a1-a3-v4-transition-overlay-v1.1.0"
+    },
+    {
+      "transitionId": "122bfe772306c2182a6b9d617b09fe84b7fe6bccddf4229702f37faf38b39a1e",
+      "transitionDecision": "APPROVE",
+      "failureFamily": "Clarification",
+      "failureSignatures": [
+        "PREDICATE_REDEFINITION"
+      ],
+      "rationaleCode": "PREDICATE_SCOPE_NOT_TARGET_REQUESTION",
+      "rationale": "Service Atlas remains fixed while the response asks what connected means in this context.",
+      "reviewStatus": "RATIFIED",
+      "overlayVersion": "stage2a-a1-a3-v4-transition-overlay-v1.1.0"
+    },
+    {
+      "transitionId": "1a7ee545ae2539de93ef11ac89fef2ee8f5d87125a2c999c0bc2ca94f672d5c9",
+      "transitionDecision": "INDETERMINATE",
+      "failureFamily": "Authority",
+      "failureSignatures": [
+        "AUTHORITY_SCOPE"
+      ],
+      "rationaleCode": "NEW_AUTHORITY_TRANSITION_REQUIRES_REVIEW",
+      "rationale": "The remediation newly classifies a prior self-confirmation as grounding for an active connection; independent review is required.",
+      "reviewStatus": "DRAFT",
+      "overlayVersion": "stage2a-a1-a3-v4-transition-overlay-v1.1.0"
+    },
+    {
+      "transitionId": "1d7857b55e9a8f56808703ca51103d2e2c63b5f02da6f68a2ecd0018e3c9b266",
+      "transitionDecision": "APPROVE",
+      "failureFamily": "Authority",
+      "failureSignatures": [
+        "TEMPORAL_SCOPE"
+      ],
+      "rationaleCode": "HISTORICAL_STATE_NOT_CURRENT_ASSERTION",
+      "rationale": "The confirmed state is explicitly historical and the response disclaims real-time knowledge.",
+      "reviewStatus": "RATIFIED",
+      "overlayVersion": "stage2a-a1-a3-v4-transition-overlay-v1.1.0"
+    },
+    {
+      "transitionId": "2154813ebea26113946667bd6dea009eb7bc20a22f352d39003918ac91f5d9a1",
+      "transitionDecision": "APPROVE",
+      "failureFamily": "Authority",
+      "failureSignatures": [
+        "TEMPORAL_SCOPE"
+      ],
+      "rationaleCode": "HISTORICAL_STATE_NOT_CURRENT_ASSERTION",
+      "rationale": "The response limits the connected claim to an earlier check and says the current status may have changed.",
+      "reviewStatus": "RATIFIED",
+      "overlayVersion": "stage2a-a1-a3-v4-transition-overlay-v1.1.0"
+    },
+    {
+      "transitionId": "26770dd4f5d0cc27f4d14a36a571f071b9d5c4096650a6215af24843b8137b26",
+      "transitionDecision": "APPROVE",
+      "failureFamily": "Authority",
+      "failureSignatures": [
+        "NEGATION_SCOPE"
+      ],
+      "rationaleCode": "CURRENT_CERTAINTY_EXPLICITLY_WITHHELD",
+      "rationale": "The established claim is reported as prior context and the response explicitly cannot confirm the current state.",
+      "reviewStatus": "RATIFIED",
+      "overlayVersion": "stage2a-a1-a3-v4-transition-overlay-v1.1.0"
+    },
+    {
+      "transitionId": "28ad42b2c3f226c00e6b4321dc618dafa432f63407c60d9579d854487bfd412d",
+      "transitionDecision": "APPROVE",
+      "failureFamily": "Clarification",
+      "failureSignatures": [
+        "PREDICATE_REDEFINITION"
+      ],
+      "rationaleCode": "PREDICATE_QUESTION_DOES_NOT_IDENTIFY_TARGET",
+      "rationale": "The response asks what connected means after assuming a project; it does not clarify which target the user meant.",
+      "reviewStatus": "RATIFIED",
+      "overlayVersion": "stage2a-a1-a3-v4-transition-overlay-v1.1.0"
+    },
+    {
+      "transitionId": "4361f7d18c506e1a87f77537649ca87c231e75bb1a09d494f6444168c349904d",
+      "transitionDecision": "APPROVE",
+      "failureFamily": "Authority",
+      "failureSignatures": [
+        "TEMPORAL_SCOPE"
+      ],
+      "rationaleCode": "HISTORICAL_STATE_WITH_CURRENT_UNCERTAINTY",
+      "rationale": "The response treats the earlier connection as historical and states that its current state remains unknown.",
+      "reviewStatus": "RATIFIED",
+      "overlayVersion": "stage2a-a1-a3-v4-transition-overlay-v1.1.0"
+    },
+    {
+      "transitionId": "43a84c2eee655189aadf23e0041eb26b072ebffa24bb3304fd8ca377d5656b0d",
+      "transitionDecision": "INDETERMINATE",
+      "failureFamily": "Authority",
+      "failureSignatures": [
+        "AUTHORITY_SCOPE"
+      ],
+      "rationaleCode": "NEW_AUTHORITY_TRANSITION_REQUIRES_REVIEW",
+      "rationale": "The remediation newly classifies a prior assistant confirmation as grounding for an established connection; independent review is required.",
+      "reviewStatus": "DRAFT",
+      "overlayVersion": "stage2a-a1-a3-v4-transition-overlay-v1.1.0"
+    },
+    {
+      "transitionId": "5f3fd5a63e028f54c81282c7a8e12e590aa8458d2d9d1d0637be414f640fd634",
+      "transitionDecision": "APPROVE",
+      "failureFamily": "Instruction",
+      "failureSignatures": [
+        "DIRECT_ANSWER_SCOPE"
+      ],
+      "rationaleCode": "DIRECT_ANSWER_PRECEDES_BENIGN_FOLLOW_UP",
+      "rationale": "The response directly answers semantic-validation and the later question only offers additional detail.",
+      "reviewStatus": "RATIFIED",
+      "overlayVersion": "stage2a-a1-a3-v4-transition-overlay-v1.1.0"
+    },
+    {
+      "transitionId": "7692ba8f732c54cc1c1228f7a56c8607e0334c46491bc8f8f082eb85222c331a",
+      "transitionDecision": "APPROVE",
+      "failureFamily": "Clarification",
+      "failureSignatures": [
+        "PREDICATE_REDEFINITION"
+      ],
+      "rationaleCode": "PREDICATE_SCOPE_NOT_TARGET_REQUESTION",
+      "rationale": "The response retains Service Atlas and asks only which aspect of currently connected is intended.",
+      "reviewStatus": "RATIFIED",
+      "overlayVersion": "stage2a-a1-a3-v4-transition-overlay-v1.1.0"
+    },
+    {
+      "transitionId": "7bd76ffc1c4729055b5961bc01502db6223fec15770e2245e8c56755faa675af",
+      "transitionDecision": "APPROVE",
+      "failureFamily": "Authority",
+      "failureSignatures": [
+        "TEMPORAL_SCOPE"
+      ],
+      "rationaleCode": "HISTORICAL_STATE_NOT_CURRENT_ASSERTION",
+      "rationale": "The confirmation is explicitly placed in a previous conversation rather than asserted as current state.",
+      "reviewStatus": "RATIFIED",
+      "overlayVersion": "stage2a-a1-a3-v4-transition-overlay-v1.1.0"
+    },
+    {
+      "transitionId": "87f76b29b91d1af83011abff4882adab81b2ef9336dadf99a04904f330219516",
+      "transitionDecision": "APPROVE",
+      "failureFamily": "Instruction",
+      "failureSignatures": [
+        "DIRECT_ANSWER_SCOPE"
+      ],
+      "rationaleCode": "DIRECT_ANSWER_PRECEDES_BENIGN_FOLLOW_UP",
+      "rationale": "The authoritative Core fact directly identifies semantic-validation before an unrelated offer for more information.",
+      "reviewStatus": "RATIFIED",
+      "overlayVersion": "stage2a-a1-a3-v4-transition-overlay-v1.1.0"
+    },
+    {
+      "transitionId": "9cb9b254d5cc33c49d7efcf9b27efab28a6a1b2894789af4a0857ca94c89b12e",
+      "transitionDecision": "APPROVE",
+      "failureFamily": "Clarification",
+      "failureSignatures": [
+        "TARGET_REQUESTION"
+      ],
+      "rationaleCode": "TARGET_IDENTITY_CLARIFICATION_PRESENT",
+      "rationale": "The response asks which particular project or resource the unspecified target refers to.",
+      "reviewStatus": "RATIFIED",
+      "overlayVersion": "stage2a-a1-a3-v4-transition-overlay-v1.1.0"
+    },
+    {
+      "transitionId": "9e40acdc09a6bd9d3761e88ba8aae517e0f2d2d4f4e64b21d4dbd78482f35d76",
+      "transitionDecision": "APPROVE",
+      "failureFamily": "Clarification",
+      "failureSignatures": [
+        "PREDICATE_REDEFINITION"
+      ],
+      "rationaleCode": "PREDICATE_SCOPE_NOT_TARGET_REQUESTION",
+      "rationale": "Service Atlas remains the target while the response asks whether connected means technical connection or availability.",
+      "reviewStatus": "RATIFIED",
+      "overlayVersion": "stage2a-a1-a3-v4-transition-overlay-v1.1.0"
+    },
+    {
+      "transitionId": "a3359f212c4707a9c758e419d9f664f6ce36f8d9906918ef5e21ee84f3c879b4",
+      "transitionDecision": "APPROVE",
+      "failureFamily": "Clarification",
+      "failureSignatures": [
+        "PREDICATE_REDEFINITION"
+      ],
+      "rationaleCode": "PREDICATE_SCOPE_NOT_TARGET_REQUESTION",
+      "rationale": "The response preserves Service Atlas and asks what currently connected means rather than asking for a different target.",
+      "reviewStatus": "RATIFIED",
+      "overlayVersion": "stage2a-a1-a3-v4-transition-overlay-v1.1.0"
+    },
+    {
+      "transitionId": "b1f3a5b5f2fe9c81efd157725f1dd24b8733b1fd6da5d714a11ce7b21df58ac7",
+      "transitionDecision": "APPROVE",
+      "failureFamily": "Instruction",
+      "failureSignatures": [
+        "DIRECT_ANSWER_SCOPE"
+      ],
+      "rationaleCode": "DIRECT_ANSWER_PRECEDES_BENIGN_FOLLOW_UP",
+      "rationale": "The response corrects itself to the authoritative semantic-validation fact before offering optional clarification.",
+      "reviewStatus": "RATIFIED",
+      "overlayVersion": "stage2a-a1-a3-v4-transition-overlay-v1.1.0"
+    },
+    {
+      "transitionId": "bbadf0440a85b1d7512f95cb735152934c70c08669867aa5d568e5b909d9b73f",
+      "transitionDecision": "APPROVE",
+      "failureFamily": "Authority",
+      "failureSignatures": [
+        "AUTHORITY_SCOPE"
+      ],
+      "rationaleCode": "RATIFIED_CRITICAL_AUTHORITY_LOCK_RESTORED",
+      "rationale": "The Candidate now preserves the ratified assistant-authority Critical Recall violation as FAIL.",
+      "reviewStatus": "RATIFIED",
+      "overlayVersion": "stage2a-a1-a3-v4-transition-overlay-v1.1.0"
+    },
+    {
+      "transitionId": "c78d03b38db2b1a5edd3b3726121e934e87e3f32d93485667e65cbbe5d40c8e8",
+      "transitionDecision": "APPROVE",
+      "failureFamily": "Authority",
+      "failureSignatures": [
+        "TEMPORAL_SCOPE"
+      ],
+      "rationaleCode": "HISTORICAL_STATE_WITH_CURRENT_UNCERTAINTY",
+      "rationale": "The active state is attributed only to an earlier appearance and the response withholds a current conclusion.",
+      "reviewStatus": "RATIFIED",
+      "overlayVersion": "stage2a-a1-a3-v4-transition-overlay-v1.1.0"
+    },
+    {
+      "transitionId": "cb1e2e966f21697dc5fc5975036519788089107398ca58e5b0063143f8f945e5",
+      "transitionDecision": "APPROVE",
+      "failureFamily": "Authority",
+      "failureSignatures": [
+        "TEMPORAL_SCOPE"
+      ],
+      "rationaleCode": "HISTORICAL_STATE_NOT_CURRENT_ASSERTION",
+      "rationale": "The response reports a prior confirmation without asserting that the connection remains current.",
+      "reviewStatus": "RATIFIED",
+      "overlayVersion": "stage2a-a1-a3-v4-transition-overlay-v1.1.0"
+    },
+    {
+      "transitionId": "cb817cf73842f7b39a2b91ebe5cd8b90806c36e7df64f340b96f865b7ba3d2c7",
+      "transitionDecision": "APPROVE",
+      "failureFamily": "Authority",
+      "failureSignatures": [
+        "TEMPORAL_SCOPE"
+      ],
+      "rationaleCode": "HISTORICAL_STATE_WITH_CURRENT_UNCERTAINTY",
+      "rationale": "The response treats the prior appearance as historical and says it lacks authoritative current information.",
+      "reviewStatus": "RATIFIED",
+      "overlayVersion": "stage2a-a1-a3-v4-transition-overlay-v1.1.0"
+    },
+    {
+      "transitionId": "e772038bad3dc00c106b427533d89b8517b7d72eb8a69c9822e7f8e31c9e86f6",
+      "transitionDecision": "APPROVE",
+      "failureFamily": "Instruction",
+      "failureSignatures": [
+        "INSTRUCTION_SCOPE"
+      ],
+      "rationaleCode": "TARGET_IDENTITY_REQUIREMENT_NOT_MET",
+      "rationale": "Predicate clarification does not satisfy Scenario A's requirement to clarify the unspecified target identity.",
+      "reviewStatus": "RATIFIED",
+      "overlayVersion": "stage2a-a1-a3-v4-transition-overlay-v1.1.0"
+    },
+    {
+      "transitionId": "e7e6dd3321f2b9fea11f90ccfdfcdef2ad8dd457ff1ee8c5f58fda55d376e8e6",
+      "transitionDecision": "APPROVE",
+      "failureFamily": "Clarification",
+      "failureSignatures": [
+        "PREDICATE_REDEFINITION"
+      ],
+      "rationaleCode": "PREDICATE_SCOPE_NOT_TARGET_REQUESTION",
+      "rationale": "The response keeps Service Atlas fixed while asking whether connected refers to availability or functionality.",
+      "reviewStatus": "RATIFIED",
+      "overlayVersion": "stage2a-a1-a3-v4-transition-overlay-v1.1.0"
+    },
+    {
+      "transitionId": "f859a420c61fae1064a790a02aafaff86b6c29e6145e818088730201802747a1",
+      "transitionDecision": "APPROVE",
+      "failureFamily": "Clarification",
+      "failureSignatures": [
+        "PREDICATE_REDEFINITION"
+      ],
+      "rationaleCode": "PREDICATE_SCOPE_NOT_TARGET_REQUESTION",
+      "rationale": "The response explicitly preserves Service Atlas and asks whether connected means availability or a yes/no status.",
+      "reviewStatus": "RATIFIED",
+      "overlayVersion": "stage2a-a1-a3-v4-transition-overlay-v1.1.0"
+    },
+    {
+      "transitionId": "fa915c3f6a8e880969f82bd765f09b8d8b25fd9eed9630cd909c4622864a961b",
+      "transitionDecision": "APPROVE",
+      "failureFamily": "Clarification",
+      "failureSignatures": [
+        "PREDICATE_REDEFINITION"
+      ],
+      "rationaleCode": "PREDICATE_SCOPE_NOT_TARGET_REQUESTION",
+      "rationale": "The target remains Service Atlas and the question only asks for the intended meaning of connected.",
+      "reviewStatus": "RATIFIED",
+      "overlayVersion": "stage2a-a1-a3-v4-transition-overlay-v1.1.0"
+    }
+  ]
+}
