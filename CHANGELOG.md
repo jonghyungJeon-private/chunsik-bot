@@ -7,6 +7,21 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Stage 2A · Provider Benchmark Framework (Plan v2.1)
+
+- Added an offline-only Stage A1/A2 benchmark planner and evidence aggregator around the existing bound
+  `provider:semantic` harness. It freezes the approved 3-reference/7-challenger configuration pool, weighted
+  A1 scenario schedule, A2 finalist schedule, and exact generation/child-process budgets.
+- Added the frozen failure taxonomy and Provider Scorecard: semantic macro/worst-scenario performance,
+  authority, continuity, target preservation, instruction following, latency, output stability, variance,
+  eligibility gates, overall score, advancement ranking, and Semantic/Latency/Overall champions.
+- Added a machine-readable Provider Matrix and deterministic summary CLI (`pnpm provider:benchmark`). The
+  command consumes existing JSON evidence only; it never invokes or downloads a Provider and does not modify
+  Prompt, Evaluator, Scenario, Binding, Acceptance, or Harness contracts.
+- Validation: focused benchmark/semantic suites **285 tests PASS**; full Node 22 suite **68 files / 1674 tests
+  PASS**; `pnpm typecheck` and `pnpm build` PASS. The default Node 18 full suite remains blocked by the existing
+  `better-sqlite3` ABI mismatch, while the focused benchmark suites pass there.
+
 ### Added — Sprint 4b · GitHub App Authentication (dev/PAT → GitHub App; ADR-0061)
 
 - **Auth-model pivot implemented** (ADR-0061, ratified 2026-07-07). Repository auth for both surfaces —

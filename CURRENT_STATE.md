@@ -25,6 +25,13 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 
 ## Implemented
 
+- **Stage 2A Provider Benchmark framework (Plan v2.1 freeze)** — an offline-only benchmark planner and
+  evidence aggregator now encode the frozen 3-reference/7-challenger pool, Stage A1/A2 schedules and exact
+  call budgets, failure taxonomy, scorecard, advancement rule, multiple-champion selection, and Provider
+  Matrix. Existing `provider:semantic` remains the sole bound Provider execution harness; the new
+  `provider:benchmark` command does not invoke or download a model and does not change Prompt, Evaluator,
+  Scenario, Binding, or Acceptance contracts. Framework validation is complete; Stage A1 Provider data
+  collection remains subject to the existing strict execution/binding controls.
 - **GitHub App Authentication (Sprint 4b, ADR-0061)** — repository auth for RepositoryHosting REST (CAP-010) and
   local `git push`/`clone` (CAP-002) uses short-lived GitHub App installation tokens minted at execution from an
   adapter-local App private key. New `@quoky/github-app-auth` (App JWT via `node:crypto`, installation resolution,
