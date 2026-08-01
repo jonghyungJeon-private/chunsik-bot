@@ -1,0 +1,111 @@
+# Stage 2B Production Routing Architecture Plan
+
+- **Status:** Planning only — architecture and implementation are not yet ratified.
+- **Input:** Completed Stage 2A Provider Evaluation Infrastructure and frozen A1+A3 evidence.
+- **Current candidates:** balanced primary `llama3.1:8b`; semantic candidate `granite3.3:8b`;
+  latency-only evidence `llama3.2:3b`; deprioritized `mistral:7b`.
+
+## Objectives
+
+- Define the Production Routing architecture that consumes Stage 2A Provider Ranking without
+  changing or reinterpreting its evidence.
+- Establish explicit responsibilities for primary selection, fallback, semantic escalation,
+  traffic policy, timeout, retry, and operational failure handling.
+- Preserve provider independence: routing must remain capability- and policy-driven rather than
+  embedding concrete model identities in Core behavior.
+- Produce an architecture decision that can be reviewed independently before implementation.
+
+## Architecture Boundary
+
+Stage 2A owns Provider Evaluation Infrastructure:
+
+- Evaluator and Golden Corpus
+- deterministic Replay and Binding
+- Benchmark Framework and Decision Engine
+- evidence-based Provider Ranking
+
+Stage 2B owns Production Routing:
+
+- primary and fallback roles
+- optional dual-routing and escalation policy
+- traffic, timeout, retry, and failure policy
+- operational observability and safe degradation expectations
+
+Stage 2B consumes Stage 2A outputs but does not rewrite historical scorecards, Golden Corpus,
+bindings, Champion rules, or Prompt conclusions. Core continues to depend only on `AiProvider`;
+providers advertise capabilities, priority, and availability, while provider-specific invocation
+and prompt shaping remain adapter responsibilities. Any change to these settled boundaries requires
+an approved ADR before implementation.
+
+## Scope
+
+- Compare candidate routing strategies against the ratified Stage 2A ranking and failure signatures.
+- Define provider roles and the decision inputs permitted for each role.
+- Define the required behavior for unavailable, timed-out, failed, and semantically escalated calls.
+- Define the governance and evidence needed to ratify one Production Routing architecture.
+- Identify regression, observability, budget, and operational-safety requirements for a later
+  implementation sprint.
+
+## Non Goals
+
+- No routing, dual-provider, retry, timeout, traffic-split, or escalation implementation.
+- No Provider, Benchmark, Runtime, Discord, or model-download execution.
+- No Prompt, Evaluator, Scorecard weight, Winner Rule, Golden Corpus, or Stage 2A result change.
+- No concrete provider branching in Core and no provider pinning to Session, Task, or Actor.
+- No new capability, aggregate, persistence schema, dynamic plugin loader, or autonomous agent loop.
+
+## Candidate Routing Strategies
+
+### Balanced Primary
+
+Use `llama3.1:8b` as the sole default candidate because it leads the combined v4 overall ranking
+and Authority score. This is the smallest operational surface, but it does not use Granite's higher
+Semantic and Continuity results.
+
+### Balanced Primary with Semantic Escalation
+
+Use `llama3.1:8b` for the default role and consider `granite3.3:8b` for a separately defined
+semantic-escalation role. Stage 2B must establish an observable, provider-neutral escalation signal;
+the existence of two strong candidates alone does not ratify dual routing.
+
+### Availability Fallback
+
+Keep one provider as the normal selection and consider the other only when the primary is unavailable
+or fails an approved operational condition. Stage 2B must distinguish availability fallback from
+semantic escalation and must define whether an additional Provider call is permitted.
+
+### Restricted Latency Path
+
+Consider `llama3.2:3b` only for a future, explicitly bounded low-risk role where latency dominates.
+Its Stage 2A Semantic and Instruction results do not support general-purpose Production routing.
+
+These are comparison candidates, not approved Production Architecture. `DUAL_PROVIDER` remains
+unratified until routing, escalation, retry, timeout, and traffic policies are defined together.
+
+## Open Questions
+
+- Which provider-neutral request or risk signals may select the balanced, semantic, or restricted
+  latency role?
+- Is semantic escalation allowed to add a second Provider call, and what budget and audit evidence
+  would authorize it?
+- Which failure classes permit fallback or retry, and which must fail closed without another call?
+- What timeout ownership and deadline propagation preserve the existing adapter/Core boundary?
+- How are retry limits, traffic distribution, circuit breaking, and recovery made deterministic and
+  observable?
+- How should routing decisions and provider variance be audited without pinning a provider to
+  Session, Task, or Actor?
+- What Golden Corpus and operational regressions are required before promotion?
+- Does the selected design fit existing `ProviderSelector` responsibilities, or does it require a
+  separately ratified architecture seam and ADR?
+
+## Success Criteria
+
+- One routing strategy and its provider roles are explicitly ratified.
+- Selection, fallback, escalation, timeout, retry, traffic, and failure semantics are unambiguous.
+- The design remains provider-independent and preserves the `apps -> adapters -> core` dependency
+  direction and existing `AiProvider` boundary.
+- Additional Provider-call budgets, audit facts, and fail-closed conditions are explicit.
+- Golden Corpus regression and operational validation requirements are measurable without changing
+  Stage 2A evidence or acceptance rules.
+- Required ADR work, implementation scope, tests, and rollout gates are identified before any code
+  or Runtime change begins.

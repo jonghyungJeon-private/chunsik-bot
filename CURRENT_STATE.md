@@ -23,6 +23,23 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   1098 tests PASS. (Under the `.nvmrc`-pinned Node 18, SQLite repo tests fail on a better-sqlite3 ABI
   mismatch — a Deferred (Environment) item; the suite is green on Node 22.)
 
+## Stage 2A — Completed
+
+- **Status:** **Completed** (`STAGE_2A = PASS`). Stage 2A established trustworthy Provider Evaluation
+  Infrastructure; Provider routing and operational policy are explicitly deferred to Stage 2B.
+- **Deliverables:** Evaluator v4, immutable Golden Corpus, post-push Binding ratification,
+  deterministic Replay, pool-decoupled Benchmark Framework, Decision Engine, and Provider Ranking.
+- **Evaluator:** `stage2a-semantic-checker-v4` is the production default. Historical Golden Corpus
+  replay remains pinned to `stage2a-semantic-checker-v3`.
+- **Golden Corpus:** Stable A1+A3 corpus — 224 records / 896 checks; combined digest
+  `add786d6ebef4cb0158119783b2329f30a6c030ed37682c95d1071df7801e3b4`.
+- **Provider Ranking:** Balanced Primary Candidate — `llama3.1:8b`; Semantic Candidate —
+  `granite3.3:8b`; latency-only evidence — `llama3.2:3b`; `mistral:7b` deprioritized.
+- **Prompt Root Cause:** **NOT ESTABLISHED**.
+- **Stage 2B:** Planning opened for Production Routing. Dual routing, traffic policy, timeout,
+  retry, escalation, and operational policy are not yet ratified or implemented. See
+  `docs/plans/stage-2b-routing-architecture-plan.md`.
+
 ## Implemented
 
 - **Stage 2A semantic checker v4 promotion** — the independently ratified Candidate v4 is now the
@@ -31,8 +48,8 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   `stage2a-semantic-checker-v3`; the immutable v4-candidate transition identity is retained only for the
   approved 25/25 transition overlay. Frozen A1+A3 replay remains deterministic with 224 records / 896 check
   instances, Critical Recall 5/5 (100%), and zero confirmed FP/FN. The new default execution path binds the
-  evaluator router and v4 implementation source/dist modules; prior execution bindings remain historical and
-  no replacement binding is ratified by this promotion.
+  evaluator router and v4 implementation source/dist modules. Post-push v4 bindings at the synchronized main
+  revision are ratified; prior v3, pre-push v4, and earlier-HEAD execution bindings remain historical.
 - **Stage 2A Provider Benchmark framework (Plan v2.1 + pool decoupling)** — the offline planner and evidence
   aggregator consume strict repository-owned or absolute-path Pool Configuration instead of owning a fixed
   model count. The immutable legacy 10-model pool remains the default; a production 18GiB four-model pool is

@@ -7,6 +7,21 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Changed — Stage 2A · Completion and Stage 2B Planning
+
+- Closed Stage 2A with `STAGE_2A = PASS`: Evaluator v4, Golden Corpus, deterministic Replay,
+  post-push Binding, Provider Benchmark Framework, Decision Engine, and Provider Ranking are ratified
+  as the completed Provider Evaluation Infrastructure deliverables.
+- Completed Evaluator v4 promotion as the production-default semantic checker while preserving the
+  immutable v3 historical replay contract and A1+A3 Golden Corpus evidence.
+- Ratified the synchronized-main static/probe/run/run-all v4 bindings without changing historical
+  bindings or authorizing a new Provider execution.
+- Completed the evidence-based Provider ranking: `llama3.1:8b` is the balanced primary candidate,
+  `granite3.3:8b` is the semantic candidate, `llama3.2:3b` is latency-only, and `mistral:7b` is
+  deprioritized. Prompt root cause remains **NOT ESTABLISHED**.
+- Opened Stage 2B as a planning-only Production Routing track. Dual routing, traffic policy, timeout,
+  retry, escalation, and operational policy remain unratified and unimplemented.
+
 ### Changed — Stage 2A · Semantic Checker v4 Promotion
 
 - Promoted the fully ratified semantic checker v4 to the default evaluator contract
