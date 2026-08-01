@@ -15,6 +15,7 @@
     "dev": "tsc -b tsconfig.build.json && node apps/chunsik/dist/main.js",
     "provider:benchmark": "node apps/chunsik/dist/tools/provider-benchmark-cli.js",
     "provider:semantic": "node apps/chunsik/dist/tools/provider-semantic-validation-cli.js",
+    "provider:semantic:shadow": "node apps/chunsik/dist/tools/provider-semantic-shadow-cli.js",
     "test": "vitest run"
   },
   "devDependencies": {
