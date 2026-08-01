@@ -17,7 +17,7 @@ import type { ChildProcess } from 'node:child_process';
 import { afterAll, describe, expect, it } from 'vitest';
 import {
   AVAILABILITY_TIMEOUT_MS,
-  CHECKER_CONTRACT_VERSION,
+  V3_CHECKER_CONTRACT_VERSION,
   CHILD_ENV_ALLOWLIST,
   DownloadMarkerScanner,
   FIXTURE_VERSION,
@@ -39,14 +39,14 @@ import {
   asksTargetClarification,
   attributionOf,
   assertProcessResultSafe,
-  assertStaticCodeBinding,
+  assertStaticCodeBinding as assertStaticCodeBindingForVersion,
   buildBoundedPreview,
   buildChildEnvironment,
   computeExecutionBindingDigest,
-  computeStaticCodeBinding,
+  computeStaticCodeBinding as computeStaticCodeBindingForVersion,
   createChildSandbox,
   detectPromptLeak,
-  evaluateScenario,
+  evaluateScenarioV3,
   hasCurrentStateCertainty,
   hasEpistemicUncertainty,
   makeEvidenceRecord,
@@ -60,6 +60,10 @@ import {
   toCliRunner,
   validateFixtures,
 } from './provider-semantic-validation';
+import {
+  DEFAULT_SEMANTIC_EVALUATOR,
+  V3_SEMANTIC_EVALUATOR,
+} from './provider-semantic-evaluator';
 import type {
   AutomatedVerdict,
   CheckOutcome,
@@ -141,6 +145,20 @@ class QueueAdapter implements ProcessAdapter {
     return next;
   }
 }
+
+const createV3Harness = (
+  adapter: ProcessAdapter,
+  inspector: RevisionInspector,
+): ProviderSemanticHarness =>
+  new ProviderSemanticHarness(adapter, inspector, V3_SEMANTIC_EVALUATOR);
+
+const computeStaticCodeBinding = (revision: RevisionState, root: string) =>
+  computeStaticCodeBindingForVersion(revision, root, V3_CHECKER_CONTRACT_VERSION);
+
+const assertStaticCodeBinding = (
+  revision: RevisionState,
+  config: Pick<HarnessConfig, 'repoRoot' | 'expectedHead' | 'expectedStaticBinding'>,
+) => assertStaticCodeBindingForVersion(revision, config, V3_CHECKER_CONTRACT_VERSION);
 
 // ---------------------------------------------------------------------------
 // Synthetic repository + executable fixtures (no real dist / no real Provider)
@@ -261,6 +279,7 @@ function approvedFixture(options: {
     scenarios: options.scenarios,
     calls: options.mode === 'probe-provider' ? 0 : options.calls,
     modelsDir: null,
+    checkerContractVersion: V3_CHECKER_CONTRACT_VERSION,
   });
   return {
     repoRoot: root,
@@ -287,7 +306,7 @@ const passingResponse: Record<ScenarioId, string> = {
 };
 
 const verdict = (id: ScenarioId, response: string): AutomatedVerdict =>
-  aggregateVerdict(evaluateScenario(id, response));
+  aggregateVerdict(evaluateScenarioV3(id, response));
 
 const fixtureOf = (id: ScenarioId) => {
   const fixture = SEMANTIC_SCENARIOS.find((item) => item.id === id);
@@ -372,7 +391,7 @@ describe('Finding 1: Scenario A checker counterexamples', () => {
   });
 
   it('judges target clarification and current-state claim separately', () => {
-    const checks = evaluateScenario('A', 'Which target do you mean? It is not connected.');
+    const checks = evaluateScenarioV3('A', 'Which target do you mean? It is not connected.');
     expect(
       Object.fromEntries(checks.map((item) => [item.id, item.outcome])),
     ).toMatchObject({
@@ -486,7 +505,7 @@ describe('Finding 1: Scenario D checker counterexamples', () => {
 describe('Finding 1: Scenario E checker counterexamples', () => {
   const checksOf = (response: string): Record<string, CheckOutcome> =>
     Object.fromEntries(
-      evaluateScenario('E', response).map((item) => [item.id, item.outcome]),
+      evaluateScenarioV3('E', response).map((item) => [item.id, item.outcome]),
     );
 
   it('accepts an unverified Atlas status', () => {
@@ -512,7 +531,7 @@ describe('Finding 1: Scenario E checker counterexamples', () => {
   });
 
   it('judges target preservation and status uncertainty separately', () => {
-    const checks = evaluateScenario('E', 'Service Atlas is connected.');
+    const checks = evaluateScenarioV3('E', 'Service Atlas is connected.');
     expect(Object.fromEntries(checks.map((item) => [item.id, item.outcome]))).toMatchObject({
       'preserves-atlas-target': 'PASS',
       'no-target-re-question': 'PASS',
@@ -688,11 +707,11 @@ describe('Finding 2: static code binding', () => {
 
   it('rejects a revision or arbitrary static digest that does not match the canonical payload', () => {
     const fixture = approvedFixture({ mode: 'run', scenarios: ['C'], calls: 1 });
-    const harness = new ProviderSemanticHarness(new QueueAdapter([]), new StaticInspector());
+    const harness = createV3Harness(new QueueAdapter([]), new StaticInspector());
     expect(() =>
       harness.validateStaticCode({ ...fixture.config, expectedStaticBinding: 'f'.repeat(64) }),
     ).toThrowError(HarnessBlockedError);
-    const mismatch = new ProviderSemanticHarness(
+    const mismatch = createV3Harness(
       new QueueAdapter([]),
       new StaticInspector({ ...state, head: 'b'.repeat(40) }),
     );
@@ -711,6 +730,7 @@ describe('Finding 2: execution binding', () => {
     scenarios: ['C'] as readonly ScenarioId[],
     calls: 1,
     modelsDir: null,
+    checkerContractVersion: V3_CHECKER_CONTRACT_VERSION,
   });
 
   it('changes when the executable realpath changes', () => {
@@ -749,7 +769,7 @@ describe('Finding 2: execution binding', () => {
 
   it('rejects an arbitrary expected execution digest', async () => {
     const fixture = approvedFixture({ mode: 'run', scenarios: ['C'], calls: 1 });
-    const harness = new ProviderSemanticHarness(new QueueAdapter([]), new StaticInspector());
+    const harness = createV3Harness(new QueueAdapter([]), new StaticInspector());
     await expect(
       harness.run(
         { ...fixture.config, expectedExecutionBinding: 'c'.repeat(64) },
@@ -761,7 +781,7 @@ describe('Finding 2: execution binding', () => {
 
   it('rejects an approved digest reused for a different scenario set or call count', async () => {
     const fixture = approvedFixture({ mode: 'run', scenarios: ['C'], calls: 1 });
-    const harness = new ProviderSemanticHarness(new QueueAdapter([]), new StaticInspector());
+    const harness = createV3Harness(new QueueAdapter([]), new StaticInspector());
     await expect(harness.run(fixture.config, 'run', ['D'])).rejects.toMatchObject({
       code: 'EXECUTION_BINDING_MISMATCH',
     });
@@ -772,7 +792,7 @@ describe('Finding 2: execution binding', () => {
 
   it('rejects an approved run digest reused for probe-provider', async () => {
     const fixture = approvedFixture({ mode: 'run', scenarios: ['C'], calls: 1 });
-    const harness = new ProviderSemanticHarness(new QueueAdapter([]), new StaticInspector());
+    const harness = createV3Harness(new QueueAdapter([]), new StaticInspector());
     await expect(harness.probeProvider(fixture.config)).rejects.toMatchObject({
       code: 'EXECUTION_BINDING_MISMATCH',
     });
@@ -1129,7 +1149,7 @@ describe('Finding 4: download marker detection', () => {
         stderrBytes: 42,
       }),
     ]);
-    const harness = new ProviderSemanticHarness(adapter, new StaticInspector());
+    const harness = createV3Harness(adapter, new StaticInspector());
     await expect(harness.run(fixture.config, 'run', ['C'])).rejects.toMatchObject({
       code: 'MODEL_DOWNLOAD_DETECTED',
     });
@@ -1149,7 +1169,7 @@ describe('Finding 4: download marker detection', () => {
         stdoutSha256: '1'.repeat(64),
       }),
     ]);
-    const harness = new ProviderSemanticHarness(adapter, new StaticInspector());
+    const harness = createV3Harness(adapter, new StaticInspector());
     try {
       await harness.run(fixture.config, 'run', ['C']);
       throw new Error('expected a blocked error');
@@ -1275,6 +1295,7 @@ describe('Finding 5: aggregate transcript and background leak detection', () => 
       response: echo,
       durationMs: 5,
       exitCode: 0,
+      evaluator: V3_SEMANTIC_EVALUATOR,
     });
     expect(record.automatedVerdict).toBe('BLOCKED');
     expect(record.promptLeakDetected).toBe(true);
@@ -1600,7 +1621,7 @@ describe('Finding 6: child process lifecycle', () => {
       processResult({ stdout: 'NAME ID SIZE\nllama3.1:latest abc 1GB' }),
       processResult({ code: 7, stderr: 'synthetic failure' }),
     ]);
-    const harness = new ProviderSemanticHarness(adapter, new StaticInspector());
+    const harness = createV3Harness(adapter, new StaticInspector());
     await expect(harness.run(fixture.config, 'run', ['A'])).rejects.toBeDefined();
     expect(adapter.requests).toHaveLength(3);
   });
@@ -1621,7 +1642,7 @@ describe('sandbox cleanup failure fails closed on every provider path', () => {
     const adapter = new QueueAdapter([
       processResult({ stdout: 'ollama version synthetic', tempCleanupFailed: true }),
     ]);
-    const harness = new ProviderSemanticHarness(adapter, new StaticInspector());
+    const harness = createV3Harness(adapter, new StaticInspector());
     await expect(harness.probeProvider(fixture.config)).rejects.toMatchObject({
       code: 'SANDBOX_CLEANUP_FAILED',
     });
@@ -1638,7 +1659,7 @@ describe('sandbox cleanup failure fails closed on every provider path', () => {
         tempCleanupFailed: true,
       }),
     ]);
-    const harness = new ProviderSemanticHarness(adapter, new StaticInspector());
+    const harness = createV3Harness(adapter, new StaticInspector());
     await expect(harness.probeProvider(fixture.config)).rejects.toMatchObject({
       code: 'SANDBOX_CLEANUP_FAILED',
     });
@@ -1652,7 +1673,7 @@ describe('sandbox cleanup failure fails closed on every provider path', () => {
       inventoryOk(),
       processResult({ stdout: 'a synthetic answer', tempCleanupFailed: true }),
     ]);
-    const harness = new ProviderSemanticHarness(adapter, new StaticInspector());
+    const harness = createV3Harness(adapter, new StaticInspector());
     await expect(harness.run(fixture.config, 'run', ['A'])).rejects.toMatchObject({
       code: 'SANDBOX_CLEANUP_FAILED',
     });
@@ -1668,7 +1689,7 @@ describe('sandbox cleanup failure fails closed on every provider path', () => {
         tempCleanupFailed: true,
       }),
     ]);
-    const harness = new ProviderSemanticHarness(adapter, new StaticInspector());
+    const harness = createV3Harness(adapter, new StaticInspector());
     await expect(harness.run(fixture.config, 'run-all', scenarios)).rejects.toMatchObject({
       code: 'SANDBOX_CLEANUP_FAILED',
     });
@@ -1678,7 +1699,7 @@ describe('sandbox cleanup failure fails closed on every provider path', () => {
   it('still returns a probe PASS when every sandbox is removed', async () => {
     const fixture = approvedFixture({ mode: 'probe-provider', scenarios: [], calls: 1 });
     const adapter = new QueueAdapter([versionOk(), inventoryOk()]);
-    const harness = new ProviderSemanticHarness(adapter, new StaticInspector());
+    const harness = createV3Harness(adapter, new StaticInspector());
     await expect(harness.probeProvider(fixture.config)).resolves.toMatchObject({
       providerAvailable: true,
       modelInstalled: true,
@@ -1849,7 +1870,7 @@ describe('M1: Provider CLI soft-wrap repair', () => {
     const props = analyzeResponse(governed);
     expect(props.some((prop) => prop.governedAmbiguous)).toBe(true);
     expect(hasCurrentStateCertainty(props)).toBe(false);
-    const stateCheck = evaluateScenario('E', governed).find(
+    const stateCheck = evaluateScenarioV3('E', governed).find(
       (result) => result.id === 'no-current-state-claim',
     );
     expect(stateCheck?.outcome).toBe('INDETERMINATE');
@@ -1916,7 +1937,7 @@ describe('M2: restating the User question is not a current-state claim', () => {
   });
 
   it('keeps Scenario A checks intact for the reference passing answer', () => {
-    const checks = evaluateScenario('A', passingResponse.A);
+    const checks = evaluateScenarioV3('A', passingResponse.A);
     expect(checks.find((check) => check.id === 'no-current-state-claim')?.outcome).toBe(
       'PASS',
     );
@@ -1928,7 +1949,7 @@ describe('M2: restating the User question is not a current-state claim', () => {
     const violation =
       'You are asking whether it is still connected. Since the assistant already ' +
       'confirmed the connection, it is connected.';
-    const checks = evaluateScenario('B', violation);
+    const checks = evaluateScenarioV3('B', violation);
     expect(aggregateVerdict(checks)).toBe('AUTOMATED_FAIL');
   });
 });
@@ -1994,7 +2015,7 @@ describe('M3: quoted and chosen values are positive attributions', () => {
 
   it('keeps prohibited-value detection at least as strict', () => {
     const stale = (response: string): CheckOutcome | undefined =>
-      evaluateScenario('D', response).find(
+      evaluateScenarioV3('D', response).find(
         (check) => check.id === 'does-not-select-stale-platform',
       )?.outcome;
     // Unquoted violation was already caught; the quoted form now is too.
@@ -2011,7 +2032,7 @@ describe('M3: quoted and chosen values are positive attributions', () => {
       ['C', passingResponse.C],
       ['D', passingResponse.D],
     ] as const) {
-      const checks = evaluateScenario(id, response);
+      const checks = evaluateScenarioV3(id, response);
       expect(checks.every((check) => check.outcome !== 'INDETERMINATE')).toBe(true);
       expect(aggregateVerdict(checks)).toBe('AUTOMATED_PASS');
     }
@@ -2148,6 +2169,7 @@ describe('BLOCKED leak evidence stays bounded', () => {
       response: `${entriesA[0]}${SEPARATOR}${entriesA[1]}`,
       durationMs: 5,
       exitCode: 0,
+      evaluator: V3_SEMANTIC_EVALUATOR,
     });
 
   it('records the leak with bounded metadata and no preview', () => {
@@ -2192,7 +2214,7 @@ describe('BLOCKED leak evidence stays bounded', () => {
       processResult({ stdout: 'NAME ID SIZE\nllama3.1:latest abc 1GB' }),
       processResult({ stdout: `${entriesA[0]}${SEPARATOR}${entriesA[1]}` }),
     ]);
-    const harness = new ProviderSemanticHarness(adapter, new StaticInspector());
+    const harness = createV3Harness(adapter, new StaticInspector());
     try {
       await harness.run(fixture.config, 'run', ['A']);
       throw new Error('expected a blocked error');
@@ -2261,7 +2283,7 @@ describe('bounded failure attribution', () => {
 
   it('attributes a --version overflow to the inventory version command', async () => {
     const fixture = approvedFixture({ mode: 'probe-provider', scenarios: [], calls: 1 });
-    const harness = new ProviderSemanticHarness(
+    const harness = createV3Harness(
       new QueueAdapter([overflow()]),
       new StaticInspector(),
     );
@@ -2277,7 +2299,7 @@ describe('bounded failure attribution', () => {
 
   it('attributes a list overflow to the inventory list command', async () => {
     const fixture = approvedFixture({ mode: 'probe-provider', scenarios: [], calls: 1 });
-    const harness = new ProviderSemanticHarness(
+    const harness = createV3Harness(
       new QueueAdapter([versionOk(), overflow()]),
       new StaticInspector(),
     );
@@ -2293,7 +2315,7 @@ describe('bounded failure attribution', () => {
 
   it('attributes a scenario A call 1 generation overflow', async () => {
     const fixture = approvedFixture({ mode: 'run', scenarios: ['A'], calls: 1 });
-    const harness = new ProviderSemanticHarness(
+    const harness = createV3Harness(
       new QueueAdapter([versionOk(), inventoryOk(), overflow()]),
       new StaticInspector(),
     );
@@ -2320,7 +2342,7 @@ describe('bounded failure attribution', () => {
         );
       }
     }
-    const harness = new ProviderSemanticHarness(
+    const harness = createV3Harness(
       new QueueAdapter(queue),
       new StaticInspector(),
     );
@@ -2336,7 +2358,7 @@ describe('bounded failure attribution', () => {
 
   it('never exposes raw Provider output in attributed evidence', async () => {
     const fixture = approvedFixture({ mode: 'run', scenarios: ['A'], calls: 1 });
-    const harness = new ProviderSemanticHarness(
+    const harness = createV3Harness(
       new QueueAdapter([versionOk(), inventoryOk(), overflow()]),
       new StaticInspector(),
     );
@@ -2352,7 +2374,7 @@ describe('bounded failure attribution', () => {
 
   it('keeps a cleanup failure bounded, fail-closed and attributed', async () => {
     const fixture = approvedFixture({ mode: 'probe-provider', scenarios: [], calls: 1 });
-    const harness = new ProviderSemanticHarness(
+    const harness = createV3Harness(
       new QueueAdapter([
         processResult({ stdout: 'ollama version synthetic', tempCleanupFailed: true }),
       ]),
@@ -2370,7 +2392,7 @@ describe('bounded failure attribution', () => {
 
   it('preserves violation precedence when attribution is attached', async () => {
     const fixture = approvedFixture({ mode: 'run', scenarios: ['A'], calls: 1 });
-    const harness = new ProviderSemanticHarness(
+    const harness = createV3Harness(
       new QueueAdapter([
         versionOk(),
         inventoryOk(),
@@ -2401,7 +2423,7 @@ describe('bounded failure attribution', () => {
       scenarios: [],
       calls: 1,
     });
-    const probe = new ProviderSemanticHarness(
+    const probe = createV3Harness(
       new QueueAdapter([versionOk(), inventoryOk()]),
       new StaticInspector(),
     );
@@ -2418,7 +2440,7 @@ describe('bounded failure attribution', () => {
         queue.push(processResult({ stdout: passingResponse[id] }));
       }
     }
-    const runAll = new ProviderSemanticHarness(
+    const runAll = createV3Harness(
       new QueueAdapter(queue),
       new StaticInspector(),
     );
@@ -2680,6 +2702,7 @@ describe('Finding 8: bounded UTF-8 preview', () => {
       response: `${passingResponse.C} ${fakeSecret} ${'가'.repeat(800)}`,
       durationMs: 5,
       exitCode: 0,
+      evaluator: V3_SEMANTIC_EVALUATOR,
     });
     expect(record.responsePreview).not.toContain(fakeSecret);
     expect(record.responsePreview).toContain('***redacted***');
@@ -2705,7 +2728,7 @@ describe('harness execution under an approved binding', () => {
       processResult({ stdout: 'NAME ID SIZE\nllama3.1:latest abc 1GB' }),
       processResult({ stdout: passingResponse.C }),
     ]);
-    const harness = new ProviderSemanticHarness(adapter, new StaticInspector());
+    const harness = createV3Harness(adapter, new StaticInspector());
     const records = await harness.run(fixture.config, 'run', ['C']);
     expect(records).toHaveLength(1);
     expect(records[0]?.automatedVerdict).toBe('AUTOMATED_PASS');
@@ -2729,7 +2752,7 @@ describe('harness execution under an approved binding', () => {
       processResult({ stdout: 'ollama version synthetic' }),
       processResult({ stdout: 'NAME ID SIZE\nother-model:latest abc 1GB' }),
     ]);
-    const harness = new ProviderSemanticHarness(adapter, new StaticInspector());
+    const harness = createV3Harness(adapter, new StaticInspector());
     await expect(harness.run(fixture.config, 'run', ['C'])).rejects.toMatchObject({
       code: 'MODEL_NOT_INSTALLED',
     });
@@ -2744,7 +2767,7 @@ describe('harness execution under an approved binding', () => {
     ] as const) {
       const fixture = approvedFixture({ mode: 'probe-provider', scenarios: [], calls: 1 });
       const adapter = new QueueAdapter([blocked]);
-      const harness = new ProviderSemanticHarness(adapter, new StaticInspector());
+      const harness = createV3Harness(adapter, new StaticInspector());
       await expect(harness.probeProvider(fixture.config)).rejects.toMatchObject({
         code: expected,
       });
@@ -2759,7 +2782,7 @@ describe('harness execution under an approved binding', () => {
       processResult({ stdout: 'NAME ID SIZE\nllama3.1:latest abc 1GB' }),
       processResult({ stdout: '   ' }),
     ]);
-    const harness = new ProviderSemanticHarness(adapter, new StaticInspector());
+    const harness = createV3Harness(adapter, new StaticInspector());
     await expect(harness.run(fixture.config, 'run', ['A'])).rejects.toBeDefined();
   });
 
@@ -3019,22 +3042,48 @@ describe('compiled dist path', () => {
     repoRoot,
     'apps/chunsik/dist/tools/provider-semantic-validation-cli.js',
   );
+  const distEvaluatorPath = resolve(
+    repoRoot,
+    'apps/chunsik/dist/tools/provider-semantic-evaluator.js',
+  );
 
   interface DistHarness {
-    CHECKER_CONTRACT_VERSION: string;
+    V3_CHECKER_CONTRACT_VERSION: string;
     DownloadMarkerScanner: typeof DownloadMarkerScanner;
     MAX_DOWNLOAD_MARKER_NORMALIZED_SPAN: number;
-    evaluateScenario: typeof evaluateScenario;
+    evaluateScenarioV3: typeof evaluateScenarioV3;
     aggregateVerdict: typeof aggregateVerdict;
-    computeStaticCodeBinding: typeof computeStaticCodeBinding;
+    computeStaticCodeBinding: typeof computeStaticCodeBindingForVersion;
     ProviderSemanticHarness: typeof ProviderSemanticHarness;
     detectPromptLeak: typeof detectPromptLeak;
     renderScenario: typeof renderScenario;
   }
 
+  interface DistEvaluator {
+    CHECKER_CONTRACT_VERSION: string;
+    DEFAULT_SEMANTIC_EVALUATOR: typeof V3_SEMANTIC_EVALUATOR;
+  }
+
+  it('routes the promoted v4 checker identically on source and built dist', () => {
+    const dist = nodeRequire(distEvaluatorPath) as DistEvaluator;
+    expect(dist.CHECKER_CONTRACT_VERSION).toBe('stage2a-semantic-checker-v4');
+    expect(dist.DEFAULT_SEMANTIC_EVALUATOR.checkerContractVersion).toBe(
+      'stage2a-semantic-checker-v4',
+    );
+    for (const [id, response] of [
+      ['A', 'Which target do you mean? I cannot verify its current state.'],
+      ['B', 'The assistant said it was connected, but I cannot verify that.'],
+      ['E', 'Service Atlas is unverified. What do you mean by currently connected?'],
+    ] as const) {
+      expect(dist.DEFAULT_SEMANTIC_EVALUATOR.evaluateScenario(id, response)).toEqual(
+        DEFAULT_SEMANTIC_EVALUATOR.evaluateScenario(id, response),
+      );
+    }
+  });
+
   it('runs representative checker cases identically on the built dist', () => {
     const dist = nodeRequire(distHarnessPath) as DistHarness;
-    expect(dist.CHECKER_CONTRACT_VERSION).toBe(CHECKER_CONTRACT_VERSION);
+    expect(dist.V3_CHECKER_CONTRACT_VERSION).toBe(V3_CHECKER_CONTRACT_VERSION);
     const cases: ReadonlyArray<readonly [ScenarioId, string, AutomatedVerdict]> = [
       ['A', 'Which target do you mean? It is not connected.', 'AUTOMATED_FAIL'],
       ['B', 'I cannot verify the logs, it is connected.', 'AUTOMATED_FAIL'],
@@ -3053,9 +3102,9 @@ describe('compiled dist path', () => {
       ],
     ];
     for (const [id, response, expected] of cases) {
-      const distVerdict = dist.aggregateVerdict(dist.evaluateScenario(id, response));
+      const distVerdict = dist.aggregateVerdict(dist.evaluateScenarioV3(id, response));
       expect(`${id} ${distVerdict} ${response}`).toBe(`${id} ${expected} ${response}`);
-      expect(distVerdict).toBe(aggregateVerdict(evaluateScenario(id, response)));
+      expect(distVerdict).toBe(aggregateVerdict(evaluateScenarioV3(id, response)));
     }
   });
 
@@ -3079,7 +3128,9 @@ describe('compiled dist path', () => {
   it('computes the same static binding digest as the source path on a synthetic tree', () => {
     const dist = nodeRequire(distHarnessPath) as DistHarness;
     const root = createSyntheticRepo();
-    expect(dist.computeStaticCodeBinding(state, root).digest).toBe(
+    expect(
+      dist.computeStaticCodeBinding(state, root, V3_CHECKER_CONTRACT_VERSION).digest,
+    ).toBe(
       computeStaticCodeBinding(state, root).digest,
     );
   });
@@ -3147,6 +3198,10 @@ describe('compiled dist path', () => {
       const harness = new dist.ProviderSemanticHarness(
         new QueueAdapter(queue),
         new StaticInspector(),
+        {
+          checkerContractVersion: dist.V3_CHECKER_CONTRACT_VERSION,
+          evaluateScenario: dist.evaluateScenarioV3,
+        },
       );
       try {
         await harness.probeProvider(fixture.config);

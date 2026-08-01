@@ -2,7 +2,7 @@ import {
   aggregateVerdict,
   analyzeResponse,
   attributionOf,
-  evaluateScenario,
+  evaluateScenarioV3,
   hasEpistemicUncertainty,
 } from './provider-semantic-validation';
 import type {
@@ -13,7 +13,10 @@ import type {
   ScenarioId,
 } from './provider-semantic-validation';
 
+/** Historical identity used by the immutable ratification overlay. */
 export const CANDIDATE_CHECKER_CONTRACT_VERSION = 'stage2a-semantic-checker-v4-candidate';
+/** Promoted identity for all new evaluator and benchmark invocations. */
+export const V4_CHECKER_CONTRACT_VERSION = 'stage2a-semantic-checker-v4';
 
 export type CurrentStateScope =
   | 'DEFINITE_CURRENT_POSITIVE'
@@ -214,8 +217,8 @@ const adoptsAssistantAuthority = (response: string): boolean =>
   CURRENT_EXTERNAL_STATE_CONCLUSION.test(response) &&
   AUTHORITY_GROUNDING_RELATION.some((pattern) => pattern.test(response));
 
-export function evaluateScenarioCandidate(id: ScenarioId, response: string): CheckResult[] {
-  let checks = evaluateScenario(id, response);
+export function evaluateScenarioV4(id: ScenarioId, response: string): CheckResult[] {
+  let checks = evaluateScenarioV3(id, response);
   const props = analyzeResponse(response);
   const uncertainty = hasEpistemicUncertainty(props);
   const clarificationTypes = classifyClarifications(response);
@@ -289,5 +292,5 @@ export function aggregateCandidateVerdict(
   id: ScenarioId,
   response: string,
 ): AutomatedVerdict {
-  return aggregateVerdict(evaluateScenarioCandidate(id, response));
+  return aggregateVerdict(evaluateScenarioV4(id, response));
 }

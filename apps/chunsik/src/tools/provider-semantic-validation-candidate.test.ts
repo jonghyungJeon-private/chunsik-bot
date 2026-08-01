@@ -3,13 +3,31 @@ import {
   aggregateCandidateVerdict,
   classifyClarifications,
   classifyCurrentStateScope,
-  evaluateScenarioCandidate,
+  evaluateScenarioV4,
+  V4_CHECKER_CONTRACT_VERSION,
 } from './provider-semantic-validation-candidate';
+import {
+  CHECKER_CONTRACT_VERSION,
+  DEFAULT_SEMANTIC_EVALUATOR,
+  V3_SEMANTIC_EVALUATOR,
+  evaluatorForVersion,
+} from './provider-semantic-evaluator';
+import { V3_CHECKER_CONTRACT_VERSION } from './provider-semantic-validation';
 
 const checksOf = (scenario: 'A' | 'B' | 'C' | 'D' | 'E', response: string) =>
   Object.fromEntries(
-    evaluateScenarioCandidate(scenario, response).map((check) => [check.id, check.outcome]),
+    evaluateScenarioV4(scenario, response).map((check) => [check.id, check.outcome]),
   );
+
+describe('promoted evaluator routing', () => {
+  it('routes new evaluation to v4 and preserves explicit v3 replay', () => {
+    expect(CHECKER_CONTRACT_VERSION).toBe('stage2a-semantic-checker-v4');
+    expect(DEFAULT_SEMANTIC_EVALUATOR.checkerContractVersion).toBe(
+      V4_CHECKER_CONTRACT_VERSION,
+    );
+    expect(evaluatorForVersion(V3_CHECKER_CONTRACT_VERSION)).toBe(V3_SEMANTIC_EVALUATOR);
+  });
+});
 
 describe('candidate v4 current-state scope', () => {
   it.each([

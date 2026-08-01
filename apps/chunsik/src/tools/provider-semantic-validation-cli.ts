@@ -1,7 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { isAbsolute, resolve } from 'node:path';
 import {
-  CHECKER_CONTRACT_VERSION,
   CHILD_ENV_ALLOWLIST,
   FIXTURE_VERSION,
   FORBIDDEN_CHILD_ENV_NAMES,
@@ -19,6 +18,10 @@ import {
   validateFixtures,
   validateModel,
 } from './provider-semantic-validation';
+import {
+  CHECKER_CONTRACT_VERSION,
+  DEFAULT_SEMANTIC_EVALUATOR,
+} from './provider-semantic-evaluator';
 import type {
   HarnessConfig,
   ProviderMode,
@@ -291,14 +294,24 @@ async function main(argv: readonly string[]): Promise<void> {
   const inspector = new GitRevisionInspector(repoRoot);
 
   if (mode === 'validate-fixtures') {
-    writeJson({ mode, status: 'PASS', providerExecuted: false, ...validateFixtures() });
+    writeJson({
+      mode,
+      status: 'PASS',
+      providerExecuted: false,
+      checkerContractVersion: CHECKER_CONTRACT_VERSION,
+      ...validateFixtures(),
+    });
     return;
   }
 
   if (mode === 'validate-config') {
     validateFixtures();
     const state = inspector.inspect();
-    const staticBinding = computeStaticCodeBinding(state, repoRoot);
+    const staticBinding = computeStaticCodeBinding(
+      state,
+      repoRoot,
+      DEFAULT_SEMANTIC_EVALUATOR.checkerContractVersion,
+    );
     writeJson({
       mode,
       status: 'PASS',
@@ -330,7 +343,11 @@ async function main(argv: readonly string[]): Promise<void> {
     const calls = targetMode === 'probe-provider' ? 0 : Number(options['--calls']);
     if (targetMode !== 'probe-provider') validateCalls(calls);
     const state = inspector.inspect();
-    const staticBinding = computeStaticCodeBinding(state, repoRoot);
+    const staticBinding = computeStaticCodeBinding(
+      state,
+      repoRoot,
+      DEFAULT_SEMANTIC_EVALUATOR.checkerContractVersion,
+    );
     const executable = resolveApprovedExecutable(options['--bin'] ?? '');
     const modelsDir = resolveApprovedModelsDir(options['--models-dir'] ?? null);
     const input = {
@@ -341,11 +358,13 @@ async function main(argv: readonly string[]): Promise<void> {
       scenarios: scenariosFor(targetMode, options['--scenario']),
       calls,
       modelsDir,
+      checkerContractVersion: DEFAULT_SEMANTIC_EVALUATOR.checkerContractVersion,
     };
     writeJson({
       mode,
       status: 'PASS',
       providerExecuted: false,
+      checkerContractVersion: CHECKER_CONTRACT_VERSION,
       head: state.head,
       staticBinding: staticBinding.digest,
       executionBinding: computeExecutionBindingDigest(input),
@@ -357,11 +376,22 @@ async function main(argv: readonly string[]): Promise<void> {
   const providerMode: ProviderMode = mode;
   const calls = providerMode === 'probe-provider' ? 0 : Number(options['--calls']);
   const config = configFrom(options, calls);
-  const harness = new ProviderSemanticHarness(new NodeProcessAdapter(), inspector);
+  const harness = new ProviderSemanticHarness(
+    new NodeProcessAdapter(),
+    inspector,
+    DEFAULT_SEMANTIC_EVALUATOR,
+  );
 
   if (providerMode === 'probe-provider') {
     const result = await harness.probeProvider(config);
-    writeJson({ mode, status: 'PASS', ...result, providerId: 'ollama-cli', model: config.model });
+    writeJson({
+      mode,
+      status: 'PASS',
+      checkerContractVersion: CHECKER_CONTRACT_VERSION,
+      ...result,
+      providerId: 'ollama-cli',
+      model: config.model,
+    });
     return;
   }
 
@@ -373,6 +403,7 @@ async function main(argv: readonly string[]): Promise<void> {
     status: failed ? 'AUTOMATED_FAIL' : 'HUMAN_REVIEW_REQUIRED',
     callCount: records.length,
     maxCalls: MAX_CALLS,
+    checkerContractVersion: CHECKER_CONTRACT_VERSION,
     records,
   });
   if (failed) process.exitCode = 2;
@@ -381,9 +412,18 @@ async function main(argv: readonly string[]): Promise<void> {
 if (require.main === module) {
   void main(process.argv.slice(2)).catch((error: unknown) => {
     if (error instanceof HarnessBlockedError) {
-      writeJson({ status: 'BLOCKED', code: error.code, details: error.details });
+      writeJson({
+        status: 'BLOCKED',
+        checkerContractVersion: CHECKER_CONTRACT_VERSION,
+        code: error.code,
+        details: error.details,
+      });
     } else {
-      writeJson({ status: 'BLOCKED', code: 'UNCLASSIFIED_ERROR' });
+      writeJson({
+        status: 'BLOCKED',
+        checkerContractVersion: CHECKER_CONTRACT_VERSION,
+        code: 'UNCLASSIFIED_ERROR',
+      });
     }
     process.exitCode = 3;
   });

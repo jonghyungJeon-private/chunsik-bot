@@ -7,6 +7,18 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Changed — Stage 2A · Semantic Checker v4 Promotion
+
+- Promoted the fully ratified semantic checker v4 to the default evaluator contract
+  (`stage2a-semantic-checker-v4`) for new semantic Harness and Provider Benchmark invocations. Evaluator
+  selection is explicit: production wiring injects v4, while historical replay injects v3.
+- Preserved the immutable v3 Golden Corpus baseline and the original v4-candidate transition identity used by
+  the ratified 25/25 overlay. Provider-free replay remains deterministic across 224 records / 896 check
+  instances with Critical Recall 5/5 (100%) and no confirmed false positives or false negatives.
+- Added the evaluator router and v4 implementation to the static source/dist binding path. The checker version
+  is now part of every static and execution binding input/output; existing bindings remain historical and any
+  new offline binding is only a candidate until separately ratified.
+
 ### Changed — Stage 2A · Provider Benchmark Pool Decoupling
 
 - Decoupled Pool Configuration from benchmark calculation: strict schema-v1 JSON configurations now define

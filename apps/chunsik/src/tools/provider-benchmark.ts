@@ -1,9 +1,6 @@
 import { createHash } from 'node:crypto';
-import {
-  CHECKER_CONTRACT_VERSION,
-  FIXTURE_VERSION,
-  PROMPT_CONTRACT_VERSION,
-} from './provider-semantic-validation';
+import { FIXTURE_VERSION, PROMPT_CONTRACT_VERSION } from './provider-semantic-validation';
+import { CHECKER_CONTRACT_VERSION } from './provider-semantic-evaluator';
 import type {
   CheckResult,
   EvidenceRecord,

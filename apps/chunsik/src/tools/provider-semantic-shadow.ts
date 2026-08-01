@@ -11,12 +11,12 @@ import { readExecutionEvidence } from './provider-benchmark-cli';
 import { FAILURE_SIGNATURE_REGISTRY_VERSION } from './provider-failure-signatures';
 import {
   CANDIDATE_CHECKER_CONTRACT_VERSION,
-  evaluateScenarioCandidate,
+  evaluateScenarioV4,
 } from './provider-semantic-validation-candidate';
 import {
-  CHECKER_CONTRACT_VERSION,
+  V3_CHECKER_CONTRACT_VERSION,
   aggregateVerdict,
-  evaluateScenario,
+  evaluateScenarioV3,
 } from './provider-semantic-validation';
 import type { EvidenceRecord } from './provider-semantic-validation';
 import {
@@ -286,8 +286,8 @@ const replayRecord = (
   }
   const checks =
     evaluator === 'baseline'
-      ? evaluateScenario(record.scenarioId, response)
-      : evaluateScenarioCandidate(record.scenarioId, response);
+      ? evaluateScenarioV3(record.scenarioId, response)
+      : evaluateScenarioV4(record.scenarioId, response);
   return { ...record, checks, automatedVerdict: aggregateVerdict(checks) };
 };
 
@@ -356,7 +356,7 @@ const replayOnce = (
           campaignId: corpus.entry.campaignId,
           executionId: baselineExecution.executionId,
           response: source.responsePreview,
-          baselineCheckerVersion: CHECKER_CONTRACT_VERSION,
+          baselineCheckerVersion: V3_CHECKER_CONTRACT_VERSION,
           candidateCheckerVersion: CANDIDATE_CHECKER_CONTRACT_VERSION,
           baseline,
           candidate,
@@ -368,7 +368,7 @@ const replayOnce = (
   const baselineDistribution = buildFailureSignatureDistribution(pairs, 'baseline');
   const candidateDistribution = buildFailureSignatureDistribution(pairs, 'candidate');
   const baselineCore = {
-    checkerVersion: CHECKER_CONTRACT_VERSION,
+    checkerVersion: V3_CHECKER_CONTRACT_VERSION,
     failureSignatureRegistryVersion: FAILURE_SIGNATURE_REGISTRY_VERSION,
     scorecardsByCorpus: baselineScorecards,
     failureSignatureDistribution: baselineDistribution,

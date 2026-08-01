@@ -17,9 +17,9 @@ import {
   runProviderFreeShadowReplay,
 } from './provider-semantic-shadow';
 import {
-  CHECKER_CONTRACT_VERSION,
+  V3_CHECKER_CONTRACT_VERSION,
   aggregateVerdict,
-  evaluateScenario,
+  evaluateScenarioV3,
 } from './provider-semantic-validation';
 import type { EvidenceRecord } from './provider-semantic-validation';
 
@@ -40,7 +40,7 @@ const createSyntheticRegistry = (): { registryPath: string; root: string } => {
   const evidenceDir = join(root, 'executions');
   mkdirSync(evidenceDir);
   const response = 'Service Atlas is unverified. What do you mean by "currently connected"?';
-  const checks = evaluateScenario('E', response);
+  const checks = evaluateScenarioV3('E', response);
   const record: EvidenceRecord = {
     scenarioId: 'E',
     callOrdinal: 1,
@@ -73,7 +73,7 @@ const createSyntheticRegistry = (): { registryPath: string; root: string } => {
       scheduleContractVersion: 'stage2a-a1-schedule-v2.1',
       promptContractVersion: 'adr-0063-provider-continuity-v2',
       fixtureVersion: 'stage2a-provider-semantic-a-e-v1',
-      checkerContractVersion: CHECKER_CONTRACT_VERSION,
+      checkerContractVersion: V3_CHECKER_CONTRACT_VERSION,
       benchmarkContractVersion: 'stage2a-provider-benchmark-v2',
       staticCodeBindingDigest: 'e'.repeat(64),
       executableIdentity: {

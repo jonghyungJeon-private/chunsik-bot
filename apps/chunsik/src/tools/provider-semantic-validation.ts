@@ -29,8 +29,8 @@ import type { CliRunOptions, CliRunResult, CliRunner } from '@chunsik/ai-cli';
 
 export const FIXTURE_VERSION = 'stage2a-provider-semantic-a-e-v1';
 export const PROMPT_CONTRACT_VERSION = 'adr-0063-provider-continuity-v2';
-/** Bumped whenever the bounded semantic checkers change verdict semantics. */
-export const CHECKER_CONTRACT_VERSION = 'stage2a-semantic-checker-v3';
+/** Historical checker identity retained for explicit frozen-corpus replay. */
+export const V3_CHECKER_CONTRACT_VERSION = 'stage2a-semantic-checker-v3';
 export const PROVIDER_ID = 'ollama-cli';
 export const AVAILABILITY_TIMEOUT_MS = 10_000;
 export const GENERATION_TIMEOUT_MS = 120_000;
@@ -190,6 +190,11 @@ export interface HarnessConfig {
 export interface CheckResult {
   id: string;
   outcome: CheckOutcome;
+}
+
+export interface SemanticEvaluator {
+  readonly checkerContractVersion: string;
+  readonly evaluateScenario: (id: ScenarioId, response: string) => CheckResult[];
 }
 
 export interface EvidenceRecord {
@@ -857,7 +862,7 @@ const prohibitedValueOutcome = (attribution: Attribution): CheckOutcome => {
   return 'PASS';
 };
 
-export function evaluateScenario(id: ScenarioId, response: string): CheckResult[] {
+export function evaluateScenarioV3(id: ScenarioId, response: string): CheckResult[] {
   const props = analyzeResponse(response);
   const uncertainty = hasEpistemicUncertainty(props);
   const ambiguity = props.some((prop) => prop.governedAmbiguous);
@@ -1258,11 +1263,12 @@ export function makeEvidenceRecord(input: {
   response: string;
   durationMs: number;
   exitCode: number;
+  evaluator: SemanticEvaluator;
 }): EvidenceRecord {
   const leak = detectPromptLeak(input.prompt, input.response, input.scenario);
   const checks = leak.detected
     ? [check('prompt-leak-absent', 'FAIL')]
-    : evaluateScenario(input.scenario.id, input.response);
+    : input.evaluator.evaluateScenario(input.scenario.id, input.response);
   const preview = leak.detected
     ? { preview: '', truncated: false }
     : buildBoundedPreview(input.response);
@@ -1334,6 +1340,18 @@ export const PROVIDER_EXECUTION_PATH_MODULES: readonly BindingModule[] = Object.
     'harness-cli',
     'apps/chunsik/src/tools/provider-semantic-validation-cli.ts',
     'apps/chunsik/dist/tools/provider-semantic-validation-cli.js',
+    APP_BUILD_INFO,
+  ),
+  bindingModule(
+    'harness-evaluator-router',
+    'apps/chunsik/src/tools/provider-semantic-evaluator.ts',
+    'apps/chunsik/dist/tools/provider-semantic-evaluator.js',
+    APP_BUILD_INFO,
+  ),
+  bindingModule(
+    'harness-evaluator-v4',
+    'apps/chunsik/src/tools/provider-semantic-validation-candidate.ts',
+    'apps/chunsik/dist/tools/provider-semantic-validation-candidate.js',
     APP_BUILD_INFO,
   ),
   bindingModule(
@@ -1527,6 +1545,7 @@ function loadBuildAttestation(buildInfoPath: string): ReadonlyMap<string, string
 export function computeStaticCodeBinding(
   state: RevisionState,
   repoRoot: string,
+  checkerContractVersion: string,
 ): StaticCodeBinding {
   const attestations = new Map<string, ReadonlyMap<string, string>>();
   const modules = PROVIDER_EXECUTION_PATH_MODULES.map((module) => {
@@ -1564,7 +1583,7 @@ export function computeStaticCodeBinding(
       ['trackedClean', state.trackedClean],
       ['fixtureVersion', FIXTURE_VERSION],
       ['promptContractVersion', PROMPT_CONTRACT_VERSION],
-      ['checkerContractVersion', CHECKER_CONTRACT_VERSION],
+      ['checkerContractVersion', checkerContractVersion],
       ['modules', modules],
     ]),
   );
@@ -1573,7 +1592,7 @@ export function computeStaticCodeBinding(
     revision: state,
     fixtureVersion: FIXTURE_VERSION,
     promptContractVersion: PROMPT_CONTRACT_VERSION,
-    checkerContractVersion: CHECKER_CONTRACT_VERSION,
+    checkerContractVersion,
     modules,
   };
 }
@@ -1669,6 +1688,7 @@ export interface ExecutionBindingInput {
   scenarios: readonly ScenarioId[];
   calls: number;
   modelsDir: string | null;
+  checkerContractVersion: string;
 }
 
 /**
@@ -1699,7 +1719,7 @@ export function canonicalExecutionBindingPayload(
     ['childEnvironmentNames', [...CHILD_ENV_ALLOWLIST]],
     ['fixtureVersion', FIXTURE_VERSION],
     ['promptContractVersion', PROMPT_CONTRACT_VERSION],
-    ['checkerContractVersion', CHECKER_CONTRACT_VERSION],
+    ['checkerContractVersion', input.checkerContractVersion],
   ];
 }
 
@@ -1725,6 +1745,7 @@ export function validateCalls(calls: number): void {
 export function assertStaticCodeBinding(
   state: RevisionState,
   config: Pick<HarnessConfig, 'repoRoot' | 'expectedHead' | 'expectedStaticBinding'>,
+  checkerContractVersion: string,
 ): StaticCodeBinding {
   if (!HEX40.test(config.expectedHead)) {
     throw new HarnessBlockedError('MISSING_REVISION_BINDING');
@@ -1740,7 +1761,7 @@ export function assertStaticCodeBinding(
   ) {
     throw new HarnessBlockedError('REVISION_MISMATCH');
   }
-  const binding = computeStaticCodeBinding(state, config.repoRoot);
+  const binding = computeStaticCodeBinding(state, config.repoRoot, checkerContractVersion);
   if (binding.digest !== config.expectedStaticBinding) {
     throw new HarnessBlockedError('STATIC_BINDING_MISMATCH');
   }
@@ -2480,6 +2501,7 @@ export class ProviderSemanticHarness {
   constructor(
     private readonly processAdapter: ProcessAdapter,
     private readonly revisionInspector: RevisionInspector,
+    private readonly evaluator: SemanticEvaluator,
   ) {}
 
   /** Offline: fixtures + Git revision + tracked source and compiled identity. */
@@ -2487,7 +2509,11 @@ export class ProviderSemanticHarness {
     config: Pick<HarnessConfig, 'repoRoot' | 'expectedHead' | 'expectedStaticBinding'>,
   ): StaticCodeBinding {
     validateFixtures();
-    return assertStaticCodeBinding(this.revisionInspector.inspect(), config);
+    return assertStaticCodeBinding(
+      this.revisionInspector.inspect(),
+      config,
+      this.evaluator.checkerContractVersion,
+    );
   }
 
   /** Confirms the approved execution binding immediately before any spawn. */
@@ -2510,6 +2536,7 @@ export class ProviderSemanticHarness {
         scenarios,
         calls: mode === 'probe-provider' ? 0 : config.calls,
         modelsDir,
+        checkerContractVersion: this.evaluator.checkerContractVersion,
       },
       config.expectedExecutionBinding,
     );
@@ -2620,6 +2647,7 @@ export class ProviderSemanticHarness {
               response: result.text,
               durationMs: Date.now() - started,
               exitCode,
+              evaluator: this.evaluator,
             });
             records.push(record);
             if (record.automatedVerdict === 'BLOCKED') {

@@ -25,6 +25,14 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 
 ## Implemented
 
+- **Stage 2A semantic checker v4 promotion** — the independently ratified Candidate v4 is now the
+  default evaluator for new `provider:semantic` and Provider Benchmark invocations under the explicit
+  contract `stage2a-semantic-checker-v4`. Historical Golden Corpus replay remains explicitly pinned to
+  `stage2a-semantic-checker-v3`; the immutable v4-candidate transition identity is retained only for the
+  approved 25/25 transition overlay. Frozen A1+A3 replay remains deterministic with 224 records / 896 check
+  instances, Critical Recall 5/5 (100%), and zero confirmed FP/FN. The new default execution path binds the
+  evaluator router and v4 implementation source/dist modules; prior execution bindings remain historical and
+  no replacement binding is ratified by this promotion.
 - **Stage 2A Provider Benchmark framework (Plan v2.1 + pool decoupling)** — the offline planner and evidence
   aggregator consume strict repository-owned or absolute-path Pool Configuration instead of owning a fixed
   model count. The immutable legacy 10-model pool remains the default; a production 18GiB four-model pool is

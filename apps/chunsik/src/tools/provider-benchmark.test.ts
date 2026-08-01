@@ -23,10 +23,10 @@ import type {
   BenchmarkExecutionEvidence,
 } from './provider-benchmark';
 import {
-  CHECKER_CONTRACT_VERSION,
   FIXTURE_VERSION,
   PROMPT_CONTRACT_VERSION,
 } from './provider-semantic-validation';
+import { CHECKER_CONTRACT_VERSION } from './provider-semantic-evaluator';
 import type {
   AutomatedVerdict,
   CheckResult,
