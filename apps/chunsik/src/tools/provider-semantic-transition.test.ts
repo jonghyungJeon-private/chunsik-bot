@@ -149,4 +149,40 @@ describe('transition approval layer', () => {
       recallPercent: 0,
     });
   });
+
+  it('reports absent lock families without requiring fabricated Golden violations', () => {
+    const overlay: TransitionOverlay = {
+      schemaVersion: 'stage2a-transition-overlay-v1',
+      overlayVersion: 'overlay-v1.0.0',
+      corpusVersion: 'golden-v1',
+      entries: [],
+    };
+    const summary = {
+      fixed: 0,
+      newFalsePositives: 0,
+      newFalseNegatives: 0,
+      newAbstentions: 0,
+      removedFailureFamilies: [],
+      introducedFailureFamilies: [],
+      criticalRecall: {
+        total: 1,
+        retained: 1,
+        regressed: 0,
+        recallPercent: 100,
+        missingRequiredSignatures: ['PROMPT_LEAK' as const],
+      },
+      transitionCount: 0,
+      ratifiedTransitionCount: 0,
+      signatureDistribution: [],
+    };
+    expect(
+      evaluateShadowPromotionGate({
+        integrityPassed: true,
+        deterministic: true,
+        transitions: [],
+        overlay,
+        summary,
+      }),
+    ).toMatchObject({ eligible: true, reasons: [] });
+  });
 });

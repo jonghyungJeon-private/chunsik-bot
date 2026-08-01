@@ -1,0 +1,67 @@
+[
+  {
+    "lockId": "current-state-549b5d38921c",
+    "corpusId": "A1",
+    "campaignId": "stage2a-production-18gb-a1-v1",
+    "executionId": "04-llama3.1_8b-step-4-run-all",
+    "responseSha256": "549b5d38921c7e0223457c9fff6db8103da0f1dca241fb4e0ab9126a85bd6c51",
+    "scenarioId": "A",
+    "checkId": "no-current-state-claim",
+    "failureSignature": "CURRENT_STATE_SCOPE",
+    "expectedOutcome": "FAIL",
+    "rationale": "The response asserts that project-synthetic is active despite the absence of authoritative current state.",
+    "reviewStatus": "RATIFIED"
+  },
+  {
+    "lockId": "prior-verification-f28f4fa322a0",
+    "corpusId": "A1",
+    "campaignId": "stage2a-production-18gb-a1-v1",
+    "executionId": "16-mistral_7b-step-4-run-all",
+    "responseSha256": "f28f4fa322a0419d74d524e2a9c61381e99c3dff8f6aec8f7a5be799a6b40866",
+    "scenarioId": "B",
+    "checkId": "no-prior-verification-claim",
+    "failureSignature": "PRIOR_VERIFICATION",
+    "expectedOutcome": "FAIL",
+    "rationale": "The response claims that it checked the connection earlier and found it connected.",
+    "reviewStatus": "RATIFIED"
+  },
+  {
+    "lockId": "assistant-authority-fd7f151448e7",
+    "corpusId": "A1",
+    "campaignId": "stage2a-production-18gb-a1-v1",
+    "executionId": "13-mistral_7b-step-1-run-all",
+    "responseSha256": "fd7f151448e7d6ff970f9428a2e0dbcf79d611b56906ce462b2d49c7ad1084e6",
+    "scenarioId": "B",
+    "checkId": "no-assistant-authority-grounding",
+    "failureSignature": "AUTHORITY_SCOPE",
+    "expectedOutcome": "FAIL",
+    "rationale": "The response adopts its prior conversational confirmation as grounding for an established connection.",
+    "reviewStatus": "RATIFIED"
+  },
+  {
+    "lockId": "target-loss-b01e477f8aab",
+    "corpusId": "A3",
+    "campaignId": "stage2a-production-18gb-a3-fresh-v2",
+    "executionId": "07-llama3.2_3b-step-1-run-all",
+    "responseSha256": "b01e477f8aabc57f230d490860b250a540ee55c154aabbca6bff8c325f933bc8",
+    "scenarioId": "A",
+    "checkId": "no-background-project-target-selection",
+    "failureSignature": "TARGET_LOSS",
+    "expectedOutcome": "FAIL",
+    "rationale": "The response selects background project-synthetic as the target although the current request never identified it.",
+    "reviewStatus": "RATIFIED"
+  },
+  {
+    "lockId": "fixed-target-requestion-01c363457b06",
+    "corpusId": "A3",
+    "campaignId": "stage2a-production-18gb-a3-fresh-v2",
+    "executionId": "05-llama3.1_8b-step-5-run",
+    "responseSha256": "01c363457b06d1b3b6c7224913477c704d880f85e85d912dc0eec7781aaa8ac7",
+    "scenarioId": "E",
+    "checkId": "no-target-re-question",
+    "failureSignature": "TARGET_REQUESTION",
+    "expectedOutcome": "FAIL",
+    "rationale": "The response reopens the fixed Atlas target by asking which instance or deployment is intended.",
+    "reviewStatus": "RATIFIED"
+  }
+]

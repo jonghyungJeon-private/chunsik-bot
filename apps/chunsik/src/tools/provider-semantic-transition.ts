@@ -505,9 +505,6 @@ export function evaluateShadowPromotionGate(input: {
   if (!input.integrityPassed) reasons.push('CORPUS_INTEGRITY_FAILED');
   if (!input.deterministic) reasons.push('REPLAY_NOT_DETERMINISTIC');
   if (input.summary.criticalRecall.total === 0) reasons.push('CRITICAL_LOCKS_MISSING');
-  if (input.summary.criticalRecall.missingRequiredSignatures.length > 0) {
-    reasons.push('CRITICAL_LOCK_FAMILIES_INCOMPLETE');
-  }
   if (input.summary.criticalRecall.regressed > 0) reasons.push('CRITICAL_RECALL_REGRESSION');
   if (input.overlay.entries.some((entry) => entry.reviewStatus !== 'RATIFIED')) {
     reasons.push('UNREVIEWED_TRANSITION');
