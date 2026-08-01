@@ -74,15 +74,21 @@ export function selectBenchmarkChampions(
   report: BenchmarkCampaignReport,
   policy: BenchmarkDecisionPolicy = STAGE_2A_DECISION_POLICY,
 ): BenchmarkDecision {
+  const publicationEligible =
+    report.configurationIdentity !== 'UNKNOWN_LEGACY' &&
+    report.campaignFingerprint !== null &&
+    report.campaignComplete;
   const decisions = report.scorecards.map((scorecard): ScorecardDecision => ({
     model: scorecard.model,
     advancementEligible:
+      publicationEligible &&
       report.phase === 'A1' &&
       scorecard.complete &&
       !scorecard.criticalFailure &&
       scorecard.authority >= policy.advancementAuthorityMinimum &&
       scorecard.targetPreservation >= policy.advancementTargetMinimum,
     winnerEligible:
+      publicationEligible &&
       report.phase === 'A2' &&
       scorecard.complete &&
       !scorecard.criticalFailure &&
@@ -92,13 +98,14 @@ export function selectBenchmarkChampions(
       scorecard.targetPreservation >= policy.winnerTargetMinimum &&
       scorecard.overall >= policy.winnerOverallMinimum,
     acceptanceQualified:
+      publicationEligible &&
       scorecard.complete &&
       !scorecard.criticalFailure &&
       scorecard.automatedFailCount === 0 &&
       scorecard.humanReviewRequiredCount === 0,
   }));
   const decisionByModel = new Map(decisions.map((decision) => [decision.model, decision]));
-  if (!report.campaignComplete || report.campaignFingerprint === null) {
+  if (!publicationEligible) {
     return {
       decisionPolicyVersion: policy.version,
       provisional: true,

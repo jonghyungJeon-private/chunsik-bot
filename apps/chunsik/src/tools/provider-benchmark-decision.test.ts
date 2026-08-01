@@ -93,31 +93,31 @@ const report = (
 };
 
 describe('benchmark decision boundary', () => {
-  it('keeps scorecards available while blocking final publication for incomplete campaigns', () => {
-    const input = report([scorecard('challenger')], {
-      campaignComplete: false,
-      provisional: true,
-    });
+  it.each([
+    ['unknown legacy identity', { configurationIdentity: 'UNKNOWN_LEGACY' }],
+    ['missing campaign fingerprint', { campaignFingerprint: null }],
+    ['incomplete campaign', { campaignComplete: false }],
+  ] as const)('blocks all final decision publication for %s', (_label, overrides) => {
+    const input = report([scorecard('challenger')], overrides);
     expect(input.scorecards).toHaveLength(1);
     expect(selectBenchmarkChampions(input)).toMatchObject({
       provisional: true,
+      scorecards: [
+        {
+          model: 'challenger',
+          advancementEligible: false,
+          winnerEligible: false,
+          acceptanceQualified: false,
+        },
+      ],
       advancement: [],
       champions: {
         semanticChampion: null,
         latencyChampion: null,
         overallChampion: null,
+        statisticalTie: false,
       },
     });
-  });
-
-  it('blocks Champion publication for unknown legacy identity', () => {
-    const input = report([scorecard('challenger')], {
-      configurationIdentity: 'UNKNOWN_LEGACY',
-      campaignFingerprint: null,
-      campaignComplete: false,
-      provisional: true,
-    });
-    expect(selectBenchmarkChampions(input).champions.overallChampion).toBeNull();
   });
 
   it('allows a challenger to become all three champions without role bias', () => {
