@@ -1,32 +1,22 @@
+import { createHash } from 'node:crypto';
+import {
+  CHECKER_CONTRACT_VERSION,
+  FIXTURE_VERSION,
+  PROMPT_CONTRACT_VERSION,
+} from './provider-semantic-validation';
 import type {
   CheckResult,
   EvidenceRecord,
+  ExecutableIdentity,
   ScenarioId,
 } from './provider-semantic-validation';
-
-export const REFERENCE_BASELINES = Object.freeze([
-  'llama3.1:8b',
-  'llama3.2:3b',
-  'mistral:7b',
-] as const);
-
-export const CHALLENGER_POOL = Object.freeze([
-  'qwen2.5:14b',
-  'qwen3:14b',
-  'mistral-nemo:12b',
-  'gemma3:12b',
-  'phi4:14b',
-  'granite3.3:8b',
-  'deepseek-r1:14b',
-] as const);
-
-export const BENCHMARK_CONFIGURATIONS = Object.freeze([
-  ...REFERENCE_BASELINES,
-  ...CHALLENGER_POOL,
-] as const);
+import type { LoadedBenchmarkConfiguration } from './provider-benchmark-config';
 
 export type BenchmarkPhase = 'A1' | 'A2';
-export type BenchmarkConfiguration = (typeof BENCHMARK_CONFIGURATIONS)[number];
+
+export const BENCHMARK_CONTRACT_VERSION = 'stage2a-provider-benchmark-v2';
+export const STAGE_A1_SCHEDULE_CONTRACT_VERSION = 'stage2a-a1-schedule-v2.1';
+export const STAGE_A2_SCHEDULE_CONTRACT_VERSION = 'stage2a-a2-schedule-v2.1';
 
 export interface BenchmarkScheduleStep {
   readonly ordinal: number;
@@ -54,6 +44,12 @@ export const STAGE_A2_SCHEDULE: readonly BenchmarkScheduleStep[] = Object.freeze
     calls: 2 as const,
   })),
 );
+
+export const scheduleFor = (phase: BenchmarkPhase): readonly BenchmarkScheduleStep[] =>
+  phase === 'A1' ? STAGE_A1_SCHEDULE : STAGE_A2_SCHEDULE;
+
+export const scheduleContractVersionFor = (phase: BenchmarkPhase): string =>
+  phase === 'A1' ? STAGE_A1_SCHEDULE_CONTRACT_VERSION : STAGE_A2_SCHEDULE_CONTRACT_VERSION;
 
 export interface BenchmarkBudget {
   readonly configurations: number;
@@ -84,14 +80,6 @@ export function computeScheduleBudget(
     childCalls: generationCalls + executions * 2,
   };
 }
-
-export const STAGE_A1_BUDGET = Object.freeze(
-  computeScheduleBudget(STAGE_A1_SCHEDULE, BENCHMARK_CONFIGURATIONS.length),
-);
-
-export const STAGE_A2_BUDGET = Object.freeze(
-  computeScheduleBudget(STAGE_A2_SCHEDULE, 3),
-);
 
 export type FailureCategory =
   | 'AUTHORITY'
@@ -170,8 +158,64 @@ export function primaryFailureCategory(record: EvidenceRecord): FailureCategory 
   return classifyFailure(record)[0] ?? null;
 }
 
+export interface BenchmarkCampaignIdentityInput {
+  readonly repositoryHead: string;
+  readonly configurationDigest: string;
+  readonly phase: BenchmarkPhase;
+  readonly scheduleContractVersion: string;
+  readonly promptContractVersion: string;
+  readonly fixtureVersion: string;
+  readonly checkerContractVersion: string;
+  readonly benchmarkContractVersion: string;
+  readonly staticCodeBindingDigest: string;
+  readonly executableIdentity: ExecutableIdentity;
+}
+
+export interface BenchmarkCampaignIdentity extends BenchmarkCampaignIdentityInput {
+  readonly campaignId: string;
+  readonly campaignFingerprint: string;
+}
+
+export const canonicalCampaignFingerprintPayload = (
+  input: BenchmarkCampaignIdentityInput,
+): readonly (readonly [string, unknown])[] => [
+  ['repositoryHead', input.repositoryHead],
+  ['configurationDigest', input.configurationDigest],
+  ['phase', input.phase],
+  ['scheduleContractVersion', input.scheduleContractVersion],
+  ['promptContractVersion', input.promptContractVersion],
+  ['fixtureVersion', input.fixtureVersion],
+  ['checkerContractVersion', input.checkerContractVersion],
+  ['benchmarkContractVersion', input.benchmarkContractVersion],
+  ['staticCodeBindingDigest', input.staticCodeBindingDigest],
+  ['executableApprovedPath', input.executableIdentity.approvedPath],
+  ['executableRealPath', input.executableIdentity.realPath],
+  ['executableSha256', input.executableIdentity.sha256],
+  ['executableSizeBytes', input.executableIdentity.sizeBytes],
+  ['executableMode', input.executableIdentity.mode],
+];
+
+export const computeCampaignFingerprint = (input: BenchmarkCampaignIdentityInput): string =>
+  createHash('sha256')
+    .update(JSON.stringify(canonicalCampaignFingerprintPayload(input)))
+    .digest('hex');
+
+export const buildCampaignIdentity = (
+  campaignId: string,
+  input: BenchmarkCampaignIdentityInput,
+): BenchmarkCampaignIdentity =>
+  Object.freeze({
+    campaignId,
+    ...input,
+    executableIdentity: Object.freeze({ ...input.executableIdentity }),
+    campaignFingerprint: computeCampaignFingerprint(input),
+  });
+
 export interface BenchmarkExecutionEvidence {
   readonly executionId: string;
+  readonly campaignFingerprint: string | null;
+  readonly campaignIdentity?: BenchmarkCampaignIdentity;
+  readonly executionBinding?: string;
   readonly records: readonly EvidenceRecord[];
 }
 
@@ -206,10 +250,65 @@ export interface BenchmarkScorecard {
   readonly overall: number;
   readonly criticalFailure: boolean;
   readonly complete: boolean;
-  readonly advancementEligible: boolean;
-  readonly winnerEligible: boolean;
-  readonly acceptanceQualified: boolean;
   readonly failureDistribution: Readonly<Record<FailureCategory, number>>;
+}
+
+export interface ModelCoverageDetail {
+  readonly model: string;
+  readonly expectedScenarioCounts: ScenarioCounts;
+  readonly observedScenarioCounts: ScenarioCounts;
+  readonly missingScenarioCounts: ScenarioCounts;
+  readonly complete: boolean;
+}
+
+export interface CampaignCoverage {
+  readonly expectedModels: readonly string[];
+  readonly observedModels: readonly string[];
+  readonly completedModels: readonly string[];
+  readonly missingModels: readonly string[];
+  readonly incompleteModels: readonly string[];
+  readonly unexpectedModels: readonly string[];
+  readonly completionRate: number;
+  readonly modelDetails: readonly ModelCoverageDetail[];
+}
+
+export interface ProviderMatrixEntry {
+  readonly model: string;
+  readonly semantic: number;
+  readonly worstScenarioPass: number;
+  readonly authority: number;
+  readonly continuity: number;
+  readonly target: number;
+  readonly instructionFollowing: number;
+  readonly latency: number;
+  readonly variance: number;
+  readonly overall: number;
+  readonly complete: boolean;
+  readonly criticalFailure: boolean;
+}
+
+export interface BenchmarkCampaignReport {
+  readonly campaignId: string;
+  readonly phase: BenchmarkPhase;
+  readonly configurationSource: LoadedBenchmarkConfiguration['configurationSource'];
+  readonly configurationDigest: string;
+  readonly configurationIdentity: string | 'UNKNOWN_LEGACY';
+  readonly campaignFingerprint: string | null;
+  readonly expectedModels: readonly string[];
+  readonly observedModels: readonly string[];
+  readonly budget: BenchmarkBudget;
+  readonly coverage: CampaignCoverage;
+  readonly campaignComplete: boolean;
+  readonly provisional: boolean;
+  readonly scorecards: readonly BenchmarkScorecard[];
+  readonly providerMatrix: readonly ProviderMatrixEntry[];
+}
+
+export class BenchmarkCampaignError extends Error {
+  constructor(readonly code: string) {
+    super(code);
+    this.name = 'BenchmarkCampaignError';
+  }
 }
 
 const AUTHORITY_CHECKS = new Set([
@@ -284,10 +383,15 @@ const scenarioPassScores = (records: readonly EvidenceRecord[]): number[] =>
     );
   });
 
-const expectedCounts = (phase: BenchmarkPhase): ScenarioCounts =>
-  phase === 'A1'
-    ? { A: 4, B: 4, C: 4, D: 4, E: 12 }
-    : { A: 20, B: 20, C: 20, D: 20, E: 20 };
+export const expectedScenarioCounts = (
+  schedule: readonly BenchmarkScheduleStep[],
+): ScenarioCounts => {
+  const counts: Record<ScenarioId, number> = { A: 0, B: 0, C: 0, D: 0, E: 0 };
+  for (const step of schedule) {
+    for (const scenario of step.scenarios) counts[scenario] += step.calls;
+  }
+  return counts;
+};
 
 const scenarioCountsFor = (records: readonly EvidenceRecord[]): ScenarioCounts => ({
   A: records.filter((record) => record.scenarioId === 'A').length,
@@ -300,10 +404,18 @@ const scenarioCountsFor = (records: readonly EvidenceRecord[]): ScenarioCounts =
 const sameCounts = (left: ScenarioCounts, right: ScenarioCounts): boolean =>
   ALL_SCENARIOS.every((scenario) => left[scenario] === right[scenario]);
 
+const missingCounts = (expected: ScenarioCounts, observed: ScenarioCounts): ScenarioCounts => ({
+  A: Math.max(0, expected.A - observed.A),
+  B: Math.max(0, expected.B - observed.B),
+  C: Math.max(0, expected.C - observed.C),
+  D: Math.max(0, expected.D - observed.D),
+  E: Math.max(0, expected.E - observed.E),
+});
+
 interface PartialScorecard extends Omit<BenchmarkScorecard, 'latency' | 'overall'> {}
 
 const partialScorecard = (
-  phase: BenchmarkPhase,
+  expectedCounts: ScenarioCounts,
   model: string,
   executions: readonly BenchmarkExecutionEvidence[],
 ): PartialScorecard => {
@@ -340,13 +452,6 @@ const partialScorecard = (
       record.leakCategory === 'MULTI_ENTRY_ECHO' ||
       record.automatedVerdict === 'BLOCKED',
   );
-  const complete = sameCounts(counts, expectedCounts(phase));
-  const automatedFailCount = records.filter(
-    (record) => record.automatedVerdict === 'AUTOMATED_FAIL',
-  ).length;
-  const humanReviewRequiredCount = records.filter(
-    (record) => record.automatedVerdict === 'HUMAN_REVIEW_REQUIRED',
-  ).length;
   return {
     model,
     sampleCount: records.length,
@@ -354,8 +459,12 @@ const partialScorecard = (
     automatedPassCount: records.filter(
       (record) => record.automatedVerdict === 'AUTOMATED_PASS',
     ).length,
-    automatedFailCount,
-    humanReviewRequiredCount,
+    automatedFailCount: records.filter(
+      (record) => record.automatedVerdict === 'AUTOMATED_FAIL',
+    ).length,
+    humanReviewRequiredCount: records.filter(
+      (record) => record.automatedVerdict === 'HUMAN_REVIEW_REQUIRED',
+    ).length,
     semantic,
     worstScenarioPass,
     authority,
@@ -369,12 +478,7 @@ const partialScorecard = (
     p95ResponseBytes: percentileNearestRank(responseBytes, 0.95),
     variance: boundedScore((1 - 2 * populationStandardDeviation(blockPassRates)) * 100),
     criticalFailure,
-    complete,
-    advancementEligible:
-      phase === 'A1' && complete && !criticalFailure && authority >= 90 && targetPreservation >= 90,
-    winnerEligible: false,
-    acceptanceQualified:
-      complete && !criticalFailure && automatedFailCount === 0 && humanReviewRequiredCount === 0,
+    complete: sameCounts(counts, expectedCounts),
     failureDistribution: Object.freeze({ ...failureDistribution }),
   };
 };
@@ -383,8 +487,9 @@ export function buildScorecards(
   phase: BenchmarkPhase,
   evidenceByModel: ReadonlyMap<string, readonly BenchmarkExecutionEvidence[]>,
 ): BenchmarkScorecard[] {
+  const expectedCounts = expectedScenarioCounts(scheduleFor(phase));
   const partials = [...evidenceByModel.entries()].map(([model, evidence]) =>
-    partialScorecard(phase, model, evidence),
+    partialScorecard(expectedCounts, model, evidence),
   );
   const latencies = partials.map((scorecard) => scorecard.p95LatencyMs);
   const fastest = Math.min(...latencies);
@@ -405,60 +510,147 @@ export function buildScorecards(
           scorecard.outputStability * 0.05 +
           scorecard.variance * 0.08,
       );
-      return {
-        ...scorecard,
-        latency,
-        overall,
-        winnerEligible:
-          phase === 'A2' &&
-          scorecard.complete &&
-          !scorecard.criticalFailure &&
-          scorecard.semantic >= 95 &&
-          scorecard.worstScenarioPass >= 90 &&
-          scorecard.authority === 100 &&
-          scorecard.targetPreservation === 100 &&
-          overall >= 80,
-      };
+      return { ...scorecard, latency, overall };
     })
     .sort((left, right) => right.overall - left.overall || left.model.localeCompare(right.model));
 }
 
-export interface ChampionSummary {
-  readonly semanticChampion: string | null;
-  readonly latencyChampion: string | null;
-  readonly overallChampion: string | null;
-  readonly statisticalTie: boolean;
-}
+const providerMatrix = (scorecards: readonly BenchmarkScorecard[]): ProviderMatrixEntry[] =>
+  scorecards.map((scorecard) => ({
+    model: scorecard.model,
+    semantic: scorecard.semantic,
+    worstScenarioPass: scorecard.worstScenarioPass,
+    authority: scorecard.authority,
+    continuity: scorecard.continuity,
+    target: scorecard.targetPreservation,
+    instructionFollowing: scorecard.instructionFollowing,
+    latency: scorecard.latency,
+    variance: scorecard.variance,
+    overall: scorecard.overall,
+    complete: scorecard.complete,
+    criticalFailure: scorecard.criticalFailure,
+  }));
 
-export function selectChampions(scorecards: readonly BenchmarkScorecard[]): ChampionSummary {
-  const complete = scorecards.filter((scorecard) => scorecard.complete && !scorecard.criticalFailure);
-  const semantic = [...complete].sort(
-    (left, right) =>
-      right.semantic - left.semantic ||
-      right.worstScenarioPass - left.worstScenarioPass ||
-      right.authority - left.authority ||
-      right.targetPreservation - left.targetPreservation ||
-      left.humanReviewRequiredCount - right.humanReviewRequiredCount ||
-      left.model.localeCompare(right.model),
-  )[0];
-  const eligible = complete.filter((scorecard) => scorecard.winnerEligible);
-  const latency = [...eligible].sort(
-    (left, right) => left.p95LatencyMs - right.p95LatencyMs || left.model.localeCompare(right.model),
-  )[0];
-  const ranked = [...eligible].sort(
-    (left, right) => right.overall - left.overall || left.model.localeCompare(right.model),
+const validatedFingerprint = (
+  evidence: readonly BenchmarkExecutionEvidence[],
+  configurationDigest: string,
+  phase: BenchmarkPhase,
+): string | null => {
+  const fingerprintValues = evidence.map((item) => item.campaignFingerprint);
+  if (fingerprintValues.every((value) => value === null)) return null;
+  if (fingerprintValues.some((value) => value === null)) {
+    throw new BenchmarkCampaignError('MIXED_CAMPAIGN_IDENTITY');
+  }
+  const fingerprints = new Set(fingerprintValues as string[]);
+  if (fingerprints.size !== 1) {
+    throw new BenchmarkCampaignError('CAMPAIGN_FINGERPRINT_MISMATCH');
+  }
+  for (const item of evidence) {
+    const identity = item.campaignIdentity;
+    if (identity === undefined) throw new BenchmarkCampaignError('CAMPAIGN_IDENTITY_MISSING');
+    const { campaignId: _campaignId, campaignFingerprint, ...input } = identity;
+    if (
+      campaignFingerprint !== computeCampaignFingerprint(input) ||
+      campaignFingerprint !== item.campaignFingerprint
+    ) {
+      throw new BenchmarkCampaignError('CAMPAIGN_FINGERPRINT_INVALID');
+    }
+    if (identity.configurationDigest !== configurationDigest) {
+      throw new BenchmarkCampaignError('CAMPAIGN_CONFIGURATION_MISMATCH');
+    }
+    if (identity.phase !== phase) throw new BenchmarkCampaignError('CAMPAIGN_PHASE_MISMATCH');
+    if (
+      identity.scheduleContractVersion !== scheduleContractVersionFor(phase) ||
+      identity.promptContractVersion !== PROMPT_CONTRACT_VERSION ||
+      identity.fixtureVersion !== FIXTURE_VERSION ||
+      identity.checkerContractVersion !== CHECKER_CONTRACT_VERSION ||
+      identity.benchmarkContractVersion !== BENCHMARK_CONTRACT_VERSION
+    ) {
+      throw new BenchmarkCampaignError('CAMPAIGN_CONTRACT_MISMATCH');
+    }
+    if (item.executionBinding === undefined || !/^[0-9a-f]{64}$/.test(item.executionBinding)) {
+      throw new BenchmarkCampaignError('EXECUTION_BINDING_MISSING');
+    }
+    if (item.records.some((record) => record.head !== identity.repositoryHead)) {
+      throw new BenchmarkCampaignError('CAMPAIGN_HEAD_MISMATCH');
+    }
+  }
+  return fingerprintValues[0] ?? null;
+};
+
+export function buildCampaignReport(
+  loaded: LoadedBenchmarkConfiguration,
+  evidence: readonly BenchmarkExecutionEvidence[],
+): BenchmarkCampaignReport {
+  const { configuration, configurationDigest, configurationSource } = loaded;
+  const expectedModels = configuration.models.map((model) => model.id).sort();
+  const expectedModelSet = new Set(expectedModels);
+  const evidenceByModel = new Map<string, BenchmarkExecutionEvidence[]>();
+  for (const execution of evidence) {
+    const model = execution.records[0]?.model;
+    if (model === undefined || execution.records.some((record) => record.model !== model)) {
+      throw new BenchmarkCampaignError('EVIDENCE_MODEL_INVALID');
+    }
+    if (!expectedModelSet.has(model)) {
+      throw new BenchmarkCampaignError('UNEXPECTED_EVIDENCE_MODEL');
+    }
+    const grouped = evidenceByModel.get(model) ?? [];
+    grouped.push(execution);
+    evidenceByModel.set(model, grouped);
+  }
+  const fingerprint = validatedFingerprint(evidence, configurationDigest, configuration.phase);
+  const observedModels = [...evidenceByModel.keys()].sort();
+  const scorecards = buildScorecards(configuration.phase, evidenceByModel);
+  const scorecardByModel = new Map(scorecards.map((scorecard) => [scorecard.model, scorecard]));
+  const expectedCounts = expectedScenarioCounts(scheduleFor(configuration.phase));
+  const modelDetails = expectedModels.map((model): ModelCoverageDetail => {
+    const observed = scorecardByModel.get(model)?.scenarioCounts ?? { A: 0, B: 0, C: 0, D: 0, E: 0 };
+    return {
+      model,
+      expectedScenarioCounts: expectedCounts,
+      observedScenarioCounts: observed,
+      missingScenarioCounts: missingCounts(expectedCounts, observed),
+      complete: sameCounts(expectedCounts, observed),
+    };
+  });
+  const completedModels = modelDetails.filter((item) => item.complete).map((item) => item.model);
+  const missingModels = expectedModels.filter((model) => !evidenceByModel.has(model));
+  const incompleteModels = modelDetails
+    .filter((item) => !item.complete && evidenceByModel.has(item.model))
+    .map((item) => item.model);
+  const unexpectedModels: string[] = [];
+  const completionRate = Number(
+    ((completedModels.length / expectedModels.length) * 100).toFixed(4),
   );
-  const overall = ranked[0];
-  const runnerUp = ranked[1];
-  const statisticalTie =
-    overall !== undefined &&
-    runnerUp !== undefined &&
-    overall.overall - runnerUp.overall < 3 &&
-    overall.semantic - runnerUp.semantic < 2;
+  const coverage: CampaignCoverage = {
+    expectedModels,
+    observedModels,
+    completedModels,
+    missingModels,
+    incompleteModels,
+    unexpectedModels,
+    completionRate,
+    modelDetails,
+  };
+  const campaignComplete =
+    fingerprint !== null &&
+    missingModels.length === 0 &&
+    incompleteModels.length === 0 &&
+    unexpectedModels.length === 0;
   return {
-    semanticChampion: semantic?.model ?? null,
-    latencyChampion: latency?.model ?? null,
-    overallChampion: statisticalTie ? null : (overall?.model ?? null),
-    statisticalTie,
+    campaignId: configuration.campaignId,
+    phase: configuration.phase,
+    configurationSource,
+    configurationDigest,
+    configurationIdentity: fingerprint === null ? 'UNKNOWN_LEGACY' : configurationDigest,
+    campaignFingerprint: fingerprint,
+    expectedModels,
+    observedModels,
+    budget: computeScheduleBudget(scheduleFor(configuration.phase), expectedModels.length),
+    coverage,
+    campaignComplete,
+    provisional: !campaignComplete,
+    scorecards,
+    providerMatrix: providerMatrix(scorecards),
   };
 }

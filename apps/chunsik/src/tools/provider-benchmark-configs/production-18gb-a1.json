@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "campaignId": "stage2a-production-18gb-a1-v1",
+  "phase": "A1",
+  "models": [
+    { "id": "llama3.1:8b", "role": "REFERENCE", "tier": "REQUIRED" },
+    { "id": "llama3.2:3b", "role": "REFERENCE", "tier": "REQUIRED" },
+    { "id": "mistral:7b", "role": "REFERENCE", "tier": "REQUIRED" },
+    { "id": "granite3.3:8b", "role": "CHALLENGER", "tier": "REQUIRED" }
+  ]
+}

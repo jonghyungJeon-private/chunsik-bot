@@ -25,13 +25,14 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 
 ## Implemented
 
-- **Stage 2A Provider Benchmark framework (Plan v2.1 freeze)** — an offline-only benchmark planner and
-  evidence aggregator now encode the frozen 3-reference/7-challenger pool, Stage A1/A2 schedules and exact
-  call budgets, failure taxonomy, scorecard, advancement rule, multiple-champion selection, and Provider
-  Matrix. Existing `provider:semantic` remains the sole bound Provider execution harness; the new
-  `provider:benchmark` command does not invoke or download a model and does not change Prompt, Evaluator,
-  Scenario, Binding, or Acceptance contracts. Framework validation is complete; Stage A1 Provider data
-  collection remains subject to the existing strict execution/binding controls.
+- **Stage 2A Provider Benchmark framework (Plan v2.1 + pool decoupling)** — the offline planner and evidence
+  aggregator consume strict repository-owned or absolute-path Pool Configuration instead of owning a fixed
+  model count. The immutable legacy 10-model pool remains the default; a production 18GiB four-model pool is
+  available explicitly. Deterministic configuration digests and full campaign fingerprints prevent evidence
+  mixing; exact model/scenario coverage controls completion; objective Engine reporting is separated from
+  advancement/Champion publication policy. Existing `provider:semantic` remains the sole bound Provider
+  execution harness. Prompt, Evaluator, Scenario, Binding, Failure Taxonomy, Scorecard weights, Winner Rule,
+  and A1/A2 schedules are unchanged; legacy evidence remains readable but unidentified/provisional.
 - **GitHub App Authentication (Sprint 4b, ADR-0061)** — repository auth for RepositoryHosting REST (CAP-010) and
   local `git push`/`clone` (CAP-002) uses short-lived GitHub App installation tokens minted at execution from an
   adapter-local App private key. New `@quoky/github-app-auth` (App JWT via `node:crypto`, installation resolution,

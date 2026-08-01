@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "campaignId": "stage2a-legacy-v2.1-a1",
+  "phase": "A1",
+  "models": [
+    { "id": "llama3.1:8b", "role": "REFERENCE", "tier": "REQUIRED" },
+    { "id": "llama3.2:3b", "role": "REFERENCE", "tier": "REQUIRED" },
+    { "id": "mistral:7b", "role": "REFERENCE", "tier": "REQUIRED" },
+    { "id": "qwen2.5:14b", "role": "CHALLENGER", "tier": "LARGE" },
+    { "id": "qwen3:14b", "role": "CHALLENGER", "tier": "LARGE" },
+    { "id": "mistral-nemo:12b", "role": "CHALLENGER", "tier": "OPTIONAL" },
+    { "id": "gemma3:12b", "role": "CHALLENGER", "tier": "OPTIONAL" },
+    { "id": "phi4:14b", "role": "CHALLENGER", "tier": "LARGE" },
+    { "id": "granite3.3:8b", "role": "CHALLENGER", "tier": "REQUIRED" },
+    { "id": "deepseek-r1:14b", "role": "CHALLENGER", "tier": "LARGE" }
+  ]
+}

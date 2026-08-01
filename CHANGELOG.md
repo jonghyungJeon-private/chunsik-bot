@@ -7,6 +7,20 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Changed — Stage 2A · Provider Benchmark Pool Decoupling
+
+- Decoupled Pool Configuration from benchmark calculation: strict schema-v1 JSON configurations now define
+  model membership/role/tier, while budgets, exact-set membership, per-model scenario coverage, and campaign
+  completion work with arbitrary pool sizes. The reviewed legacy 10-model pool remains the omitted-config
+  default; the production 18GiB four-model pool is available through an explicit absolute `--config` path.
+- Added canonical configuration digests and campaign fingerprints over repository HEAD, Pool digest, phase,
+  schedule/Prompt/Fixture/Checker/benchmark contracts, static code binding, and approved executable identity.
+  Fingerprints exclude human `campaignId`; mixed campaigns fail closed. Existing raw evidence is never assigned
+  a guessed identity and remains `UNKNOWN_LEGACY`, provisional, and ineligible for final Champion publication.
+- Separated objective Engine output (coverage, scorecards, failure distribution, completion, Provider Matrix)
+  from Stage 2A decisions (advancement, eligibility, tie handling, acceptance, Champions). Existing weights,
+  thresholds, tie policy, schedules, semantic Harness, Prompt, Provider, and Core boundaries are unchanged.
+
 ### Added — Stage 2A · Provider Benchmark Framework (Plan v2.1)
 
 - Added an offline-only Stage A1/A2 benchmark planner and evidence aggregator around the existing bound
