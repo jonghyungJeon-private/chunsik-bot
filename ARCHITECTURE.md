@@ -108,9 +108,10 @@ fixed; the implementations are not.
    deterministic lexicographic ranking, and ineligible Providers never enter
    ranking. Concrete model tags, executables, Runtime benchmark lookup, and
    provider-id conditionals never appear in Application policy source. The
-   existing `CapabilityRouter` priority path remains the invocation path until
-   a separately approved Runtime-integration slice replaces it; Stage 2B Slice
-   1 only computes decisions and invokes no Provider (ADR-0064).
+   existing `CapabilityRouter` priority path remains the Runtime invocation path
+   until a separately approved integration slice replaces it. Stage 2B Slice 1
+   only computes decisions; Slice 2 adds an isolated single-attempt execution
+   boundary without wiring Runtime or Code Generation (ADR-0064).
 3. The selected provider `id` is **audit-only** (on `TaskRun`). It MUST NOT be
    surfaced to the user by default.
 4. **Provider-specific prompt shaping happens in the adapter.** Core emits a
@@ -126,6 +127,11 @@ fixed; the implementations are not.
    not own selection policy. Approved bounded Capability Profiles may cite a
    Stage 2A evidence binding, but Runtime routing never reads raw benchmark
    scores or Golden Corpus evidence directly (ADR-0064).
+8. **Selection and execution remain separate.** A selected decision must become
+   an immutable `ProviderExecutionPlan` before `ProviderRoutingGateway` may
+   invoke the selected `AiProvider`. Stage 2B Slice 2 permits exactly one
+   attempt and no availability probe, retry, fallback, escalation, deadline
+   policy, or Runtime response validation (ADR-0064).
 
 ---
 

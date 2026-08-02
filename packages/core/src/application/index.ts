@@ -43,3 +43,6 @@ export * from './stateless-apply-preview-flow';
 export * from './provider-routing-contracts';
 export * from './provider-registry';
 export * from './routing-policy-engine';
+export * from './provider-execution-plan';
+export * from './provider-binding-registry';
+export * from './provider-routing-gateway';

@@ -7,6 +7,19 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Stage 2B · Single-Attempt Provider Gateway (ADR-0064 Slice 2)
+
+- Added an immutable `ProviderExecutionPlan` between selection and execution. It carries the selected Provider,
+  one-element execution order, fixed attempt budget, capability, validation-profile identity, and routing
+  configuration provenance while explicitly disabling deadline, fallback, and escalation policy.
+- Added an immutable executable-binding registry that validates binding identity without probing availability or
+  invoking Providers.
+- Added an isolated `ProviderRoutingGateway` that resolves and invokes exactly one selected `AiProvider` once and
+  emits a bounded success/failure audit. It performs no retry, fallback, escalation, timeout policy, response
+  validation, alternate-provider execution, or raw prompt/response/error capture.
+- Covered the boundary with fake Providers only. No Runtime, Code Generation, app, adapter, persistence, database,
+  model activation, or actual external Provider execution was added.
+
 ### Added — Stage 2B · Provider Selection Foundation (ADR-0064)
 
 - Ratified Provider Routing as a Core Application policy service rather than a Capability or Provider-adapter

@@ -4364,11 +4364,13 @@ Gate 6. Each requires separate explicit approval.
 
 ## ADR-0064 — Provider Routing Policy and Registry Ownership
 
-- **Status:** ✅ Accepted — Stage 2B Architecture and Slice 1 ratified by the Product Owner and Chief Architect;
-  Provider-free selection foundation implemented. Runtime integration requires a later approval.
+- **Status:** ✅ Accepted — Stage 2B Architecture and Slice 1 accepted; Slice 2's isolated single-attempt
+  execution boundary implemented under Chief Architect direction. Runtime integration requires a later approval.
 - **Date:** 2026-08-02
-- **Scope:** Core Application routing contracts, immutable descriptor registry, typed policy evaluation,
-  deterministic selection decisions, and configuration identity only. No Provider invocation or Runtime wiring.
+- **Scope:** Core Application routing contracts, immutable descriptor and executable-binding registries, typed
+  policy evaluation, deterministic selection decisions, immutable single-attempt execution plans, isolated
+  gateway orchestration, bounded execution audit, and configuration identity. No Runtime wiring or external
+  Provider execution.
 
 ### Context
 
@@ -4535,10 +4537,45 @@ Persistence and `TaskRun` audit integration are deferred.
 
 1. **Slice 1 — complete here:** routing contracts, immutable descriptor registry, typed policy validation,
    eligibility/exclusion, deterministic ranking, terminal decisions, SHA-256 identity, provider-free fixtures.
-2. **Slice 2 — requires approval:** executable binding, single-attempt selection integration, bounded audit.
+2. **Slice 2 — complete here:** immutable execution plan, executable binding registry, isolated single-attempt
+   gateway, and bounded audit; no Runtime integration.
 3. **Slice 3 — requires approval:** explicit bounded fallback/escalation orchestration and ownership enforcement.
 4. **Slice 4 — requires approval:** provider-free simulation and Golden routing fixtures.
 5. **Slice 5 — Strict approval:** real Provider preflight/UAT and any Runtime/Discord action.
+
+### Slice 2 — Selection / Execution Separation
+
+Slice 2 extends the calculation boundary without wiring it into a product Runtime:
+
+```text
+ProviderSelectionDecision
+→ ProviderExecutionPlan
+→ ProviderRoutingGateway
+→ AiProvider.execute() (one bound Provider, one attempt)
+```
+
+`ProviderExecutionPlanner` converts only a selected decision into an immutable plan. The plan records a
+one-element execution order, fixed attempt budget `1`, capability, validation-profile identifier, matched-policy
+and configuration identity, while fixing overall deadline to `null` and fallback/escalation eligibility to
+`false`. Invalid decision identity, capability/profile data, version, digest, or selected/eligible relationship
+fails before execution.
+
+`ProviderBindingRegistry` is an immutable Core Application binding boundary. It validates Provider ids and
+binding/provider identity, rejects duplicates, normalizes order, and never probes availability or invokes a
+Provider during construction. Concrete binding and application wiring remain composition-root responsibilities;
+Slice 2 adds no Runtime binding.
+
+`ProviderRoutingGateway` accepts an explicit plan and request, revalidates the single-attempt boundary and
+capability match, resolves exactly the selected binding, and calls `AiProvider.execute()` once. It performs no
+availability probe, retry, fallback, escalation, alternate-provider call, timeout/deadline policy, or response
+validation.
+
+The gateway returns a discriminated success/failure result and a bounded audit containing configuration identity,
+selected Provider id, attempt count, status, and bounded failure kind only. It never copies a prompt, response,
+transcript, raw error text, credential, reasoning, or environment value into the audit. Known `AiProviderError`
+failure kinds are preserved; unknown failures become `EXECUTION_FAILED`. Tests use fake Providers only. There is no
+ConversationRuntime, CodeGenerationManager, app, adapter, storage, or database integration, and no actual external
+Provider execution. Multi-provider orchestration remains Slice 3+.
 
 ### Relations
 
