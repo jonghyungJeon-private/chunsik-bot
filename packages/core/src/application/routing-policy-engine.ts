@@ -465,6 +465,8 @@ export class RoutingPolicyEngine {
       reasonCode,
       policyVersion: this.policyVersion,
       registryVersion: registry.version,
+      registryConfigurationDigest: registry.configurationDigest,
+      policyConfigurationDigest: this.policyDigest,
       configurationDigest,
     });
   }

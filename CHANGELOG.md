@@ -7,6 +7,20 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Fixed — Stage 2B · Slice 2 Binding Provenance
+
+- Bound executable registrations to an immutable `ProviderRegistrySnapshot`; unknown/disabled descriptors,
+  duplicates, executable-id mismatches, and adapter/model mismatches now fail before invocation.
+- Added a deterministic, deep-frozen binding identity whose canonical SHA-256 input is Provider, adapter, model,
+  binding version, and descriptor profile version. Runtime availability, timestamps, execution data, latency,
+  environment, secrets, and raw errors remain excluded.
+- Required Plan construction to validate Decision eligibility, descriptor availability, registry/policy/combined
+  configuration identities, and executable binding provenance. The Gateway rechecks current registry and binding
+  identity and returns bounded zero-attempt failures for stale, missing, malformed, or mismatched provenance.
+- Preserved the single-attempt boundary: valid, classified-failure, and unknown-exception paths invoke exactly once;
+  configuration failures invoke zero times; retry, fallback, escalation, Runtime wiring, and external Provider
+  execution remain absent.
+
 ### Added — Stage 2B · Single-Attempt Provider Gateway (ADR-0064 Slice 2)
 
 - Added an immutable `ProviderExecutionPlan` between selection and execution. It carries the selected Provider,

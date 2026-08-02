@@ -276,6 +276,8 @@ export interface ProviderSelectionDecision {
   reasonCode: RoutingReasonCode;
   policyVersion: string;
   registryVersion: string;
+  registryConfigurationDigest: string;
+  policyConfigurationDigest: string;
   configurationDigest: string;
 }
 

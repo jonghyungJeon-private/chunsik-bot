@@ -230,8 +230,12 @@ describe('RoutingPolicyEngine eligibility and ranking', () => {
       policyVersion: 'policy-set-v1',
       registryVersion: 'registry-v1',
     });
+    expect(decision.registryConfigurationDigest).toBe(snapshot.configurationDigest);
+    expect(decision.policyConfigurationDigest).toMatch(/^[a-f0-9]{64}$/);
     expect(decision.configurationDigest).toMatch(/^[a-f0-9]{64}$/);
-    expect(Object.keys(decision)).not.toContain('reasoning');
+    expect(Object.keys(decision)).not.toEqual(
+      expect.arrayContaining(['reasoning', 'executionResult', 'latency', 'rawError', 'attemptAudit', 'response']),
+    );
   });
 
   it('locks the combined registry/policy configuration digest test vector', () => {

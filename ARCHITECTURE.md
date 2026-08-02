@@ -129,9 +129,12 @@ fixed; the implementations are not.
    scores or Golden Corpus evidence directly (ADR-0064).
 8. **Selection and execution remain separate.** A selected decision must become
    an immutable `ProviderExecutionPlan` before `ProviderRoutingGateway` may
-   invoke the selected `AiProvider`. Stage 2B Slice 2 permits exactly one
-   attempt and no availability probe, retry, fallback, escalation, deadline
-   policy, or Runtime response validation (ADR-0064).
+   invoke the selected `AiProvider`. The Plan freezes a canonical SHA-256
+   executable-binding identity validated against the same immutable descriptor
+   snapshot and selection configuration. The Gateway rechecks the current
+   registry and binding identity before invocation. Stage 2B Slice 2 permits
+   exactly one attempt and no availability probe, retry, fallback, escalation,
+   deadline policy, or Runtime response validation (ADR-0064).
 
 ---
 

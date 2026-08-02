@@ -18,10 +18,10 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   wording. No second masking pass (adapter boundary, ADR-0028, already redacts/caps). **Reuse only —
   no new capability/aggregate/repository/migration/port; no Core/Orchestrator contract change.**
   Implemented on a branch — **awaiting CA implementation review, no merge.**
-- **Next:** Independent Chief Architect review of Stage 2B Slice 2; Runtime integration and actual external
-  Provider invocation remain unapproved.
-- **Build/Test (Stage 2B Slice 2 validation runtime: Node 22):** focused routing suite 4 files / 47 tests
-  PASS; Core regression suite 46 files / 1067 tests PASS; `pnpm typecheck` and `pnpm build` PASS.
+- **Next:** Independent Chief Architect re-review of Stage 2B Slice 2 binding-provenance remediation; Runtime
+  integration and actual external Provider invocation remain unapproved.
+- **Build/Test (Stage 2B Slice 2 remediation runtime: Node 22):** focused routing/binding suite 5 files / 55 tests
+  PASS; Core regression suite 47 files / 1075 tests PASS; `pnpm typecheck` and `pnpm build` PASS.
   (The `.nvmrc`-pinned Node 18 full suite continues to reproduce the existing `better-sqlite3` ABI
   mismatch; the approved Node 22 focused/Core validation is green.)
 
@@ -62,12 +62,15 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 - **Boundary:** Core Application orchestration only; selection remains separate from execution through
   `ProviderSelectionDecision → ProviderExecutionPlan → ProviderRoutingGateway → AiProvider.execute()`.
 - **Execution plan:** immutable one-provider order and attempt budget `1`, with bounded capability,
-  validation-profile, policy, registry, and configuration identity. Deadline is `null`; fallback and escalation
-  eligibility are `false`.
-- **Binding:** immutable, identity-validated executable binding registry; construction performs no availability
-  probe or Provider invocation.
-- **Gateway:** validates the plan/request boundary, resolves only the selected binding, and invokes it exactly once.
-  No availability probe, retry, fallback, escalation, alternate Provider, timeout policy, or response validation.
+  validation-profile, policy/registry/combined configuration identities, and a deep-frozen executable-binding
+  identity. Deadline is `null`; fallback and escalation eligibility are `false`.
+- **Binding:** descriptor-snapshot-bound immutable executable registry; unknown/disabled descriptors, duplicate
+  bindings, executable-id mismatch, and adapter/model mismatch fail before invocation. Canonical SHA-256 identity
+  includes Provider, adapter, model, binding version, and descriptor profile version only.
+- **Gateway:** validates the plan/request, registry, current binding digest, and executable identity boundaries,
+  resolves only the selected binding, and invokes it exactly once. Provenance mismatch returns a bounded failure
+  with attempt count `0`. No availability probe, retry, fallback, escalation, alternate Provider, timeout policy,
+  or response validation.
 - **Audit:** bounded success/failure facts only; no prompt, response, transcript, raw error, reasoning, credential,
   or environment values. Known Provider failure kinds are preserved; unknown failures are `EXECUTION_FAILED`.
 - **Integration:** fake-Provider tests only. Zero ConversationRuntime/CodeGenerationManager/app/adapter/storage/DB
@@ -76,9 +79,9 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 ## Implemented
 
 - **Stage 2B Single-Attempt Provider Gateway (ADR-0064 Slice 2)** — added immutable execution planning,
-  identity-validated executable bindings, one selected Provider/one attempt gateway orchestration, discriminated
-  outcomes, and bounded execution audit. Multi-provider fallback/escalation and all Runtime integration remain
-  deferred.
+  descriptor-bound executable bindings, canonical binding identity, selection/binding provenance validation, one
+  selected Provider/one attempt gateway orchestration, discriminated outcomes, and bounded execution audit.
+  Multi-provider fallback/escalation and all Runtime integration remain deferred.
 - **Stage 2B Provider Selection Foundation (ADR-0064)** — added bounded routing signals and branded configuration
   identifiers; immutable, descriptor-only Provider Registry snapshots; static Capability/Operational Profiles;
   fail-fast typed policy validation; eligibility/exclusion; deterministic routing-class/reliability/latency/cost

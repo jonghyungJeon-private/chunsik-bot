@@ -4365,7 +4365,8 @@ Gate 6. Each requires separate explicit approval.
 ## ADR-0064 — Provider Routing Policy and Registry Ownership
 
 - **Status:** ✅ Accepted — Stage 2B Architecture and Slice 1 accepted; Slice 2's isolated single-attempt
-  execution boundary implemented under Chief Architect direction. Runtime integration requires a later approval.
+  execution boundary and binding-provenance remediation implemented under Chief Architect direction. Runtime
+  integration requires a later approval.
 - **Date:** 2026-08-02
 - **Scope:** Core Application routing contracts, immutable descriptor and executable-binding registries, typed
   policy evaluation, deterministic selection decisions, immutable single-attempt execution plans, isolated
@@ -4556,19 +4557,24 @@ ProviderSelectionDecision
 
 `ProviderExecutionPlanner` converts only a selected decision into an immutable plan. The plan records a
 one-element execution order, fixed attempt budget `1`, capability, validation-profile identifier, matched-policy
-and configuration identity, while fixing overall deadline to `null` and fallback/escalation eligibility to
-`false`. Invalid decision identity, capability/profile data, version, digest, or selected/eligible relationship
-fails before execution.
+and selection configuration identity plus an immutable executable-binding identity, while fixing overall deadline
+to `null` and fallback/escalation eligibility to `false`. Plan creation requires the Decision, the validated
+descriptor snapshot, and a binding registry validated against that same snapshot. Invalid decision identity,
+capability/profile data, version, digest, snapshot identity, selected/eligible relationship, availability, or
+binding provenance fails before execution.
 
-`ProviderBindingRegistry` is an immutable Core Application binding boundary. It validates Provider ids and
-binding/provider identity, rejects duplicates, normalizes order, and never probes availability or invokes a
-Provider during construction. Concrete binding and application wiring remain composition-root responsibilities;
-Slice 2 adds no Runtime binding.
+`ProviderBindingRegistry` is an immutable Core Application binding boundary constructed from a
+`ProviderRegistrySnapshot` plus executable bindings. It rejects unknown or disabled descriptors, duplicate
+bindings, Provider-id mismatch, and adapter/model mismatch. Each accepted binding receives a canonical SHA-256
+identity over Provider, adapter, model, binding-version, and descriptor-profile-version configuration. Availability,
+timestamps, execution results, latency, environment, secrets, and raw errors are excluded. Concrete binding and
+application wiring remain composition-root responsibilities; Slice 2 adds no Runtime binding.
 
-`ProviderRoutingGateway` accepts an explicit plan and request, revalidates the single-attempt boundary and
-capability match, resolves exactly the selected binding, and calls `AiProvider.execute()` once. It performs no
-availability probe, retry, fallback, escalation, alternate-provider call, timeout/deadline policy, or response
-validation.
+`ProviderRoutingGateway` accepts an explicit plan and request, revalidates the single-attempt boundary, capability,
+selection/registry identity, current binding identity, and executable Provider id, then calls
+`AiProvider.execute()` once. Missing or mismatched provenance returns a bounded pre-invocation failure with attempt
+count `0`. It performs no availability probe, retry, fallback, escalation, alternate-provider call,
+timeout/deadline policy, or response validation.
 
 The gateway returns a discriminated success/failure result and a bounded audit containing configuration identity,
 selected Provider id, attempt count, status, and bounded failure kind only. It never copies a prompt, response,
@@ -4576,6 +4582,15 @@ transcript, raw error text, credential, reasoning, or environment value into the
 failure kinds are preserved; unknown failures become `EXECUTION_FAILED`. Tests use fake Providers only. There is no
 ConversationRuntime, CodeGenerationManager, app, adapter, storage, or database integration, and no actual external
 Provider execution. Multi-provider orchestration remains Slice 3+.
+
+### Slice 2 Binding Provenance Remediation
+
+The Execution Plan carries a frozen `{ providerId, bindingVersion, bindingDigest }` identity. The selection
+Decision separately exposes registry, policy, and combined configuration digests so the Planner can recompute and
+verify the combined selection identity without adding execution state to selection. Unknown, disabled,
+unavailable/ineligible, missing, adapter/model-mismatched, executable-id-mismatched, stale-registry, and stale-binding
+paths stop before invocation. Configuration failures use bounded codes and never copy rejected configuration or raw
+Provider details into audit. Valid execution remains exactly one attempt.
 
 ### Relations
 
