@@ -148,6 +148,10 @@ fixed; the implementations are not.
    workspace package with strict static JSON fixtures, scripted Providers and
    monotonic time, and a Harness-owned canonical audit projection. Its dependency
    is one-way into Core; production packages and apps must never import it.
+   Slice 4 adds a separate provider-free selection-simulation subtree in that
+   private package. It replays only `RoutingPolicyEngine → ProviderSelectionDecision`
+   from self-contained fixtures and must not construct an execution plan, Gateway,
+   validator, Provider binding, or Runtime object.
 
 ---
 

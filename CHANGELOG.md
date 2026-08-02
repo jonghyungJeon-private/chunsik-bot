@@ -7,6 +7,18 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Stage 2B · Slice 4 Deterministic Routing Selection Simulation
+
+- Added an independent provider-free selection subtree to the private routing validation package. Strict static
+  fixtures run the real immutable Provider Registry and `RoutingPolicyEngine`, then stop at
+  `ProviderSelectionDecision` without constructing an Execution Plan, Gateway, validator, or Provider binding.
+- Added a Harness-owned canonical selection projection containing bounded decision facts, `matchedPolicyId`, and
+  only the configured ranking dimensions/directions, with independent schema/compiler/digest versions and pinned
+  fixture/corpus SHA-256 identities.
+- Added exact double replay plus a fixed ordering metamorphic replay for policy match/absence, eligibility,
+  disabled/unavailable filtering, no-eligible termination, configured preference/ranking, stable ordering, and a
+  combined Authority × Safety × Ranking golden scenario. Provider execution remains zero.
+
 ### Fixed — Stage 2B · Slice 3C Coverage Integrity
 
 - Partitioned every routing failure contract into active golden coverage, a bounded explicit active waiver, or

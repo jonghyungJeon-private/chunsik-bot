@@ -4364,7 +4364,7 @@ Gate 6. Each requires separate explicit approval.
 
 ## ADR-0064 — Provider Routing Policy and Registry Ownership
 
-- **Status:** ✅ Accepted — Stage 2B Architecture and Slices 1–3C implemented under Chief Architect direction.
+- **Status:** ✅ Accepted — Stage 2B Architecture and Slices 1–4 implemented under Chief Architect direction.
   Runtime integration and actual external Provider execution require later approval.
 - **Date:** 2026-08-02
 - **Scope:** Core Application routing contracts, immutable descriptor and executable-binding registries, typed
@@ -4543,8 +4543,11 @@ Persistence and `TaskRun` audit integration are deferred.
 3. **Slice 3A — complete here:** validation/failure/profile contracts, pure response validator, bounded output,
    and explicit branch planning only; no fallback or escalation execution.
 4. **Slice 3B — complete here:** two-attempt Gateway orchestration and ownership enforcement.
-5. **Slice 4 — requires approval:** provider-free simulation and Golden routing fixtures.
-6. **Slice 5 — Strict approval:** real Provider preflight/UAT and any Runtime/Discord action.
+5. **Slice 3C — complete here:** private deterministic Planner/Gateway/Validator replay harness; no production
+   dependency or external Provider execution.
+6. **Slice 4 — complete here:** provider-free selection simulation and Golden routing decisions; stops before
+   execution planning.
+7. **Slice 5 — Strict approval:** real Provider preflight/UAT and any Runtime/Discord action.
 
 ### Slice 2 — Selection / Execution Separation
 
@@ -4662,6 +4665,21 @@ configuration-failure statuses. `humanReviewRequired` is first-class. Accepted r
 audit v2 records bounded configuration identities, attempt/transition facts, response identity and size, the
 deadline-policy version, and one terminal summary without prompt, raw output/error, credentials, or environment.
 `executionId` is mandatory caller-supplied input and remains excluded from deterministic execution digests.
+
+### Slice 4 — Deterministic Routing Selection Simulation
+
+Slice 4 is an independent subtree of the private validation package. Strict, statically registered JSON fixtures
+compile bounded `RoutingContext`, Provider descriptors and availability, and typed policy configuration, then run
+the real `ProviderRegistry` and `RoutingPolicyEngine`. Replay stops at `ProviderSelectionDecision`; it never creates
+an Execution Plan, binding registry, Gateway, validator, Runtime, or Provider executable.
+
+The Harness-owned canonical selection projection contains the bounded decision plus only the configured ranking
+dimension and direction vector. It records `matchedPolicyId` but no score, prompt, execution, response, clock, or
+Provider-call facts. Fixture schema, fixture compiler, and selection digest versions are independent from the
+Slice 3C execution Harness contracts. Golden fixtures pin policy match/absence, eligibility, disabled and
+unavailable filtering, no-eligible termination, configured preference and ranking, and a combined authority,
+safety-sensitive, and ranking decision. Fresh replay and one fixed order permutation must produce the same exact
+decision and digest; stable provider-id ordering remains a Core implementation detail rather than a fixture API.
 
 ### Relations
 

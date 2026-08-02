@@ -18,13 +18,11 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   wording. No second masking pass (adapter boundary, ADR-0028, already redacts/caps). **Reuse only —
   no new capability/aggregate/repository/migration/port; no Core/Orchestrator contract change.**
   Implemented on a branch — **awaiting CA implementation review, no merge.**
-- **Next:** Independent Chief Architect implementation review of Stage 2B Slice 3C. Runtime integration and actual
+- **Next:** Independent Chief Architect implementation review of Stage 2B Slice 4. Runtime integration and actual
   external Provider invocation remain unapproved.
-- **Build/Test (Stage 2B Slice 3C remediation):** focused Harness/Core routing suite 9 files / 66 tests PASS;
-  non-SQLite repository regression 80 files / 1827 tests PASS. The 18 SQLite tests are environment-blocked by
-  the pre-existing Node ABI 108 / `better-sqlite3` ABI 127 mismatch. `pnpm typecheck`, private Harness build,
-  production build, and `git diff --check` PASS. No external Provider, Runtime, network, or database execution
-  was part of this slice.
+- **Build/Test (Stage 2B Slice 4):** focused selection/execution Harness and Core routing regression 4 files /
+  48 tests PASS; `pnpm typecheck`, private Harness build, production build, and `git diff --check` PASS. No
+  external Provider, Runtime, network, or database execution was part of this slice.
 
 ## Stage 2A — Completed
 
@@ -45,6 +43,19 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   execution, traffic policy, and dual-provider activation remain unapproved/unimplemented. Slice 3A added immutable
   validation/failure contracts, pure response validation, bounded output projection, and pre-fixed declarative
   branches. Slice 3B adds bounded two-attempt Gateway orchestration without Runtime wiring.
+
+## Stage 2B — Slice 4 Deterministic Routing Selection Simulation
+
+- **Boundary:** independent `selection/` subtree in the existing private validation package. Replay stops at
+  `RoutingPolicyEngine → ProviderSelectionDecision`; execution planning, Gateway, validation, bindings, Runtime,
+  adapters, and production dependency wiring are absent.
+- **Fixtures:** five strict, statically registered JSON scenarios with independent schema/compiler/digest versions
+  and immutable fixture/corpus SHA-256 identities.
+- **Projection:** exact decision facts plus `matchedPolicyId` and the configured ranking dimension/direction vector;
+  no scores or execution facts.
+- **Determinism:** every fixture replays twice and under a fixed registration/unordered-array permutation. Coverage
+  includes policy match/absence, eligibility/no-eligible, disabled/unavailable filtering, preference/ranking, stable
+  ordering, and one Authority × Safety × Ranking cross-scenario. Provider invocations remain zero.
 
 ## Stage 2B — Slice 3C Deterministic Validation Harness
 

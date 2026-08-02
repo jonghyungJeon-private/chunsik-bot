@@ -1,0 +1,12 @@
+{
+  "harnessDigestVersion":"routing-selection-harness-digest-v1",
+  "compilerVersion":"routing-selection-fixture-compiler-v1",
+  "fixtures":[
+    {"scenarioId":"authority-safety-ranking","fixtureVersion":"1","fixtureDigest":"8d43504430b4a7dd7b75e58d02e321c8c6b9e8af01ca58c7dacc6eb6c259c1c8"},
+    {"scenarioId":"availability-filter","fixtureVersion":"1","fixtureDigest":"5ca34775a0b78f93f7694b87cd5b9857b7205afb47870b1ab9cd4292df1407e8"},
+    {"scenarioId":"no-policy-match","fixtureVersion":"1","fixtureDigest":"1e5bbdebf4b37e0b345752e8a7e030502caadc525c5613846421fa759e67c34f"},
+    {"scenarioId":"routing-preference","fixtureVersion":"1","fixtureDigest":"b35b0e6bd4a4aee8003429d2ee48b34347c9aeb70c2f4973ca5aa38a0c831f5f"},
+    {"scenarioId":"trait-eligibility","fixtureVersion":"1","fixtureDigest":"fda3ffc0480c766c499914090dabd1acd34f3c37a1a17729fc045a758c4bf9c0"}
+  ],
+  "corpusDigest":"83de4d0a04d0c5f919493457c7e2b85f985d3d55076fdba9ca8388bf318f44f7"
+}
