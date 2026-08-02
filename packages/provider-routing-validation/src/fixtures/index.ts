@@ -4,6 +4,7 @@ import manifestJson from './manifest.json';
 import primaryAccepted from './primary-accepted-v1.json';
 import promptLeak from './prompt-leak-v1.json';
 import semanticEscalation from './semantic-escalation-v1.json';
+import semanticValidationUnresolved from './semantic-validation-unresolved-v1.json';
 import timeoutFallback from './timeout-fallback-v1.json';
 import { FixtureManifest, RoutingValidationFixture } from '../contracts';
 import { validateFixture, validateManifest } from '../fixture-validator';
@@ -23,6 +24,7 @@ export const GOLDEN_FIXTURES: readonly RoutingValidationFixture[] = Object.freez
   primaryAccepted,
   promptLeak,
   semanticEscalation,
+  semanticValidationUnresolved,
   timeoutFallback,
 ].map((fixture) => deepFreeze(validateFixture(fixture))));
 

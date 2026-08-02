@@ -6,7 +6,8 @@
     { "scenarioId": "primary-accepted", "fixtureVersion": "1", "fixtureDigest": "8d5437e88ab39bf67574520ec73d39681ac459e77d17be87b5edbafda81c2a1c" },
     { "scenarioId": "prompt-leak", "fixtureVersion": "1", "fixtureDigest": "dd3d43a186a12d1fe7284d5d1242adaf182991f84f4a81dc14590163f6badb83" },
     { "scenarioId": "semantic-escalation", "fixtureVersion": "1", "fixtureDigest": "eb6707bbbe855ff4c9d9b312bb088abe4ed6f78d8fd4567a26418dc5899da6ad" },
+    { "scenarioId": "semantic-validation-unresolved", "fixtureVersion": "1", "fixtureDigest": "c746c2da1da05c214267abe1f80c0cac56ac0b8d4d5122fa732a7a8aaa29b2a2" },
     { "scenarioId": "timeout-fallback", "fixtureVersion": "1", "fixtureDigest": "1d9423677509f7f1431eb3e4977c4b9e9f3662606ae16e1e9452c67a933c3a33" }
   ],
-  "corpusDigest": "b44b06944e41f7bbb15fd14f3ea9b1b5a068f3539834f7ff0d6b9b0d7a064f19"
+  "corpusDigest": "63126eaf7ce3383a21e1337b076f6d39e34771b032ab3b9f129fe9c44f5bb2e9"
 }

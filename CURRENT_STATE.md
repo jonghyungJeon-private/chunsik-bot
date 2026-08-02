@@ -20,7 +20,7 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   Implemented on a branch — **awaiting CA implementation review, no merge.**
 - **Next:** Independent Chief Architect implementation review of Stage 2B Slice 3C. Runtime integration and actual
   external Provider invocation remain unapproved.
-- **Build/Test (Stage 2B Slice 3C):** focused Harness/Core routing suite 7 files / 57 tests PASS;
+- **Build/Test (Stage 2B Slice 3C remediation):** focused Harness/Core routing suite 9 files / 66 tests PASS;
   non-SQLite repository regression 80 files / 1827 tests PASS. The 18 SQLite tests are environment-blocked by
   the pre-existing Node ABI 108 / `better-sqlite3` ABI 127 mismatch. `pnpm typecheck`, private Harness build,
   production build, and `git diff --check` PASS. No external Provider, Runtime, network, or database execution
@@ -59,6 +59,8 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   product-audit fields do not silently redefine the corpus. Every fixture is replayed twice from a fresh graph.
 - **Coverage:** primary acceptance, operational fallback, semantic escalation, safety fail-closed, post-validation
   deadline failure, maximum-transition fallback, binding provenance, attempt bounds, and failure-matrix accounting.
+  Slice 3C remediation explicitly partitions every failure code into active golden coverage, bounded active waiver,
+  or producer-pending status and adds terminal `SEMANTIC_VALIDATION_UNRESOLVED` golden replay coverage.
 
 ## Stage 2B — Slice 1 Provider Selection Foundation
 

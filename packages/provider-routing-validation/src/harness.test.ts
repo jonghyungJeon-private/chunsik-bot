@@ -14,9 +14,32 @@ const EXECUTABLE_FAILURE_COVERAGE: Readonly<Partial<Record<RoutingFailureCode, s
   [RoutingFailureCode.PROVIDER_TIMEOUT]: 'timeout-fallback',
   [RoutingFailureCode.EMPTY_OUTPUT]: 'empty-output-fallback',
   [RoutingFailureCode.SEMANTIC_VALIDATION_FAILED]: 'semantic-escalation',
+  [RoutingFailureCode.SEMANTIC_VALIDATION_UNRESOLVED]: 'semantic-validation-unresolved',
   [RoutingFailureCode.DEADLINE_EXHAUSTED]: 'deadline-after-validation',
   [RoutingFailureCode.PROMPT_LEAK]: 'prompt-leak',
 });
+
+interface ActiveFailureWaiver {
+  readonly failureCode: RoutingFailureCode;
+  readonly reason: string;
+  readonly coveredBy: string;
+}
+
+/** Bounded MA-1 manifest: ACTIVE contracts that intentionally have no Harness golden fixture yet. */
+const ACTIVE_FAILURE_WAIVERS: readonly ActiveFailureWaiver[] = Object.freeze([
+  { failureCode: RoutingFailureCode.ROUTING_CONFIGURATION_MISMATCH, reason: 'Requires rejected configuration mutation outside strict replay fixtures.', coveredBy: 'Core gateway focused test' },
+  { failureCode: RoutingFailureCode.BINDING_MISMATCH, reason: 'Reserved routing-level binding contract has no direct Gateway producer.', coveredBy: 'Core failure-matrix focused test' },
+  { failureCode: RoutingFailureCode.PROVIDER_BINDING_NOT_FOUND, reason: 'Requires preflight binding-registry mutation outside strict replay fixtures.', coveredBy: 'Core gateway focused test' },
+  { failureCode: RoutingFailureCode.PROVIDER_DISABLED, reason: 'Rejected during registry/binding construction before replay.', coveredBy: 'Core binding-registry focused test' },
+  { failureCode: RoutingFailureCode.UNKNOWN_VALIDATION_PROFILE, reason: 'Strict fixture schema accepts only registered validation profiles.', coveredBy: 'Core execution-plan focused test' },
+  { failureCode: RoutingFailureCode.PROVIDER_UNAVAILABLE, reason: 'MA-1 adds only the mandated unresolved golden scenario.', coveredBy: 'Core failure-classifier focused test' },
+  { failureCode: RoutingFailureCode.PROVIDER_AUTH_REQUIRED, reason: 'MA-1 adds only the mandated unresolved golden scenario.', coveredBy: 'Core failure-classifier focused test' },
+  { failureCode: RoutingFailureCode.PROVIDER_EXECUTION_FAILED, reason: 'Unknown-exception normalization remains covered at the Gateway boundary.', coveredBy: 'Core gateway focused test' },
+  { failureCode: RoutingFailureCode.OUTPUT_LIMIT_VIOLATION, reason: 'Output-boundary behavior remains covered by Core validation and Gateway tests.', coveredBy: 'Core validator and gateway focused tests' },
+  { failureCode: RoutingFailureCode.MULTI_ENTRY_ECHO, reason: 'Context-corpus fixtures are outside the current strict fixture schema.', coveredBy: 'Core validator focused test' },
+  { failureCode: RoutingFailureCode.SECRET_EXPOSURE_RISK, reason: 'Synthetic secret-pattern behavior remains covered by the Core validator.', coveredBy: 'Core validator focused test' },
+  { failureCode: RoutingFailureCode.VALIDATOR_INTERNAL_FAILURE, reason: 'Malformed provider-output injection is outside the current scripted Provider contract.', coveredBy: 'Core validator focused test' },
+]);
 
 describe('deterministic provider routing validation harness', () => {
   it.each(GOLDEN_FIXTURES)('replays $scenarioId twice with an exact stable projection', async (fixture) => {
@@ -41,18 +64,37 @@ describe('deterministic provider routing validation harness', () => {
     expect(computeCorpusDigest(GOLDEN_FIXTURES)).toBe(GOLDEN_FIXTURE_MANIFEST.corpusDigest);
   });
 
-  it('accounts for every failure-matrix contract and only calls executable coverage executable', () => {
+  it('partitions failure-matrix coverage into golden, explicit ACTIVE waiver, and producer-pending sets', () => {
     expect(ROUTING_FAILURE_MATRIX.map((entry) => entry.code).sort()).toEqual(Object.values(RoutingFailureCode).sort());
-    const fixtureIds = new Set(GOLDEN_FIXTURES.map((fixture) => fixture.scenarioId));
-    for (const entry of ROUTING_FAILURE_MATRIX) {
-      const executableFixture = EXECUTABLE_FAILURE_COVERAGE[entry.code];
-      if (executableFixture !== undefined) {
-        expect(entry.producerStatus).toBe(RoutingFailureProducerStatus.ACTIVE);
-        expect(fixtureIds.has(executableFixture)).toBe(true);
-      } else {
-        // Explicitly contract-only in this slice; no synthetic producer is invented.
-        expect(Object.values(RoutingFailureCode)).toContain(entry.code);
-      }
+    const fixturesById = new Map(GOLDEN_FIXTURES.map((fixture) => [fixture.scenarioId, fixture]));
+    const goldenCodes = Object.keys(EXECUTABLE_FAILURE_COVERAGE) as RoutingFailureCode[];
+    const waiverCodes = ACTIVE_FAILURE_WAIVERS.map((waiver) => waiver.failureCode);
+    const activeCodes = ROUTING_FAILURE_MATRIX
+      .filter((entry) => entry.producerStatus === RoutingFailureProducerStatus.ACTIVE)
+      .map((entry) => entry.code);
+    const pendingCodes = ROUTING_FAILURE_MATRIX
+      .filter((entry) => entry.producerStatus === RoutingFailureProducerStatus.PRODUCER_PENDING)
+      .map((entry) => entry.code);
+
+    expect(new Set(goldenCodes).size).toBe(goldenCodes.length);
+    expect(new Set(waiverCodes).size).toBe(waiverCodes.length);
+    expect(goldenCodes.filter((code) => waiverCodes.includes(code))).toEqual([]);
+    expect([...goldenCodes, ...waiverCodes].sort()).toEqual([...activeCodes].sort());
+    expect(pendingCodes.filter((code) => goldenCodes.includes(code) || waiverCodes.includes(code))).toEqual([]);
+
+    for (const code of goldenCodes) {
+      const scenarioId = EXECUTABLE_FAILURE_COVERAGE[code];
+      const fixture = scenarioId === undefined ? undefined : fixturesById.get(scenarioId);
+      expect(fixture, `${code} must reference an existing golden fixture`).toBeDefined();
+      expect(
+        fixture?.expected.failureCode === code || fixture?.expected.attempts.some((attempt) => attempt.failureCode === code),
+        `${code} must be observable in its declared golden fixture`,
+      ).toBe(true);
+    }
+
+    for (const waiver of ACTIVE_FAILURE_WAIVERS) {
+      expect(waiver.reason.trim().length).toBeGreaterThan(0);
+      expect(waiver.coveredBy.trim().length).toBeGreaterThan(0);
     }
   });
 });

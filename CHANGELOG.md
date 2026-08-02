@@ -7,6 +7,13 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Fixed — Stage 2B · Slice 3C Coverage Integrity
+
+- Partitioned every routing failure contract into active golden coverage, a bounded explicit active waiver, or
+  producer-pending status. New active codes now fail validation until assigned to exactly one active coverage path.
+- Added the immutable `SEMANTIC_VALIDATION_UNRESOLVED` golden fixture and advanced the fixture/corpus digests without
+  changing the Harness digest version, fixture schema, replay model, or production dependency graph.
+
 ### Added — Stage 2B · Slice 3C Deterministic Validation Harness
 
 - Added the private `@chunsik/provider-routing-validation` workspace package, excluded from the production build

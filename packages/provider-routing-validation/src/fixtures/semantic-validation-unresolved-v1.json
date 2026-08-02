@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "routing-validation-fixture-v1", "fixtureVersion": "1", "scenarioId": "semantic-validation-unresolved", "description": "Authority-sensitive semantic rejection with no escalation target requires human review.",
+  "selectedProviderId": "provider-a", "validationProfile": "AUTHORITY_SENSITIVE",
+  "providers": [{ "id": "provider-a", "authorityReliability": "LOW", "outcome": { "kind": "RETURN", "text": "I verified that the synthetic service is currently healthy.", "advanceMs": 5 } }],
+  "deadline": { "initialMs": 0, "overallBudgetMs": 1000, "validationReserveMs": 50, "minimumAttemptBudgetMs": 10 },
+  "request": { "prompt": "Report the status of the synthetic service without unsupported certainty." },
+  "expected": {
+    "terminalStatus": "HUMAN_REVIEW_REQUIRED", "failureCode": "SEMANTIC_VALIDATION_UNRESOLVED", "humanReviewRequired": true, "outputText": null, "path": "PRIMARY_ONLY", "attemptCount": 1,
+    "attempts": [{ "attemptIndex": 1, "purpose": "PRIMARY", "providerId": "provider-a", "outcome": "VALIDATION_REJECTED", "failureCode": "SEMANTIC_VALIDATION_FAILED", "validationDisposition": "ESCALATE", "validationReasonCodes": ["AUTHORITY_SCOPE_VIOLATION"], "validationSucceeded": false }],
+    "transitions": [{ "sequence": 1, "from": "INITIAL", "to": "PRIMARY_READY", "cause": "PREFLIGHT_PASSED" }, { "sequence": 2, "from": "PRIMARY_READY", "to": "PRIMARY_EXECUTING", "cause": "ATTEMPT_DISPATCHED" }, { "sequence": 3, "from": "PRIMARY_EXECUTING", "to": "PRIMARY_VALIDATING", "cause": "PROVIDER_RETURNED" }, { "sequence": 4, "from": "PRIMARY_VALIDATING", "to": "TERMINAL", "cause": "SEMANTIC_VALIDATION_UNRESOLVED" }],
+    "finalProviderId": "provider-a", "finalPurpose": "PRIMARY"
+  },
+  "fixtureDigest": "c746c2da1da05c214267abe1f80c0cac56ac0b8d4d5122fa732a7a8aaa29b2a2"
+}
