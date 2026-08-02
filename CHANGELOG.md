@@ -7,6 +7,27 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Stage 2B · Slice 3A Response Validation Planning
+
+- Added the immutable `LOW_RISK_FAST_PATH`, `GENERAL_CHAT`, and `AUTHORITY_SENSITIVE` validation-profile registry,
+  deterministic profile digests, and fail-fast unknown-profile handling. Placeholder structured/code/tool profiles
+  remain unregistered.
+- Added the independent pure synchronous Runtime response validator with bounded non-empty/output-limit, prompt
+  leak, multi-entry echo, secret-exposure, and authority-scope rules. Validation results contain only bounded
+  dispositions, reason codes, response identity/size, and contract versions; the bounded output projection strips
+  provider raw/audit data plus artifact metadata and storage URIs.
+- Added a versioned configuration/operational/validation/safety failure matrix with safety fail-closed behavior,
+  explicit fallback/escalation permissions, and producer-pending status for signals that still require future
+  adapter/runtime producers.
+- Evolved `ProviderExecutionPlan` into a provenance-bound declarative Strategy B plan: primary, optional operational
+  fallback, optional strictly stronger semantic escalation, maximum attempts `2`, maximum additional hops `1`,
+  deadline class, deterministic decision/configuration/plan digests, and optional caller-owned execution identity.
+  Candidate identities are unique and fixed from the ranked eligible set; runtime policy reevaluation and
+  same-provider retry remain prohibited.
+- Preserved the Slice 2 execution boundary: the Gateway validates the extended provenance but continues to invoke
+  only the primary once. It does not perform response validation, fallback, escalation, retry, deadline calculation,
+  Runtime wiring, or external Provider execution.
+
 ### Fixed — Stage 2B · Slice 2 Binding Provenance
 
 - Bound executable registrations to an immutable `ProviderRegistrySnapshot`; unknown/disabled descriptors,

@@ -2,13 +2,22 @@ import { AiProviderError } from '../errors';
 import { AiFailureKind, Capability } from '../domain';
 import type { AiExecutionResult, AiRequest } from '../ports';
 import type { ProviderExecutionPlan } from './provider-execution-plan';
-import { combinedRoutingConfigurationDigest } from './provider-execution-plan';
+import {
+  DeadlineClass,
+  ExecutionTargetPurpose,
+  MAX_ADDITIONAL_PROVIDER_HOPS,
+  MAX_PROVIDER_ATTEMPTS,
+  combinedRoutingConfigurationDigest,
+  computeProviderExecutionConfigurationDigest,
+  computeProviderExecutionPlanDigest,
+} from './provider-execution-plan';
 import {
   ProviderBindingFailureCode,
   ProviderBindingRegistry,
 } from './provider-binding-registry';
 import type { PolicyId, ProviderId, ValidationProfileId } from './provider-routing-contracts';
 import { isRoutingIdentifier } from './provider-routing-contracts';
+import { ROUTING_FAILURE_MATRIX_VERSION } from './runtime-response-validation-contracts';
 
 const SHA_256 = /^[a-f0-9]{64}$/;
 const VERSION = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -68,7 +77,13 @@ function validatePlanShape(plan: ProviderExecutionPlan, request: AiRequest): Pro
     !SHA_256.test(plan.registryConfigurationDigest) ||
     !SHA_256.test(plan.policyConfigurationDigest) ||
     !SHA_256.test(plan.configurationDigest) ||
+    !SHA_256.test(plan.validationProfileConfigurationDigest) ||
+    !SHA_256.test(plan.executionConfigurationDigest) ||
+    !SHA_256.test(plan.decisionId) ||
+    !SHA_256.test(plan.planDigest) ||
+    !VERSION.test(plan.validationProfileVersion) ||
     !isRoutingIdentifier(plan.validationProfile) ||
+    (plan.executionId !== undefined && !isRoutingIdentifier(plan.executionId)) ||
     !CAPABILITIES.has(plan.capability)
   ) {
     return ProviderBindingFailureCode.ROUTING_CONFIGURATION_MISMATCH;
@@ -80,6 +95,33 @@ function validatePlanShape(plan: ProviderExecutionPlan, request: AiRequest): Pro
     return ProviderBindingFailureCode.ROUTING_CONFIGURATION_MISMATCH;
   }
   if (
+    plan.operationalFallback === undefined ||
+    plan.semanticEscalation === undefined ||
+    plan.primary?.purpose !== ExecutionTargetPurpose.PRIMARY ||
+    plan.primary.providerId !== plan.selectedProviderId ||
+    plan.primary.bindingIdentity.providerId !== plan.selectedProviderId ||
+    (plan.operationalFallback !== null && plan.operationalFallback.purpose !== ExecutionTargetPurpose.FALLBACK) ||
+    (plan.semanticEscalation !== null && plan.semanticEscalation.purpose !== ExecutionTargetPurpose.ESCALATION) ||
+    plan.operationalFallback?.providerId === plan.selectedProviderId ||
+    plan.semanticEscalation?.providerId === plan.selectedProviderId ||
+    (plan.operationalFallback !== null &&
+      plan.semanticEscalation !== null &&
+      plan.operationalFallback.providerId === plan.semanticEscalation.providerId) ||
+    [plan.primary, plan.operationalFallback, plan.semanticEscalation]
+      .filter((target) => target !== null)
+      .some(
+        (target) =>
+          !isRoutingIdentifier(target.providerId) ||
+          target.bindingIdentity.providerId !== target.providerId ||
+          !VERSION.test(target.bindingIdentity.bindingVersion) ||
+          !SHA_256.test(target.bindingIdentity.bindingDigest),
+      ) ||
+    plan.failureMatrixVersion !== ROUTING_FAILURE_MATRIX_VERSION ||
+    plan.maxAttempts !== MAX_PROVIDER_ATTEMPTS ||
+    plan.maxAdditionalHops !== MAX_ADDITIONAL_PROVIDER_HOPS ||
+    !Object.values(DeadlineClass).includes(plan.deadlineClass) ||
+    plan.executionConfigurationDigest !== computeProviderExecutionConfigurationDigest(plan) ||
+    plan.planDigest !== computeProviderExecutionPlanDigest(plan.decisionId, plan.executionConfigurationDigest) ||
     plan.attemptBudget !== 1 ||
     !Array.isArray(plan.executionOrder) ||
     plan.executionOrder.length !== 1 ||
@@ -180,6 +222,23 @@ export class ProviderRoutingGateway {
       binding.identity.bindingDigest !== plan.bindingIdentity.bindingDigest
     ) {
       return preflightFailure(plan, ProviderBindingFailureCode.PROVIDER_BINDING_MISMATCH);
+    }
+
+    for (const target of [plan.primary, plan.operationalFallback, plan.semanticEscalation]) {
+      if (!target) continue;
+      const targetBinding = this.bindings.get(target.providerId);
+      if (!targetBinding) {
+        return preflightFailure(plan, ProviderBindingFailureCode.PROVIDER_BINDING_NOT_FOUND);
+      }
+      if (
+        targetBinding.providerId !== target.providerId ||
+        targetBinding.identity.providerId !== target.providerId ||
+        targetBinding.provider.id !== target.providerId ||
+        targetBinding.identity.bindingVersion !== target.bindingIdentity.bindingVersion ||
+        targetBinding.identity.bindingDigest !== target.bindingIdentity.bindingDigest
+      ) {
+        return preflightFailure(plan, ProviderBindingFailureCode.PROVIDER_BINDING_MISMATCH);
+      }
     }
 
     try {

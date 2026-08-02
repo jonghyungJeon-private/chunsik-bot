@@ -21,7 +21,6 @@ import {
   adapterId,
   policyId,
   providerId,
-  validationProfileId,
 } from './provider-routing-contracts';
 import { ProviderRegistry } from './provider-registry';
 import {
@@ -30,11 +29,17 @@ import {
   ProviderBindingRegistry,
 } from './provider-binding-registry';
 import {
+  DeadlineClass,
   ProviderExecutionPlan,
   ProviderExecutionPlanner,
   combinedRoutingConfigurationDigest,
 } from './provider-execution-plan';
 import { ProviderExecutionOutcome, ProviderRoutingGateway } from './provider-routing-gateway';
+import {
+  AUTHORITY_SENSITIVE,
+  GENERAL_CHAT,
+  createDefaultValidationProfileRegistry,
+} from './validation-profile-registry';
 
 const POLICY_DIGEST = 'c'.repeat(64);
 const REQUEST: AiRequest = {
@@ -107,7 +112,7 @@ function binding(value: AiProvider): ExecutableProviderBinding {
 function decision(registry: ProviderRegistrySnapshot): ProviderSelectionDecision {
   return {
     selectedProviderId: providerId('provider-a'),
-    eligibleProviderIds: [providerId('provider-a'), providerId('provider-b')],
+    eligibleProviderIds: registry.providers.map((entry) => entry.descriptor.providerId),
     matchedPolicyId: policyId('balanced-v1'),
     reasonCode: RoutingReasonCode.SELECTED,
     policyVersion: 'policy-v1',
@@ -118,11 +123,22 @@ function decision(registry: ProviderRegistrySnapshot): ProviderSelectionDecision
   };
 }
 
-function plan(registry: ProviderRegistrySnapshot, bindings: ProviderBindingRegistry): ProviderExecutionPlan {
-  return new ProviderExecutionPlanner().create(decision(registry), registry, bindings, {
-    capability: Capability.GENERAL_CHAT,
-    validationProfile: validationProfileId('general-chat-v1'),
-  });
+function plan(
+  registry: ProviderRegistrySnapshot,
+  bindings: ProviderBindingRegistry,
+  validationProfile = GENERAL_CHAT,
+): ProviderExecutionPlan {
+  return new ProviderExecutionPlanner().create(
+    decision(registry),
+    registry,
+    bindings,
+    createDefaultValidationProfileRegistry(),
+    {
+      capability: Capability.GENERAL_CHAT,
+      validationProfile,
+      deadlineClass: DeadlineClass.STANDARD,
+    },
+  );
 }
 
 describe('ProviderRoutingGateway — provenance-bound single attempt', () => {
@@ -316,5 +332,41 @@ describe('ProviderRoutingGateway — provenance-bound single attempt', () => {
     const result = await new ProviderRoutingGateway(bindings).execute(plan(registry, bindings), REQUEST);
     expect(result.status).toBe(ProviderExecutionOutcome.SUCCEEDED);
     expect(selected.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not execute a pre-fixed semantic escalation branch in Slice 3A', async () => {
+    const selected = fakeProvider('provider-a', async () => ({
+      text: 'I verified that the production service is currently healthy.',
+    }));
+    const escalation = fakeProvider('provider-b', async () => ({ text: 'must not run' }));
+    const registry = snapshot([
+      {
+        ...descriptor('provider-a'),
+        capabilities: {
+          ...descriptor('provider-a').capabilities,
+          authorityReliability: ReliabilityTier.LOW,
+        },
+      },
+      {
+        ...descriptor('provider-b'),
+        capabilities: {
+          ...descriptor('provider-b').capabilities,
+          authorityReliability: ReliabilityTier.HIGH,
+        },
+      },
+    ]);
+    const bindings = new ProviderBindingRegistry(registry, [binding(selected), binding(escalation)]);
+    const executionPlan = plan(registry, bindings, AUTHORITY_SENSITIVE);
+
+    expect(executionPlan.semanticEscalation?.providerId).toBe('provider-b');
+    const result = await new ProviderRoutingGateway(bindings).execute(executionPlan, REQUEST);
+    expect(result.status).toBe(ProviderExecutionOutcome.SUCCEEDED);
+    expect(selected.execute).toHaveBeenCalledTimes(1);
+    expect(escalation.execute).not.toHaveBeenCalled();
+    expect(result.audit).toMatchObject({
+      attemptCount: 1,
+      fallbackAttempted: false,
+      escalationAttempted: false,
+    });
   });
 });

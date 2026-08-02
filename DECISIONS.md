@@ -4364,13 +4364,14 @@ Gate 6. Each requires separate explicit approval.
 
 ## ADR-0064 — Provider Routing Policy and Registry Ownership
 
-- **Status:** ✅ Accepted — Stage 2B Architecture and Slice 1 accepted; Slice 2's isolated single-attempt
-  execution boundary and binding-provenance remediation implemented under Chief Architect direction. Runtime
-  integration requires a later approval.
+- **Status:** ✅ Accepted — Stage 2B Architecture, Slices 1–2, and Slice 3A validation/planning contracts
+  implemented under Chief Architect direction. Slice 3B execution orchestration and Runtime integration require
+  later approval.
 - **Date:** 2026-08-02
 - **Scope:** Core Application routing contracts, immutable descriptor and executable-binding registries, typed
-  policy evaluation, deterministic selection decisions, immutable single-attempt execution plans, isolated
-  gateway orchestration, bounded execution audit, and configuration identity. No Runtime wiring or external
+  policy evaluation, deterministic selection decisions, immutable executable-binding and validation-profile
+  registries, pure response validation, explicit bounded branch planning, isolated single-attempt gateway
+  orchestration, bounded output/audit contracts, and configuration identity. No Runtime wiring or external
   Provider execution.
 
 ### Context
@@ -4540,9 +4541,11 @@ Persistence and `TaskRun` audit integration are deferred.
    eligibility/exclusion, deterministic ranking, terminal decisions, SHA-256 identity, provider-free fixtures.
 2. **Slice 2 — complete here:** immutable execution plan, executable binding registry, isolated single-attempt
    gateway, and bounded audit; no Runtime integration.
-3. **Slice 3 — requires approval:** explicit bounded fallback/escalation orchestration and ownership enforcement.
-4. **Slice 4 — requires approval:** provider-free simulation and Golden routing fixtures.
-5. **Slice 5 — Strict approval:** real Provider preflight/UAT and any Runtime/Discord action.
+3. **Slice 3A — complete here:** validation/failure/profile contracts, pure response validator, bounded output,
+   and explicit branch planning only; no fallback or escalation execution.
+4. **Slice 3B — requires approval:** two-attempt Gateway orchestration and ownership enforcement.
+5. **Slice 4 — requires approval:** provider-free simulation and Golden routing fixtures.
+6. **Slice 5 — Strict approval:** real Provider preflight/UAT and any Runtime/Discord action.
 
 ### Slice 2 — Selection / Execution Separation
 
@@ -4591,6 +4594,47 @@ verify the combined selection identity without adding execution state to selecti
 unavailable/ineligible, missing, adapter/model-mismatched, executable-id-mismatched, stale-registry, and stale-binding
 paths stop before invocation. Configuration failures use bounded codes and never copy rejected configuration or raw
 Provider details into audit. Valid execution remains exactly one attempt.
+
+### Slice 3A — Response Validation and Explicit Branch Planning
+
+Slice 3A adopts Strategy B as a declarative plan only:
+
+```text
+Primary + optional Operational Fallback + optional Semantic Escalation
+Maximum attempts = 2; maximum additional hops = 1
+Primary → Fallback OR Primary → Escalation
+```
+
+`ValidationProfileRegistry` contains only `LOW_RISK_FAST_PATH`, `GENERAL_CHAT`, and `AUTHORITY_SENSITIVE`.
+Definitions and rules are canonicalized, deep-frozen, and configuration-digested; an unknown profile fails closed
+with `UNKNOWN_VALIDATION_PROFILE`. `RuntimeResponseValidator` is an independent Core Application, pure synchronous
+service. It consumes the profile fixed upstream and returns only bounded disposition/reason/hash/size/version facts.
+It performs no Provider/registry lookup, branch execution, I/O, clock/random access, logging, persistence, Runtime
+response assembly, or Stage 2A import. `routing-response-rules-v1` is an independent Runtime contract and makes no
+equivalence claim with the Stage 2A evaluator or binding.
+
+The failure matrix distinguishes configuration, operational, validation, and safety failures. Safety and
+configuration failures fail closed with no fallback or escalation; operational failures never escalate;
+`EMPTY_OUTPUT` may use operational fallback while `OUTPUT_LIMIT_VIOLATION` may not; validation failures never
+fallback and may escalate only when the fixed profile permits it. `PROVIDER_SPAWN_FAILED`, `CONTAINMENT_FAILURE`,
+`MODEL_DOWNLOAD_DETECTED`, and `STRUCTURAL_VALIDATION_FAILED` are `PRODUCER_PENDING`, not implemented defenses.
+
+`ProviderExecutionPlan` pre-fixes candidates solely from the ordered `eligibleProviderIds` and the same descriptor
+snapshot/binding registry. Target Provider ids are unique and provenance-bound. The escalation target must be
+strictly stronger on the profile's existing reliability axis. For an escalation-enabled profile, the stronger
+candidate is reserved first and fallback deterministically takes the first remaining executable eligible candidate;
+this preserves mutually exclusive target identities without runtime policy reevaluation. Same-provider retry,
+primary re-entry, adapter hidden retry, pre-execution escalation, and Provider-id branching remain prohibited.
+
+The execution-configuration digest binds registry/policy/profile digests, failure-matrix version, attempt/hop bounds,
+deadline class, capability/profile/policy, and every target purpose/provider/binding digest. It excludes clocks,
+durations, concrete deadline milliseconds, request/prompt/response/raw output, environment/secrets, execution id,
+and audit schema version. `decisionId` is deterministic selection identity; optional `executionId` is caller-owned.
+
+Slice 3A does not implement the two-attempt Gateway state machine. The existing Gateway validates the extended Plan
+provenance but retains a one-element execution order, attempt budget `1`, and exactly one primary invocation. It does
+not call the validator or execute fallback/escalation. High-risk pre-execution provider strength remains Slice 1
+selection responsibility through existing authority/risk/profile/reliability policy data.
 
 ### Relations
 

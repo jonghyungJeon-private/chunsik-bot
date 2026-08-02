@@ -132,9 +132,16 @@ fixed; the implementations are not.
    invoke the selected `AiProvider`. The Plan freezes a canonical SHA-256
    executable-binding identity validated against the same immutable descriptor
    snapshot and selection configuration. The Gateway rechecks the current
-   registry and binding identity before invocation. Stage 2B Slice 2 permits
-   exactly one attempt and no availability probe, retry, fallback, escalation,
-   deadline policy, or Runtime response validation (ADR-0064).
+   registry and binding identity before invocation. Stage 2B Slice 3A adds an
+   immutable validation-profile registry, a pure synchronous Runtime response
+   validator, a bounded output projection, and an explicit declarative branch
+   plan. A plan may pre-fix one operational fallback and one stronger semantic
+   escalation candidate from the ranked eligible set, but an execution may use
+   at most one additional hop (`Primary → Fallback` or `Primary → Escalation`).
+   Same-provider retry, runtime policy reevaluation, safety-failure branching,
+   and pre-execution escalation are prohibited. Until Slice 3B is separately
+   approved, the Gateway still invokes only the primary exactly once and does
+   not run validation, fallback, or escalation (ADR-0064).
 
 ---
 

@@ -18,12 +18,11 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   wording. No second masking pass (adapter boundary, ADR-0028, already redacts/caps). **Reuse only —
   no new capability/aggregate/repository/migration/port; no Core/Orchestrator contract change.**
   Implemented on a branch — **awaiting CA implementation review, no merge.**
-- **Next:** Independent Chief Architect re-review of Stage 2B Slice 2 binding-provenance remediation; Runtime
-  integration and actual external Provider invocation remain unapproved.
-- **Build/Test (Stage 2B Slice 2 remediation runtime: Node 22):** focused routing/binding suite 5 files / 55 tests
-  PASS; Core regression suite 47 files / 1075 tests PASS; `pnpm typecheck` and `pnpm build` PASS.
-  (The `.nvmrc`-pinned Node 18 full suite continues to reproduce the existing `better-sqlite3` ABI
-  mismatch; the approved Node 22 focused/Core validation is green.)
+- **Next:** Independent Chief Architect review of Stage 2B Slice 3A. Slice 3B Gateway two-attempt orchestration,
+  Runtime integration, and actual external Provider invocation remain unapproved.
+- **Build/Test (Stage 2B Slice 3A):** focused validation/planning suite 5 files / 41 tests PASS; shared Core
+  regression 50 files / 1095 tests PASS; `pnpm typecheck` and `pnpm build` PASS. No external Provider, Runtime,
+  network, or database execution was part of this slice.
 
 ## Stage 2A — Completed
 
@@ -41,8 +40,9 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 - **Stage 2B:** Architecture and Option B typed policy foundation are ratified in ADR-0064. Slice 1
   implements Provider-free deterministic selection. Slice 2 adds an immutable execution plan, executable-binding
   registry, isolated single-attempt gateway, and bounded audit. Runtime integration, actual external Provider
-  execution, fallback, escalation, retry, timeout/deadline policy, Runtime response validation, traffic policy,
-  and dual-provider activation remain unapproved/unimplemented.
+  execution, fallback/escalation orchestration, retry, timeout/deadline calculation, traffic policy, and
+  dual-provider activation remain unapproved/unimplemented. Slice 3A adds only immutable validation/failure
+  contracts, pure response validation, bounded output projection, and pre-fixed declarative branches.
 
 ## Stage 2B — Slice 1 Provider Selection Foundation
 
@@ -76,8 +76,26 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 - **Integration:** fake-Provider tests only. Zero ConversationRuntime/CodeGenerationManager/app/adapter/storage/DB
   integration and zero actual external Provider execution.
 
+## Stage 2B — Slice 3A Validation and Branch Planning
+
+- **Validation:** immutable three-profile registry and independent pure synchronous validator; prompt/context are
+  input-only, while result contracts contain bounded reason codes, digest, byte count, and contract versions.
+- **Failure policy:** versioned configuration/operational/validation/safety matrix. Safety is fail-closed;
+  `EMPTY_OUTPUT` alone is an approved output-related fallback candidate; four future adapter/runtime signals are
+  explicitly producer-pending.
+- **Plan:** primary plus optional pre-fixed operational fallback and stronger semantic escalation targets, all bound
+  to eligible-set and executable-binding provenance. Maximum attempts `2`, maximum additional hops `1`, mutually
+  exclusive execution branch, no same-provider retry, and no runtime policy reevaluation.
+- **Execution boundary:** declarative only. The Slice 2 Gateway still calls only the primary once; it does not call
+  the validator, fallback, or escalation. No state machine, Runtime/app/adapter/port/storage integration, actual
+  Provider execution, network, or database work was added.
+
 ## Implemented
 
+- **Stage 2B Slice 3A validation/planning contracts (ADR-0064)** — added validation profiles, deterministic Runtime
+  response validation, bounded output projection, a versioned failure matrix, deadline class, target-purpose and
+  branch contracts, candidate pre-fixation, and execution configuration/decision/plan identities while preserving
+  the Gateway's one-invocation Slice 2 behavior.
 - **Stage 2B Single-Attempt Provider Gateway (ADR-0064 Slice 2)** — added immutable execution planning,
   descriptor-bound executable bindings, canonical binding identity, selection/binding provenance validation, one
   selected Provider/one attempt gateway orchestration, discriminated outcomes, and bounded execution audit.
