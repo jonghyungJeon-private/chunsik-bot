@@ -18,6 +18,8 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 - Added exact double replay plus a fixed ordering metamorphic replay for policy match/absence, eligibility,
   disabled/unavailable filtering, no-eligible termination, configured preference/ranking, stable ordering, and a
   combined Authority × Safety × Ranking golden scenario. Provider execution remains zero.
+- Removed the unexercised unordered-array metamorphic axis so the Harness advertises only registration-order
+  permutations that its current Golden corpus actually verifies.
 
 ### Fixed — Stage 2B · Slice 3C Coverage Integrity
 

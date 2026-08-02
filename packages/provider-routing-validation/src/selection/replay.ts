@@ -133,39 +133,17 @@ function context(fixture: SelectionFixture): RoutingContext {
 interface ReplayPermutation {
   readonly reverseProviders: boolean;
   readonly reversePolicies: boolean;
-  readonly reverseUnorderedArrays: boolean;
 }
 
-const ORIGINAL: ReplayPermutation = Object.freeze({ reverseProviders: false, reversePolicies: false, reverseUnorderedArrays: false });
-const FIXED_PERMUTATION: ReplayPermutation = Object.freeze({ reverseProviders: true, reversePolicies: true, reverseUnorderedArrays: true });
+const ORIGINAL: ReplayPermutation = Object.freeze({ reverseProviders: false, reversePolicies: false });
+const FIXED_PERMUTATION: ReplayPermutation = Object.freeze({ reverseProviders: true, reversePolicies: true });
 
 function reverse<T>(values: readonly T[], enabled: boolean): readonly T[] {
   return enabled ? [...values].reverse() : values;
 }
 
-function permutedProvider(provider: SelectionProviderFixture, enabled: boolean): SelectionProviderFixture {
-  return {
-    ...provider,
-    supportedCapabilities: reverse(provider.supportedCapabilities, enabled),
-    routingClasses: reverse(provider.routingClasses, enabled),
-  };
-}
-
-function permutedPolicy(policy: SelectionPolicyFixture, enabled: boolean): SelectionPolicyFixture {
-  return {
-    ...policy,
-    when: Object.fromEntries(Object.entries(policy.when).map(([key, values]) => [key, reverse(values, enabled)])),
-    eligibility: {
-      ...policy.eligibility,
-      requiredRoutingClasses: reverse(policy.eligibility.requiredRoutingClasses as string[], enabled),
-      excludedRoutingClasses: reverse(policy.eligibility.excludedRoutingClasses as string[], enabled),
-    },
-  };
-}
-
 function run(fixture: SelectionFixture, permutation: ReplayPermutation): SelectionReplayResult {
-  const providers = reverse(fixture.registry.providers, permutation.reverseProviders)
-    .map((provider) => permutedProvider(provider, permutation.reverseUnorderedArrays));
+  const providers = reverse(fixture.registry.providers, permutation.reverseProviders);
   const registry = new ProviderRegistry(
     fixture.registry.version,
     providers.map((provider) => {
@@ -176,8 +154,7 @@ function run(fixture: SelectionFixture, permutation: ReplayPermutation): Selecti
   const snapshot = registry.snapshot(
     Object.fromEntries(providers.map((provider) => [provider.id, provider.availability as ProviderAvailability])),
   );
-  const policyFixtures = reverse(fixture.policyConfiguration.policies, permutation.reversePolicies)
-    .map((policy) => permutedPolicy(policy, permutation.reverseUnorderedArrays));
+  const policyFixtures = reverse(fixture.policyConfiguration.policies, permutation.reversePolicies);
   const configuration: RoutingPolicyConfiguration = {
     version: fixture.policyConfiguration.version,
     policies: policyFixtures.map(compilePolicy),

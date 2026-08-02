@@ -53,7 +53,7 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   and immutable fixture/corpus SHA-256 identities.
 - **Projection:** exact decision facts plus `matchedPolicyId` and the configured ranking dimension/direction vector;
   no scores or execution facts.
-- **Determinism:** every fixture replays twice and under a fixed registration/unordered-array permutation. Coverage
+- **Determinism:** every fixture replays twice and under a fixed registration-order permutation. Coverage
   includes policy match/absence, eligibility/no-eligible, disabled/unavailable filtering, preference/ranking, stable
   ordering, and one Authority × Safety × Ranking cross-scenario. Provider invocations remain zero.
 
