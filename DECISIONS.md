@@ -4653,8 +4653,9 @@ cancellation and `AbortSignal` changes remain outside this slice.
 
 Operational failure may use only the pre-fixed fallback allowed by the failure matrix. Semantic validation may use
 only the pre-fixed stronger escalation target when the selected validation profile permits it. Safety takes
-precedence, fails closed, and permits neither branch. The v3 failure matrix marks deadline attempt consumption as
-contextual because exhaustion can occur before dispatch or after a consumed attempt.
+precedence, fails closed, and permits neither branch. The v4 failure matrix marks deadline attempt consumption as
+contextual because exhaustion can occur before dispatch or after a consumed attempt. The Gateway-produced
+`SEMANTIC_VALIDATION_UNRESOLVED` is active; `STRUCTURAL_VALIDATION_UNRESOLVED` remains producer-pending.
 
 Terminal results preserve explicit accepted, rejected, human-review, execution-failure, safety-blocked, and
 configuration-failure statuses. `humanReviewRequired` is first-class. Accepted results expose only bounded output;

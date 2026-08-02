@@ -7,6 +7,16 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Fixed — Stage 2B · Slice 3B Review Remediation
+
+- Advanced the failure matrix to v4: Gateway-produced `SEMANTIC_VALIDATION_UNRESOLVED` is active while
+  `STRUCTURAL_VALIDATION_UNRESOLVED` remains producer-pending.
+- Restored Gateway regression coverage for unknown Provider exceptions, missing bindings, registry identity
+  mismatches, and forged plan version/digest mismatches.
+- Revalidate binding provenance immediately before every attempt, including the optional second hop, so a binding
+  changed after primary dispatch fails through the existing bounded binding contract without another invocation.
+- Added direct failure-classifier tests while retaining Gateway-level integration coverage.
+
 ### Added — Stage 2B · Slice 3B Bounded Two-Attempt Orchestration
 
 - Added a pure bounded execution state reducer, explicit seven-transition upper bound, and zero-attempt deadline

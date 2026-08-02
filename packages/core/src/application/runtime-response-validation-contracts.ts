@@ -2,7 +2,7 @@ import type { Artifact } from '../domain';
 import type { ValidationProfileId } from './provider-routing-contracts';
 
 export const ROUTING_RESPONSE_RULE_CONTRACT_VERSION = 'routing-response-rules-v1' as const;
-export const ROUTING_FAILURE_MATRIX_VERSION = 'routing-failure-matrix-v3' as const;
+export const ROUTING_FAILURE_MATRIX_VERSION = 'routing-failure-matrix-v4' as const;
 
 export enum ValidationDisposition {
   ACCEPT = 'ACCEPT',
@@ -167,7 +167,10 @@ const safety = (
   producerStatus,
 });
 
-const terminalUnresolvedValidation = (code: RoutingFailureCode): RoutingFailurePolicy => ({
+const terminalUnresolvedValidation = (
+  code: RoutingFailureCode,
+  producerStatus = RoutingFailureProducerStatus.PRODUCER_PENDING,
+): RoutingFailurePolicy => ({
   code,
   failureClass: RoutingFailureClass.VALIDATION,
   attemptConsumed: 1,
@@ -175,7 +178,7 @@ const terminalUnresolvedValidation = (code: RoutingFailureCode): RoutingFailureP
   escalationAllowed: false,
   failClosed: false,
   humanReviewCandidate: true,
-  producerStatus: RoutingFailureProducerStatus.PRODUCER_PENDING,
+  producerStatus,
 });
 
 const contextualDeadline: RoutingFailurePolicy = {
@@ -207,7 +210,10 @@ const FAILURE_MATRIX: readonly RoutingFailurePolicy[] = [
     RoutingFailureProducerStatus.PRODUCER_PENDING,
   ),
   validation(RoutingFailureCode.SEMANTIC_VALIDATION_FAILED),
-  terminalUnresolvedValidation(RoutingFailureCode.SEMANTIC_VALIDATION_UNRESOLVED),
+  terminalUnresolvedValidation(
+    RoutingFailureCode.SEMANTIC_VALIDATION_UNRESOLVED,
+    RoutingFailureProducerStatus.ACTIVE,
+  ),
   terminalUnresolvedValidation(RoutingFailureCode.STRUCTURAL_VALIDATION_UNRESOLVED),
   contextualDeadline,
   safety(RoutingFailureCode.PROMPT_LEAK),

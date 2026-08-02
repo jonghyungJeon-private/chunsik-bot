@@ -20,8 +20,8 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   Implemented on a branch — **awaiting CA implementation review, no merge.**
 - **Next:** Independent Chief Architect implementation review of Stage 2B Slice 3B. Runtime integration and actual
   external Provider invocation remain unapproved.
-- **Build/Test (Stage 2B Slice 3B):** focused routing/validation suite 6 files / 41 tests PASS; shared Core regression
-  52 files / 1099 tests PASS; `pnpm typecheck`, `pnpm build`, and `git diff --check` PASS. No external Provider,
+- **Build/Test (Stage 2B Slice 3B remediation):** focused routing/validation suite 7 files / 51 tests PASS; shared
+  Core regression 53 files / 1109 tests PASS; `pnpm typecheck`, `pnpm build`, and `git diff --check` PASS. No external Provider,
   Runtime, network, or database execution was part of this slice.
 
 ## Stage 2A — Completed
@@ -102,6 +102,8 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   deadline, and caller timeout is capped by remaining Provider budget.
 - **Terminal/audit:** six explicit terminal statuses, first-class `humanReviewRequired`, bounded accepted output,
   and audit v2 with at most two attempts, seven transitions, deadline-policy identity, and no raw content.
+- **Review remediation:** failure matrix v4 makes semantic-unresolved production active while structural-unresolved
+  remains pending; restored provenance/error regression contracts and rechecks binding identity before attempt 2.
 - **Boundary:** fake-Provider tests only. No ConversationRuntime, CodeGenerationManager, app, adapter, port,
   persistence, Discord, network, database, or actual external Provider execution integration.
 

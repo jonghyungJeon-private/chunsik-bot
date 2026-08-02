@@ -370,6 +370,11 @@ export class ProviderRoutingGateway {
           RoutingFailureCode.DEADLINE_EXHAUSTED,
         );
       }
+      const currentBindingFailure = bindingFailure(this.bindings, target);
+      if (currentBindingFailure) {
+        finalTarget = target;
+        return finish(ProviderGatewayTerminalStatus.CONFIGURATION_FAILED, currentBindingFailure);
+      }
       const states =
         target.purpose === ExecutionTargetPurpose.PRIMARY
           ? [RoutingExecutionState.PRIMARY_EXECUTING, RoutingExecutionState.PRIMARY_VALIDATING]

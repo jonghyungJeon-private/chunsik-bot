@@ -97,9 +97,12 @@ function descriptor(id: string, authorityReliability = ReliabilityTier.STANDARD)
   };
 }
 
-function snapshot(descriptors: readonly ProviderDescriptor[]): ProviderRegistrySnapshot {
+function snapshot(
+  descriptors: readonly ProviderDescriptor[],
+  version = 'registry-v1',
+): ProviderRegistrySnapshot {
   const registry = new ProviderRegistry(
-    'registry-v1',
+    version,
     descriptors.map((value) => ({ providerId: value.providerId, descriptor: value })),
   );
   return registry.snapshot(
@@ -402,5 +405,101 @@ describe('ProviderRoutingGateway — bounded two-attempt orchestration', () => {
       audit: { attemptCount: 0 },
     });
     expect(primary.execute).not.toHaveBeenCalled();
+  });
+
+  it('maps an unknown Provider exception to the existing execution-failure contract', async () => {
+    const primary = fakeProvider('provider-a', async () => {
+      throw new Error('private implementation detail');
+    });
+    const registry = snapshot([descriptor('provider-a')]);
+    const bindings = new ProviderBindingRegistry(registry, [binding(primary)]);
+    const profiles = createDefaultValidationProfileRegistry();
+    const result = await gateway(bindings, profiles).execute(plan(registry, bindings, profiles), REQUEST);
+
+    expect(result).toMatchObject({
+      status: ProviderGatewayTerminalStatus.EXECUTION_FAILED,
+      failureCode: RoutingFailureCode.PROVIDER_EXECUTION_FAILED,
+      audit: { attemptCount: 1 },
+    });
+    expect(JSON.stringify(result)).not.toContain('private implementation detail');
+  });
+
+  it('blocks a missing selected binding before invocation', async () => {
+    const primary = fakeProvider('provider-a', async () => ({ text: 'must not run' }));
+    const other = fakeProvider('provider-b', async () => ({ text: 'other' }));
+    const registry = snapshot([descriptor('provider-a'), descriptor('provider-b')]);
+    const complete = new ProviderBindingRegistry(registry, [binding(primary), binding(other)]);
+    const onlyOther = new ProviderBindingRegistry(registry, [binding(other)]);
+    const profiles = createDefaultValidationProfileRegistry();
+    const result = await gateway(onlyOther, profiles).execute(plan(registry, complete, profiles), REQUEST);
+
+    expect(result).toMatchObject({
+      status: ProviderGatewayTerminalStatus.CONFIGURATION_FAILED,
+      failureCode: ProviderBindingFailureCode.PROVIDER_BINDING_NOT_FOUND,
+      audit: { attemptCount: 0 },
+    });
+    expect(primary.execute).not.toHaveBeenCalled();
+    expect(other.execute).not.toHaveBeenCalled();
+  });
+
+  it('blocks a current registry identity mismatch before invocation', async () => {
+    const first = fakeProvider('provider-a', async () => ({ text: 'must not run' }));
+    const second = fakeProvider('provider-a', async () => ({ text: 'must not run either' }));
+    const firstRegistry = snapshot([descriptor('provider-a')], 'registry-v1');
+    const secondRegistry = snapshot([descriptor('provider-a')], 'registry-v2');
+    const firstBindings = new ProviderBindingRegistry(firstRegistry, [binding(first)]);
+    const secondBindings = new ProviderBindingRegistry(secondRegistry, [binding(second)]);
+    const profiles = createDefaultValidationProfileRegistry();
+    const result = await gateway(secondBindings, profiles).execute(
+      plan(firstRegistry, firstBindings, profiles),
+      REQUEST,
+    );
+
+    expect(result).toMatchObject({
+      status: ProviderGatewayTerminalStatus.CONFIGURATION_FAILED,
+      failureCode: ProviderBindingFailureCode.ROUTING_CONFIGURATION_MISMATCH,
+      audit: { attemptCount: 0 },
+    });
+    expect(first.execute).not.toHaveBeenCalled();
+    expect(second.execute).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['failure matrix version', (value: ProviderExecutionPlan) => ({ ...value, failureMatrixVersion: 'forged-v0' })],
+    ['plan digest', (value: ProviderExecutionPlan) => ({ ...value, planDigest: 'd'.repeat(64) })],
+  ])('blocks a forged execution plan %s before invocation', async (_name, forge) => {
+    const primary = fakeProvider('provider-a', async () => ({ text: 'must not run' }));
+    const registry = snapshot([descriptor('provider-a')]);
+    const bindings = new ProviderBindingRegistry(registry, [binding(primary)]);
+    const profiles = createDefaultValidationProfileRegistry();
+    const forged = forge(plan(registry, bindings, profiles)) as ProviderExecutionPlan;
+    const result = await gateway(bindings, profiles).execute(forged, REQUEST);
+
+    expect(result).toMatchObject({
+      status: ProviderGatewayTerminalStatus.CONFIGURATION_FAILED,
+      failureCode: ProviderBindingFailureCode.ROUTING_CONFIGURATION_MISMATCH,
+      audit: { attemptCount: 0 },
+    });
+    expect(primary.execute).not.toHaveBeenCalled();
+  });
+
+  it('rechecks fallback binding provenance immediately before the second attempt', async () => {
+    const fallback = fakeProvider('provider-b', async () => ({ text: 'must not run' }));
+    const primary = fakeProvider('provider-a', async () => {
+      fallback.id = 'provider-mutated';
+      throw new AiProviderError(AiFailureKind.TIMEOUT, 'private timeout detail');
+    });
+    const registry = snapshot([descriptor('provider-a'), descriptor('provider-b')]);
+    const bindings = new ProviderBindingRegistry(registry, [binding(primary), binding(fallback)]);
+    const profiles = createDefaultValidationProfileRegistry();
+    const result = await gateway(bindings, profiles).execute(plan(registry, bindings, profiles), REQUEST);
+
+    expect(result).toMatchObject({
+      status: ProviderGatewayTerminalStatus.CONFIGURATION_FAILED,
+      failureCode: ProviderBindingFailureCode.PROVIDER_BINDING_MISMATCH,
+      audit: { attemptCount: 1, path: 'FALLBACK' },
+    });
+    expect(primary.execute).toHaveBeenCalledTimes(1);
+    expect(fallback.execute).not.toHaveBeenCalled();
   });
 });

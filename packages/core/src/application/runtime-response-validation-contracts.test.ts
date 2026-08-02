@@ -9,7 +9,7 @@ import {
 
 describe('routing failure matrix', () => {
   it('uses the remediation matrix version', () => {
-    expect(ROUTING_FAILURE_MATRIX_VERSION).toBe('routing-failure-matrix-v3');
+    expect(ROUTING_FAILURE_MATRIX_VERSION).toBe('routing-failure-matrix-v4');
   });
 
   it('defines every bounded failure code exactly once', () => {
@@ -55,7 +55,6 @@ describe('routing failure matrix', () => {
     expect(pending).toEqual([
       RoutingFailureCode.PROVIDER_SPAWN_FAILED,
       RoutingFailureCode.STRUCTURAL_VALIDATION_FAILED,
-      RoutingFailureCode.SEMANTIC_VALIDATION_UNRESOLVED,
       RoutingFailureCode.STRUCTURAL_VALIDATION_UNRESOLVED,
       RoutingFailureCode.CONTAINMENT_FAILURE,
       RoutingFailureCode.MODEL_DOWNLOAD_DETECTED,
@@ -77,10 +76,20 @@ describe('routing failure matrix', () => {
           !entry.fallbackAllowed &&
           !entry.escalationAllowed &&
           !entry.failClosed &&
-          entry.humanReviewCandidate &&
-          entry.producerStatus === RoutingFailureProducerStatus.PRODUCER_PENDING,
+          entry.humanReviewCandidate,
       ),
     ).toBe(true);
+
+    expect(
+      ROUTING_FAILURE_MATRIX.find(
+        (entry) => entry.code === RoutingFailureCode.SEMANTIC_VALIDATION_UNRESOLVED,
+      )?.producerStatus,
+    ).toBe(RoutingFailureProducerStatus.ACTIVE);
+    expect(
+      ROUTING_FAILURE_MATRIX.find(
+        (entry) => entry.code === RoutingFailureCode.STRUCTURAL_VALIDATION_UNRESOLVED,
+      )?.producerStatus,
+    ).toBe(RoutingFailureProducerStatus.PRODUCER_PENDING);
 
     expect(
       ROUTING_FAILURE_MATRIX.find((entry) => entry.code === RoutingFailureCode.DEADLINE_EXHAUSTED),
