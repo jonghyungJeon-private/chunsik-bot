@@ -22,7 +22,7 @@ export const SELECTION_COVERAGE_MANIFEST: readonly SelectionCoverageEntry[] = Ob
   { axis: 'DISABLED', scenarioId: 'availability-filter', assertion: 'Disabled providers never enter ranking.' },
   { axis: 'UNAVAILABLE', scenarioId: 'availability-filter', assertion: 'Unavailable providers never enter ranking.' },
   { axis: 'RANKING', scenarioId: 'authority-safety-ranking', assertion: 'Configured dimensions are applied lexicographically.' },
-  { axis: 'STABLE_ORDERING', scenarioId: 'routing-preference', assertion: 'Fixed registration-order permutations preserve the decision.' },
+  { axis: 'STABLE_ORDERING', scenarioId: 'routing-preference', assertion: 'Provider registration-order permutation is exercised; policy-order independence is Core-owned and not independently exercised here.' },
   { axis: 'PREFERENCE', scenarioId: 'routing-preference', assertion: 'Routing-class preference precedes later ranking dimensions.' },
   { axis: 'AUTHORITY', scenarioId: 'authority-safety-ranking', assertion: 'Authority requirements and reliability participate together.' },
   { axis: 'SAFETY', scenarioId: 'authority-safety-ranking', assertion: 'High semantic risk selects through a bounded safety-sensitive policy.' },

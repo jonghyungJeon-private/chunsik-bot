@@ -53,9 +53,12 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   and immutable fixture/corpus SHA-256 identities.
 - **Projection:** exact decision facts plus `matchedPolicyId` and the configured ranking dimension/direction vector;
   no scores or execution facts.
-- **Determinism:** every fixture replays twice and under a fixed registration-order permutation. Coverage
-  includes policy match/absence, eligibility/no-eligible, disabled/unavailable filtering, preference/ranking, stable
-  ordering, and one Authority × Safety × Ranking cross-scenario. Provider invocations remain zero.
+- **Determinism:** every fixture replays twice. The current multi-provider Golden fixtures exercise Provider
+  registration-order permutation. Policy declaration-order permutation remains implemented but is not independently
+  exercised by the single-policy corpus; policy-order independence is owned by Core normalization and regression.
+  Coverage includes policy match/absence, eligibility/no-eligible, disabled/unavailable filtering,
+  preference/ranking, stable ordering, and one Authority × Safety × Ranking cross-scenario. Provider invocations
+  remain zero.
 
 ## Stage 2B — Slice 3C Deterministic Validation Harness
 
