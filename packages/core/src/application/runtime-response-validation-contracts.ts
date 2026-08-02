@@ -2,7 +2,7 @@ import type { Artifact } from '../domain';
 import type { ValidationProfileId } from './provider-routing-contracts';
 
 export const ROUTING_RESPONSE_RULE_CONTRACT_VERSION = 'routing-response-rules-v1' as const;
-export const ROUTING_FAILURE_MATRIX_VERSION = 'routing-failure-matrix-v2' as const;
+export const ROUTING_FAILURE_MATRIX_VERSION = 'routing-failure-matrix-v3' as const;
 
 export enum ValidationDisposition {
   ACCEPT = 'ACCEPT',
@@ -104,7 +104,8 @@ export enum RoutingFailureCode {
 export interface RoutingFailurePolicy {
   readonly code: RoutingFailureCode;
   readonly failureClass: RoutingFailureClass;
-  readonly attemptConsumed: 0 | 1;
+  /** DEADLINE_EXHAUSTED can occur before dispatch (0) or after validation (1). */
+  readonly attemptConsumed: 0 | 1 | 'CONTEXTUAL';
   readonly fallbackAllowed: boolean;
   readonly escalationAllowed: boolean;
   readonly failClosed: boolean;
@@ -177,6 +178,17 @@ const terminalUnresolvedValidation = (code: RoutingFailureCode): RoutingFailureP
   producerStatus: RoutingFailureProducerStatus.PRODUCER_PENDING,
 });
 
+const contextualDeadline: RoutingFailurePolicy = {
+  code: RoutingFailureCode.DEADLINE_EXHAUSTED,
+  failureClass: RoutingFailureClass.OPERATIONAL,
+  attemptConsumed: 'CONTEXTUAL',
+  fallbackAllowed: false,
+  escalationAllowed: false,
+  failClosed: true,
+  humanReviewCandidate: false,
+  producerStatus: RoutingFailureProducerStatus.ACTIVE,
+};
+
 const FAILURE_MATRIX: readonly RoutingFailurePolicy[] = [
   configuration(RoutingFailureCode.ROUTING_CONFIGURATION_MISMATCH),
   configuration(RoutingFailureCode.BINDING_MISMATCH),
@@ -197,7 +209,7 @@ const FAILURE_MATRIX: readonly RoutingFailurePolicy[] = [
   validation(RoutingFailureCode.SEMANTIC_VALIDATION_FAILED),
   terminalUnresolvedValidation(RoutingFailureCode.SEMANTIC_VALIDATION_UNRESOLVED),
   terminalUnresolvedValidation(RoutingFailureCode.STRUCTURAL_VALIDATION_UNRESOLVED),
-  operational(RoutingFailureCode.DEADLINE_EXHAUSTED, false, RoutingFailureProducerStatus.PRODUCER_PENDING),
+  contextualDeadline,
   safety(RoutingFailureCode.PROMPT_LEAK),
   safety(RoutingFailureCode.MULTI_ENTRY_ECHO),
   safety(RoutingFailureCode.SECRET_EXPOSURE_RISK),

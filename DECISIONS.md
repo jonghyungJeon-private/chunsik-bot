@@ -4364,13 +4364,12 @@ Gate 6. Each requires separate explicit approval.
 
 ## ADR-0064 — Provider Routing Policy and Registry Ownership
 
-- **Status:** ✅ Accepted — Stage 2B Architecture, Slices 1–2, and Slice 3A validation/planning contracts
-  implemented under Chief Architect direction. Slice 3B execution orchestration and Runtime integration require
-  later approval.
+- **Status:** ✅ Accepted — Stage 2B Architecture and Slices 1–3B implemented under Chief Architect direction.
+  Runtime integration and actual external Provider execution require later approval.
 - **Date:** 2026-08-02
 - **Scope:** Core Application routing contracts, immutable descriptor and executable-binding registries, typed
   policy evaluation, deterministic selection decisions, immutable executable-binding and validation-profile
-  registries, pure response validation, explicit bounded branch planning, isolated single-attempt gateway
+  registries, pure response validation, explicit bounded branch planning, bounded two-attempt Gateway
   orchestration, bounded output/audit contracts, and configuration identity. No Runtime wiring or external
   Provider execution.
 
@@ -4543,7 +4542,7 @@ Persistence and `TaskRun` audit integration are deferred.
    gateway, and bounded audit; no Runtime integration.
 3. **Slice 3A — complete here:** validation/failure/profile contracts, pure response validator, bounded output,
    and explicit branch planning only; no fallback or escalation execution.
-4. **Slice 3B — requires approval:** two-attempt Gateway orchestration and ownership enforcement.
+4. **Slice 3B — complete here:** two-attempt Gateway orchestration and ownership enforcement.
 5. **Slice 4 — requires approval:** provider-free simulation and Golden routing fixtures.
 6. **Slice 5 — Strict approval:** real Provider preflight/UAT and any Runtime/Discord action.
 
@@ -4635,10 +4634,33 @@ deadline class, capability/profile/policy, and every target purpose/provider/bin
 durations, concrete deadline milliseconds, request/prompt/response/raw output, environment/secrets, execution id,
 and audit schema version. `decisionId` is deterministic selection identity; optional `executionId` is caller-owned.
 
-Slice 3A does not implement the two-attempt Gateway state machine. The existing Gateway validates the extended Plan
-provenance but retains a one-element execution order, attempt budget `1`, and exactly one primary invocation. It does
-not call the validator or execute fallback/escalation. High-risk pre-execution provider strength remains Slice 1
-selection responsibility through existing authority/risk/profile/reliability policy data.
+Slice 3A did not implement the two-attempt Gateway state machine. High-risk pre-execution provider strength remains
+Slice 1 selection responsibility through existing authority/risk/profile/reliability policy data.
+
+### Slice 3B — Bounded Two-Attempt Gateway Orchestration
+
+The Gateway is the sole execution owner for `Primary → Validation → Optional Single Hop → Terminal`. A separate
+pure state reducer permits at most seven audited transitions and explicitly permits every READY state to terminate
+at its zero-attempt deadline checkpoint. An invocation consumes its attempt immediately before provider dispatch;
+maximum attempts remain `2`, maximum additional hops remain `1`, and fallback and escalation are mutually exclusive.
+There is no retry, same-provider retry, provider availability re-probe, or runtime policy reevaluation.
+
+The Gateway applies a versioned deadline policy using an injected monotonic clock. One absolute deadline covers
+Provider execution and validation and is never reset for the optional hop. The effective cooperative Provider
+timeout is the smaller of the caller timeout, when supplied, and the remaining Provider budget. Validation success
+completed after the overall deadline is retained in bounded audit but never returned as accepted output. Hard
+cancellation and `AbortSignal` changes remain outside this slice.
+
+Operational failure may use only the pre-fixed fallback allowed by the failure matrix. Semantic validation may use
+only the pre-fixed stronger escalation target when the selected validation profile permits it. Safety takes
+precedence, fails closed, and permits neither branch. The v3 failure matrix marks deadline attempt consumption as
+contextual because exhaustion can occur before dispatch or after a consumed attempt.
+
+Terminal results preserve explicit accepted, rejected, human-review, execution-failure, safety-blocked, and
+configuration-failure statuses. `humanReviewRequired` is first-class. Accepted results expose only bounded output;
+audit v2 records bounded configuration identities, attempt/transition facts, response identity and size, the
+deadline-policy version, and one terminal summary without prompt, raw output/error, credentials, or environment.
+`executionId` is mandatory caller-supplied input and remains excluded from deterministic execution digests.
 
 ### Relations
 

@@ -7,6 +7,22 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Stage 2B · Slice 3B Bounded Two-Attempt Orchestration
+
+- Added a pure bounded execution state reducer, explicit seven-transition upper bound, and zero-attempt deadline
+  exits from primary, fallback, and escalation READY states.
+- Added versioned Gateway deadline policy and injected monotonic clock ownership. Provider timeout is the smaller
+  of an optional caller timeout and remaining Provider budget; validation shares the same non-resetting deadline.
+- Added validation-gated operational fallback or semantic escalation as one mutually exclusive additional hop.
+  Retry, same-provider retry, runtime policy reevaluation, and safety branching remain prohibited.
+- Replaced raw Provider results with bounded terminal results and audit v2. Six terminal statuses and first-class
+  `humanReviewRequired` are retained; audit is capped at two attempts and seven transitions and includes deadline
+  policy identity without prompt, raw output/error, credentials, or environment.
+- Advanced the failure matrix to v3 for contextual deadline attempt consumption, required caller-owned execution
+  identity, and retired contradictory Slice 2 single-attempt compatibility fields from the execution plan.
+- Covered orchestration with fake Providers and an injected fake clock only. Runtime/app/adapter wiring, hard
+  cancellation, actual Provider execution, network, Discord, persistence, and database changes remain excluded.
+
 ### Added — Stage 2B · Slice 3A Response Validation Planning
 
 - Added the immutable `LOW_RISK_FAST_PATH`, `GENERAL_CHAT`, and `AUTHORITY_SENSITIVE` validation-profile registry,

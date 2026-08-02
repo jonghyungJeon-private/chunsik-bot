@@ -141,28 +141,19 @@ const input = {
   capability: Capability.GENERAL_CHAT,
   validationProfile: GENERAL_CHAT,
   deadlineClass: DeadlineClass.STANDARD,
+  executionId: 'execution-fixture-1',
 };
 const profiles = createDefaultValidationProfileRegistry();
 
 describe('ProviderExecutionPlanner provenance', () => {
-  it('deep-freezes a valid primary-only branch plan while preserving the Slice 2 single-attempt boundary', () => {
+  it('deep-freezes a valid primary-only bounded orchestration plan', () => {
     const registry = snapshot();
     const bindings = new ProviderBindingRegistry(registry, [binding(provider('provider-a'))]);
     const plan = new ProviderExecutionPlanner().create(decision(registry), registry, bindings, profiles, input);
 
     expect(plan).toMatchObject({
-      selectedProviderId: 'provider-a',
-      bindingIdentity: {
-        providerId: 'provider-a',
-        bindingVersion: 'binding-v1',
-        bindingDigest: '11a6b2a89d935ef767613a3a57330fbe8b9056e0b2708d6e7d41323eaf141a3e',
-      },
-      executionOrder: ['provider-a'],
-      attemptBudget: 1,
-      overallDeadlineMs: null,
       validationProfile: GENERAL_CHAT,
-      fallbackEligible: false,
-      escalationEligible: false,
+      executionId: 'execution-fixture-1',
       maxAttempts: MAX_PROVIDER_ATTEMPTS,
       maxAdditionalHops: MAX_ADDITIONAL_PROVIDER_HOPS,
       deadlineClass: DeadlineClass.STANDARD,
@@ -174,12 +165,12 @@ describe('ProviderExecutionPlanner provenance', () => {
       failureMatrixVersion: ROUTING_FAILURE_MATRIX_VERSION,
     });
     expect(Object.isFrozen(plan)).toBe(true);
-    expect(Object.isFrozen(plan.executionOrder)).toBe(true);
-    expect(Object.isFrozen(plan.bindingIdentity)).toBe(true);
+    expect('executionOrder' in plan).toBe(false);
+    expect('attemptBudget' in plan).toBe(false);
     expect(Object.isFrozen(plan.primary)).toBe(true);
   });
 
-  it('pre-fixes a ranked operational fallback without changing the runtime execution order', () => {
+  it('pre-fixes a ranked operational fallback without encoding a runtime path', () => {
     const registry = snapshot([descriptor('provider-a'), descriptor('provider-b')]);
     const bindings = new ProviderBindingRegistry(registry, [
       binding(provider('provider-a')),
@@ -198,8 +189,8 @@ describe('ProviderExecutionPlanner provenance', () => {
       providerId: 'provider-b',
     });
     expect(plan.semanticEscalation).toBeNull();
-    expect(plan.executionOrder).toEqual(['provider-a']);
-    expect(plan.attemptBudget).toBe(1);
+    expect('executionOrder' in plan).toBe(false);
+    expect(plan.maxAttempts).toBe(2);
   });
 
   it('pre-fixes distinct escalation and fallback branches using the existing authority reliability axis', () => {
@@ -453,7 +444,7 @@ describe('ProviderExecutionPlanner provenance', () => {
       }),
     ).not.toBe(base.executionConfigurationDigest);
     expect(
-      computeProviderExecutionConfigurationDigest({ ...base, failureMatrixVersion: 'routing-failure-matrix-v3' }),
+      computeProviderExecutionConfigurationDigest({ ...base, failureMatrixVersion: 'routing-failure-matrix-v4' }),
     ).not.toBe(base.executionConfigurationDigest);
     expect(
       computeProviderExecutionConfigurationDigest({ ...base, deadlineClass: DeadlineClass.EXTENDED }),

@@ -9,7 +9,7 @@ import {
 
 describe('routing failure matrix', () => {
   it('uses the remediation matrix version', () => {
-    expect(ROUTING_FAILURE_MATRIX_VERSION).toBe('routing-failure-matrix-v2');
+    expect(ROUTING_FAILURE_MATRIX_VERSION).toBe('routing-failure-matrix-v3');
   });
 
   it('defines every bounded failure code exactly once', () => {
@@ -29,6 +29,9 @@ describe('routing failure matrix', () => {
     );
     expect(closed.every((entry) => !entry.fallbackAllowed && !entry.escalationAllowed && entry.failClosed)).toBe(true);
     expect(closed.filter((entry) => entry.failureClass === RoutingFailureClass.CONFIGURATION).every((entry) => entry.attemptConsumed === 0)).toBe(true);
+    expect(
+      ROUTING_FAILURE_MATRIX.find((entry) => entry.code === RoutingFailureCode.DEADLINE_EXHAUSTED)?.attemptConsumed,
+    ).toBe('CONTEXTUAL');
   });
 
   it('permits empty-output fallback, prohibits output-limit fallback, and never escalates operational failures', () => {
@@ -54,7 +57,6 @@ describe('routing failure matrix', () => {
       RoutingFailureCode.STRUCTURAL_VALIDATION_FAILED,
       RoutingFailureCode.SEMANTIC_VALIDATION_UNRESOLVED,
       RoutingFailureCode.STRUCTURAL_VALIDATION_UNRESOLVED,
-      RoutingFailureCode.DEADLINE_EXHAUSTED,
       RoutingFailureCode.CONTAINMENT_FAILURE,
       RoutingFailureCode.MODEL_DOWNLOAD_DETECTED,
     ]);
@@ -88,7 +90,7 @@ describe('routing failure matrix', () => {
       escalationAllowed: false,
       failClosed: true,
       humanReviewCandidate: false,
-      producerStatus: RoutingFailureProducerStatus.PRODUCER_PENDING,
+      producerStatus: RoutingFailureProducerStatus.ACTIVE,
     });
   });
 });

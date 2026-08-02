@@ -139,9 +139,12 @@ fixed; the implementations are not.
    escalation candidate from the ranked eligible set, but an execution may use
    at most one additional hop (`Primary → Fallback` or `Primary → Escalation`).
    Same-provider retry, runtime policy reevaluation, safety-failure branching,
-   and pre-execution escalation are prohibited. Until Slice 3B is separately
-   approved, the Gateway still invokes only the primary exactly once and does
-   not run validation, fallback, or escalation (ADR-0064).
+   and pre-execution escalation are prohibited. Slice 3B makes the Gateway the
+   sole owner of a validation-gated, deadline-bounded execution state machine:
+   primary plus at most one mutually exclusive fallback or escalation attempt,
+   followed by exactly one bounded terminal result. Runtime integration and
+   actual external Provider execution remain separate approval boundaries
+   (ADR-0064).
 
 ---
 

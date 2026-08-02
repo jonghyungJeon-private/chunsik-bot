@@ -18,11 +18,11 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   wording. No second masking pass (adapter boundary, ADR-0028, already redacts/caps). **Reuse only —
   no new capability/aggregate/repository/migration/port; no Core/Orchestrator contract change.**
   Implemented on a branch — **awaiting CA implementation review, no merge.**
-- **Next:** Independent Chief Architect review of Stage 2B Slice 3A. Slice 3B Gateway two-attempt orchestration,
-  Runtime integration, and actual external Provider invocation remain unapproved.
-- **Build/Test (Stage 2B Slice 3A remediation):** focused validation/planning suite 5 files / 46 tests PASS; shared
-  Core regression 50 files / 1100 tests PASS; `pnpm typecheck` and `pnpm build` PASS. No external Provider, Runtime,
-  network, or database execution was part of this slice.
+- **Next:** Independent Chief Architect implementation review of Stage 2B Slice 3B. Runtime integration and actual
+  external Provider invocation remain unapproved.
+- **Build/Test (Stage 2B Slice 3B):** focused routing/validation suite 6 files / 41 tests PASS; shared Core regression
+  52 files / 1099 tests PASS; `pnpm typecheck`, `pnpm build`, and `git diff --check` PASS. No external Provider,
+  Runtime, network, or database execution was part of this slice.
 
 ## Stage 2A — Completed
 
@@ -40,9 +40,9 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 - **Stage 2B:** Architecture and Option B typed policy foundation are ratified in ADR-0064. Slice 1
   implements Provider-free deterministic selection. Slice 2 adds an immutable execution plan, executable-binding
   registry, isolated single-attempt gateway, and bounded audit. Runtime integration, actual external Provider
-  execution, fallback/escalation orchestration, retry, timeout/deadline calculation, traffic policy, and
-  dual-provider activation remain unapproved/unimplemented. Slice 3A adds only immutable validation/failure
-  contracts, pure response validation, bounded output projection, and pre-fixed declarative branches.
+  execution, traffic policy, and dual-provider activation remain unapproved/unimplemented. Slice 3A added immutable
+  validation/failure contracts, pure response validation, bounded output projection, and pre-fixed declarative
+  branches. Slice 3B adds bounded two-attempt Gateway orchestration without Runtime wiring.
 
 ## Stage 2B — Slice 1 Provider Selection Foundation
 
@@ -91,6 +91,19 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 - **Execution boundary:** declarative only. The Slice 2 Gateway still calls only the primary once; it does not call
   the validator, fallback, or escalation. No state machine, Runtime/app/adapter/port/storage integration, actual
   Provider execution, network, or database work was added.
+
+## Stage 2B — Slice 3B Bounded Two-Attempt Gateway
+
+- **State ownership:** the Gateway orchestrates a separate pure state reducer with an explicit seven-transition
+  upper bound and READY-to-terminal zero-attempt deadline checkpoints.
+- **Execution:** primary followed by at most one pre-fixed operational fallback or stronger semantic escalation;
+  maximum attempts `2`, additional hops `1`, retry and same-provider retry prohibited.
+- **Deadline:** versioned policy plus injected monotonic clock; execution and validation share one non-resetting
+  deadline, and caller timeout is capped by remaining Provider budget.
+- **Terminal/audit:** six explicit terminal statuses, first-class `humanReviewRequired`, bounded accepted output,
+  and audit v2 with at most two attempts, seven transitions, deadline-policy identity, and no raw content.
+- **Boundary:** fake-Provider tests only. No ConversationRuntime, CodeGenerationManager, app, adapter, port,
+  persistence, Discord, network, database, or actual external Provider execution integration.
 
 ## Implemented
 

@@ -61,7 +61,7 @@ export interface ProviderExecutionPlanInput {
   validationProfile: ValidationProfileId;
   deadlineClass: DeadlineClass;
   /** Caller-owned concrete execution identity. Excluded from configuration digests. */
-  executionId?: string;
+  executionId: string;
 }
 
 export interface ProviderExecutionDigestMaterial {
@@ -80,26 +80,15 @@ export interface ProviderExecutionDigestMaterial {
   semanticEscalation: ProviderExecutionTarget | null;
 }
 
-/**
- * Slice 3A declarative branch plan. Legacy one-attempt fields remain explicit so
- * the Slice 2 Gateway continues to invoke only the primary until Slice 3B.
- */
+/** Immutable bounded orchestration plan. Runtime values remain outside its digest. */
 export interface ProviderExecutionPlan extends ProviderExecutionDigestMaterial {
-  selectedProviderId: ProviderId;
-  bindingIdentity: ProviderBindingIdentity;
-  executionOrder: readonly [ProviderId];
-  attemptBudget: 1;
-  overallDeadlineMs: null;
-  fallbackEligible: false;
-  escalationEligible: false;
   validationProfileVersion: string;
   decisionId: string;
-  executionId?: string;
+  executionId: string;
   executionConfigurationDigest: string;
   planDigest: string;
   policyVersion: string;
   registryVersion: string;
-  /** Selection configuration identity retained for Slice 2 Gateway compatibility. */
   configurationDigest: string;
 }
 
@@ -345,7 +334,7 @@ export class ProviderExecutionPlanner {
       !CAPABILITIES.has(input.capability) ||
       !isRoutingIdentifier(input.validationProfile) ||
       !Object.values(DeadlineClass).includes(input.deadlineClass) ||
-      (input.executionId !== undefined && !isRoutingIdentifier(input.executionId))
+      !isRoutingIdentifier(input.executionId)
     ) {
       planError(ProviderBindingFailureCode.ROUTING_CONFIGURATION_MISMATCH, 'Invalid execution input');
     }
@@ -426,20 +415,11 @@ export class ProviderExecutionPlanner {
     });
     const executionConfigurationDigest = computeProviderExecutionConfigurationDigest(material);
     const decisionId = selectionDecisionId(decision);
-    const bindingIdentity = frozenIdentity(primaryCandidate.bindingIdentity);
-
     return Object.freeze({
       ...material,
-      selectedProviderId: primaryCandidate.providerId,
-      bindingIdentity,
-      executionOrder: Object.freeze([primaryCandidate.providerId]) as readonly [ProviderId],
-      attemptBudget: 1,
-      overallDeadlineMs: null,
-      fallbackEligible: false,
-      escalationEligible: false,
       validationProfileVersion: profile.version,
       decisionId,
-      ...(input.executionId === undefined ? {} : { executionId: input.executionId }),
+      executionId: input.executionId,
       executionConfigurationDigest,
       planDigest: computeProviderExecutionPlanDigest(decisionId, executionConfigurationDigest),
       policyVersion: decision.policyVersion,
