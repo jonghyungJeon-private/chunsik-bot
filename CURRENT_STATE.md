@@ -18,10 +18,12 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   wording. No second masking pass (adapter boundary, ADR-0028, already redacts/caps). **Reuse only —
   no new capability/aggregate/repository/migration/port; no Core/Orchestrator contract change.**
   Implemented on a branch — **awaiting CA implementation review, no merge.**
-- **Next:** Chief Architect implementation review of Sprint 2m; no merge until approved.
-- **Build/Test (validation runtime: Node 22):** `pnpm typecheck` PASS (exit 0); `pnpm test` 49 files /
-  1098 tests PASS. (Under the `.nvmrc`-pinned Node 18, SQLite repo tests fail on a better-sqlite3 ABI
-  mismatch — a Deferred (Environment) item; the suite is green on Node 22.)
+- **Next:** Independent Chief Architect review of Stage 2B Slice 1; Runtime integration and Provider
+  invocation remain unapproved.
+- **Build/Test (Stage 2B Slice 1 validation runtime: Node 22):** focused routing suite 2 files / 30 tests
+  PASS; Core regression suite 44 files / 1050 tests PASS; `pnpm typecheck` and `pnpm build` PASS.
+  (The `.nvmrc`-pinned Node 18 full suite continues to reproduce the existing `better-sqlite3` ABI
+  mismatch; the approved Node 22 focused/Core validation is green.)
 
 ## Stage 2A — Completed
 
@@ -36,12 +38,34 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 - **Provider Ranking:** Balanced Primary Candidate — `llama3.1:8b`; Semantic Candidate —
   `granite3.3:8b`; latency-only evidence — `llama3.2:3b`; `mistral:7b` deprioritized.
 - **Prompt Root Cause:** **NOT ESTABLISHED**.
-- **Stage 2B:** Planning opened for Production Routing. Dual routing, traffic policy, timeout,
-  retry, escalation, and operational policy are not yet ratified or implemented. See
-  `docs/plans/stage-2b-routing-architecture-plan.md`.
+- **Stage 2B:** Architecture and Option B typed policy foundation are ratified in ADR-0064. Slice 1
+  implements Provider-free routing contracts, an immutable descriptor registry, typed eligibility,
+  deterministic lexicographic ranking, explainable decisions, and canonical SHA-256 configuration
+  identity. Runtime integration, Provider invocation, fallback, escalation, retry, deadline,
+  response validation, traffic policy, and dual-provider activation remain unapproved/unimplemented.
+
+## Stage 2B — Slice 1 Provider Selection Foundation
+
+- **Boundary:** Core Application policy service, not a Capability, Aggregate, Provider adapter, or Runtime path.
+- **Input/output:** `RoutingContext + ProviderRegistrySnapshot + RoutingPolicyConfiguration →
+  ProviderSelectionDecision`.
+- **Registry:** descriptor-only, validated, immutable, stable provider ordering; transient availability is part
+  of a snapshot but excluded from the registry configuration digest.
+- **Policy:** bounded TypeScript enums/read-only configuration; predicate match → eligibility/exclusion →
+  configured lexicographic ranking → stable provider-id tie-break. No weighted runtime score.
+- **Evidence:** Stage 2A raw scores and Golden Corpus remain offline; Runtime profiles use bounded reliability,
+  support, capacity, locality, latency, cost, concurrency, and availability classes only.
+- **Execution:** zero Provider calls and zero ConversationRuntime/CodeGenerationManager integration in Slice 1.
 
 ## Implemented
 
+- **Stage 2B Provider Selection Foundation (ADR-0064)** — added bounded routing signals and branded configuration
+  identifiers; immutable, descriptor-only Provider Registry snapshots; static Capability/Operational Profiles;
+  fail-fast typed policy validation; eligibility/exclusion; deterministic routing-class/reliability/latency/cost
+  ranking; explicit selected/no-eligible/no-policy decisions; and canonical SHA-256 registry/policy/combined
+  configuration identities. Concrete adapters/models appear only in future composition configuration, never Core
+  policy logic. No AiProvider binding/invocation, fallback, escalation, retry, deadline, response validation,
+  Runtime integration, TaskRun audit, storage, or DB change.
 - **Stage 2A semantic checker v4 promotion** — the independently ratified Candidate v4 is now the
   default evaluator for new `provider:semantic` and Provider Benchmark invocations under the explicit
   contract `stage2a-semantic-checker-v4`. Historical Golden Corpus replay remains explicitly pinned to

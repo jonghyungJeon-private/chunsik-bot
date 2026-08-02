@@ -101,10 +101,16 @@ fixed; the implementations are not.
 
 1. Core depends only on the `AiProvider` interface. It MUST NOT import a concrete
    provider, branch on a provider `id`, or assume a specific CLI exists.
-2. **Selection is data-driven.** Providers advertise
-   `capabilities: {capability, priority}[]` and `isAvailable()`. The router picks
-   the highest-priority *available* provider for a capability. The fallback
-   policy lives in that data, never in `if` statements in Core.
+2. **Selection is data-driven.** Routing is a Core Application policy service,
+   not a Capability or Provider concern. A bounded `RoutingContext`, immutable
+   Provider Registry snapshot, and typed declarative policy produce an
+   explainable `ProviderSelectionDecision`: eligibility is evaluated before a
+   deterministic lexicographic ranking, and ineligible Providers never enter
+   ranking. Concrete model tags, executables, Runtime benchmark lookup, and
+   provider-id conditionals never appear in Application policy source. The
+   existing `CapabilityRouter` priority path remains the invocation path until
+   a separately approved Runtime-integration slice replaces it; Stage 2B Slice
+   1 only computes decisions and invokes no Provider (ADR-0064).
 3. The selected provider `id` is **audit-only** (on `TaskRun`). It MUST NOT be
    surfaced to the user by default.
 4. **Provider-specific prompt shaping happens in the adapter.** Core emits a
@@ -115,6 +121,11 @@ fixed; the implementations are not.
 6. Transports (queue, event bus, vector store, storage) follow the same rule:
    abstraction in Core, transport in a provider (in-process now, distributed in
    Team Edition).
+7. Provider Registry configuration is supplied by the composition root and
+   validated as an immutable Core Application snapshot. Provider adapters do
+   not own selection policy. Approved bounded Capability Profiles may cite a
+   Stage 2A evidence binding, but Runtime routing never reads raw benchmark
+   scores or Golden Corpus evidence directly (ADR-0064).
 
 ---
 

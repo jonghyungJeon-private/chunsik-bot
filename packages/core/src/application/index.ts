@@ -40,3 +40,6 @@ export * from './conversation-runtime';
 export * from './stateless-approval-flow';
 export * from './stateless-scope-clarification-flow';
 export * from './stateless-apply-preview-flow';
+export * from './provider-routing-contracts';
+export * from './provider-registry';
+export * from './routing-policy-engine';

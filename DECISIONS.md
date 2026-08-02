@@ -4361,3 +4361,188 @@ None is introduced by this ADR. A future feature that changes routing or adds AI
 This Accepted ADR records the ratified Architecture decision only. Ratification does not authorize production/test
 implementation, Build/Test, Merge, Runtime/Discord/AI execution, DB/session/memory mutation, Live UAT, Cleanup, or
 Gate 6. Each requires separate explicit approval.
+
+## ADR-0064 — Provider Routing Policy and Registry Ownership
+
+- **Status:** ✅ Accepted — Stage 2B Architecture and Slice 1 ratified by the Product Owner and Chief Architect;
+  Provider-free selection foundation implemented. Runtime integration requires a later approval.
+- **Date:** 2026-08-02
+- **Scope:** Core Application routing contracts, immutable descriptor registry, typed policy evaluation,
+  deterministic selection decisions, and configuration identity only. No Provider invocation or Runtime wiring.
+
+### Context
+
+Stage 2A completed Provider Evaluation Infrastructure and established evidence-backed role candidates, but did not
+ratify Production routing. The existing Runtime uses `CapabilityRouter.select(capability)`, filters by
+`isAvailable()`, sorts provider-advertised numeric priorities, returns one `AiProvider`, and lets callers invoke it
+directly. That contract cannot represent bounded request signals, separate eligibility from ranking, explain why a
+policy matched, or later own explicit fallback/escalation without duplicating orchestration.
+
+Stage 2B must remain provider-independent. It must not encode two current model candidates as an architecture
+primitive, read Stage 2A scorecards at Runtime, add model-specific conditions to `CapabilityRouter`, or move policy
+into infrastructure adapters.
+
+### Decision
+
+Provider Routing is a **Core Application policy service**, not a new Capability or Aggregate. Slice 1 implements the
+pure calculation boundary:
+
+```text
+RoutingContext
++ immutable ProviderRegistrySnapshot
++ typed RoutingPolicyConfiguration
+→ ProviderSelectionDecision
+```
+
+The initial policy model is bounded TypeScript enums, branded identifiers, and readonly declarative configuration.
+There is no generic DSL/YAML loader, executable policy callback, weighted dynamic score, Runtime evidence lookup,
+or concrete Provider/model branch.
+
+### Routing Boundary
+
+Intent classification continues to own `Intent` and `Capability`. A future Runtime integration slice will construct
+only bounded `RoutingContext` signals and consume the resulting decision. Routing policy does not classify natural
+language, compose prompts, invoke Providers, validate responses, mutate Task/Session state, or surface Provider
+identity to the user.
+
+Slice 1 contains no `AiProvider` executable binding. Descriptor registration and selection computation are kept
+separate so implementing the foundation cannot accidentally cross the invocation boundary.
+
+### Provider Registry Ownership
+
+Concrete adapter construction, model binding, and registry configuration belong to the composition root. Core
+Application owns validation and the immutable descriptor snapshot. Provider adapters advertise execution behavior
+but own no selection rule.
+
+Registry construction fails fast on an empty registry, duplicate or malformed provider identity,
+descriptor/registration mismatch, invalid adapter/model binding, invalid enum/profile version/evidence digest, and
+duplicate capability/profile entries. Registrations and semantically unordered descriptor arrays are normalized to
+stable order. Lookup and enabled-provider enumeration return frozen descriptors.
+
+Runtime availability is a bounded snapshot signal (`AVAILABLE | UNAVAILABLE | UNKNOWN`). It affects eligibility but
+is deliberately excluded from configuration identity. Availability is not probed in Slice 1.
+
+### Eligibility / Ranking Separation
+
+Evaluation order is fixed:
+
+```text
+predicate match → eligibility/exclusion → deterministic ranking → terminal decision
+```
+
+Disabled, unavailable/unknown, capability-incompatible, locality/tool/structured-output/context-incompatible,
+below-minimum-reliability, required-class-missing, or excluded-class Providers are ineligible and never reach
+ranking.
+
+Ranking is lexicographic, never a combined weighted score. A policy may order these dimensions:
+
+1. routing-class preference (configured list; lower index wins);
+2. reliability tier (`HIGH > STANDARD > LOW > UNPROVEN`);
+3. latency tier (`FAST < BALANCED < SLOW < UNKNOWN`);
+4. cost tier (`LOW < STANDARD < HIGH < UNKNOWN`);
+5. stable provider-id ascending tie-break, always applied last.
+
+Policy precedence descending and policy-id ascending determine a matching policy deterministically. Identical
+context, registry snapshot, and policy configuration must return an identical decision regardless of Provider
+registration or object insertion order.
+
+### Provider Descriptor and Capability Profile
+
+`ProviderDescriptor` contains branded provider/adapter ids, an opaque audit/configuration `modelId`, bounded
+Capability and Operational Profiles, enabled state, profile version, and optional SHA-256 evidence binding.
+
+Capability Profiles use bounded tiers for semantic/authority/continuity reliability, tool use, structured output,
+context capacity, streaming, execution locality, and routing class (`BALANCED | SEMANTIC_HIGH |
+LATENCY_RESTRICTED | DEPRIORITIZED`). Operational Profiles use bounded latency, timeout, cost, concurrency, and
+availability classes. Raw Stage 2A scores are not Runtime fields and do not participate in selection.
+
+`modelId` remains opaque: Core validates its bounded representation and configuration identity but never interprets
+or compares model-tag contents in policy logic.
+
+### Configuration / Digest
+
+Registry and policy identities are SHA-256 over explicit canonical JSON shapes. Semantically unordered arrays and
+Provider/policy registration order are normalized; ranking order remains significant. Digests exclude timestamps,
+environment, transient availability, prompts, responses, and executable state. The decision contains a combined
+SHA-256 of the registry and policy digests plus the registry/policy versions.
+
+The Core FNV `contentHash()` is not used for routing configuration identity.
+
+### Retry / Fallback Ownership
+
+The ratified ownership is:
+
+```text
+Adapter hidden retry = 0
+Same-provider retry = 0
+Fallback / escalation = future ProviderRoutingGateway policy
+```
+
+Slice 1 implements none of retry, fallback, escalation, attempt budgets, deadlines, or Provider loops. Any future
+Gateway must make these behaviors explicit and bounded rather than hiding them inside adapters.
+
+### Runtime Validation Boundary
+
+Provider selection and response validation are separate responsibilities. Slice 1 stops at
+`ProviderSelectionDecision` and has no response or invocation type. Stage 2A Evaluator v4 remains an offline
+benchmark tool and is not imported as a Runtime gate. A future Runtime validator requires its own approved slice.
+
+### Observability Boundary
+
+The Slice 1 decision exposes only bounded facts: selected Provider id or null, sorted eligible ids, matched policy
+id or null, bounded reason code, policy/registry versions, and combined configuration digest. It contains no prompt,
+transcript, response, reasoning, fallback chain, attempt, latency, raw error, credential, or environment value.
+Persistence and `TaskRun` audit integration are deferred.
+
+### Architecture Invariants
+
+- Application policy source contains no concrete model tag, executable, or concrete Provider implementation.
+- Provider adapters do not own selection policy.
+- Provider Registry snapshots and returned decisions are immutable.
+- Identical context, registry snapshot, and policy return the same selection result.
+- An eligibility failure can never enter ranking.
+- Registry and policy configuration fail fast at construction for invalid bounded configuration.
+- Decisions are explainable through bounded reason codes and configuration identities, never free-form reasoning.
+- Runtime routing never reads Stage 2A Benchmark scores or Golden Corpus evidence directly.
+- Slice 1 never invokes an `AiProvider` and does not integrate with Runtime or Code Generation.
+
+### Consequences
+
+- **+** New Provider bindings can be added through adapter/composition configuration without changing policy-engine
+  logic.
+- **+** Eligibility, ranking, policy match, terminal absence, and configuration identity are deterministic and
+  provider-free testable.
+- **+** Static profiles preserve reviewed Stage 2A provenance without coupling Runtime to mutable evidence.
+- **+** No Aggregate, database schema, persistence owner, prompt, Provider adapter, or Runtime flow changes.
+- **−** Descriptor capability data and the legacy `AiProvider.capabilities` contract coexist until Runtime migration
+  establishes one authoritative binding path.
+- **−** Slice 1 computes decisions but does not yet improve Production invocation behavior.
+- **Risk:** Static profile evidence can drift. Profile version and optional evidence-binding digest require explicit
+  review when refreshed; evidence is never auto-imported.
+- **Risk:** Misconfigured rules can produce no eligible Provider. Construction validation plus explicit
+  `NO_ELIGIBLE_PROVIDER`/`POLICY_NOT_MATCHED` decisions make that state visible and fail closed.
+
+### Rejected Alternatives
+
+- **Static Primary + Fallback:** hard-codes the current two-candidate topology and does not scale by descriptors.
+- **Dynamic Score-based Router:** introduces score drift, weak replayability, and opaque weighted decisions.
+- **Runtime Benchmark Evidence Lookup:** couples Production to offline scorecards/Golden Corpus and mutable files.
+- **Provider Adapter-owned Routing:** reverses ownership; infrastructure must not select itself.
+- **Model-specific conditions in `CapabilityRouter`:** violate the Core provider-id/model independence invariant.
+- **Generic DSL/YAML engine:** adds schema/parser/hot-reload complexity before an operational need exists.
+
+### Implementation Slices
+
+1. **Slice 1 — complete here:** routing contracts, immutable descriptor registry, typed policy validation,
+   eligibility/exclusion, deterministic ranking, terminal decisions, SHA-256 identity, provider-free fixtures.
+2. **Slice 2 — requires approval:** executable binding, single-attempt selection integration, bounded audit.
+3. **Slice 3 — requires approval:** explicit bounded fallback/escalation orchestration and ownership enforcement.
+4. **Slice 4 — requires approval:** provider-free simulation and Golden routing fixtures.
+5. **Slice 5 — Strict approval:** real Provider preflight/UAT and any Runtime/Discord action.
+
+### Relations
+
+Extends `ARCHITECTURE.md` Provider Rule 2 and ADR-0029's `ProviderSelector` seam. It does not change ADR-0015
+Provider failure handling, ADR-0031 orchestration, ADR-0032 Conversation Runtime, ADR-0063 context provenance,
+Stage 2A evidence, or existing Provider execution. The legacy Runtime selection path remains unchanged until a
+separately approved integration slice.

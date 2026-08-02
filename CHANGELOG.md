@@ -7,6 +7,21 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Stage 2B · Provider Selection Foundation (ADR-0064)
+
+- Ratified Provider Routing as a Core Application policy service rather than a Capability or Provider-adapter
+  concern. Added bounded `RoutingContext`, static Capability/Operational Profiles, branded configuration ids,
+  explainable `ProviderSelectionDecision`, and bounded terminal reason codes.
+- Added a validated descriptor-only Provider Registry with immutable snapshots, stable provider ordering,
+  lookup/enabled enumeration, transient availability snapshots, and canonical SHA-256 configuration identity.
+  Timestamp, environment, availability, and object insertion order do not affect the registry digest.
+- Added typed declarative policy evaluation: deterministic predicate selection, eligibility/exclusion before
+  ranking, configured lexicographic routing-class/reliability/latency/cost comparison, and stable provider-id
+  tie-breaking. Stage 2A raw scores, Golden Corpus, concrete model tags, and executable providers are absent from
+  Core policy logic.
+- Slice 1 is calculation-only: no Provider invocation, Runtime or CodeGeneration integration, fallback,
+  escalation, retry, deadline, response validation, TaskRun audit, storage migration, or model activation.
+
 ### Changed — Stage 2A · Completion and Stage 2B Planning
 
 - Closed Stage 2A with `STAGE_2A = PASS`: Evaluator v4, Golden Corpus, deterministic Replay,
