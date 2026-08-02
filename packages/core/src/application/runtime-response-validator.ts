@@ -81,10 +81,22 @@ function canonicalOutput(input: RuntimeValidationInputView['result']): Canonical
 }
 
 function outputIdentity(output: CanonicalProviderOutput): { responseSha256: string; byteCount: number } {
-  const canonical = JSON.stringify(output);
+  const boundedOutput = JSON.stringify(output);
+  const responseIdentity = JSON.stringify({
+    text: output.text,
+    artifacts: output.artifacts.map((artifact) => ({
+      id: artifact.id,
+      ...(artifact.taskId === undefined ? {} : { taskId: artifact.taskId }),
+      ...(artifact.taskRunId === undefined ? {} : { taskRunId: artifact.taskRunId }),
+      kind: artifact.kind,
+      title: artifact.title,
+      ...(artifact.content === undefined ? {} : { content: artifact.content }),
+      ...(artifact.mimeType === undefined ? {} : { mimeType: artifact.mimeType }),
+    })),
+  });
   return {
-    responseSha256: createHash('sha256').update(canonical).digest('hex'),
-    byteCount: Buffer.byteLength(canonical, 'utf8'),
+    responseSha256: createHash('sha256').update(responseIdentity).digest('hex'),
+    byteCount: Buffer.byteLength(boundedOutput, 'utf8'),
   };
 }
 

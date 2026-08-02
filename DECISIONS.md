@@ -4616,8 +4616,12 @@ equivalence claim with the Stage 2A evaluator or binding.
 The failure matrix distinguishes configuration, operational, validation, and safety failures. Safety and
 configuration failures fail closed with no fallback or escalation; operational failures never escalate;
 `EMPTY_OUTPUT` may use operational fallback while `OUTPUT_LIMIT_VIOLATION` may not; validation failures never
-fallback and may escalate only when the fixed profile permits it. `PROVIDER_SPAWN_FAILED`, `CONTAINMENT_FAILURE`,
-`MODEL_DOWNLOAD_DETECTED`, and `STRUCTURAL_VALIDATION_FAILED` are `PRODUCER_PENDING`, not implemented defenses.
+fallback and may escalate only when the fixed profile permits it. Producer ownership remains deferred:
+`PROVIDER_SPAWN_FAILED` is adapter-producer-pending;
+`CONTAINMENT_FAILURE` and `MODEL_DOWNLOAD_DETECTED` are
+Runtime-producer-pending; `STRUCTURAL_VALIDATION_FAILED` is future-profile/validator-producer-pending; and
+`SEMANTIC_VALIDATION_UNRESOLVED`, `STRUCTURAL_VALIDATION_UNRESOLVED`, and `DEADLINE_EXHAUSTED` are future-Gateway-
+orchestration-producer-pending. These are contract reservations, not implemented defenses.
 
 `ProviderExecutionPlan` pre-fixes candidates solely from the ordered `eligibleProviderIds` and the same descriptor
 snapshot/binding registry. Target Provider ids are unique and provenance-bound. The escalation target must be

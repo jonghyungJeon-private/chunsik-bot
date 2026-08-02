@@ -20,8 +20,8 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   Implemented on a branch — **awaiting CA implementation review, no merge.**
 - **Next:** Independent Chief Architect review of Stage 2B Slice 3A. Slice 3B Gateway two-attempt orchestration,
   Runtime integration, and actual external Provider invocation remain unapproved.
-- **Build/Test (Stage 2B Slice 3A):** focused validation/planning suite 5 files / 41 tests PASS; shared Core
-  regression 50 files / 1095 tests PASS; `pnpm typecheck` and `pnpm build` PASS. No external Provider, Runtime,
+- **Build/Test (Stage 2B Slice 3A remediation):** focused validation/planning suite 5 files / 46 tests PASS; shared
+  Core regression 50 files / 1100 tests PASS; `pnpm typecheck` and `pnpm build` PASS. No external Provider, Runtime,
   network, or database execution was part of this slice.
 
 ## Stage 2A — Completed
@@ -81,8 +81,10 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 - **Validation:** immutable three-profile registry and independent pure synchronous validator; prompt/context are
   input-only, while result contracts contain bounded reason codes, digest, byte count, and contract versions.
 - **Failure policy:** versioned configuration/operational/validation/safety matrix. Safety is fail-closed;
-  `EMPTY_OUTPUT` alone is an approved output-related fallback candidate; four future adapter/runtime signals are
-  explicitly producer-pending.
+  `EMPTY_OUTPUT` alone is an approved output-related fallback candidate. Producer-pending ownership remains
+  explicit: Provider spawn belongs to a future adapter producer; containment/model-download detection to Runtime;
+  structural-validation failure to a future validation profile/validator; and unresolved semantic/structural
+  validation plus deadline exhaustion to future Gateway orchestration. None is an implemented defense in Slice 3A.
 - **Plan:** primary plus optional pre-fixed operational fallback and stronger semantic escalation targets, all bound
   to eligible-set and executable-binding provenance. Maximum attempts `2`, maximum additional hops `1`, mutually
   exclusive execution branch, no same-provider retry, and no runtime policy reevaluation.

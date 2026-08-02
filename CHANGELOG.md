@@ -17,8 +17,9 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
   dispositions, reason codes, response identity/size, and contract versions; the bounded output projection strips
   provider raw/audit data plus artifact metadata and storage URIs.
 - Added a versioned configuration/operational/validation/safety failure matrix with safety fail-closed behavior,
-  explicit fallback/escalation permissions, and producer-pending status for signals that still require future
-  adapter/runtime producers.
+  explicit fallback/escalation permissions, and producer-pending ownership. Review remediation advances the matrix
+  to v2 with terminal semantic/structural-unresolved and deadline-exhausted reservations; no producer or transition
+  is implemented in Slice 3A.
 - Evolved `ProviderExecutionPlan` into a provenance-bound declarative Strategy B plan: primary, optional operational
   fallback, optional strictly stronger semantic escalation, maximum attempts `2`, maximum additional hops `1`,
   deadline class, deterministic decision/configuration/plan digests, and optional caller-owned execution identity.

@@ -2,7 +2,7 @@ import type { Artifact } from '../domain';
 import type { ValidationProfileId } from './provider-routing-contracts';
 
 export const ROUTING_RESPONSE_RULE_CONTRACT_VERSION = 'routing-response-rules-v1' as const;
-export const ROUTING_FAILURE_MATRIX_VERSION = 'routing-failure-matrix-v1' as const;
+export const ROUTING_FAILURE_MATRIX_VERSION = 'routing-failure-matrix-v2' as const;
 
 export enum ValidationDisposition {
   ACCEPT = 'ACCEPT',
@@ -90,6 +90,9 @@ export enum RoutingFailureCode {
   OUTPUT_LIMIT_VIOLATION = 'OUTPUT_LIMIT_VIOLATION',
   STRUCTURAL_VALIDATION_FAILED = 'STRUCTURAL_VALIDATION_FAILED',
   SEMANTIC_VALIDATION_FAILED = 'SEMANTIC_VALIDATION_FAILED',
+  SEMANTIC_VALIDATION_UNRESOLVED = 'SEMANTIC_VALIDATION_UNRESOLVED',
+  STRUCTURAL_VALIDATION_UNRESOLVED = 'STRUCTURAL_VALIDATION_UNRESOLVED',
+  DEADLINE_EXHAUSTED = 'DEADLINE_EXHAUSTED',
   PROMPT_LEAK = 'PROMPT_LEAK',
   MULTI_ENTRY_ECHO = 'MULTI_ENTRY_ECHO',
   SECRET_EXPOSURE_RISK = 'SECRET_EXPOSURE_RISK',
@@ -163,6 +166,17 @@ const safety = (
   producerStatus,
 });
 
+const terminalUnresolvedValidation = (code: RoutingFailureCode): RoutingFailurePolicy => ({
+  code,
+  failureClass: RoutingFailureClass.VALIDATION,
+  attemptConsumed: 1,
+  fallbackAllowed: false,
+  escalationAllowed: false,
+  failClosed: false,
+  humanReviewCandidate: true,
+  producerStatus: RoutingFailureProducerStatus.PRODUCER_PENDING,
+});
+
 const FAILURE_MATRIX: readonly RoutingFailurePolicy[] = [
   configuration(RoutingFailureCode.ROUTING_CONFIGURATION_MISMATCH),
   configuration(RoutingFailureCode.BINDING_MISMATCH),
@@ -181,6 +195,9 @@ const FAILURE_MATRIX: readonly RoutingFailurePolicy[] = [
     RoutingFailureProducerStatus.PRODUCER_PENDING,
   ),
   validation(RoutingFailureCode.SEMANTIC_VALIDATION_FAILED),
+  terminalUnresolvedValidation(RoutingFailureCode.SEMANTIC_VALIDATION_UNRESOLVED),
+  terminalUnresolvedValidation(RoutingFailureCode.STRUCTURAL_VALIDATION_UNRESOLVED),
+  operational(RoutingFailureCode.DEADLINE_EXHAUSTED, false, RoutingFailureProducerStatus.PRODUCER_PENDING),
   safety(RoutingFailureCode.PROMPT_LEAK),
   safety(RoutingFailureCode.MULTI_ENTRY_ECHO),
   safety(RoutingFailureCode.SECRET_EXPOSURE_RISK),

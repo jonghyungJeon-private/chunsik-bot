@@ -286,14 +286,11 @@ function target(
 
 function executableCandidates(
   decision: ProviderSelectionDecision,
-  registry: ProviderRegistrySnapshot,
   bindings: ProviderBindingRegistry,
 ): readonly ProviderId[] {
-  return decision.eligibleProviderIds.filter((provider) => {
-    if (provider === decision.selectedProviderId || !bindings.get(provider)) return false;
-    const entry = registry.providers.find((candidate) => candidate.descriptor.providerId === provider);
-    return entry?.descriptor.enabled === true && entry.availability === ProviderAvailability.AVAILABLE;
-  });
+  return decision.eligibleProviderIds.filter(
+    (provider) => provider !== decision.selectedProviderId && bindings.get(provider) !== undefined,
+  );
 }
 
 export class ProviderExecutionPlanner {
@@ -381,7 +378,7 @@ export class ProviderExecutionPlanner {
       planError(ProviderBindingFailureCode.PROVIDER_BINDING_NOT_FOUND, 'Selected Provider has no executable binding');
     }
 
-    const candidates = executableCandidates(decision, registry, bindings);
+    const candidates = executableCandidates(decision, bindings);
     let semanticEscalation: ProviderExecutionTarget | null = null;
     if (profile.escalationEnabled && profile.escalationReliabilityAxis) {
       const primaryReliability = reliability(registry, primaryCandidate.providerId, profile.escalationReliabilityAxis);

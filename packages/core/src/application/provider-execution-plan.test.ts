@@ -453,7 +453,7 @@ describe('ProviderExecutionPlanner provenance', () => {
       }),
     ).not.toBe(base.executionConfigurationDigest);
     expect(
-      computeProviderExecutionConfigurationDigest({ ...base, failureMatrixVersion: 'routing-failure-matrix-v2' }),
+      computeProviderExecutionConfigurationDigest({ ...base, failureMatrixVersion: 'routing-failure-matrix-v3' }),
     ).not.toBe(base.executionConfigurationDigest);
     expect(
       computeProviderExecutionConfigurationDigest({ ...base, deadlineClass: DeadlineClass.EXTENDED }),

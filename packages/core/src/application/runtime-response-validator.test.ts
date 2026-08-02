@@ -96,6 +96,98 @@ describe('RuntimeResponseValidator', () => {
     expect(secret.reasonCodes).toContain(ResponseValidationReasonCode.SECRET_EXPOSURE_RISK);
   });
 
+  it('does not flag natural partial prompt reuse below the bounded token-window threshold', () => {
+    const prompt =
+      'Summarize the public release status, deployment notes, compatibility findings, and remaining follow-up work.';
+    const result = validate(
+      'The release status is stable, with two follow-up items remaining.',
+      GENERAL_CHAT,
+      prompt,
+    );
+
+    expect(result.disposition).toBe(ValidationDisposition.ACCEPT);
+    expect(result.reasonCodes).not.toContain(ResponseValidationReasonCode.PROMPT_LEAK);
+  });
+
+  it('measures OUTPUT_LIMIT from the complete bounded-output UTF-8 JSON at the exact byte boundary', () => {
+    const profileId = validationProfileId('BOUNDARY_PROFILE');
+    const result = {
+      text: 'Boundary response.',
+      artifacts: [
+        {
+          id: 'artifact-boundary',
+          kind: 'DOCUMENT',
+          title: 'Boundary artifact',
+          content: 'bounded',
+          createdAt: '2026-08-02T00:00:00.000Z',
+        },
+      ],
+    } as const;
+    const maxOutputBytes = Buffer.byteLength(JSON.stringify(result), 'utf8');
+    const boundaryValidator = new RuntimeResponseValidator(
+      new ValidationProfileRegistry([
+        {
+          profileId,
+          version: '1',
+          rules: [RuntimeValidationRule.NON_EMPTY, RuntimeValidationRule.OUTPUT_LIMIT],
+          outputLimitBytes: maxOutputBytes,
+          escalationEnabled: false,
+        },
+      ]),
+    );
+
+    expect(boundaryValidator.validate({ validationProfile: profileId, prompt: 'Unrelated.', result })).toMatchObject({
+      disposition: ValidationDisposition.ACCEPT,
+      reasonCodes: [],
+      byteCount: maxOutputBytes,
+    });
+    expect(
+      boundaryValidator.validate({
+        validationProfile: profileId,
+        prompt: 'Unrelated.',
+        result: {
+          ...result,
+          artifacts: [{ ...result.artifacts[0], content: `${result.artifacts[0].content}!` }],
+        },
+      }),
+    ).toMatchObject({
+      disposition: ValidationDisposition.REJECT,
+      reasonCodes: [ResponseValidationReasonCode.OUTPUT_LIMIT_VIOLATION],
+      byteCount: maxOutputBytes + 1,
+    });
+  });
+
+  it('excludes artifact createdAt only from responseSha256 while retaining full-output byteCount', () => {
+    const firstResult = {
+      text: 'Stable response.',
+      artifacts: [
+        {
+          id: 'artifact-stable',
+          kind: 'DOCUMENT',
+          title: 'Stable artifact',
+          content: 'same content',
+          createdAt: '2026-08-02T00:00:00.000Z',
+        },
+      ],
+    } as const;
+    const secondResult = {
+      ...firstResult,
+      artifacts: [{ ...firstResult.artifacts[0], createdAt: '2027-09-03T01:02:03.000Z' }],
+    } as const;
+    const first = validator.validate({ validationProfile: GENERAL_CHAT, prompt: 'Unrelated.', result: firstResult });
+    const second = validator.validate({ validationProfile: GENERAL_CHAT, prompt: 'Unrelated.', result: secondResult });
+
+    expect(first.responseSha256).toBe(second.responseSha256);
+    expect(first.byteCount).toBe(Buffer.byteLength(JSON.stringify(firstResult), 'utf8'));
+    expect(second.byteCount).toBe(Buffer.byteLength(JSON.stringify(secondResult), 'utf8'));
+    expect(projectBoundedProviderOutput(firstResult, first).artifacts[0]?.createdAt).toBe(
+      firstResult.artifacts[0].createdAt,
+    );
+    expect(projectBoundedProviderOutput(secondResult, second).artifacts[0]?.createdAt).toBe(
+      secondResult.artifacts[0].createdAt,
+    );
+  });
+
   it('allows semantic escalation only for the authority-sensitive profile', () => {
     const claim = 'I verified that the production service is currently healthy.';
     expect(validate(claim, GENERAL_CHAT)).toMatchObject({
