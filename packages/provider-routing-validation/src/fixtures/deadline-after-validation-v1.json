@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "routing-validation-fixture-v1", "fixtureVersion": "1", "scenarioId": "deadline-after-validation", "description": "Accepted validation cannot escape the gateway deadline.",
+  "selectedProviderId": "provider-a", "validationProfile": "GENERAL_CHAT",
+  "providers": [{ "id": "provider-a", "authorityReliability": "STANDARD", "outcome": { "kind": "RETURN", "text": "Synthetic response that validates.", "advanceMs": 1000 } }],
+  "deadline": { "initialMs": 0, "overallBudgetMs": 1000, "validationReserveMs": 50, "minimumAttemptBudgetMs": 10 },
+  "request": { "prompt": "Return a synthetic response." },
+  "expected": {
+    "terminalStatus": "EXECUTION_FAILED", "failureCode": "DEADLINE_EXHAUSTED", "humanReviewRequired": false, "outputText": null, "path": "PRIMARY_ONLY", "attemptCount": 1,
+    "attempts": [{ "attemptIndex": 1, "purpose": "PRIMARY", "providerId": "provider-a", "outcome": "VALIDATION_ACCEPTED", "failureCode": null, "validationDisposition": "ACCEPT", "validationReasonCodes": [], "validationSucceeded": true }],
+    "transitions": [{ "sequence": 1, "from": "INITIAL", "to": "PRIMARY_READY", "cause": "PREFLIGHT_PASSED" }, { "sequence": 2, "from": "PRIMARY_READY", "to": "PRIMARY_EXECUTING", "cause": "ATTEMPT_DISPATCHED" }, { "sequence": 3, "from": "PRIMARY_EXECUTING", "to": "PRIMARY_VALIDATING", "cause": "PROVIDER_RETURNED" }, { "sequence": 4, "from": "PRIMARY_VALIDATING", "to": "TERMINAL", "cause": "DEADLINE_EXHAUSTED" }],
+    "finalProviderId": "provider-a", "finalPurpose": "PRIMARY"
+  },
+  "fixtureDigest": "8927ee2318203a5ff6121ccddb349e7e85170cf5e53a925cc0a09ddd4eb106c3"
+}

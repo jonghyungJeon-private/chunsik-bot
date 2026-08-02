@@ -144,7 +144,10 @@ fixed; the implementations are not.
    primary plus at most one mutually exclusive fallback or escalation attempt,
    followed by exactly one bounded terminal result. Runtime integration and
    actual external Provider execution remain separate approval boundaries
-   (ADR-0064).
+   (ADR-0064). Slice 3C validates this boundary through a private test-only
+   workspace package with strict static JSON fixtures, scripted Providers and
+   monotonic time, and a Harness-owned canonical audit projection. Its dependency
+   is one-way into Core; production packages and apps must never import it.
 
 ---
 

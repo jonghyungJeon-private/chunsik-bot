@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "routing-validation-fixture-v1", "fixtureVersion": "1", "scenarioId": "primary-accepted", "description": "Primary response is accepted without another hop.",
+  "selectedProviderId": "provider-a", "validationProfile": "GENERAL_CHAT",
+  "providers": [{ "id": "provider-a", "authorityReliability": "STANDARD", "outcome": { "kind": "RETURN", "text": "Synthetic bounded answer.", "advanceMs": 5 } }],
+  "deadline": { "initialMs": 100, "overallBudgetMs": 1000, "validationReserveMs": 50, "minimumAttemptBudgetMs": 10 },
+  "request": { "prompt": "Summarize a synthetic topic without quoting this instruction." },
+  "expected": {
+    "terminalStatus": "ACCEPTED", "failureCode": null, "humanReviewRequired": false, "outputText": "Synthetic bounded answer.", "path": "PRIMARY_ONLY", "attemptCount": 1,
+    "attempts": [{ "attemptIndex": 1, "purpose": "PRIMARY", "providerId": "provider-a", "outcome": "VALIDATION_ACCEPTED", "failureCode": null, "validationDisposition": "ACCEPT", "validationReasonCodes": [], "validationSucceeded": true }],
+    "transitions": [{ "sequence": 1, "from": "INITIAL", "to": "PRIMARY_READY", "cause": "PREFLIGHT_PASSED" }, { "sequence": 2, "from": "PRIMARY_READY", "to": "PRIMARY_EXECUTING", "cause": "ATTEMPT_DISPATCHED" }, { "sequence": 3, "from": "PRIMARY_EXECUTING", "to": "PRIMARY_VALIDATING", "cause": "PROVIDER_RETURNED" }, { "sequence": 4, "from": "PRIMARY_VALIDATING", "to": "TERMINAL", "cause": "ACCEPTED" }],
+    "finalProviderId": "provider-a", "finalPurpose": "PRIMARY"
+  },
+  "fixtureDigest": "8d5437e88ab39bf67574520ec73d39681ac459e77d17be87b5edbafda81c2a1c"
+}

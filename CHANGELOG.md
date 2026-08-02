@@ -7,6 +7,19 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Stage 2B · Slice 3C Deterministic Validation Harness
+
+- Added the private `@chunsik/provider-routing-validation` workspace package, excluded from the production build
+  reference graph and consumed by no app, Runtime, adapter, or production package.
+- Added strict versioned JSON fixtures with an explicit static registry, immutable per-fixture digests, a retained
+  corpus manifest, and a Harness-owned digest version independent from the Core failure matrix.
+- Added scripted in-memory `AiProvider` implementations and a scripted monotonic clock to replay the real Core
+  Planner → Gateway → Validator path without policy reevaluation, filesystem discovery, network, or external
+  Provider execution.
+- Added exact golden comparison through a Harness-owned canonical audit projection and fresh-graph double replay,
+  covering accepted, fallback, escalation, safety, deadline, attempt/transition, binding-provenance, and
+  failure-matrix contracts.
+
 ### Fixed — Stage 2B · Slice 3B Review Remediation
 
 - Advanced the failure matrix to v4: Gateway-produced `SEMANTIC_VALIDATION_UNRESOLVED` is active while

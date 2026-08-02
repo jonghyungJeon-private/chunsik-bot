@@ -1,0 +1,12 @@
+{
+  "harnessDigestVersion": "provider-routing-harness-digest-v1",
+  "fixtures": [
+    { "scenarioId": "deadline-after-validation", "fixtureVersion": "1", "fixtureDigest": "8927ee2318203a5ff6121ccddb349e7e85170cf5e53a925cc0a09ddd4eb106c3" },
+    { "scenarioId": "empty-output-fallback", "fixtureVersion": "1", "fixtureDigest": "368e9a3e044744a694b76f350b06278ff2adfef62f1f1291e19b22fec5f4c20f" },
+    { "scenarioId": "primary-accepted", "fixtureVersion": "1", "fixtureDigest": "8d5437e88ab39bf67574520ec73d39681ac459e77d17be87b5edbafda81c2a1c" },
+    { "scenarioId": "prompt-leak", "fixtureVersion": "1", "fixtureDigest": "dd3d43a186a12d1fe7284d5d1242adaf182991f84f4a81dc14590163f6badb83" },
+    { "scenarioId": "semantic-escalation", "fixtureVersion": "1", "fixtureDigest": "eb6707bbbe855ff4c9d9b312bb088abe4ed6f78d8fd4567a26418dc5899da6ad" },
+    { "scenarioId": "timeout-fallback", "fixtureVersion": "1", "fixtureDigest": "1d9423677509f7f1431eb3e4977c4b9e9f3662606ae16e1e9452c67a933c3a33" }
+  ],
+  "corpusDigest": "b44b06944e41f7bbb15fd14f3ea9b1b5a068f3539834f7ff0d6b9b0d7a064f19"
+}

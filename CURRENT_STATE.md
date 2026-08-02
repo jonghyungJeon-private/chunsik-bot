@@ -18,11 +18,13 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   wording. No second masking pass (adapter boundary, ADR-0028, already redacts/caps). **Reuse only —
   no new capability/aggregate/repository/migration/port; no Core/Orchestrator contract change.**
   Implemented on a branch — **awaiting CA implementation review, no merge.**
-- **Next:** Independent Chief Architect implementation review of Stage 2B Slice 3B. Runtime integration and actual
+- **Next:** Independent Chief Architect implementation review of Stage 2B Slice 3C. Runtime integration and actual
   external Provider invocation remain unapproved.
-- **Build/Test (Stage 2B Slice 3B remediation):** focused routing/validation suite 7 files / 51 tests PASS; shared
-  Core regression 53 files / 1109 tests PASS; `pnpm typecheck`, `pnpm build`, and `git diff --check` PASS. No external Provider,
-  Runtime, network, or database execution was part of this slice.
+- **Build/Test (Stage 2B Slice 3C):** focused Harness/Core routing suite 7 files / 57 tests PASS;
+  non-SQLite repository regression 80 files / 1827 tests PASS. The 18 SQLite tests are environment-blocked by
+  the pre-existing Node ABI 108 / `better-sqlite3` ABI 127 mismatch. `pnpm typecheck`, private Harness build,
+  production build, and `git diff --check` PASS. No external Provider, Runtime, network, or database execution
+  was part of this slice.
 
 ## Stage 2A — Completed
 
@@ -43,6 +45,20 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   execution, traffic policy, and dual-provider activation remain unapproved/unimplemented. Slice 3A added immutable
   validation/failure contracts, pure response validation, bounded output projection, and pre-fixed declarative
   branches. Slice 3B adds bounded two-attempt Gateway orchestration without Runtime wiring.
+
+## Stage 2B — Slice 3C Deterministic Validation Harness
+
+- **Boundary:** private test-only workspace package depending one-way on Core; it is absent from the production
+  TypeScript reference graph and must never be imported by apps, Runtime, adapters, or production packages.
+- **Fixtures:** strict JSON schema, explicit static registry, immutable fixture versions, and retained per-fixture
+  plus corpus SHA-256 identities under an independent Harness digest version. There is no filesystem discovery or
+  evidence lookup.
+- **Replay:** real Core planner, validator, and Gateway contracts run against scripted in-memory Providers and an
+  injected monotonic clock. Selection policy is not simulated or reevaluated. External Provider execution is zero.
+- **Golden contract:** exact comparisons use the Harness-owned `CanonicalAuditProjection`, so unrelated future
+  product-audit fields do not silently redefine the corpus. Every fixture is replayed twice from a fresh graph.
+- **Coverage:** primary acceptance, operational fallback, semantic escalation, safety fail-closed, post-validation
+  deadline failure, maximum-transition fallback, binding provenance, attempt bounds, and failure-matrix accounting.
 
 ## Stage 2B — Slice 1 Provider Selection Foundation
 

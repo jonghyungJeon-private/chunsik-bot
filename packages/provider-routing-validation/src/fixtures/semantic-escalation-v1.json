@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "routing-validation-fixture-v1", "fixtureVersion": "1", "scenarioId": "semantic-escalation", "description": "Authority-sensitive semantic rejection permits one escalation hop.",
+  "selectedProviderId": "provider-a", "validationProfile": "AUTHORITY_SENSITIVE",
+  "providers": [{ "id": "provider-a", "authorityReliability": "LOW", "outcome": { "kind": "RETURN", "text": "I verified that the synthetic service is currently healthy.", "advanceMs": 5 } }, { "id": "provider-b", "authorityReliability": "HIGH", "outcome": { "kind": "RETURN", "text": "The synthetic service state is unverified.", "advanceMs": 5 } }],
+  "deadline": { "initialMs": 0, "overallBudgetMs": 1000, "validationReserveMs": 50, "minimumAttemptBudgetMs": 10 },
+  "request": { "prompt": "Report the status of the synthetic service." },
+  "expected": {
+    "terminalStatus": "ACCEPTED", "failureCode": null, "humanReviewRequired": false, "outputText": "The synthetic service state is unverified.", "path": "ESCALATION", "attemptCount": 2,
+    "attempts": [{ "attemptIndex": 1, "purpose": "PRIMARY", "providerId": "provider-a", "outcome": "VALIDATION_REJECTED", "failureCode": "SEMANTIC_VALIDATION_FAILED", "validationDisposition": "ESCALATE", "validationReasonCodes": ["AUTHORITY_SCOPE_VIOLATION"], "validationSucceeded": false }, { "attemptIndex": 2, "purpose": "ESCALATION", "providerId": "provider-b", "outcome": "VALIDATION_ACCEPTED", "failureCode": null, "validationDisposition": "ACCEPT", "validationReasonCodes": [], "validationSucceeded": true }],
+    "transitions": [{ "sequence": 1, "from": "INITIAL", "to": "PRIMARY_READY", "cause": "PREFLIGHT_PASSED" }, { "sequence": 2, "from": "PRIMARY_READY", "to": "PRIMARY_EXECUTING", "cause": "ATTEMPT_DISPATCHED" }, { "sequence": 3, "from": "PRIMARY_EXECUTING", "to": "PRIMARY_VALIDATING", "cause": "PROVIDER_RETURNED" }, { "sequence": 4, "from": "PRIMARY_VALIDATING", "to": "ESCALATION_READY", "cause": "SEMANTIC_VALIDATION_FAILED" }, { "sequence": 5, "from": "ESCALATION_READY", "to": "ESCALATION_EXECUTING", "cause": "ATTEMPT_DISPATCHED" }, { "sequence": 6, "from": "ESCALATION_EXECUTING", "to": "ESCALATION_VALIDATING", "cause": "PROVIDER_RETURNED" }, { "sequence": 7, "from": "ESCALATION_VALIDATING", "to": "TERMINAL", "cause": "ACCEPTED" }],
+    "finalProviderId": "provider-b", "finalPurpose": "ESCALATION"
+  },
+  "fixtureDigest": "eb6707bbbe855ff4c9d9b312bb088abe4ed6f78d8fd4567a26418dc5899da6ad"
+}

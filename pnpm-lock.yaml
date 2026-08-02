@@ -109,6 +109,12 @@ importers:
 
   packages/github-app-auth: {}
 
+  packages/provider-routing-validation:
+    dependencies:
+      '@chunsik/core':
+        specifier: workspace:*
+        version: link:../core
+
   packages/queue-local:
     dependencies:
       '@chunsik/core':

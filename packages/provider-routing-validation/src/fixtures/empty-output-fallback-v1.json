@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "routing-validation-fixture-v1", "fixtureVersion": "1", "scenarioId": "empty-output-fallback", "description": "Empty primary output permits one fallback hop.",
+  "selectedProviderId": "provider-a", "validationProfile": "GENERAL_CHAT",
+  "providers": [{ "id": "provider-a", "authorityReliability": "STANDARD", "outcome": { "kind": "RETURN", "text": "", "advanceMs": 1 } }, { "id": "provider-b", "authorityReliability": "STANDARD", "outcome": { "kind": "RETURN", "text": "Synthetic non-empty fallback.", "advanceMs": 1 } }],
+  "deadline": { "initialMs": 0, "overallBudgetMs": 1000, "validationReserveMs": 50, "minimumAttemptBudgetMs": 10 },
+  "request": { "prompt": "Return a synthetic response." },
+  "expected": {
+    "terminalStatus": "ACCEPTED", "failureCode": null, "humanReviewRequired": false, "outputText": "Synthetic non-empty fallback.", "path": "FALLBACK", "attemptCount": 2,
+    "attempts": [{ "attemptIndex": 1, "purpose": "PRIMARY", "providerId": "provider-a", "outcome": "VALIDATION_REJECTED", "failureCode": "EMPTY_OUTPUT", "validationDisposition": "REJECT", "validationReasonCodes": ["EMPTY_OUTPUT"], "validationSucceeded": false }, { "attemptIndex": 2, "purpose": "FALLBACK", "providerId": "provider-b", "outcome": "VALIDATION_ACCEPTED", "failureCode": null, "validationDisposition": "ACCEPT", "validationReasonCodes": [], "validationSucceeded": true }],
+    "transitions": [{ "sequence": 1, "from": "INITIAL", "to": "PRIMARY_READY", "cause": "PREFLIGHT_PASSED" }, { "sequence": 2, "from": "PRIMARY_READY", "to": "PRIMARY_EXECUTING", "cause": "ATTEMPT_DISPATCHED" }, { "sequence": 3, "from": "PRIMARY_EXECUTING", "to": "PRIMARY_VALIDATING", "cause": "PROVIDER_RETURNED" }, { "sequence": 4, "from": "PRIMARY_VALIDATING", "to": "FALLBACK_READY", "cause": "EMPTY_OUTPUT" }, { "sequence": 5, "from": "FALLBACK_READY", "to": "FALLBACK_EXECUTING", "cause": "ATTEMPT_DISPATCHED" }, { "sequence": 6, "from": "FALLBACK_EXECUTING", "to": "FALLBACK_VALIDATING", "cause": "PROVIDER_RETURNED" }, { "sequence": 7, "from": "FALLBACK_VALIDATING", "to": "TERMINAL", "cause": "ACCEPTED" }],
+    "finalProviderId": "provider-b", "finalPurpose": "FALLBACK"
+  },
+  "fixtureDigest": "368e9a3e044744a694b76f350b06278ff2adfef62f1f1291e19b22fec5f4c20f"
+}

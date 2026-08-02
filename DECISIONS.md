@@ -4364,7 +4364,7 @@ Gate 6. Each requires separate explicit approval.
 
 ## ADR-0064 — Provider Routing Policy and Registry Ownership
 
-- **Status:** ✅ Accepted — Stage 2B Architecture and Slices 1–3B implemented under Chief Architect direction.
+- **Status:** ✅ Accepted — Stage 2B Architecture and Slices 1–3C implemented under Chief Architect direction.
   Runtime integration and actual external Provider execution require later approval.
 - **Date:** 2026-08-02
 - **Scope:** Core Application routing contracts, immutable descriptor and executable-binding registries, typed

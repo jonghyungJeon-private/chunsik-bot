@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "routing-validation-fixture-v1", "fixtureVersion": "1", "scenarioId": "prompt-leak", "description": "Synthetic prompt echo fails closed as a safety violation.",
+  "selectedProviderId": "provider-a", "validationProfile": "GENERAL_CHAT",
+  "providers": [{ "id": "provider-a", "authorityReliability": "STANDARD", "outcome": { "kind": "RETURN", "text": "synthetic secret instruction phrase for validation only", "advanceMs": 1 } }],
+  "deadline": { "initialMs": 0, "overallBudgetMs": 1000, "validationReserveMs": 50, "minimumAttemptBudgetMs": 10 },
+  "request": { "prompt": "synthetic secret instruction phrase for validation only" },
+  "expected": {
+    "terminalStatus": "SAFETY_BLOCKED", "failureCode": "PROMPT_LEAK", "humanReviewRequired": true, "outputText": null, "path": "PRIMARY_ONLY", "attemptCount": 1,
+    "attempts": [{ "attemptIndex": 1, "purpose": "PRIMARY", "providerId": "provider-a", "outcome": "VALIDATION_REJECTED", "failureCode": "PROMPT_LEAK", "validationDisposition": "REJECT", "validationReasonCodes": ["PROMPT_LEAK"], "validationSucceeded": false }],
+    "transitions": [{ "sequence": 1, "from": "INITIAL", "to": "PRIMARY_READY", "cause": "PREFLIGHT_PASSED" }, { "sequence": 2, "from": "PRIMARY_READY", "to": "PRIMARY_EXECUTING", "cause": "ATTEMPT_DISPATCHED" }, { "sequence": 3, "from": "PRIMARY_EXECUTING", "to": "PRIMARY_VALIDATING", "cause": "PROVIDER_RETURNED" }, { "sequence": 4, "from": "PRIMARY_VALIDATING", "to": "TERMINAL", "cause": "PROMPT_LEAK" }],
+    "finalProviderId": "provider-a", "finalPurpose": "PRIMARY"
+  },
+  "fixtureDigest": "dd3d43a186a12d1fe7284d5d1242adaf182991f84f4a81dc14590163f6badb83"
+}

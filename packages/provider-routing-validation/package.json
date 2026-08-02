@@ -1,0 +1,15 @@
+{
+  "name": "@chunsik/provider-routing-validation",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Private deterministic validation harness for provider routing contracts.",
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@chunsik/core": "workspace:*"
+  }
+}
