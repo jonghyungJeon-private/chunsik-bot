@@ -25,7 +25,9 @@ ADR-0064 is the canonical decision record when this historical plan differs from
 - Actual Provider readiness and model installation are **NOT VERIFIED**. Provider execution is deferred to Slice
   5B-2; activation and Runtime/Discord/DB UAT are deferred to Slice 5C.
 - Slice 5B-2A-I implements executable identity, exact version/list allowlisting, isolated loopback environment,
-  bounded parsers/process lifecycle, and non-persistent results without app wiring. Actual executable/version and
+  bounded parsers/process lifecycle, and non-persistent results without app wiring. Its egress-denial input is a
+  caller-supplied, unverified attestation; the runner owns exact environment construction and hard settlement.
+  Actual executable/version and
   installed inventory remain **NOT VERIFIED**; process, daemon/network, inventory, and generation were not executed.
 
 ## Objectives

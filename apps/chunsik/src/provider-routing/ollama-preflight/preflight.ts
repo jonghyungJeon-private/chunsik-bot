@@ -18,6 +18,7 @@ import {
 import type {
   ApprovedOllamaExecutable,
   OllamaPreflightCheck,
+  OllamaPreflightNetworkClass,
   OllamaPreflightResult,
 } from './contracts';
 import {
@@ -25,7 +26,7 @@ import {
 } from './executable-identity';
 import type { OllamaPreflightFileSystem } from './executable-identity';
 import { parseOllamaInventory, parseOllamaVersion } from './parsers';
-import { argvFor, buildIsolatedOllamaEnvironment } from './policy';
+import { argvFor, parseApprovedLoopbackEndpoint } from './policy';
 import type {
   OllamaPreflightProcessResult,
   OllamaPreflightProcessRunner,
@@ -35,9 +36,8 @@ export interface OllamaPreflightRequest {
   readonly executablePath: string;
   readonly approvedExecutable: ApprovedOllamaExecutable;
   readonly loopbackEndpoint: string;
-  readonly sandboxHome: string;
-  readonly sandboxTmpdir: string;
-  readonly externalEgressDenied: boolean;
+  /** Caller-supplied containment attestation; this preflight does not independently verify it. */
+  readonly externalEgressDeniedAttestation: boolean;
 }
 
 const blockedCodes = new Set<OllamaPreflightFailureCode>([
@@ -79,15 +79,12 @@ export class OllamaInventoryPreflight {
     let inventoryObserved = false;
     let additionalModelCount = 0;
     let downloadObserved = false;
+    let networkClass: OllamaPreflightNetworkClass | null = null;
     try {
-      if (!request.externalEgressDenied) {
+      if (!request.externalEgressDeniedAttestation) {
         throw new OllamaPreflightError(OllamaPreflightFailureCode.NETWORK_CONTAINMENT_UNAVAILABLE);
       }
-      const environment = buildIsolatedOllamaEnvironment({
-        home: request.sandboxHome,
-        tmpdir: request.sandboxTmpdir,
-        loopbackEndpoint: request.loopbackEndpoint,
-      });
+      const approvedLoopbackEndpoint = parseApprovedLoopbackEndpoint(request.loopbackEndpoint);
       const executable = assertOllamaExecutableIdentity(
         request.approvedExecutable, request.executablePath, this.fileSystem,
       );
@@ -95,10 +92,11 @@ export class OllamaInventoryPreflight {
       if (versionBudget <= 0) throw new OllamaPreflightError(OllamaPreflightFailureCode.TIMEOUT);
       const version = await this.processRunner.run({
         executable, category: OllamaPreflightCommandCategory.VERSION,
-        argv: argvFor(OllamaPreflightCommandCategory.VERSION), environment,
+        argv: argvFor(OllamaPreflightCommandCategory.VERSION), approvedLoopbackEndpoint,
         timeoutMs: versionBudget, stdoutLimitBytes: VERSION_STDOUT_LIMIT,
-        stderrLimitBytes: STDERR_LIMIT, networkClass: 'LOOPBACK_DAEMON',
+        stderrLimitBytes: STDERR_LIMIT,
       });
+      networkClass = version.networkClass;
       downloadObserved ||= version.downloadObserved;
       const versionFailure = this.processFailure(version, OllamaPreflightFailureCode.VERSION_CHECK_FAILED);
       if (versionFailure !== null) {
@@ -115,10 +113,11 @@ export class OllamaInventoryPreflight {
       if (inventoryBudget <= 0) throw new OllamaPreflightError(OllamaPreflightFailureCode.TIMEOUT);
       const inventory = await this.processRunner.run({
         executable: revalidated, category: OllamaPreflightCommandCategory.INVENTORY,
-        argv: argvFor(OllamaPreflightCommandCategory.INVENTORY), environment,
+        argv: argvFor(OllamaPreflightCommandCategory.INVENTORY), approvedLoopbackEndpoint,
         timeoutMs: inventoryBudget, stdoutLimitBytes: INVENTORY_STDOUT_LIMIT,
-        stderrLimitBytes: STDERR_LIMIT, networkClass: 'LOOPBACK_DAEMON',
+        stderrLimitBytes: STDERR_LIMIT,
       });
+      networkClass = inventory.networkClass;
       downloadObserved ||= inventory.downloadObserved;
       const inventoryFailure = this.processFailure(inventory, OllamaPreflightFailureCode.INVENTORY_CHECK_FAILED);
       if (inventoryFailure !== null) {
@@ -135,7 +134,7 @@ export class OllamaInventoryPreflight {
         throw new OllamaPreflightError(OllamaPreflightFailureCode.REQUIRED_MODEL_MISSING);
       }
       return this.result(OllamaPreflightStatus.PASS, null, identityDigest, normalizedVersion,
-        installed, missing, inventoryObserved, additionalModelCount, downloadObserved, checks);
+        installed, missing, inventoryObserved, additionalModelCount, downloadObserved, networkClass, checks);
     } catch (error) {
       const code = error instanceof OllamaPreflightError
         ? error.code : OllamaPreflightFailureCode.UNEXPECTED_FAILURE;
@@ -152,7 +151,7 @@ export class OllamaInventoryPreflight {
       }
       return this.result(blockedCodes.has(code) ? OllamaPreflightStatus.BLOCKED : OllamaPreflightStatus.FAIL,
         code, identityDigest, normalizedVersion, installed, missing, inventoryObserved,
-        additionalModelCount, downloadObserved, checks);
+        additionalModelCount, downloadObserved, networkClass, checks);
     }
   }
 
@@ -161,7 +160,9 @@ export class OllamaInventoryPreflight {
     commandFailure: OllamaPreflightFailureCode,
   ): OllamaPreflightFailureCode | null {
     if (result.downloadObserved) return OllamaPreflightFailureCode.MODEL_DOWNLOAD_DETECTED;
-    if (result.cleanupFailed || result.spawnFailed) return OllamaPreflightFailureCode.PROCESS_CONTAINMENT_FAILED;
+    if (result.cleanupFailed || result.spawnFailed || result.containmentFailed) {
+      return OllamaPreflightFailureCode.PROCESS_CONTAINMENT_FAILED;
+    }
     if (result.timedOut) return OllamaPreflightFailureCode.TIMEOUT;
     if (result.outputLimited) return OllamaPreflightFailureCode.OUTPUT_LIMIT_EXCEEDED;
     if (result.exitCode !== 0) return commandFailure;
@@ -182,6 +183,7 @@ export class OllamaInventoryPreflight {
     inventoryObserved: boolean,
     additionalModelCount: number,
     downloadObserved: boolean,
+    networkClass: OllamaPreflightNetworkClass | null,
     checks: readonly OllamaPreflightCheck[],
   ): OllamaPreflightResult {
     return Object.freeze({
@@ -195,7 +197,7 @@ export class OllamaInventoryPreflight {
       missingRequiredModels: Object.freeze([...missingRequiredModels]),
       inventoryObserved, additionalModelCount,
       downloadCapableCommandInvoked: false,
-      downloadObserved, networkClass: 'LOOPBACK_DAEMON',
+      downloadObserved, networkClass,
       providerExecutionCount: 0, commandCount: checks.length,
       checks: Object.freeze([...checks]),
     });

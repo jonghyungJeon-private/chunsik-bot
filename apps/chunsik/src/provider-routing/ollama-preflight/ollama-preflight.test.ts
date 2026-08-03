@@ -1,7 +1,12 @@
 import { createHash } from 'node:crypto';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
+import type { ChildProcess, SpawnOptions } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import {
+  FINAL_SETTLEMENT_EPSILON_MS,
   INVENTORY_STDOUT_LIMIT,
+  KILL_GRACE_MS,
   MAX_EXECUTABLE_BYTES,
   OllamaPreflightCommandCategory,
   OllamaPreflightFailureCode,
@@ -18,6 +23,7 @@ import { observesModelDownload, parseOllamaInventory, parseOllamaVersion } from 
 import {
   argvFor,
   assertAllowedOllamaPreflightCommand,
+  assertIsolatedOllamaEnvironment,
   buildIsolatedOllamaEnvironment,
   parseApprovedLoopbackEndpoint,
 } from './policy';
@@ -25,7 +31,9 @@ import type {
   OllamaPreflightProcessRequest,
   OllamaPreflightProcessResult,
   OllamaPreflightProcessRunner,
+  PreflightRunnerTimers,
 } from './process-runner';
+import { ContainedOllamaPreflightProcessRunner } from './process-runner';
 import { OllamaInventoryPreflight } from './preflight';
 
 class FakeFileSystem implements OllamaPreflightFileSystem {
@@ -62,7 +70,8 @@ const processResult = (
     exitCode: 0, stdout: out, stderr: err, stdoutBytes: out.byteLength, stderrBytes: 0,
     stdoutSha256: digest(out), stderrSha256: digest(err), durationMs: 1,
     timedOut: false, outputLimited: false, spawnFailed: false, cleanupFailed: false,
-    killEscalated: false, downloadObserved: false, ...patch,
+    containmentFailed: false, killEscalated: false, downloadObserved: false,
+    networkClass: 'LOOPBACK_DAEMON', ...patch,
   };
 };
 
@@ -86,8 +95,8 @@ async function configured(
   const service = new OllamaInventoryPreflight(fileSystem, runner);
   return service.execute({
     executablePath: '/approved/ollama', approvedExecutable,
-    loopbackEndpoint: 'http://127.0.0.1:11434', sandboxHome: '/sandbox/home',
-    sandboxTmpdir: '/sandbox/tmp', externalEgressDenied: true, ...patch,
+    loopbackEndpoint: 'http://127.0.0.1:11434',
+    externalEgressDeniedAttestation: true, ...patch,
   });
 }
 
@@ -149,6 +158,217 @@ describe('Ollama preflight command and environment policy', () => {
       'http://localhost:1/path', 'http://localhost:1?q=1', 'http://localhost:0', 'http://localhost:65536']) {
       expect(() => parseApprovedLoopbackEndpoint(value)).toThrow(/REMOTE_HOST_CONFIGURATION_DETECTED/);
     }
+  });
+});
+
+class FakeChildProcess extends EventEmitter {
+  readonly stdin = new PassThrough();
+  readonly stdout = new PassThrough();
+  readonly stderr = new PassThrough();
+  readonly signals: NodeJS.Signals[] = [];
+
+  kill(signal: NodeJS.Signals): boolean {
+    this.signals.push(signal);
+    return true;
+  }
+}
+
+class FakeTimers implements PreflightRunnerTimers {
+  private clock = 0;
+  private sequence = 0;
+  private readonly scheduled: Array<{
+    id: number; at: number; active: boolean; handler: () => void;
+  }> = [];
+
+  setTimeout(handler: () => void, delayMs: number): ReturnType<typeof setTimeout> {
+    const timer = { id: this.sequence += 1, at: this.clock + delayMs, active: true, handler };
+    this.scheduled.push(timer);
+    return timer as unknown as ReturnType<typeof setTimeout>;
+  }
+
+  clearTimeout(handle: ReturnType<typeof setTimeout>): void {
+    const timer = handle as unknown as { active: boolean };
+    timer.active = false;
+  }
+
+  advance(milliseconds: number): void {
+    const target = this.clock + milliseconds;
+    while (true) {
+      const next = this.scheduled
+        .filter((timer) => timer.active && timer.at <= target)
+        .sort((left, right) => left.at - right.at || left.id - right.id)[0];
+      if (!next) break;
+      this.clock = next.at;
+      next.active = false;
+      next.handler();
+    }
+    this.clock = target;
+  }
+}
+
+const approvedExecutable = Object.freeze({
+  realPath: '/approved/ollama',
+  identity: Object.freeze({
+    contractVersion: 'stage2b-ollama-executable-identity-v1' as const,
+    identityDigest: '0'.repeat(64), sizeBytes: 6, modeClass: 'EXECUTABLE' as const,
+    pathKind: 'ABSOLUTE_REALPATH' as const,
+  }),
+});
+
+const containedRequest = (patch: Partial<OllamaPreflightProcessRequest> = {}): OllamaPreflightProcessRequest => ({
+  executable: approvedExecutable,
+  category: OllamaPreflightCommandCategory.VERSION,
+  argv: ['--version'],
+  approvedLoopbackEndpoint: 'http://127.0.0.1:11434',
+  timeoutMs: 50,
+  stdoutLimitBytes: VERSION_STDOUT_LIMIT,
+  stderrLimitBytes: STDERR_LIMIT,
+  ...patch,
+});
+
+describe('Contained Ollama preflight process runner', () => {
+  it('owns the exact spawn contract and isolated environment', async () => {
+    const child = new FakeChildProcess();
+    let cleanupCount = 0;
+    let captured: { command: string; args: readonly string[]; options: SpawnOptions } | undefined;
+    const runner = new ContainedOllamaPreflightProcessRunner((command, args, options) => {
+      captured = { command, args, options };
+      return child as unknown as ChildProcess;
+    }, () => ({ home: '/sandbox/home', tmpdir: '/sandbox/tmp', cleanup: () => { cleanupCount += 1; } }));
+    const pending = runner.run(containedRequest());
+    child.stdout.write('ollama version 1.2.3');
+    child.emit('close', 0);
+    const result = await pending;
+
+    expect(captured).toMatchObject({ command: '/approved/ollama', args: ['--version'],
+      options: { cwd: '/sandbox/tmp', shell: false, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true } });
+    expect(captured?.options.env).toEqual({ HOME: '/sandbox/home', TMPDIR: '/sandbox/tmp',
+      LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8', NO_COLOR: '1', CLICOLOR: '0',
+      CLICOLOR_FORCE: '0', OLLAMA_HOST: 'http://127.0.0.1:11434' });
+    expect(Object.keys(captured?.options.env ?? {}).sort()).toEqual([
+      'CLICOLOR', 'CLICOLOR_FORCE', 'HOME', 'LANG', 'LC_ALL', 'NO_COLOR', 'OLLAMA_HOST', 'TMPDIR',
+    ]);
+    expect(child.stdin.writableEnded).toBe(true);
+    expect(result).toMatchObject({ exitCode: 0, networkClass: 'LOOPBACK_DAEMON', containmentFailed: false });
+    expect(cleanupCount).toBe(1);
+  });
+
+  it.each(['stdout', 'stderr'] as const)('bounds %s and terminates without exposing output', async (stream) => {
+    const child = new FakeChildProcess();
+    const runner = new ContainedOllamaPreflightProcessRunner(
+      () => child as unknown as ChildProcess,
+      () => ({ home: '/h', tmpdir: '/t', cleanup: () => undefined }),
+    );
+    const pending = runner.run(containedRequest({ stdoutLimitBytes: 2, stderrLimitBytes: 2 }));
+    child[stream].write('abc');
+    expect(child.signals).toEqual(['SIGTERM']);
+    child.emit('close', null);
+    const result = await pending;
+    expect(result.outputLimited).toBe(true);
+    expect(result.stdout).toHaveLength(0);
+    expect(result.stderr).toHaveLength(0);
+  });
+
+  it('enforces timeout, TERM/KILL escalation, and the final settlement deadline', async () => {
+    const child = new FakeChildProcess();
+    const timers = new FakeTimers();
+    let cleanupCount = 0;
+    const runner = new ContainedOllamaPreflightProcessRunner(
+      () => child as unknown as ChildProcess,
+      () => ({ home: '/h', tmpdir: '/t', cleanup: () => { cleanupCount += 1; } }),
+      () => 0,
+      timers,
+    );
+    const pending = runner.run(containedRequest());
+    timers.advance(50);
+    expect(child.signals).toEqual(['SIGTERM']);
+    timers.advance(KILL_GRACE_MS);
+    expect(child.signals).toEqual(['SIGTERM', 'SIGKILL']);
+    timers.advance(FINAL_SETTLEMENT_EPSILON_MS);
+    const result = await pending;
+    expect(result).toMatchObject({ timedOut: true, killEscalated: true,
+      containmentFailed: true, exitCode: null });
+    expect(cleanupCount).toBe(1);
+    child.emit('close', 0);
+    expect(cleanupCount).toBe(1);
+  });
+
+  it('settles an exit-without-close race at the hard deadline exactly once', async () => {
+    const child = new FakeChildProcess();
+    const timers = new FakeTimers();
+    let cleanupCount = 0;
+    const runner = new ContainedOllamaPreflightProcessRunner(
+      () => child as unknown as ChildProcess,
+      () => ({ home: '/h', tmpdir: '/t', cleanup: () => { cleanupCount += 1; } }),
+      () => 0,
+      timers,
+    );
+    const pending = runner.run(containedRequest());
+    child.emit('exit', 0);
+    timers.advance(50 + KILL_GRACE_MS + FINAL_SETTLEMENT_EPSILON_MS);
+    expect(await pending).toMatchObject({ containmentFailed: true, exitCode: null });
+    expect(cleanupCount).toBe(1);
+  });
+
+  it('rejects malformed runner-built environments before spawn', async () => {
+    const exact = buildIsolatedOllamaEnvironment({
+      home: '/h', tmpdir: '/t', loopbackEndpoint: 'http://127.0.0.1:11434',
+    });
+    expect(() => assertIsolatedOllamaEnvironment(exact, {
+      home: '/h', tmpdir: '/t', loopbackEndpoint: 'http://127.0.0.1:11434',
+    })).not.toThrow();
+    for (const malformed of [
+      { ...exact, PATH: '/bin' },
+      { ...exact, HTTP_PROXY: 'http://proxy' },
+      { ...exact, GITHUB_TOKEN: 'secret' },
+      { ...exact, HOME: '/wrong' },
+    ]) {
+      let spawnCount = 0;
+      const runner = new ContainedOllamaPreflightProcessRunner(
+        () => { spawnCount += 1; return new FakeChildProcess() as unknown as ChildProcess; },
+        () => ({ home: '/h', tmpdir: '/t', cleanup: () => undefined }),
+        () => 0,
+        new FakeTimers(),
+        () => malformed,
+      );
+      const result = await runner.run(containedRequest());
+      expect(spawnCount).toBe(0);
+      expect(result).toMatchObject({ containmentFailed: true, networkClass: null });
+    }
+  });
+
+  it('returns bounded facts for synchronous spawn, child error, sandbox, and cleanup failures', async () => {
+    const spawnFailure = await new ContainedOllamaPreflightProcessRunner(
+      () => { throw new Error('raw spawn detail'); },
+      () => ({ home: '/h', tmpdir: '/t', cleanup: () => undefined }),
+    ).run(containedRequest());
+    expect(spawnFailure).toMatchObject({ spawnFailed: true, containmentFailed: false });
+    expect(JSON.stringify(spawnFailure)).not.toContain('raw spawn detail');
+
+    const child = new FakeChildProcess();
+    const childRunner = new ContainedOllamaPreflightProcessRunner(
+      () => child as unknown as ChildProcess,
+      () => ({ home: '/h', tmpdir: '/t', cleanup: () => undefined }),
+    );
+    const childPending = childRunner.run(containedRequest());
+    child.emit('error', new Error('raw child detail'));
+    expect(await childPending).toMatchObject({ spawnFailed: true });
+
+    const sandboxFailure = await new ContainedOllamaPreflightProcessRunner(
+      () => child as unknown as ChildProcess,
+      () => { throw new Error('raw sandbox detail'); },
+    ).run(containedRequest());
+    expect(sandboxFailure).toMatchObject({ spawnFailed: true, cleanupFailed: true,
+      containmentFailed: true, networkClass: null });
+
+    const cleanupChild = new FakeChildProcess();
+    const cleanupRunner = new ContainedOllamaPreflightProcessRunner(
+      () => cleanupChild as unknown as ChildProcess,
+      () => ({ home: '/h', tmpdir: '/t', cleanup: () => { throw new Error('raw cleanup detail'); } }),
+    );
+    const cleanupPending = cleanupRunner.run(containedRequest());
+    cleanupChild.emit('close', 0);
+    expect(await cleanupPending).toMatchObject({ cleanupFailed: true });
   });
 });
 
@@ -249,8 +469,11 @@ describe('Ollama inventory preflight orchestration', () => {
 
   it('blocks before commands when egress containment is unavailable or executable changes', async () => {
     const noNetworkRunner = new FakeRunner([]);
-    expect((await configured(noNetworkRunner, new FakeFileSystem(), { externalEgressDenied: false })).failureCode)
-      .toBe(OllamaPreflightFailureCode.NETWORK_CONTAINMENT_UNAVAILABLE);
+    const noNetwork = await configured(noNetworkRunner, new FakeFileSystem(), {
+      externalEgressDeniedAttestation: false,
+    });
+    expect(noNetwork.failureCode).toBe(OllamaPreflightFailureCode.NETWORK_CONTAINMENT_UNAVAILABLE);
+    expect(noNetwork.networkClass).toBeNull();
     expect(noNetworkRunner.requests).toHaveLength(0);
 
     const fs = new FakeFileSystem(Buffer.from('first'));
@@ -261,5 +484,17 @@ describe('Ollama inventory preflight orchestration', () => {
     expect(mismatch).toMatchObject({ status: OllamaPreflightStatus.BLOCKED,
       failureCode: OllamaPreflightFailureCode.EXECUTABLE_IDENTITY_MISMATCH, commandCount: 0 });
     expect(mismatchRunner.requests).toHaveLength(0);
+    expect(mismatch.networkClass).toBeNull();
+  });
+
+  it('revalidates executable identity after VERSION and before INVENTORY', async () => {
+    const fs = new FakeFileSystem(Buffer.from('first'));
+    fs.contents = [Buffer.from('first'), Buffer.from('first'), Buffer.from('changed')];
+    fs.statValue = { kind: 'file', sizeBytes: 5, mode: 0o755 };
+    const runner = new FakeRunner([processResult('1.2.3')]);
+    const result = await configured(runner, fs);
+    expect(result).toMatchObject({ status: OllamaPreflightStatus.BLOCKED,
+      failureCode: OllamaPreflightFailureCode.EXECUTABLE_IDENTITY_MISMATCH, commandCount: 1 });
+    expect(runner.requests).toHaveLength(1);
   });
 });

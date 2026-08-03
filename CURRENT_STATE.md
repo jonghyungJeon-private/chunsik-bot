@@ -86,8 +86,9 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 - **Contracts:** independent v1 identities for preflight result, executable identity, command policy, and inventory
   parser; exact required tags are `llama3.1:8b` and `granite3.3:8b`.
 - **Containment:** absolute realpath/digest revalidation, exact `--version`/`list` argv, loopback-only endpoint,
-  isolated environment, bounded timeout/output/rows, zero retry, download-marker observation, and maximum two
-  non-generation commands.
+  runner-owned exact isolated environment, hard promise-settlement deadline, bounded timeout/output/rows, zero
+  retry, download-marker observation, and maximum two non-generation commands. External-egress denial is a
+  caller-supplied attestation and is not independently verified by this boundary.
 - **Execution:** actual executable/version/inventory are **NOT VERIFIED**; Ollama process, daemon/network access,
   inventory read, and Provider generation were **NOT EXECUTED** and remain 5B-2A-E/5B-2B gates.
 

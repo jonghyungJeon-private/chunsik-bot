@@ -4765,6 +4765,14 @@ fatal UTF-8 version/inventory parsing, exact required model tags, bounded timeou
 observation, and immutable terminal results. Only VERSION then INVENTORY may run, each at most once; retry and every
 generation/mutation argv are structurally prohibited, and `providerExecutionCount` is always zero.
 
+The process runner, not its caller, exclusively constructs and validates the exact child environment. The
+external-egress-denied field is explicitly a caller-supplied, unverified attestation; a false attestation blocks
+before spawn, and the public network class remains null until loopback endpoint and environment validation succeed.
+Every spawned command has a hard promise-settlement deadline beyond timeout and kill grace, including the
+exit-without-close case.
+Detached process groups, negative-pid termination, and OS-specific process-tree containment remain an explicit
+Slice 5B-2A-E review note and are not introduced by this remediation.
+
 Filesystem and process ownership remain injectable app-private seams. Tests use fake implementations only; the
 production module is not imported by `app.module.ts`, Runtime, Core, Stage 2A, or the private validation package.
 Actual executable/version and installed inventory are **NOT VERIFIED**. Ollama process, local daemon, external

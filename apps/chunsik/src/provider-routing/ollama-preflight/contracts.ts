@@ -14,6 +14,7 @@ export const STDERR_LIMIT = 8 * 1024;
 export const MAX_INVENTORY_ROWS = 512;
 export const MAX_EXECUTABLE_BYTES = 1024 * 1024 * 1024;
 export const KILL_GRACE_MS = 1_000;
+export const FINAL_SETTLEMENT_EPSILON_MS = 100;
 
 export enum OllamaPreflightStatus {
   PASS = 'PASS',
@@ -91,7 +92,7 @@ export interface OllamaPreflightResult {
   readonly additionalModelCount: number;
   readonly downloadCapableCommandInvoked: false;
   readonly downloadObserved: boolean;
-  readonly networkClass: OllamaPreflightNetworkClass;
+  readonly networkClass: OllamaPreflightNetworkClass | null;
   readonly providerExecutionCount: 0;
   readonly commandCount: number;
   readonly checks: readonly OllamaPreflightCheck[];

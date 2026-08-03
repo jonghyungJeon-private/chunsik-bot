@@ -14,6 +14,8 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 - Added absolute-realpath executable validation, strict loopback/environment policy, bounded UTF-8/terminal parsing,
   exact required-model matching, positive argv allowlisting, download-marker observation, and fail-closed immutable
   non-persistent results.
+- Hardened the runner-owned exact child environment and hard settlement deadline; external-egress denial is
+  represented only as a caller-supplied, unverified attestation and failed containment does not claim a network class.
 - Actual executable/version and installed inventory remain **NOT VERIFIED**. Ollama process, local daemon, external
   network, model inventory, and Provider generation were **NOT EXECUTED**; execution remains separately gated by
   Slice 5B-2A-E.

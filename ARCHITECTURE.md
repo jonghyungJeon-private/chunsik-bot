@@ -171,6 +171,8 @@ fixed; the implementations are not.
     5B-2A-I implements typed executable identity, exact `--version`/`list` policy,
     isolated environment, bounded parsers/process lifecycle, and immutable results
     behind injectable filesystem/process seams. It is unwired and fake-tested only;
+    its external-egress-denied input is a caller-supplied, unverified attestation,
+    while the runner exclusively constructs and validates the exact child environment.
     actual executable/version/inventory, daemon/network access, and Provider generation
     require later independent gates (ADR-0064).
 

@@ -48,3 +48,28 @@ export function buildIsolatedOllamaEnvironment(input: {
     OLLAMA_HOST: parseApprovedLoopbackEndpoint(input.loopbackEndpoint),
   });
 }
+
+const ISOLATED_ENVIRONMENT_KEYS = Object.freeze([
+  'CLICOLOR', 'CLICOLOR_FORCE', 'HOME', 'LANG', 'LC_ALL', 'NO_COLOR', 'OLLAMA_HOST', 'TMPDIR',
+]);
+
+export function assertIsolatedOllamaEnvironment(
+  environment: Readonly<Record<string, string>>,
+  expected: { readonly home: string; readonly tmpdir: string; readonly loopbackEndpoint: string },
+): void {
+  const keys = Object.keys(environment).sort();
+  if (
+    keys.length !== ISOLATED_ENVIRONMENT_KEYS.length ||
+    keys.some((key, index) => key !== ISOLATED_ENVIRONMENT_KEYS[index]) ||
+    environment.HOME !== expected.home ||
+    environment.TMPDIR !== expected.tmpdir ||
+    environment.LANG !== 'C.UTF-8' ||
+    environment.LC_ALL !== 'C.UTF-8' ||
+    environment.NO_COLOR !== '1' ||
+    environment.CLICOLOR !== '0' ||
+    environment.CLICOLOR_FORCE !== '0' ||
+    environment.OLLAMA_HOST !== parseApprovedLoopbackEndpoint(expected.loopbackEndpoint)
+  ) {
+    throw new OllamaPreflightError(OllamaPreflightFailureCode.INVALID_PREFLIGHT_CONFIGURATION);
+  }
+}
