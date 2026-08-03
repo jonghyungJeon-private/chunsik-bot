@@ -7,6 +7,19 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Stage 2B · Slice 5B-1 Provider Identity and Static Routing Configuration
+
+- Added additive explicit instance identity to `OllamaCliProvider` while preserving the legacy default
+  `ollama-cli` identity and existing `AI_PROVIDERS` composition.
+- Added an unwired composition-root typed configuration for the `llama3.1:8b` balanced primary and
+  `granite3.3:8b` semantic candidate, including immutable descriptors, executable bindings, GENERAL_CHAT-only
+  policy, validation/deadline selection, and pure construction validation.
+- Bound each descriptor to the ratified Stage 2A facts through the canonical
+  `stage2b-provider-provenance-v1` SHA-256 payload. Raw scorecards and Golden Corpus data are not imported at
+  Runtime.
+- Actual Provider readiness/model installation are **NOT VERIFIED**. Provider execution is deferred to separately
+  approved Slice 5B-2; Runtime activation and Runtime/Discord/DB UAT remain deferred to Slice 5C.
+
 ### Added — Stage 2B · Slice 5A Offline Runtime Integration Seam
 
 - Added the Core `RuntimeProviderRoutingService` collaborator for TaskRun-backed `GENERAL_CHAT` work turns. It

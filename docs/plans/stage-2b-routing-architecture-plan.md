@@ -1,8 +1,8 @@
 # Stage 2B Production Routing Architecture Plan
 
-- **Status:** Architecture ratified by ADR-0064. Slices 1–5A are implemented; Slice 5A is an offline
-  Runtime integration seam only. Real descriptor/policy/binding configuration, composition-root activation,
-  Runtime/Discord execution, and external Provider invocation remain deferred and require separate approval.
+- **Status:** Architecture ratified by ADR-0064. Slices 1–5A and Slice 5B-1 are implemented. Slice 5B-1 adds
+  instance identity and an unwired typed static configuration only. Composition-root activation, Provider
+  readiness/execution, and Runtime/Discord/DB UAT remain deferred and require separate approval.
 - **Input:** Completed Stage 2A Provider Evaluation Infrastructure and frozen A1+A3 evidence.
 - **Current candidates:** balanced primary `llama3.1:8b`; semantic candidate `granite3.3:8b`;
   latency-only evidence `llama3.2:3b`; deprioritized `mistral:7b`.
@@ -19,7 +19,11 @@ ADR-0064 is the canonical decision record when this historical plan differs from
   executable per request, the fixed `GENERAL_CHAT` validation profile, and existing Task/TaskRun lifecycles.
 - Slice 5A uses fake configuration and fake Providers only. The app composition root remains unchanged, so the
   currently configured Claude/Ollama instances do not use this seam.
-- Real Provider activation, Runtime/Discord action, network execution, and live validation remain deferred.
+- Slice 5B-1 statically binds only `llama3.1:8b` and `granite3.3:8b` as distinct Ollama executable instances,
+  attaches canonical bounded Stage 2A provenance, and validates descriptor/binding/policy/profile construction.
+  The configuration is intentionally not imported by `app.module.ts`.
+- Actual Provider readiness and model installation are **NOT VERIFIED**. Provider execution is deferred to Slice
+  5B-2; activation and Runtime/Discord/DB UAT are deferred to Slice 5C.
 
 ## Objectives
 

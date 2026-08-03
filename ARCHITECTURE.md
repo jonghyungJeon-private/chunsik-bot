@@ -159,6 +159,14 @@ fixed; the implementations are not.
    private package. It replays only `RoutingPolicyEngine → ProviderSelectionDecision`
    from self-contained fixtures and must not construct an execution plan, Gateway,
    validator, Provider binding, or Runtime object.
+9. Production executable identity is instance-specific: `providerId` identifies one
+   configured executable Provider instance, `adapterId` identifies its adapter family,
+   and opaque `modelId` identifies the exact model binding. Stage 2B Slice 5B-1 owns a
+   typed static composition-root configuration for only the ratified balanced and
+   semantic Ollama candidates. It binds bounded Stage 2A provenance by canonical
+   SHA-256 without importing benchmark evidence at Runtime. This configuration is not
+   wired into the app; readiness, execution, Runtime activation, and UAT remain later
+   approval boundaries (ADR-0064).
 
 ---
 

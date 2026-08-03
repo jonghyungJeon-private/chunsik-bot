@@ -4733,3 +4733,26 @@ Provider failure handling, ADR-0031 orchestration, ADR-0032 Conversation Runtime
 Stage 2A evidence, or existing concrete Provider execution. Slice 5A adds the optional offline seam while leaving
 the production composition root and all legacy out-of-scope paths unchanged; real activation remains separately
 approved work.
+
+### Slice 5B-1 — Provider Identity and Static Routing Configuration
+
+Slice 5B-1 makes executable identity instance-specific: `providerId` names one configured executable Provider,
+`adapterId` names the adapter family, and opaque `modelId` names its exact model binding. The Ollama adapter accepts
+an additive caller-supplied instance id while retaining `ollama-cli` for every legacy constructor call. Production
+construction fails closed on duplicate ids or any descriptor/binding/executable identity mismatch.
+
+The composition root owns a typed static, unwired configuration containing only balanced-primary
+`ollama-cli:llama3.1:8b` and semantic-candidate `ollama-cli:granite3.3:8b`. Its GENERAL_CHAT policy ranks only the
+ordered `BALANCED → SEMANTIC_HIGH` routing class and semantic reliability, followed by the existing stable
+provider-id tie-break. Unratified latency, cost, concurrency, and availability profile dimensions remain equal
+conservative values and cannot create a ranking advantage.
+
+Each descriptor binds immutable Stage 2A provenance under `stage2b-provider-provenance-v1`. The canonical SHA-256
+payload includes the instance/adapter/model/role and the ratified campaign, checker, corpus, digest, counts, and
+prompt-root-cause status. It excludes executable path, availability, environment, clock, secrets, and installed
+model state; Runtime imports no Stage 2A scorecard, harness, or Golden Corpus data.
+
+The factory performs only pure construction validation. `app.module.ts`, the legacy `AI_PROVIDERS` path, Slice 5A
+Runtime integration, Gateway/Planner/Registry/Validator behavior, and persistence remain unchanged. Actual Provider
+readiness/model installation are **NOT VERIFIED**. Provider execution requires separately approved Slice 5B-2;
+Runtime activation and Runtime/Discord/DB UAT remain Slice 5C approval boundaries.

@@ -5,20 +5,15 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** **Stage 2B Slice 5A — Offline Runtime Integration Seam** (ADR-0064). Core now contains the optional
-  `RuntimeProviderRoutingService` and `ConversationRuntime` integration for TaskRun-backed `GENERAL_CHAT` work
-  turns only. Bounded Runtime facts deterministically produce the fixed `GENERAL_CHAT` routing context/profile;
-  per-request availability is snapshotted once per configured executable before the existing Policy → Planner →
-  Gateway chain. Terminal results reuse existing Task/TaskRun lifecycles and persist bounded `routingAudit`
-  metadata without a migration. Code Generation, Project Analysis, no-work chat, and all other Capabilities retain
-  their legacy paths.
-- **Next:** Independent Chief Architect implementation review of Stage 2B Slice 5A. Actual provider descriptors,
-  policies, bindings, app composition activation, external Provider execution, Runtime/Discord action, and live
-  validation remain deferred and unapproved.
-- **Build/Test (Stage 2B Slice 5A):** focused Core routing/seam/lifecycle/composer/TaskManager/CodeGeneration plus
-  private Harness regression 19 files / 715 tests PASS; `pnpm typecheck`, Core build, private Harness build, app
-  build, and `git diff --check` PASS. Validation used fake Providers only; no Runtime, external Provider, network, Discord,
-  secret, or database execution occurred.
+- **Phase:** **Stage 2B Slice 5B-1 — Provider Identity and Static Routing Configuration** (ADR-0064). The
+  composition-root now owns an unwired typed configuration for instance-specific `llama3.1:8b` balanced-primary
+  and `granite3.3:8b` semantic-candidate Ollama bindings, conservative profiles, a GENERAL_CHAT-only policy, and
+  immutable Stage 2A provenance digests. The legacy `AI_PROVIDERS` path and Slice 5A Runtime seam are unchanged.
+- **Next:** Independent Chief Architect implementation review of Slice 5B-1. Actual Provider readiness and model
+  installation are **NOT VERIFIED**; external Provider execution is deferred to separately approved Slice 5B-2,
+  and Runtime activation plus Runtime/Discord/DB UAT remain deferred to Slice 5C.
+- **Build/Test (Stage 2B Slice 5B-1):** construction and adapter tests use static/fake execution boundaries only.
+  No Runtime, external Provider, CLI, network, Discord, secret, model inventory, or database execution occurred.
 
 ## Stage 2A — Completed
 
@@ -68,7 +63,22 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   bounded `routingAudit`; only accepted output records its actual Provider on `TaskRun.providerId`.
 - **Rollout:** once this seam handles a request, no legacy selection fallback or shadow comparison occurs.
   Project Analysis, Code Generation, no-work chat, and other Capabilities remain legacy. Tests use fake Providers;
-  actual descriptors/policies/bindings, app activation, Runtime/Discord, and external execution remain deferred.
+  Slice 5B-1 now supplies unwired production descriptors/policies/bindings; app activation, Runtime/Discord, and
+  external execution remain deferred.
+
+## Stage 2B — Slice 5B-1 Provider Identity and Static Routing Configuration
+
+- **Identity:** `providerId` identifies a configured executable instance, `adapterId` the adapter family, and
+  `modelId` the exact opaque model binding. Ollama accepts an additive explicit instance id while its legacy
+  constructor still yields `ollama-cli`.
+- **Configuration:** the unwired composition-root factory contains exactly `ollama-cli:llama3.1:8b` and
+  `ollama-cli:granite3.3:8b`, GENERAL_CHAT-only BALANCED → SEMANTIC_HIGH routing, existing GENERAL_CHAT validation,
+  and the existing STANDARD deadline. Unratified operational dimensions are equal conservative values.
+- **Provenance:** each descriptor carries an immutable canonical SHA-256 binding over the ratified Stage 2A
+  campaign, checker, corpus, model, instance, and candidate-role facts under `stage2b-provider-provenance-v1`.
+- **Boundary:** the factory performs construction validation without availability probes or execution and is not
+  imported by `app.module.ts`. Readiness/model installation are **NOT VERIFIED**; 5B-2 execution and 5C activation/UAT
+  remain separately approved work.
 
 ## Stage 2B — Slice 3C Deterministic Validation Harness
 

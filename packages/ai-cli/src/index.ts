@@ -179,7 +179,7 @@ export class CodexCliProvider extends BaseCliAiProvider {
  * a fallback, not the default, for code — plus its existing chat/summarization roles.
  */
 export class OllamaCliProvider extends BaseCliAiProvider {
-  readonly id = 'ollama-cli';
+  readonly id: string;
   protected readonly bin: string;
   private readonly model: string;
   private readonly runner: CliRunner;
@@ -198,8 +198,15 @@ export class OllamaCliProvider extends BaseCliAiProvider {
     { capability: Capability.CODE_IMPLEMENTATION, priority: 40 },
   ];
 
-  constructor(options: { bin?: string; model?: string; runner?: CliRunner; timeoutMs?: number } = {}) {
+  constructor(options: {
+    bin?: string;
+    model?: string;
+    providerId?: string;
+    runner?: CliRunner;
+    timeoutMs?: number;
+  } = {}) {
     super();
+    this.id = options.providerId ?? 'ollama-cli';
     this.bin = options.bin ?? 'ollama';
     this.model = options.model ?? 'llama3.1';
     this.runner = options.runner ?? defaultCliRunner;
