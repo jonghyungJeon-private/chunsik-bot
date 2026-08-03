@@ -99,7 +99,6 @@ export interface RuntimeProviderRoutingAudit {
 export interface RuntimeProviderRoutingResult {
   readonly status: ProviderGatewayTerminalStatus;
   readonly failureCode: RuntimeProviderRoutingFailureCode | null;
-  readonly humanReviewRequired: boolean;
   /** Present only for an accepted, validated Gateway output. */
   readonly output?: BoundedProviderOutput;
   /** Present only for an accepted output and never copied to a non-accepted TaskRun. */
@@ -264,7 +263,6 @@ export class RuntimeProviderRoutingService implements RuntimeProviderRouting {
         return Object.freeze({
           status: result.status,
           failureCode: result.failureCode,
-          humanReviewRequired: false,
           output: result.output,
           acceptedProviderId: result.audit.finalProviderId,
           audit: freezeAudit(routingContext, decision, result.audit, result.status, result.failureCode),
@@ -282,7 +280,6 @@ export class RuntimeProviderRoutingService implements RuntimeProviderRouting {
       return Object.freeze({
         status: result.status,
         failureCode: result.failureCode,
-        humanReviewRequired: result.humanReviewRequired,
         audit: freezeAudit(routingContext, decision, result.audit, result.status, result.failureCode),
       });
     } catch (error) {
@@ -310,7 +307,6 @@ export class RuntimeProviderRoutingService implements RuntimeProviderRouting {
     return Object.freeze({
       status,
       failureCode,
-      humanReviewRequired: status === ProviderGatewayTerminalStatus.HUMAN_REVIEW_REQUIRED,
       audit: freezeAudit(routingContext, selectionDecision, gatewayAudit, status, failureCode),
     });
   }

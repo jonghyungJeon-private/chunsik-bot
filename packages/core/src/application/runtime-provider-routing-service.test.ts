@@ -252,6 +252,24 @@ describe('RuntimeProviderRoutingService — Slice 5A offline seam', () => {
     expect(provider.execute).not.toHaveBeenCalled();
   });
 
+  it('passes through a real Gateway safety terminal with audit and no accepted Provider identity', async () => {
+    const provider = fakeProvider('alpha', true, { text: `leak: ${REQUEST.prompt}` });
+    const result = await serviceFor([provider]).execute({
+      facts: { capability: Capability.GENERAL_CHAT, intentType: IntentType.CHAT, requiresWork: true },
+      request: REQUEST,
+      executionId: 'task-run-safety-blocked',
+    });
+
+    expect(result.status).toBe(ProviderGatewayTerminalStatus.SAFETY_BLOCKED);
+    expect(result.failureCode).toBe(RoutingFailureCode.PROMPT_LEAK);
+    expect(result.audit.gatewayAudit).not.toBeNull();
+    expect(result.acceptedProviderId).toBeUndefined();
+    expect(result).not.toHaveProperty('humanReviewRequired');
+    expect(result.audit.terminalCode).toBe(RoutingFailureCode.PROMPT_LEAK);
+    expect(provider.isAvailable).toHaveBeenCalledTimes(1);
+    expect(provider.execute).toHaveBeenCalledTimes(1);
+  });
+
   it('turns unavailable/throwing probes into one immutable no-selection snapshot and a bounded audited result', async () => {
     const unavailable = fakeProvider('alpha', false);
     const throwing = fakeProvider('beta', 'throw');

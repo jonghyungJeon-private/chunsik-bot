@@ -6798,14 +6798,12 @@ function routedResultOf(status: ProviderGatewayTerminalStatus): RuntimeProviderR
     return Object.freeze({
       status,
       failureCode,
-      humanReviewRequired: status === ProviderGatewayTerminalStatus.HUMAN_REVIEW_REQUIRED,
       audit,
     });
   }
   return Object.freeze({
     status,
     failureCode: null,
-    humanReviewRequired: false,
     acceptedProviderId,
     output: Object.freeze({
       text: 'bounded routed answer',

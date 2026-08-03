@@ -18,19 +18,27 @@ const detailOf = (o: Partial<TestResultDetail> = {}): TestResultDetail => ({
 });
 
 describe('ResponseComposer.composeProviderRoutingTerminal', () => {
-  it.each([
+  const terminalStatuses = [
     ProviderGatewayTerminalStatus.HUMAN_REVIEW_REQUIRED,
     ProviderGatewayTerminalStatus.REJECTED,
     ProviderGatewayTerminalStatus.SAFETY_BLOCKED,
     ProviderGatewayTerminalStatus.CONFIGURATION_FAILED,
     ProviderGatewayTerminalStatus.EXECUTION_FAILED,
-  ])('renders bounded category wording for %s without internal routing detail', (status) => {
+  ] as const;
+
+  it.each(terminalStatuses)('renders bounded category wording for %s without internal routing detail', (status) => {
     const reply = composer.composeProviderRoutingTerminal(CTX, status);
 
     expect(reply.text.length).toBeLessThan(200);
     expect(reply.text).not.toMatch(
       /provider-a|opaque-model|private prompt|raw output|raw error|reasoning|[a-f0-9]{64}/i,
     );
+  });
+
+  it('keeps all five terminal category messages distinct', () => {
+    const texts = terminalStatuses.map((status) => composer.composeProviderRoutingTerminal(CTX, status).text);
+
+    expect(new Set(texts).size).toBe(terminalStatuses.length);
   });
 });
 
