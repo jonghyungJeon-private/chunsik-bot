@@ -5,13 +5,13 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** **Stage 2B Slice 5B-2A-I — Ollama Preflight Contracts and Runner Implementation** (ADR-0064).
-  App-private, unwired contracts now cover executable identity, exact version/list commands, isolated loopback
-  environment, strict version/inventory parsers, bounded process lifecycle, and immutable non-persistent results.
-- **Next:** Independent Chief Architect implementation review. Actual executable/version and installed inventory
+- **Phase:** **Stage 2B Slice 5B-2A-E0 — Honest Egress Contract and Execution Composition** (ADR-0064).
+  App-private, unwired code now adds explicit egress-control semantics, strict invocation parsing, concrete
+  filesystem/sandbox/spawn composition, bounded console projection, and deterministic exit mapping.
+- **Next:** Independent Chief Architect implementation review, then separately approved 5B-2A-E execution. Actual executable/version and installed inventory
   remain **NOT VERIFIED**. Ollama process, local daemon, external network, model inventory, and Provider generation
   were **NOT EXECUTED**; actual version/inventory execution requires separately approved Slice 5B-2A-E.
-- **Build/Test (Stage 2B Slice 5B-2A-I):** fake filesystem/process seams only; no Runtime, CLI, network, Discord,
+- **Build/Test (Stage 2B Slice 5B-2A-E0):** fake filesystem/process seams only; no Runtime, CLI, network, Discord,
   secret, `.env.local`, model inventory, persistence, or database execution.
 
 ## Stage 2A — Completed
@@ -87,10 +87,18 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   parser; exact required tags are `llama3.1:8b` and `granite3.3:8b`.
 - **Containment:** absolute realpath/digest revalidation, exact `--version`/`list` argv, loopback-only endpoint,
   runner-owned exact isolated environment, hard promise-settlement deadline, bounded timeout/output/rows, zero
-  retry, download-marker observation, and maximum two non-generation commands. External-egress denial is a
-  caller-supplied attestation and is not independently verified by this boundary.
+  retry, download-marker observation, and maximum two non-generation commands.
 - **Execution:** actual executable/version/inventory are **NOT VERIFIED**; Ollama process, daemon/network access,
   inventory read, and Provider generation were **NOT EXECUTED** and remain 5B-2A-E/5B-2B gates.
+
+## Stage 2B — Slice 5B-2A-E0 Honest Egress and Execution Composition
+
+- **Egress:** `OS_DENIED_VERIFIED` requires an independently successful verifier and projects isolation true.
+  `CONFIG_RESTRICTED_RISK_ACCEPTED` projects isolation false and does not technically deny external egress.
+- **Composition:** strict explicit inputs, concrete bounded filesystem/sandbox/spawn adapters, existing preflight,
+  one bounded console projection, and exit codes 0/2/3/4 remain app-private and absent from `app.module.ts`.
+- **Boundary:** actual executable/version/inventory are **NOT VERIFIED**; Ollama process, daemon/network access,
+  inventory read, Provider generation, persistence, and DB work were **NOT EXECUTED**.
 
 ## Stage 2B — Slice 3C Deterministic Validation Harness
 

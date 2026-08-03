@@ -4765,9 +4765,9 @@ fatal UTF-8 version/inventory parsing, exact required model tags, bounded timeou
 observation, and immutable terminal results. Only VERSION then INVENTORY may run, each at most once; retry and every
 generation/mutation argv are structurally prohibited, and `providerExecutionCount` is always zero.
 
-The process runner, not its caller, exclusively constructs and validates the exact child environment. The
-external-egress-denied field is explicitly a caller-supplied, unverified attestation; a false attestation blocks
-before spawn, and the public network class remains null until loopback endpoint and environment validation succeed.
+The process runner, not its caller, exclusively constructs and validates the exact child environment. Egress
+approval is governed by the explicit Slice 5B-2A-E0 controls below, while the public network class remains null
+until loopback endpoint and environment validation succeed.
 Every spawned command has a hard promise-settlement deadline beyond timeout and kill grace, including the
 exit-without-close case.
 Detached process groups, negative-pid termination, and OS-specific process-tree containment remain an explicit
@@ -4778,3 +4778,26 @@ production module is not imported by `app.module.ts`, Runtime, Core, Stage 2A, o
 Actual executable/version and installed inventory are **NOT VERIFIED**. Ollama process, local daemon, external
 network, inventory access, and Provider generation were **NOT EXECUTED**. Actual version/list execution requires
 separately approved Slice 5B-2A-E; generation remains Slice 5B-2B and Runtime/Discord/DB UAT remains Slice 5C.
+
+### Slice 5B-2A-E0 — Honest Egress Contract and Concrete Execution Composition
+
+The boolean external-egress attestation is removed. `OS_DENIED_VERIFIED` is executable only when an injected
+independent verifier confirms OS/sandbox denial and therefore projects `externalEgressIsolationVerified=true`.
+`CONFIG_RESTRICTED_RISK_ACCEPTED` projects false and records Chief Architect acceptance of exact
+binary/digest/size, read-only argv, isolated environment, loopback endpoint, two-command maximum, zero retry, and
+zero raw-output persistence; it does not technically deny or prove denial of external egress. This egress control
+is independent of `networkClass`, which continues to classify validated endpoint/environment configuration only.
+
+An app-private tools entrypoint requires every executable identity, endpoint, and egress input explicitly, performs
+no PATH lookup, composes concrete read-only filesystem, runner-owned sandbox, and injected spawn adapters, and emits
+one bounded projection with exit codes PASS=0, FAIL=2, BLOCKED=3, configuration error=4. It is not imported by the
+composition root. Actual executable/version/inventory, daemon/network communication, Provider generation,
+persistence, and DB work remain unexecuted and require separately approved Slice 5B-2A-E.
+
+For the exact read-only VERSION/INVENTORY scope, the Chief Architect accepts bounded hash-to-spawn TOCTOU,
+descendant/process-tree containment, network-class run-level monotonicity, the final-settlement defensive terminate
+branch, and loss of detailed environment-rejection failure codes. This acceptance relies on explicit executable
+identity, exact non-generation argv, shell disabled, no prompt/secret, loopback configuration, isolated parent-free
+environment, at most two commands, and zero retry. A future execution packet must revalidate executable identity
+immediately before VERSION, again before INVENTORY, and after terminal completion; any mismatch is terminal and
+must not trigger recovery, download, or generation.

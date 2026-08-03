@@ -6,6 +6,7 @@ import {
   OLLAMA_PREFLIGHT_COMMAND_POLICY_VERSION,
   OLLAMA_PREFLIGHT_CONTRACT_VERSION,
   OVERALL_TIMEOUT_MS,
+  ExternalEgressControl,
   OllamaPreflightCommandCategory,
   OllamaPreflightError,
   OllamaPreflightFailureCode,
@@ -36,8 +37,8 @@ export interface OllamaPreflightRequest {
   readonly executablePath: string;
   readonly approvedExecutable: ApprovedOllamaExecutable;
   readonly loopbackEndpoint: string;
-  /** Caller-supplied containment attestation; this preflight does not independently verify it. */
-  readonly externalEgressDeniedAttestation: boolean;
+  readonly externalEgressControl: ExternalEgressControl;
+  readonly externalEgressIsolationVerified: boolean;
 }
 
 const blockedCodes = new Set<OllamaPreflightFailureCode>([
@@ -80,10 +81,15 @@ export class OllamaInventoryPreflight {
     let additionalModelCount = 0;
     let downloadObserved = false;
     let networkClass: OllamaPreflightNetworkClass | null = null;
+    let externalEgressControl: ExternalEgressControl | null = null;
+    let externalEgressIsolationVerified = false;
     try {
-      if (!request.externalEgressDeniedAttestation) {
-        throw new OllamaPreflightError(OllamaPreflightFailureCode.NETWORK_CONTAINMENT_UNAVAILABLE);
-      }
+      const egress = this.validateEgressControl(
+        request.externalEgressControl,
+        request.externalEgressIsolationVerified,
+      );
+      externalEgressControl = egress.control;
+      externalEgressIsolationVerified = egress.isolationVerified;
       const approvedLoopbackEndpoint = parseApprovedLoopbackEndpoint(request.loopbackEndpoint);
       const executable = assertOllamaExecutableIdentity(
         request.approvedExecutable, request.executablePath, this.fileSystem,
@@ -134,7 +140,8 @@ export class OllamaInventoryPreflight {
         throw new OllamaPreflightError(OllamaPreflightFailureCode.REQUIRED_MODEL_MISSING);
       }
       return this.result(OllamaPreflightStatus.PASS, null, identityDigest, normalizedVersion,
-        installed, missing, inventoryObserved, additionalModelCount, downloadObserved, networkClass, checks);
+        installed, missing, inventoryObserved, additionalModelCount, downloadObserved,
+        externalEgressControl, externalEgressIsolationVerified, networkClass, checks);
     } catch (error) {
       const code = error instanceof OllamaPreflightError
         ? error.code : OllamaPreflightFailureCode.UNEXPECTED_FAILURE;
@@ -151,7 +158,8 @@ export class OllamaInventoryPreflight {
       }
       return this.result(blockedCodes.has(code) ? OllamaPreflightStatus.BLOCKED : OllamaPreflightStatus.FAIL,
         code, identityDigest, normalizedVersion, installed, missing, inventoryObserved,
-        additionalModelCount, downloadObserved, networkClass, checks);
+        additionalModelCount, downloadObserved, externalEgressControl,
+        externalEgressIsolationVerified, networkClass, checks);
     }
   }
 
@@ -173,6 +181,25 @@ export class OllamaInventoryPreflight {
     return Math.max(0, OVERALL_TIMEOUT_MS - Math.max(0, this.nowMs() - startedAt));
   }
 
+  private validateEgressControl(
+    control: ExternalEgressControl,
+    isolationVerified: boolean,
+  ): { readonly control: ExternalEgressControl; readonly isolationVerified: boolean } {
+    if (
+      control === ExternalEgressControl.OS_DENIED_VERIFIED &&
+      isolationVerified === true
+    ) {
+      return { control, isolationVerified: true };
+    }
+    if (
+      control === ExternalEgressControl.CONFIG_RESTRICTED_RISK_ACCEPTED &&
+      isolationVerified === false
+    ) {
+      return { control, isolationVerified: false };
+    }
+    throw new OllamaPreflightError(OllamaPreflightFailureCode.NETWORK_CONTAINMENT_UNAVAILABLE);
+  }
+
   private result(
     status: OllamaPreflightStatus,
     failureCode: OllamaPreflightFailureCode | null,
@@ -183,6 +210,8 @@ export class OllamaInventoryPreflight {
     inventoryObserved: boolean,
     additionalModelCount: number,
     downloadObserved: boolean,
+    externalEgressControl: ExternalEgressControl | null,
+    externalEgressIsolationVerified: boolean,
     networkClass: OllamaPreflightNetworkClass | null,
     checks: readonly OllamaPreflightCheck[],
   ): OllamaPreflightResult {
@@ -197,7 +226,7 @@ export class OllamaInventoryPreflight {
       missingRequiredModels: Object.freeze([...missingRequiredModels]),
       inventoryObserved, additionalModelCount,
       downloadCapableCommandInvoked: false,
-      downloadObserved, networkClass,
+      downloadObserved, externalEgressControl, externalEgressIsolationVerified, networkClass,
       providerExecutionCount: 0, commandCount: checks.length,
       checks: Object.freeze([...checks]),
     });

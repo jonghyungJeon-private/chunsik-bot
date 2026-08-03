@@ -7,6 +7,18 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Stage 2B · Slice 5B-2A-E0 Honest Egress and Execution Composition
+
+- Replaced the boolean egress attestation with explicit `OS_DENIED_VERIFIED` and
+  `CONFIG_RESTRICTED_RISK_ACCEPTED` controls plus a separately projected isolation-verification fact. The
+  risk-accepted mode restricts binary, argv, environment, and endpoint configuration but does not technically
+  deny or prove denial of external egress.
+- Added an app-private strict invocation parser, concrete read-only filesystem and runner-owned sandbox adapters,
+  injected spawn composition, bounded console projection, and deterministic PASS/FAIL/BLOCKED/configuration exit
+  codes without wiring the preflight into `app.module.ts`.
+- Actual executable/version and installed inventory remain **NOT VERIFIED**. Ollama process, local daemon/network,
+  model inventory, and Provider generation were **NOT EXECUTED**; execution remains separately gated by 5B-2A-E.
+
 ### Added — Stage 2B · Slice 5B-2A-I Bounded Ollama Inventory Preflight
 
 - Added app-private typed preflight, executable-identity, command-policy, parser, process, and result contracts for
@@ -14,8 +26,7 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 - Added absolute-realpath executable validation, strict loopback/environment policy, bounded UTF-8/terminal parsing,
   exact required-model matching, positive argv allowlisting, download-marker observation, and fail-closed immutable
   non-persistent results.
-- Hardened the runner-owned exact child environment and hard settlement deadline; external-egress denial is
-  represented only as a caller-supplied, unverified attestation. The network class remains null until loopback
+- Hardened the runner-owned exact child environment and hard settlement deadline. The network class remains null until loopback
   endpoint/environment validation; afterward it classifies only that approved configuration, not observed
   connectivity, containment success, command success, or external-egress denial.
 - Actual executable/version and installed inventory remain **NOT VERIFIED**. Ollama process, local daemon, external

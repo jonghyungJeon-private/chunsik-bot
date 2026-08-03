@@ -5,6 +5,7 @@ import type { ChildProcess, SpawnOptions } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import {
   FINAL_SETTLEMENT_EPSILON_MS,
+  ExternalEgressControl,
   INVENTORY_STDOUT_LIMIT,
   KILL_GRACE_MS,
   MAX_EXECUTABLE_BYTES,
@@ -96,7 +97,9 @@ async function configured(
   return service.execute({
     executablePath: '/approved/ollama', approvedExecutable,
     loopbackEndpoint: 'http://127.0.0.1:11434',
-    externalEgressDeniedAttestation: true, ...patch,
+    externalEgressControl: ExternalEgressControl.CONFIG_RESTRICTED_RISK_ACCEPTED,
+    externalEgressIsolationVerified: false,
+    ...patch,
   });
 }
 
@@ -468,10 +471,11 @@ describe('Ollama inventory preflight orchestration', () => {
     expect(runner.requests).toHaveLength(1);
   });
 
-  it('blocks before commands when egress containment is unavailable or executable changes', async () => {
+  it('blocks before commands when egress control is invalid or executable changes', async () => {
     const noNetworkRunner = new FakeRunner([]);
     const noNetwork = await configured(noNetworkRunner, new FakeFileSystem(), {
-      externalEgressDeniedAttestation: false,
+      externalEgressControl: ExternalEgressControl.OS_DENIED_VERIFIED,
+      externalEgressIsolationVerified: false,
     });
     expect(noNetwork.failureCode).toBe(OllamaPreflightFailureCode.NETWORK_CONTAINMENT_UNAVAILABLE);
     expect(noNetwork.networkClass).toBeNull();
@@ -496,6 +500,41 @@ describe('Ollama inventory preflight orchestration', () => {
       failureCode: OllamaPreflightFailureCode.EXECUTABLE_IDENTITY_MISMATCH, commandCount: 0 });
     expect(mismatchRunner.requests).toHaveLength(0);
     expect(mismatch.networkClass).toBeNull();
+  });
+
+  it.each([
+    [ExternalEgressControl.OS_DENIED_VERIFIED, true],
+    [ExternalEgressControl.CONFIG_RESTRICTED_RISK_ACCEPTED, false],
+  ] as const)('projects explicit egress control %s independently from network class', async (
+    externalEgressControl,
+    externalEgressIsolationVerified,
+  ) => {
+    const runner = new FakeRunner([processResult('1.2.3', { timedOut: true })]);
+    const result = await configured(runner, new FakeFileSystem(), {
+      externalEgressControl,
+      externalEgressIsolationVerified,
+    });
+    expect(result).toMatchObject({ externalEgressControl, externalEgressIsolationVerified,
+      networkClass: 'LOOPBACK_DAEMON' });
+  });
+
+  it.each([
+    ['UNKNOWN' as ExternalEgressControl, false],
+    [undefined as unknown as ExternalEgressControl, false],
+    [ExternalEgressControl.CONFIG_RESTRICTED_RISK_ACCEPTED, true],
+  ] as const)('blocks unknown, missing, or inconsistent egress control %#', async (
+    externalEgressControl,
+    externalEgressIsolationVerified,
+  ) => {
+    const runner = new FakeRunner([]);
+    const result = await configured(runner, new FakeFileSystem(), {
+      externalEgressControl,
+      externalEgressIsolationVerified,
+    });
+    expect(result).toMatchObject({ status: OllamaPreflightStatus.BLOCKED,
+      failureCode: OllamaPreflightFailureCode.NETWORK_CONTAINMENT_UNAVAILABLE,
+      externalEgressControl: null, externalEgressIsolationVerified: false, networkClass: null });
+    expect(runner.requests).toHaveLength(0);
   });
 
   it('revalidates executable identity after VERSION and before INVENTORY', async () => {

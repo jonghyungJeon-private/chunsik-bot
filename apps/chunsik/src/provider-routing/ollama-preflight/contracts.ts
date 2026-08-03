@@ -48,6 +48,11 @@ export enum OllamaPreflightCommandCategory {
   INVENTORY = 'INVENTORY',
 }
 
+export enum ExternalEgressControl {
+  OS_DENIED_VERIFIED = 'OS_DENIED_VERIFIED',
+  CONFIG_RESTRICTED_RISK_ACCEPTED = 'CONFIG_RESTRICTED_RISK_ACCEPTED',
+}
+
 /**
  * Classifies validated endpoint/environment configuration only. It does not attest to observed
  * connectivity, command success, process-containment success, or external-egress denial.
@@ -96,6 +101,8 @@ export interface OllamaPreflightResult {
   readonly additionalModelCount: number;
   readonly downloadCapableCommandInvoked: false;
   readonly downloadObserved: boolean;
+  readonly externalEgressControl: ExternalEgressControl | null;
+  readonly externalEgressIsolationVerified: boolean;
   readonly networkClass: OllamaPreflightNetworkClass | null;
   readonly providerExecutionCount: 0;
   readonly commandCount: number;
