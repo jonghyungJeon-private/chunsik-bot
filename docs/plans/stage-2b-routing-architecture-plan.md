@@ -1,9 +1,25 @@
 # Stage 2B Production Routing Architecture Plan
 
-- **Status:** Planning only — architecture and implementation are not yet ratified.
+- **Status:** Architecture ratified by ADR-0064. Slices 1–5A are implemented; Slice 5A is an offline
+  Runtime integration seam only. Real descriptor/policy/binding configuration, composition-root activation,
+  Runtime/Discord execution, and external Provider invocation remain deferred and require separate approval.
 - **Input:** Completed Stage 2A Provider Evaluation Infrastructure and frozen A1+A3 evidence.
 - **Current candidates:** balanced primary `llama3.1:8b`; semantic candidate `granite3.3:8b`;
   latency-only evidence `llama3.2:3b`; deprioritized `mistral:7b`.
+
+The objectives, candidate comparison, and open questions below are the retained pre-ratification analysis.
+ADR-0064 is the canonical decision record when this historical plan differs from the implemented architecture.
+
+## Implementation Status
+
+- Slices 1–4 implement and validate provider-independent selection, bounded planning/Gateway orchestration,
+  validation, audit, and private deterministic simulation.
+- Slice 5A adds `RuntimeProviderRoutingService` in Core and an optional `ConversationRuntime` seam for only
+  TaskRun-backed `GENERAL_CHAT` work turns. It uses static Runtime facts, one availability probe per configured
+  executable per request, the fixed `GENERAL_CHAT` validation profile, and existing Task/TaskRun lifecycles.
+- Slice 5A uses fake configuration and fake Providers only. The app composition root remains unchanged, so the
+  currently configured Claude/Ollama instances do not use this seam.
+- Real Provider activation, Runtime/Discord action, network execution, and live validation remain deferred.
 
 ## Objectives
 
@@ -79,8 +95,8 @@ semantic escalation and must define whether an additional Provider call is permi
 Consider `llama3.2:3b` only for a future, explicitly bounded low-risk role where latency dominates.
 Its Stage 2A Semantic and Instruction results do not support general-purpose Production routing.
 
-These are comparison candidates, not approved Production Architecture. `DUAL_PROVIDER` remains
-unratified until routing, escalation, retry, timeout, and traffic policies are defined together.
+These are retained comparison candidates, not an authorization to activate concrete Production routing.
+`DUAL_PROVIDER` production activation remains unratified and deferred.
 
 ## Open Questions
 

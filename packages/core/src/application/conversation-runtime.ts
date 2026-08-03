@@ -89,6 +89,11 @@ import type {
   PatchSetPreview,
   TestResultDetail,
 } from './response-composer';
+import { ProviderGatewayTerminalStatus } from './provider-routing-gateway';
+import type {
+  RuntimeProviderRouting,
+  RuntimeProviderRoutingAudit,
+} from './runtime-provider-routing-service';
 import type { IntentResolutionContext } from './intent-resolver';
 import { extractTargetPathCandidates, normalizeRelativePath } from './target-scope';
 import { MAX_COMMIT_MESSAGE_CHARS, isValidCommitMessage } from './commit-message';
@@ -544,7 +549,11 @@ export interface ConversationRuntimeDeps {
       run: TaskRun,
       opts: { artifactIds: Id[]; providerId?: string; metadata?: Metadata },
     ): Promise<unknown>;
-    failRun(run: TaskRun, summary: string, opts: { providerId?: string }): Promise<unknown>;
+    failRun(
+      run: TaskRun,
+      summary: string,
+      opts: { providerId?: string; metadata?: Metadata },
+    ): Promise<unknown>;
   };
   readonly workspace: {
     prepare(task: Task): Promise<WorkspaceRef | undefined>;
@@ -568,6 +577,8 @@ export interface ConversationRuntimeDeps {
     render(spec: PromptSpec, opts: { capability: Capability; workspace?: WorkspaceRef }): AiRequest;
   };
   readonly router: { select(capability: Capability): Promise<AiProvider> };
+  /** Optional Slice 5A seam. Only TaskRun-backed GENERAL_CHAT work turns may use it. */
+  readonly runtimeProviderRouting?: RuntimeProviderRouting;
   readonly artifacts: { persistAll(taskId: Id, runId: Id, artifacts: Artifact[]): Promise<Id[]> };
   readonly composer: ResponseComposer;
   readonly risk: { requiresApproval(level: RiskLevel): boolean };
@@ -5049,6 +5060,7 @@ export class ConversationRuntime {
     const run = await this.deps.tasks.startRun(task, capability);
 
     let providerId: string | undefined;
+    let routingAudit: RuntimeProviderRoutingAudit | undefined;
     try {
       const workspace = ConversationRuntime.needsWorkspace(capability)
         ? await this.deps.workspace.prepare(task)
@@ -5059,6 +5071,63 @@ export class ConversationRuntime {
         capability,
         ...(workspace ? { workspace } : {}),
       });
+
+      if (capability === Capability.GENERAL_CHAT && this.deps.runtimeProviderRouting) {
+        const routed = await this.deps.runtimeProviderRouting.execute({
+          facts: {
+            capability,
+            intentType: intent.type,
+            requiresWork: intent.requiresWork,
+          },
+          request: aiRequest,
+          executionId: run.id,
+        });
+        routingAudit = routed.audit;
+
+        if (routed.status === ProviderGatewayTerminalStatus.ACCEPTED) {
+          if (routed.output === undefined || routed.acceptedProviderId === undefined) {
+            throw new Error('Accepted routing result is incomplete');
+          }
+          providerId = routed.acceptedProviderId;
+          const artifacts: Artifact[] = routed.output.artifacts.map((artifact) => ({ ...artifact }));
+          const artifactIds = await this.deps.artifacts.persistAll(task.id, run.id, artifacts);
+          await this.deps.tasks.completeRun(run, {
+            artifactIds,
+            providerId,
+            metadata: { routingAudit },
+          });
+          await this.deps.memory.recordAssistant(
+            routed.output.text,
+            message.context,
+            task.sessionId ?? session.id,
+          );
+          await this.deps.tasks.transition(task, TaskStatus.COMPLETED);
+          const reply = this.deps.composer.compose(
+            message.context,
+            { text: routed.output.text, artifacts },
+            artifacts,
+          );
+          return this.responded(session, reply);
+        }
+
+        await this.deps.tasks.failRun(run, `Provider routing ended with ${routed.status}`, {
+          metadata: { routingAudit },
+        });
+        await this.deps.tasks.transition(
+          task,
+          routed.status === ProviderGatewayTerminalStatus.HUMAN_REVIEW_REQUIRED
+            ? TaskStatus.NEEDS_REVIEW
+            : TaskStatus.FAILED,
+        );
+        this.deps.logger.error('provider routing ended without accepted output', {
+          taskId: task.id,
+          runId: run.id,
+          status: routed.status,
+        });
+        const reply = this.deps.composer.composeProviderRoutingTerminal(message.context, routed.status);
+        return { status: 'FAILED', reply, sessionId: session.id };
+      }
+
       const provider = await this.deps.router.select(capability);
       providerId = provider.id;
       const result = await provider.execute(aiRequest);
@@ -5081,7 +5150,10 @@ export class ConversationRuntime {
       return this.responded(session, reply);
     } catch (err) {
       const failure = describeAiFailure(err);
-      await this.deps.tasks.failRun(run, failure.errorSummary, providerId ? { providerId } : {});
+      await this.deps.tasks.failRun(run, failure.errorSummary, {
+        ...(providerId ? { providerId } : {}),
+        ...(routingAudit ? { metadata: { routingAudit } } : {}),
+      });
       await this.deps.tasks.transition(task, TaskStatus.FAILED);
       this.deps.logger.error('work turn failed', { taskId: task.id, runId: run.id, kind: failure.kind });
       const reply = this.deps.composer.composeError(message.context, failure.userMessage);

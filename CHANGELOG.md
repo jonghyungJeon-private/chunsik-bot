@@ -7,6 +7,21 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Stage 2B · Slice 5A Offline Runtime Integration Seam
+
+- Added the Core `RuntimeProviderRoutingService` collaborator for TaskRun-backed `GENERAL_CHAT` work turns. It
+  deterministically maps bounded Runtime facts, probes each configured executable Provider at most once into an
+  immutable availability snapshot, then composes the existing Registry → Policy → Planner → Gateway chain.
+- Added fail-closed `ConversationRuntime` integration with no legacy-selector fallback after the seam is selected.
+  Accepted output persists bounded artifacts and completes the existing TaskRun/Task lifecycle; human-review and
+  failure terminal categories reuse `NEEDS_REVIEW` or `FAILED` without a new aggregate or status.
+- Added bounded `routingAudit` TaskRun metadata for accepted and non-accepted outcomes, plus additive failed-run
+  metadata persistence. A non-accepted run receives no representative `providerId`, and user-facing terminal
+  wording exposes no Provider/model identity, prompt, raw output/error, reasoning, or configuration digest.
+- Kept Code Generation, Project Analysis, no-work chat, and all other Capabilities on their legacy paths. Production
+  app wiring, actual descriptors/policies/bindings, external Provider execution, Runtime/Discord, network, secret,
+  and database work remain deferred.
+
 ### Added — Stage 2B · Slice 4 Deterministic Routing Selection Simulation
 
 - Added an independent provider-free selection subtree to the private routing validation package. Strict static

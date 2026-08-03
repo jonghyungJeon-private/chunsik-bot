@@ -52,3 +52,4 @@ export * from './deadline-policy';
 export * from './runtime-response-validation-contracts';
 export * from './validation-profile-registry';
 export * from './runtime-response-validator';
+export * from './runtime-provider-routing-service';

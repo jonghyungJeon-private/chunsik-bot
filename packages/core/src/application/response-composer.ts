@@ -13,6 +13,12 @@ import { newId } from '../util/id';
 import { buildCanonicalDiff } from './preview-delivery';
 import { formatSafeErrorText } from './safe-error';
 import type { SafeError, SafeErrorContext } from './safe-error';
+import { ProviderGatewayTerminalStatus } from './provider-routing-gateway';
+
+export type ProviderRoutingTerminalReplyStatus = Exclude<
+  ProviderGatewayTerminalStatus,
+  ProviderGatewayTerminalStatus.ACCEPTED
+>;
 
 /**
  * Read-only display context for the last post-apply validation run (Sprint 2w, ADR-0044). `'none'` = no
@@ -478,6 +484,24 @@ export class ResponseComposer {
             ? '작업을 취소했어요.'
             : '작업을 진행하던 중 문제가 생겨서 멈췄어요. 다시 시도해 주세요.'; // STOPPED_ON_FAILURE
     return { context, text, ...(artifacts.length ? { artifacts } : {}) };
+  }
+
+  /** Bounded Stage 2B terminal wording. Internal routing identity, raw output, and failure detail stay out. */
+  composeProviderRoutingTerminal(
+    context: ConversationContext,
+    status: ProviderRoutingTerminalReplyStatus,
+  ): OutboundMessage {
+    const text =
+      status === ProviderGatewayTerminalStatus.HUMAN_REVIEW_REQUIRED
+        ? '응답을 자동으로 확정할 수 없어 검토가 필요해요.'
+        : status === ProviderGatewayTerminalStatus.REJECTED
+          ? '응답이 검증 기준을 통과하지 못해 전달하지 않았어요. 다시 시도해 주세요.'
+          : status === ProviderGatewayTerminalStatus.SAFETY_BLOCKED
+            ? '안전 검증에서 문제가 확인되어 응답을 전달하지 않았어요.'
+            : status === ProviderGatewayTerminalStatus.CONFIGURATION_FAILED
+              ? '응답 처리 구성이 올바르지 않아 작업을 완료하지 못했어요.'
+              : '응답 생성 중 문제가 생겨 작업을 완료하지 못했어요. 다시 시도해 주세요.';
+    return { context, text };
   }
 
   /** A user-facing failure reply (ADR-0015). Never includes technical detail. */

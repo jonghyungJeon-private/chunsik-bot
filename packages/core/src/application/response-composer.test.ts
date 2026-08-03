@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { ConversationContext, GitDiff, GitStatus } from '../domain';
 import { ResponseComposer } from './response-composer';
 import type { CodeChangePreview, CodeDiffPreview, PatchSetPreview, TestResultDetail } from './response-composer';
+import { ProviderGatewayTerminalStatus } from './provider-routing-gateway';
 
 const CTX: ConversationContext = { platform: 'test', channelId: 'c1', userId: 'u1' };
 const composer = new ResponseComposer();
@@ -14,6 +15,23 @@ const detailOf = (o: Partial<TestResultDetail> = {}): TestResultDetail => ({
   stdout: '',
   stderr: '',
   ...o,
+});
+
+describe('ResponseComposer.composeProviderRoutingTerminal', () => {
+  it.each([
+    ProviderGatewayTerminalStatus.HUMAN_REVIEW_REQUIRED,
+    ProviderGatewayTerminalStatus.REJECTED,
+    ProviderGatewayTerminalStatus.SAFETY_BLOCKED,
+    ProviderGatewayTerminalStatus.CONFIGURATION_FAILED,
+    ProviderGatewayTerminalStatus.EXECUTION_FAILED,
+  ])('renders bounded category wording for %s without internal routing detail', (status) => {
+    const reply = composer.composeProviderRoutingTerminal(CTX, status);
+
+    expect(reply.text.length).toBeLessThan(200);
+    expect(reply.text).not.toMatch(
+      /provider-a|opaque-model|private prompt|raw output|raw error|reasoning|[a-f0-9]{64}/i,
+    );
+  });
 });
 
 // ── Sprint 2m — Test Result Detail UX (ADR-0034) ────────────────────────────────────────────────

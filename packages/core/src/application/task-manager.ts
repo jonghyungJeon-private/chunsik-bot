@@ -107,7 +107,7 @@ export class TaskManager {
   async failRun(
     run: TaskRun,
     error: string,
-    info: { providerId?: string } = {},
+    info: { providerId?: string; metadata?: Metadata } = {},
   ): Promise<TaskRun> {
     const finishedAt = now();
     const updated: TaskRun = {
@@ -117,6 +117,7 @@ export class TaskManager {
       finishedAt,
       durationMs: TaskManager.elapsed(run.startedAt, finishedAt),
       ...(info.providerId ? { providerId: info.providerId } : {}),
+      ...(info.metadata ? { metadata: info.metadata } : {}),
     };
     return this.storage.taskRuns.save(updated);
   }

@@ -5,24 +5,20 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** **Version 2, Phase 2 (Application Layer), Sprint 2m — Test Result Detail UX** (ADR-0034,
-  CA-directed): existing `CommandExecution` facts (`command`, `args`, `exitCode`, `stdout`, `stderr`,
-  `durationMs`) now reach the user, instead of bare pass/fail. **Sprint 2l (Live Test Execution,
-  ADR-0033) and Sprint 2j/2k (Execution Orchestrator / Conversation Runtime) merged; Phase 1
-  (CAP-001…009) closed.** `ConversationRuntime.frameTestResult` branches three ways
-  (`SUCCEEDED`/`FAILED` ran → detail result; `TIMED_OUT` → distinct timeout reply; no
-  `CommandExecution` → unchanged `composeCommandUnavailable`) and assembles a new Application-layer
-  `TestResultDetail` DTO (not domain, not persisted); `ResponseComposer.composeTestResult` (signature
-  changed) and the new `composeTestTimedOut` own all summarization (deterministic tail/char-capped
-  excerpt, stdout-preferred with an omitted-stream notice when `stderr` also had output) and Korean
-  wording. No second masking pass (adapter boundary, ADR-0028, already redacts/caps). **Reuse only —
-  no new capability/aggregate/repository/migration/port; no Core/Orchestrator contract change.**
-  Implemented on a branch — **awaiting CA implementation review, no merge.**
-- **Next:** Independent Chief Architect implementation review of Stage 2B Slice 4. Runtime integration and actual
-  external Provider invocation remain unapproved.
-- **Build/Test (Stage 2B Slice 4):** focused selection/execution Harness and Core routing regression 4 files /
-  48 tests PASS; `pnpm typecheck`, private Harness build, production build, and `git diff --check` PASS. No
-  external Provider, Runtime, network, or database execution was part of this slice.
+- **Phase:** **Stage 2B Slice 5A — Offline Runtime Integration Seam** (ADR-0064). Core now contains the optional
+  `RuntimeProviderRoutingService` and `ConversationRuntime` integration for TaskRun-backed `GENERAL_CHAT` work
+  turns only. Bounded Runtime facts deterministically produce the fixed `GENERAL_CHAT` routing context/profile;
+  per-request availability is snapshotted once per configured executable before the existing Policy → Planner →
+  Gateway chain. Terminal results reuse existing Task/TaskRun lifecycles and persist bounded `routingAudit`
+  metadata without a migration. Code Generation, Project Analysis, no-work chat, and all other Capabilities retain
+  their legacy paths.
+- **Next:** Independent Chief Architect implementation review of Stage 2B Slice 5A. Actual provider descriptors,
+  policies, bindings, app composition activation, external Provider execution, Runtime/Discord action, and live
+  validation remain deferred and unapproved.
+- **Build/Test (Stage 2B Slice 5A):** focused Core routing/seam/lifecycle/composer/TaskManager/CodeGeneration plus
+  private Harness regression 19 files / 715 tests PASS; `pnpm typecheck`, Core build, private Harness build, app
+  build, and `git diff --check` PASS. Validation used fake Providers only; no Runtime, external Provider, network, Discord,
+  secret, or database execution occurred.
 
 ## Stage 2A — Completed
 
@@ -37,12 +33,10 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 - **Provider Ranking:** Balanced Primary Candidate — `llama3.1:8b`; Semantic Candidate —
   `granite3.3:8b`; latency-only evidence — `llama3.2:3b`; `mistral:7b` deprioritized.
 - **Prompt Root Cause:** **NOT ESTABLISHED**.
-- **Stage 2B:** Architecture and Option B typed policy foundation are ratified in ADR-0064. Slice 1
-  implements Provider-free deterministic selection. Slice 2 adds an immutable execution plan, executable-binding
-  registry, isolated single-attempt gateway, and bounded audit. Runtime integration, actual external Provider
-  execution, traffic policy, and dual-provider activation remain unapproved/unimplemented. Slice 3A added immutable
-  validation/failure contracts, pure response validation, bounded output projection, and pre-fixed declarative
-  branches. Slice 3B adds bounded two-attempt Gateway orchestration without Runtime wiring.
+- **Stage 2B:** Architecture and Option B typed policy foundation are ratified in ADR-0064. Slices 1–4 implement
+  deterministic selection, immutable planning/binding, bounded two-attempt Gateway orchestration, response
+  validation, audit, and private simulation. Slice 5A adds the offline Core Runtime integration seam for only
+  TaskRun-backed `GENERAL_CHAT`; real app composition and external Provider execution remain deferred.
 
 ## Stage 2B — Slice 4 Deterministic Routing Selection Simulation
 
@@ -59,6 +53,22 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   Coverage includes policy match/absence, eligibility/no-eligible, disabled/unavailable filtering,
   preference/ranking, stable ordering, and one Authority × Safety × Ranking cross-scenario. Provider invocations
   remain zero.
+
+## Stage 2B — Slice 5A Offline Runtime Integration Seam
+
+- **Boundary:** optional Core Application collaborator plus `ConversationRuntime` integration for only
+  TaskRun-backed `GENERAL_CHAT` work turns. The app composition root is intentionally unchanged.
+- **Context/profile:** exact static enum mapping from existing Runtime facts; `GENERAL_CHAT` validation profile is
+  fixed upstream. There is no message reclassification, Provider/model branch, evidence lookup, clock/random use,
+  or I/O in the mapping.
+- **Availability/execution:** each configured executable Provider is probed at most once per request, producing one
+  immutable snapshot consumed by Registry → Policy → Planner → Gateway. Gateway never re-probes availability.
+- **Lifecycle/audit:** accepted bounded output persists artifacts and completes TaskRun/Task. Human review reuses
+  `NEEDS_REVIEW`; rejected, safety, configuration, and execution failures reuse `FAILED`. Every outcome persists
+  bounded `routingAudit`; only accepted output records its actual Provider on `TaskRun.providerId`.
+- **Rollout:** once this seam handles a request, no legacy selection fallback or shadow comparison occurs.
+  Project Analysis, Code Generation, no-work chat, and other Capabilities remain legacy. Tests use fake Providers;
+  actual descriptors/policies/bindings, app activation, Runtime/Discord, and external execution remain deferred.
 
 ## Stage 2B — Slice 3C Deterministic Validation Harness
 
@@ -141,6 +151,10 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 
 ## Implemented
 
+- **Stage 2B Slice 5A offline Runtime integration (ADR-0064)** — added deterministic bounded Runtime-context
+  mapping, one-probe immutable availability snapshots, the existing selection/plan/Gateway composition, existing
+  lifecycle terminal mapping, bounded TaskRun `routingAudit`, safe terminal replies, and fail-closed no-legacy
+  fallback behavior. Production Provider/app activation remains absent.
 - **Stage 2B Slice 3A validation/planning contracts (ADR-0064)** — added validation profiles, deterministic Runtime
   response validation, bounded output projection, a versioned failure matrix, deadline class, target-purpose and
   branch contracts, candidate pre-fixation, and execution configuration/decision/plan identities while preserving
@@ -263,7 +277,7 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   (timeout/refusal/open-failure) is a system-failure reply. `ResponseComposer` gains
   `composeTestResult`/`composeNeedsProject`/`composeWorkspaceUnavailable`/`composeCommandUnavailable`.
   Risk MEDIUM, no approval halt. Reuse only — no new capability/aggregate/repository/migration, no
-  Core/Orchestrator contract change (ADR-0033). *(awaiting CA implementation review)*
+  Core/Orchestrator contract change (ADR-0033).
 
 ## Deferred
 

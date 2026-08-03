@@ -4364,14 +4364,16 @@ Gate 6. Each requires separate explicit approval.
 
 ## ADR-0064 — Provider Routing Policy and Registry Ownership
 
-- **Status:** ✅ Accepted — Stage 2B Architecture and Slices 1–4 implemented under Chief Architect direction.
-  Runtime integration and actual external Provider execution require later approval.
+- **Status:** ✅ Accepted — Stage 2B Architecture and Slices 1–5A implemented under Chief Architect direction.
+  Slice 5A is offline integration only; real app activation and actual external Provider execution require later
+  approval.
 - **Date:** 2026-08-02
 - **Scope:** Core Application routing contracts, immutable descriptor and executable-binding registries, typed
   policy evaluation, deterministic selection decisions, immutable executable-binding and validation-profile
   registries, pure response validation, explicit bounded branch planning, bounded two-attempt Gateway
-  orchestration, bounded output/audit contracts, and configuration identity. No Runtime wiring or external
-  Provider execution.
+  orchestration, bounded output/audit contracts, configuration identity, and the offline TaskRun-backed
+  `GENERAL_CHAT` Runtime integration seam. No concrete Provider routing configuration, composition-root activation,
+  or external Provider execution.
 
 ### Context
 
@@ -4403,10 +4405,10 @@ or concrete Provider/model branch.
 
 ### Routing Boundary
 
-Intent classification continues to own `Intent` and `Capability`. A future Runtime integration slice will construct
-only bounded `RoutingContext` signals and consume the resulting decision. Routing policy does not classify natural
-language, compose prompts, invoke Providers, validate responses, mutate Task/Session state, or surface Provider
-identity to the user.
+Intent classification continues to own `Intent` and `Capability`. Slice 5A constructs bounded `RoutingContext`
+signals from existing Runtime facts for only TaskRun-backed `GENERAL_CHAT` and consumes the resulting decision
+through the existing Planner and Gateway. Routing policy does not classify natural language, compose prompts,
+invoke Providers, validate responses, mutate Task/Session state, or surface Provider identity to the user.
 
 Slice 1 contains no `AiProvider` executable binding. Descriptor registration and selection computation are kept
 separate so implementing the foundation cannot accidentally cross the invocation boundary.
@@ -4495,7 +4497,9 @@ benchmark tool and is not imported as a Runtime gate. A future Runtime validator
 The Slice 1 decision exposes only bounded facts: selected Provider id or null, sorted eligible ids, matched policy
 id or null, bounded reason code, policy/registry versions, and combined configuration digest. It contains no prompt,
 transcript, response, reasoning, fallback chain, attempt, latency, raw error, credential, or environment value.
-Persistence and `TaskRun` audit integration are deferred.
+Slice 5A persists a bounded wrapper plus Gateway audit under TaskRun metadata `routingAudit` for every terminal
+outcome. Only an accepted output records its actual executable identity in `TaskRun.providerId`; no schema migration
+or new persistence owner is introduced.
 
 ### Architecture Invariants
 
@@ -4547,7 +4551,10 @@ Persistence and `TaskRun` audit integration are deferred.
    dependency or external Provider execution.
 6. **Slice 4 — complete here:** provider-free selection simulation and Golden routing decisions; stops before
    execution planning.
-7. **Slice 5 — Strict approval:** real Provider preflight/UAT and any Runtime/Discord action.
+7. **Slice 5A — complete here:** offline Core Runtime integration seam for TaskRun-backed `GENERAL_CHAT`, fake
+   configuration/Providers, existing lifecycle mapping, and bounded TaskRun audit; no app activation.
+8. **Slice 5B+ — Strict approval:** real descriptor/policy/binding composition, Provider preflight/UAT, external
+   Provider execution, and any Runtime/Discord action.
 
 ### Slice 2 — Selection / Execution Separation
 
@@ -4681,9 +4688,48 @@ unavailable filtering, no-eligible termination, configured preference and rankin
 safety-sensitive, and ranking decision. Fresh replay and one fixed order permutation must produce the same exact
 decision and digest; stable provider-id ordering remains a Core implementation detail rather than a fixture API.
 
+### Slice 5A — Offline Runtime Integration Seam
+
+`RuntimeProviderRoutingService` is a narrow Core Application collaborator. It accepts only bounded Runtime facts,
+an already-rendered provider-agnostic `AiRequest`, and caller-owned TaskRun execution identity, then composes:
+
+```text
+static GENERAL_CHAT RoutingContext
+→ one immutable availability snapshot
+→ ProviderRegistrySnapshot
+→ RoutingPolicyEngine
+→ ProviderExecutionPlanner
+→ ProviderRoutingGateway
+→ one bounded terminal result
+```
+
+The mapping supports only `Capability.GENERAL_CHAT + IntentType.CHAT + requiresWork=true`, fixes the
+`GENERAL_CHAT` validation profile and `STANDARD` deadline class, and performs no natural-language analysis,
+Provider/model branching, evidence lookup, clock/random access, or I/O. Each configured executable binding's
+`isAvailable()` is called at most once per request; a thrown probe becomes `UNAVAILABLE`, and the Gateway never
+re-probes. Construction validates registry/binding/profile identity without invoking a Provider.
+
+`ConversationRuntime` uses the collaborator only when it is explicitly injected and the request is a TaskRun-backed
+`GENERAL_CHAT` work turn. After this branch is selected, selection, configuration, validation, safety, or execution
+failure is terminal and never falls back to `CapabilityRouter`; no shadow selection or comparison is performed.
+Project Analysis, Code Generation, no-work chat, and every other Capability retain their legacy path.
+
+Accepted bounded output persists artifacts, completes the TaskRun with the actual accepted executable id, and then
+completes the Task. Human-review-required reuses `TaskStatus.NEEDS_REVIEW`; rejected, safety-blocked,
+configuration-failed, and execution-failed reuse the existing failed lifecycle. Every terminal result stores bounded
+`routingAudit` metadata; non-accepted runs receive no representative `providerId`. `ResponseComposer` maps only the
+terminal category and receives no Provider/model identity, prompt, raw output/error, reasoning, or configuration
+digest.
+
+Slice 5A defines only typed configuration boundaries and fake integration tests. It adds no concrete Claude/Ollama
+descriptor, policy, binding, or composition-root wiring and performs no Runtime, Discord, network, database, secret,
+or external Provider execution. The private validation package remains outside the production import/reference
+graph.
+
 ### Relations
 
 Extends `ARCHITECTURE.md` Provider Rule 2 and ADR-0029's `ProviderSelector` seam. It does not change ADR-0015
 Provider failure handling, ADR-0031 orchestration, ADR-0032 Conversation Runtime, ADR-0063 context provenance,
-Stage 2A evidence, or existing Provider execution. The legacy Runtime selection path remains unchanged until a
-separately approved integration slice.
+Stage 2A evidence, or existing concrete Provider execution. Slice 5A adds the optional offline seam while leaving
+the production composition root and all legacy out-of-scope paths unchanged; real activation remains separately
+approved work.

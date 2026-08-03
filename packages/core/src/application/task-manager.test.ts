@@ -94,4 +94,24 @@ describe('TaskManager TaskRun audit metadata', () => {
 
     expect(completed).not.toHaveProperty('metadata');
   });
+
+  it('persists routing metadata on a failed TaskRun without inventing a providerId', async () => {
+    const { manager, saved } = managerWithSavedRuns();
+    const metadata: Metadata = {
+      routingAudit: {
+        schemaVersion: 'runtime-provider-routing-audit-v1',
+        terminalStatus: 'EXECUTION_FAILED',
+      },
+    };
+
+    const failed = await manager.failRun(runOf(), 'bounded routing failure', { metadata });
+
+    expect(failed).toMatchObject({
+      status: TaskRunStatus.FAILED,
+      error: 'bounded routing failure',
+      metadata,
+    });
+    expect(failed).not.toHaveProperty('providerId');
+    expect(saved.at(-1)?.metadata).toEqual(metadata);
+  });
 });

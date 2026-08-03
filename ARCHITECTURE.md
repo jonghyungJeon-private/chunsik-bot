@@ -108,10 +108,11 @@ fixed; the implementations are not.
    deterministic lexicographic ranking, and ineligible Providers never enter
    ranking. Concrete model tags, executables, Runtime benchmark lookup, and
    provider-id conditionals never appear in Application policy source. The
-   existing `CapabilityRouter` priority path remains the Runtime invocation path
-   until a separately approved integration slice replaces it. Stage 2B Slice 1
-   only computes decisions; Slice 2 adds an isolated single-attempt execution
-   boundary without wiring Runtime or Code Generation (ADR-0064).
+   existing `CapabilityRouter` priority path remains the legacy invocation path.
+   Stage 2B Slice 5A adds an optional Core Application integration seam only for
+   TaskRun-backed `GENERAL_CHAT` work turns; the production composition root does
+   not activate it. Project Analysis, Code Generation, no-work chat, and every
+   other Capability remain on their existing paths (ADR-0064).
 3. The selected provider `id` is **audit-only** (on `TaskRun`). It MUST NOT be
    surfaced to the user by default.
 4. **Provider-specific prompt shaping happens in the adapter.** Core emits a
@@ -142,9 +143,15 @@ fixed; the implementations are not.
    and pre-execution escalation are prohibited. Slice 3B makes the Gateway the
    sole owner of a validation-gated, deadline-bounded execution state machine:
    primary plus at most one mutually exclusive fallback or escalation attempt,
-   followed by exactly one bounded terminal result. Runtime integration and
-   actual external Provider execution remain separate approval boundaries
-   (ADR-0064). Slice 3C validates this boundary through a private test-only
+   followed by exactly one bounded terminal result. Slice 5A composes the approved
+   selection/plan/Gateway chain behind the optional Runtime seam, snapshots each
+   configured executable's availability at most once per request, maps terminal
+   results onto existing Task/TaskRun lifecycles, and persists bounded
+   `routingAudit` metadata without a schema migration. It never falls back to the
+   legacy selector after the seam is chosen. Actual descriptor/policy/binding
+   configuration, composition-root activation, and external Provider execution
+   remain separate approval boundaries (ADR-0064). Slice 3C validates the Gateway
+   boundary through a private test-only
    workspace package with strict static JSON fixtures, scripted Providers and
    monotonic time, and a Harness-owned canonical audit projection. Its dependency
    is one-way into Core; production packages and apps must never import it.

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   AiFailureKind,
   ApprovalStatus,
+  ArtifactKind,
   Capability,
   CodeGenerationStatus,
   CommandExecutionStatus,
@@ -79,6 +80,13 @@ import { StatelessApprovalFlow } from './stateless-approval-flow';
 import { RepositoryHostingBlockedError, RepositoryHostingUnverifiedError } from './repository-hosting-manager';
 import { RemoteBranchCleanupBlockedError, RemoteBranchCleanupUnverifiedError } from '../domain';
 import { BranchCleanupBlockedError, BranchCleanupUnverifiedError, GitMainSyncBlockedError, GitMainSyncUnverifiedError, GitPushBlockedError } from './git-manager';
+import { ProviderGatewayTerminalStatus } from './provider-routing-gateway';
+import { providerId } from './provider-routing-contracts';
+import { RoutingFailureCode } from './runtime-response-validation-contracts';
+import type {
+  RuntimeProviderRoutingAudit,
+  RuntimeProviderRoutingResult,
+} from './runtime-provider-routing-service';
 
 const TS = '2026-07-01T00:00:00.000Z';
 const CTX: ConversationContext = { platform: 'test', channelId: 'c1', userId: 'u1' };
@@ -6758,6 +6766,65 @@ const workTurnHappyPathDeps = () => ({
   promptRenderer: { render() { return {} as unknown as AiRequest; } },
 });
 
+function routedResultOf(status: ProviderGatewayTerminalStatus): RuntimeProviderRoutingResult {
+  const accepted = status === ProviderGatewayTerminalStatus.ACCEPTED;
+  const failureCode = accepted
+    ? null
+    : status === ProviderGatewayTerminalStatus.REJECTED
+      ? RoutingFailureCode.EMPTY_OUTPUT
+      : status === ProviderGatewayTerminalStatus.SAFETY_BLOCKED
+        ? RoutingFailureCode.PROMPT_LEAK
+        : status === ProviderGatewayTerminalStatus.CONFIGURATION_FAILED
+          ? RoutingFailureCode.ROUTING_CONFIGURATION_MISMATCH
+          : status === ProviderGatewayTerminalStatus.HUMAN_REVIEW_REQUIRED
+            ? RoutingFailureCode.SEMANTIC_VALIDATION_UNRESOLVED
+            : RoutingFailureCode.PROVIDER_EXECUTION_FAILED;
+  const acceptedProviderId = providerId('stage-2b-fake-provider');
+  const gatewayAudit = {
+    schemaVersion: 'provider-execution-audit-v2',
+    terminalStatus: status,
+    terminalCode: failureCode,
+    finalProviderId: accepted ? acceptedProviderId : null,
+  } as NonNullable<RuntimeProviderRoutingAudit['gatewayAudit']>;
+  const audit: RuntimeProviderRoutingAudit = Object.freeze({
+    schemaVersion: 'runtime-provider-routing-audit-v1',
+    routingContext: null,
+    selectionDecision: null,
+    gatewayAudit,
+    terminalStatus: status,
+    terminalCode: failureCode,
+  });
+  if (!accepted) {
+    return Object.freeze({
+      status,
+      failureCode,
+      humanReviewRequired: status === ProviderGatewayTerminalStatus.HUMAN_REVIEW_REQUIRED,
+      audit,
+    });
+  }
+  return Object.freeze({
+    status,
+    failureCode: null,
+    humanReviewRequired: false,
+    acceptedProviderId,
+    output: Object.freeze({
+      text: 'bounded routed answer',
+      artifacts: Object.freeze([
+        Object.freeze({
+          id: 'routed-artifact-1',
+          kind: ArtifactKind.MARKDOWN_REPORT,
+          title: 'bounded report',
+          content: 'bounded artifact content',
+          createdAt: TS,
+        }),
+      ]),
+      responseSha256: 'b'.repeat(64),
+      byteCount: 100,
+    }),
+    audit,
+  });
+}
+
 describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => {
   it('preserves the generic conversation platform from inbound context through task creation into prompt composition', async () => {
     const { storage } = makeTaskStorage();
@@ -7267,6 +7334,183 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
     const planning = await new TaskManager(storage).transition(pendingTask, TaskStatus.PLANNING);
     const running = await new TaskManager(storage).transition(planning, TaskStatus.RUNNING);
     expect(running.status).toBe(TaskStatus.RUNNING);
+  });
+});
+
+describe('Stage 2B Slice 5A — ConversationRuntime integration seam', () => {
+  it('ACCEPTED persists bounded artifacts/audit, completes TaskRun + Task, and never calls the legacy selector', async () => {
+    const { storage, taskSaves, runSaves } = makeTaskStorage();
+    const { deps: base } = makeDeps({
+      intent: intentOf(Capability.GENERAL_CHAT, IntentType.CHAT, true),
+    });
+    const routed = routedResultOf(ProviderGatewayTerminalStatus.ACCEPTED);
+    const executeRouting = vi.fn(async () => routed);
+    const legacySelect = vi.fn(async () => {
+      throw new Error('legacy selector must not run');
+    });
+    const persistAll = vi.fn(async () => ['routed-artifact-1']);
+    const deps: ConversationRuntimeDeps = {
+      ...base,
+      ...workTurnHappyPathDeps(),
+      tasks: new TaskManager(storage),
+      promptRenderer: {
+        render() {
+          return { capability: Capability.GENERAL_CHAT, prompt: 'private runtime prompt' };
+        },
+      },
+      router: { select: legacySelect },
+      runtimeProviderRouting: { execute: executeRouting },
+      artifacts: { persistAll },
+    };
+
+    const result = await new ConversationRuntime(deps).handle(messageOf('라우팅된 대화 요청'));
+
+    expect(result.status).toBe('RESPONDED');
+    expect(result.reply.text).toBe('bounded routed answer');
+    expect(result.reply.artifacts).toHaveLength(1);
+    expect(executeRouting).toHaveBeenCalledWith({
+      facts: {
+        capability: Capability.GENERAL_CHAT,
+        intentType: IntentType.CHAT,
+        requiresWork: true,
+      },
+      request: { capability: Capability.GENERAL_CHAT, prompt: 'private runtime prompt' },
+      executionId: expect.any(String),
+    });
+    expect(legacySelect).not.toHaveBeenCalled();
+    expect(persistAll).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      [expect.objectContaining({ id: 'routed-artifact-1', content: 'bounded artifact content' })],
+    );
+    expect(taskSaves.at(-1)?.status).toBe(TaskStatus.COMPLETED);
+    expect(runSaves.at(-1)).toMatchObject({
+      status: TaskRunStatus.SUCCEEDED,
+      providerId: 'stage-2b-fake-provider',
+      artifactIds: ['routed-artifact-1'],
+      metadata: { routingAudit: routed.audit },
+    });
+    expect(result.reply.text).not.toMatch(/stage-2b-fake-provider|private runtime prompt|raw output/i);
+  });
+
+  it.each([
+    [ProviderGatewayTerminalStatus.HUMAN_REVIEW_REQUIRED, TaskStatus.NEEDS_REVIEW],
+    [ProviderGatewayTerminalStatus.REJECTED, TaskStatus.FAILED],
+    [ProviderGatewayTerminalStatus.SAFETY_BLOCKED, TaskStatus.FAILED],
+    [ProviderGatewayTerminalStatus.CONFIGURATION_FAILED, TaskStatus.FAILED],
+    [ProviderGatewayTerminalStatus.EXECUTION_FAILED, TaskStatus.FAILED],
+  ] as const)(
+    '%s persists routingAudit, records no representative providerId, maps Task lifecycle to %s, and never falls back',
+    async (status, expectedTaskStatus) => {
+      const { storage, taskSaves, runSaves } = makeTaskStorage();
+      const { deps: base } = makeDeps({
+        intent: intentOf(Capability.GENERAL_CHAT, IntentType.CHAT, true),
+      });
+      const routed = routedResultOf(status);
+      const executeRouting = vi.fn(async () => routed);
+      const legacySelect = vi.fn(async () => {
+        throw new Error('legacy selector must not run');
+      });
+      const deps: ConversationRuntimeDeps = {
+        ...base,
+        ...workTurnHappyPathDeps(),
+        tasks: new TaskManager(storage),
+        promptRenderer: {
+          render() {
+            return { capability: Capability.GENERAL_CHAT, prompt: 'private runtime prompt' };
+          },
+        },
+        router: { select: legacySelect },
+        runtimeProviderRouting: { execute: executeRouting },
+      };
+
+      const result = await new ConversationRuntime(deps).handle(messageOf('라우팅 실패 분류 요청'));
+
+      expect(result.status).toBe('FAILED');
+      expect(executeRouting).toHaveBeenCalledTimes(1);
+      expect(legacySelect).not.toHaveBeenCalled();
+      expect(taskSaves.at(-1)?.status).toBe(expectedTaskStatus);
+      expect(runSaves.at(-1)).toMatchObject({
+        status: TaskRunStatus.FAILED,
+        metadata: { routingAudit: routed.audit },
+      });
+      expect(runSaves.at(-1)).not.toHaveProperty('providerId');
+      expect(result.reply.text).not.toMatch(
+        /stage-2b-fake-provider|opaque-model|private runtime prompt|raw output|raw error|reasoning|[a-f0-9]{64}/i,
+      );
+    },
+  );
+
+  it('keeps a no-work GENERAL_CHAT turn on the legacy fast path even when the seam is available', async () => {
+    const { deps: base } = makeDeps({
+      intent: intentOf(Capability.GENERAL_CHAT, IntentType.CHAT, false),
+    });
+    const executeRouting = vi.fn(async () => routedResultOf(ProviderGatewayTerminalStatus.ACCEPTED));
+    const providerExecute = vi.fn(async () => ({ text: 'legacy fast-path answer', artifacts: [] }));
+    const legacySelect = vi.fn(async () => ({
+      id: 'legacy-fast-path',
+      capabilities: [{ capability: Capability.GENERAL_CHAT, priority: 1 }],
+      async isAvailable() { return true; },
+      execute: providerExecute,
+    }));
+
+    const result = await new ConversationRuntime({
+      ...base,
+      router: { select: legacySelect },
+      runtimeProviderRouting: { execute: executeRouting },
+    }).handle(messageOf('짧은 대화'));
+
+    expect(result.status).toBe('RESPONDED');
+    expect(result.reply.text).toBe('legacy fast-path answer');
+    expect(executeRouting).not.toHaveBeenCalled();
+    expect(legacySelect).toHaveBeenCalledTimes(1);
+    expect(providerExecute).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps PROJECT_ANALYSIS work turns on the legacy work path', async () => {
+    const { storage } = makeTaskStorage();
+    const { deps: base } = makeDeps({
+      intent: intentOf(Capability.PROJECT_ANALYSIS, IntentType.PROJECT_ANALYSIS, true),
+    });
+    const executeRouting = vi.fn(async () => routedResultOf(ProviderGatewayTerminalStatus.ACCEPTED));
+    const providerExecute = vi.fn(async () => ({ text: 'legacy project analysis', artifacts: [] }));
+    const legacySelect = vi.fn(async () => ({
+      id: 'legacy-project-analysis',
+      capabilities: [{ capability: Capability.PROJECT_ANALYSIS, priority: 1 }],
+      async isAvailable() { return true; },
+      execute: providerExecute,
+    }));
+    const deps: ConversationRuntimeDeps = {
+      ...base,
+      ...workTurnHappyPathDeps(),
+      tasks: new TaskManager(storage),
+      router: { select: legacySelect },
+      runtimeProviderRouting: { execute: executeRouting },
+    };
+
+    const result = await new ConversationRuntime(deps).handle(messageOf('프로젝트 구조를 분석해줘'));
+
+    expect(result.status).toBe('RESPONDED');
+    expect(executeRouting).not.toHaveBeenCalled();
+    expect(legacySelect).toHaveBeenCalledWith(Capability.PROJECT_ANALYSIS);
+    expect(providerExecute).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps CODE_IMPLEMENTATION execution intents outside the Stage 2B work seam', async () => {
+    const { deps: base, calls } = makeDeps({
+      intent: codeIntent,
+      workspaceList: hitsFor(TARGET_FILE),
+    });
+    const executeRouting = vi.fn(async () => routedResultOf(ProviderGatewayTerminalStatus.ACCEPTED));
+
+    const result = await new ConversationRuntime({
+      ...base,
+      runtimeProviderRouting: { execute: executeRouting },
+    }).handle(messageOf(`${TARGET_FILE} 파일의 버그를 고쳐줘`));
+
+    expect(result.status).toBe('RESPONDED');
+    expect(calls.run).toBe(1);
+    expect(executeRouting).not.toHaveBeenCalled();
   });
 });
 
