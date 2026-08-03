@@ -7,6 +7,17 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Stage 2B · Slice 5B-2A-I Bounded Ollama Inventory Preflight
+
+- Added app-private typed preflight, executable-identity, command-policy, parser, process, and result contracts for
+  exact Ollama `--version` and `list` checks behind injectable filesystem/process seams.
+- Added absolute-realpath executable validation, strict loopback/environment policy, bounded UTF-8/terminal parsing,
+  exact required-model matching, positive argv allowlisting, download-marker observation, and fail-closed immutable
+  non-persistent results.
+- Actual executable/version and installed inventory remain **NOT VERIFIED**. Ollama process, local daemon, external
+  network, model inventory, and Provider generation were **NOT EXECUTED**; execution remains separately gated by
+  Slice 5B-2A-E.
+
 ### Added — Stage 2B · Slice 5B-1 Provider Identity and Static Routing Configuration
 
 - Added additive explicit instance identity to `OllamaCliProvider` while preserving the legacy default

@@ -1,8 +1,8 @@
 # Stage 2B Production Routing Architecture Plan
 
-- **Status:** Architecture ratified by ADR-0064. Slices 1–5A and Slice 5B-1 are implemented. Slice 5B-1 adds
-  instance identity and an unwired typed static configuration only. Composition-root activation, Provider
-  readiness/execution, and Runtime/Discord/DB UAT remain deferred and require separate approval.
+- **Status:** Architecture ratified by ADR-0064. Slices 1–5A, 5B-1, and 5B-2A-I are implemented. 5B-2A-I adds
+  unwired app-private preflight contracts/runner with fake filesystem/process validation only. Actual Ollama
+  version/inventory execution, activation, Provider generation, and Runtime/Discord/DB UAT remain separate gates.
 - **Input:** Completed Stage 2A Provider Evaluation Infrastructure and frozen A1+A3 evidence.
 - **Current candidates:** balanced primary `llama3.1:8b`; semantic candidate `granite3.3:8b`;
   latency-only evidence `llama3.2:3b`; deprioritized `mistral:7b`.
@@ -24,6 +24,9 @@ ADR-0064 is the canonical decision record when this historical plan differs from
   The configuration is intentionally not imported by `app.module.ts`.
 - Actual Provider readiness and model installation are **NOT VERIFIED**. Provider execution is deferred to Slice
   5B-2; activation and Runtime/Discord/DB UAT are deferred to Slice 5C.
+- Slice 5B-2A-I implements executable identity, exact version/list allowlisting, isolated loopback environment,
+  bounded parsers/process lifecycle, and non-persistent results without app wiring. Actual executable/version and
+  installed inventory remain **NOT VERIFIED**; process, daemon/network, inventory, and generation were not executed.
 
 ## Objectives
 

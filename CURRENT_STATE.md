@@ -5,15 +5,14 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** **Stage 2B Slice 5B-1 — Provider Identity and Static Routing Configuration** (ADR-0064). The
-  composition-root now owns an unwired typed configuration for instance-specific `llama3.1:8b` balanced-primary
-  and `granite3.3:8b` semantic-candidate Ollama bindings, conservative profiles, a GENERAL_CHAT-only policy, and
-  immutable Stage 2A provenance digests. The legacy `AI_PROVIDERS` path and Slice 5A Runtime seam are unchanged.
-- **Next:** Independent Chief Architect implementation review of Slice 5B-1. Actual Provider readiness and model
-  installation are **NOT VERIFIED**; external Provider execution is deferred to separately approved Slice 5B-2,
-  and Runtime activation plus Runtime/Discord/DB UAT remain deferred to Slice 5C.
-- **Build/Test (Stage 2B Slice 5B-1):** construction and adapter tests use static/fake execution boundaries only.
-  No Runtime, external Provider, CLI, network, Discord, secret, model inventory, or database execution occurred.
+- **Phase:** **Stage 2B Slice 5B-2A-I — Ollama Preflight Contracts and Runner Implementation** (ADR-0064).
+  App-private, unwired contracts now cover executable identity, exact version/list commands, isolated loopback
+  environment, strict version/inventory parsers, bounded process lifecycle, and immutable non-persistent results.
+- **Next:** Independent Chief Architect implementation review. Actual executable/version and installed inventory
+  remain **NOT VERIFIED**. Ollama process, local daemon, external network, model inventory, and Provider generation
+  were **NOT EXECUTED**; actual version/inventory execution requires separately approved Slice 5B-2A-E.
+- **Build/Test (Stage 2B Slice 5B-2A-I):** fake filesystem/process seams only; no Runtime, CLI, network, Discord,
+  secret, `.env.local`, model inventory, persistence, or database execution.
 
 ## Stage 2A — Completed
 
@@ -79,6 +78,18 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 - **Boundary:** the factory performs construction validation without availability probes or execution and is not
   imported by `app.module.ts`. Readiness/model installation are **NOT VERIFIED**; 5B-2 execution and 5C activation/UAT
   remain separately approved work.
+
+## Stage 2B — Slice 5B-2A-I Ollama Preflight Contracts and Runner
+
+- **Boundary:** composition-root-private and unwired; no Core API, Capability, Aggregate, Runtime, app-module, or
+  persistence change.
+- **Contracts:** independent v1 identities for preflight result, executable identity, command policy, and inventory
+  parser; exact required tags are `llama3.1:8b` and `granite3.3:8b`.
+- **Containment:** absolute realpath/digest revalidation, exact `--version`/`list` argv, loopback-only endpoint,
+  isolated environment, bounded timeout/output/rows, zero retry, download-marker observation, and maximum two
+  non-generation commands.
+- **Execution:** actual executable/version/inventory are **NOT VERIFIED**; Ollama process, daemon/network access,
+  inventory read, and Provider generation were **NOT EXECUTED** and remain 5B-2A-E/5B-2B gates.
 
 ## Stage 2B — Slice 3C Deterministic Validation Harness
 

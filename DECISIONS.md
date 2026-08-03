@@ -4756,3 +4756,17 @@ The factory performs only pure construction validation. `app.module.ts`, the leg
 Runtime integration, Gateway/Planner/Registry/Validator behavior, and persistence remain unchanged. Actual Provider
 readiness/model installation are **NOT VERIFIED**. Provider execution requires separately approved Slice 5B-2;
 Runtime activation and Runtime/Discord/DB UAT remain Slice 5C approval boundaries.
+
+### Slice 5B-2A-I — Ollama Preflight Contracts and Runner Implementation
+
+Slice 5B-2A-I owns an app-private, unwired, non-persistent preflight boundary. Independent v1 contracts define
+absolute-realpath executable identity, exact `--version` and `list` commands, strict loopback-only environment,
+fatal UTF-8 version/inventory parsing, exact required model tags, bounded timeout/output/row limits, download-marker
+observation, and immutable terminal results. Only VERSION then INVENTORY may run, each at most once; retry and every
+generation/mutation argv are structurally prohibited, and `providerExecutionCount` is always zero.
+
+Filesystem and process ownership remain injectable app-private seams. Tests use fake implementations only; the
+production module is not imported by `app.module.ts`, Runtime, Core, Stage 2A, or the private validation package.
+Actual executable/version and installed inventory are **NOT VERIFIED**. Ollama process, local daemon, external
+network, inventory access, and Provider generation were **NOT EXECUTED**. Actual version/list execution requires
+separately approved Slice 5B-2A-E; generation remains Slice 5B-2B and Runtime/Discord/DB UAT remains Slice 5C.

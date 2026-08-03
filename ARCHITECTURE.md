@@ -167,6 +167,12 @@ fixed; the implementations are not.
    SHA-256 without importing benchmark evidence at Runtime. This configuration is not
    wired into the app; readiness, execution, Runtime activation, and UAT remain later
    approval boundaries (ADR-0064).
+10. Ollama readiness preflight is an app-private, non-persistent boundary. Slice
+    5B-2A-I implements typed executable identity, exact `--version`/`list` policy,
+    isolated environment, bounded parsers/process lifecycle, and immutable results
+    behind injectable filesystem/process seams. It is unwired and fake-tested only;
+    actual executable/version/inventory, daemon/network access, and Provider generation
+    require later independent gates (ADR-0064).
 
 ---
 
