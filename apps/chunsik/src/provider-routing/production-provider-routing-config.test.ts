@@ -136,7 +136,7 @@ describe('Stage 2B Slice 5B-1 production Provider routing configuration', () => 
         { ...balanced, provider: new StaticProvider('ollama-cli') },
         semantic,
       ]),
-    ).toThrow(/binding mismatch/);
+    ).toThrow(/Executable Provider binding mismatch/);
   });
 
   it('uses only GENERAL_CHAT and the approved deterministic ranking dimensions', () => {
@@ -204,6 +204,9 @@ describe('Stage 2B Slice 5B-1 production Provider routing configuration', () => 
     });
 
     expect(first).toEqual(repeated);
+    expect(first.evidenceBindingDigest).toBe(
+      '516bbd3c9e16fc8ee14a43aea48fb3723ac7b64ce948d0d452550c9bc5bb3151',
+    );
     expect(providerChanged.evidenceBindingDigest).not.toBe(first.evidenceBindingDigest);
     expect(modelChanged.evidenceBindingDigest).not.toBe(first.evidenceBindingDigest);
     expect(roleChanged.evidenceBindingDigest).not.toBe(first.evidenceBindingDigest);
