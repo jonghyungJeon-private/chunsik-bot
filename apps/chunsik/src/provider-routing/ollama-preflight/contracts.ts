@@ -48,6 +48,10 @@ export enum OllamaPreflightCommandCategory {
   INVENTORY = 'INVENTORY',
 }
 
+/**
+ * Classifies validated endpoint/environment configuration only. It does not attest to observed
+ * connectivity, command success, process-containment success, or external-egress denial.
+ */
 export type OllamaPreflightNetworkClass = 'LOOPBACK_DAEMON';
 
 export interface OllamaExecutableIdentity {

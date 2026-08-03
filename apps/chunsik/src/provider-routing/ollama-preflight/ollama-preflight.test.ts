@@ -287,7 +287,7 @@ describe('Contained Ollama preflight process runner', () => {
     timers.advance(FINAL_SETTLEMENT_EPSILON_MS);
     const result = await pending;
     expect(result).toMatchObject({ timedOut: true, killEscalated: true,
-      containmentFailed: true, exitCode: null });
+      containmentFailed: true, exitCode: null, networkClass: 'LOOPBACK_DAEMON' });
     expect(cleanupCount).toBe(1);
     child.emit('close', 0);
     expect(cleanupCount).toBe(1);
@@ -306,7 +306,8 @@ describe('Contained Ollama preflight process runner', () => {
     const pending = runner.run(containedRequest());
     child.emit('exit', 0);
     timers.advance(50 + KILL_GRACE_MS + FINAL_SETTLEMENT_EPSILON_MS);
-    expect(await pending).toMatchObject({ containmentFailed: true, exitCode: null });
+    expect(await pending).toMatchObject({ containmentFailed: true, exitCode: null,
+      networkClass: 'LOOPBACK_DAEMON' });
     expect(cleanupCount).toBe(1);
   });
 
@@ -475,6 +476,16 @@ describe('Ollama inventory preflight orchestration', () => {
     expect(noNetwork.failureCode).toBe(OllamaPreflightFailureCode.NETWORK_CONTAINMENT_UNAVAILABLE);
     expect(noNetwork.networkClass).toBeNull();
     expect(noNetworkRunner.requests).toHaveLength(0);
+
+    const remoteRunner = new FakeRunner([]);
+    const remote = await configured(remoteRunner, new FakeFileSystem(), {
+      loopbackEndpoint: 'http://example.com:11434',
+    });
+    expect(remote).toMatchObject({
+      failureCode: OllamaPreflightFailureCode.REMOTE_HOST_CONFIGURATION_DETECTED,
+      networkClass: null,
+    });
+    expect(remoteRunner.requests).toHaveLength(0);
 
     const fs = new FakeFileSystem(Buffer.from('first'));
     fs.contents = [Buffer.from('first'), Buffer.from('changed')];

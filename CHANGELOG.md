@@ -15,7 +15,9 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
   exact required-model matching, positive argv allowlisting, download-marker observation, and fail-closed immutable
   non-persistent results.
 - Hardened the runner-owned exact child environment and hard settlement deadline; external-egress denial is
-  represented only as a caller-supplied, unverified attestation and failed containment does not claim a network class.
+  represented only as a caller-supplied, unverified attestation. The network class remains null until loopback
+  endpoint/environment validation; afterward it classifies only that approved configuration, not observed
+  connectivity, containment success, command success, or external-egress denial.
 - Actual executable/version and installed inventory remain **NOT VERIFIED**. Ollama process, local daemon, external
   network, model inventory, and Provider generation were **NOT EXECUTED**; execution remains separately gated by
   Slice 5B-2A-E.
