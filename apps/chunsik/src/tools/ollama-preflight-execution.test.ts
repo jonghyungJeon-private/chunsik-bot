@@ -33,6 +33,11 @@ const invocation = (
   '--external-egress-control', control,
 ];
 
+function withoutFlag(argv: readonly string[], omittedFlag: string): string[] {
+  const index = argv.indexOf(omittedFlag);
+  return [...argv.slice(0, index), ...argv.slice(index + 2)];
+}
+
 class FakeFileSystem implements OllamaPreflightFileSystem {
   reads = 0;
   realpath(path: string): string { return path; }
@@ -205,6 +210,120 @@ describe('Ollama preflight execution composition', () => {
     expect(adapterAccess).toBe(0);
     expect(writes).toHaveLength(1);
     expect(writes[0]).not.toContain('raw');
+  });
+
+  it.each([
+    '--expected-executable-sha256',
+    '--expected-executable-size-bytes',
+  ])('rejects an omitted %s before process composition', async (omittedFlag) => {
+    let spawnCount = 0;
+    const outcome = await executeOllamaPreflightInvocation(
+      withoutFlag(invocation(), omittedFlag),
+      {
+        spawnAdapter: (...args) => { spawnCount += 1; return fakeSpawn()(...args); },
+        writeProjection: () => undefined,
+      },
+    );
+
+    expect(outcome).toMatchObject({ exitCode: 4, projection: {
+      status: 'ENTRYPOINT_CONFIGURATION_ERROR',
+      failureCode: 'INVALID_INVOCATION',
+    } });
+    expect(spawnCount).toBe(0);
+  });
+
+  it('blocks without process composition when the OS-denial verifier throws', async () => {
+    let spawnCount = 0;
+    const serialized: string[] = [];
+    const outcome = await executeOllamaPreflightInvocation(
+      invocation(ExternalEgressControl.OS_DENIED_VERIFIED),
+      {
+        spawnAdapter: (...args) => { spawnCount += 1; return fakeSpawn()(...args); },
+        verifyOsDenied: () => { throw new Error('raw verifier detail'); },
+        writeProjection: (projection) => serialized.push(projection),
+      },
+    );
+
+    expect(outcome).toMatchObject({ exitCode: 3, projection: {
+      status: OllamaPreflightStatus.BLOCKED,
+      failureCode: OllamaPreflightFailureCode.NETWORK_CONTAINMENT_UNAVAILABLE,
+      externalEgressIsolationVerified: false,
+    } });
+    expect(spawnCount).toBe(0);
+    expect(serialized.join('')).not.toContain('raw verifier detail');
+  });
+
+  it('maps unexpected valid-invocation failures to a distinct bounded projection', async () => {
+    const writes: string[] = [];
+    const dependencies = Object.defineProperty({}, 'fileSystem', {
+      get: () => { throw new Error('raw OS failure /private/path'); },
+    }) as Parameters<typeof executeOllamaPreflightInvocation>[1];
+    Object.defineProperty(dependencies, 'writeProjection', {
+      value: (projection: string) => writes.push(projection),
+    });
+
+    const outcome = await executeOllamaPreflightInvocation(invocation(), dependencies);
+
+    expect(outcome).toMatchObject({ exitCode: 5, projection: {
+      status: 'ENTRYPOINT_UNEXPECTED_FAILURE',
+      failureCode: 'UNEXPECTED_ENTRYPOINT_FAILURE',
+    } });
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).not.toContain('raw OS failure');
+    expect(writes[0]).not.toContain('/private/path');
+    expect(writes[0]).not.toContain('Error');
+  });
+
+  it('never attempts a second projection after a writer reports failure', async () => {
+    const writes: string[] = [];
+    await expect(executeOllamaPreflightInvocation(invocation(), {
+      fileSystem: new FakeFileSystem(),
+      spawnAdapter: fakeSpawn(),
+      sandboxFactory: () => ({ home: '/h', tmpdir: '/t', cleanup: () => undefined }),
+      writeProjection: (projection) => {
+        writes.push(projection);
+        throw new Error('post-write failure');
+      },
+    })).rejects.toThrow('post-write failure');
+    expect(writes).toHaveLength(1);
+  });
+
+  it('uses one unified bounded key set for every projection status', async () => {
+    const projections = [] as Array<Readonly<Record<string, unknown>>>;
+    const collect = (projection: string) => projections.push(
+      JSON.parse(projection) as Readonly<Record<string, unknown>>,
+    );
+    const baseDependencies = {
+      fileSystem: new FakeFileSystem(),
+      sandboxFactory: () => ({ home: '/h', tmpdir: '/t', cleanup: () => undefined }),
+      writeProjection: collect,
+    };
+    await executeOllamaPreflightInvocation(invocation(), {
+      ...baseDependencies, spawnAdapter: fakeSpawn(),
+    });
+    await executeOllamaPreflightInvocation(invocation(), {
+      ...baseDependencies, spawnAdapter: fakeSpawn(1),
+    });
+    await executeOllamaPreflightInvocation(
+      invocation(ExternalEgressControl.OS_DENIED_VERIFIED),
+      { ...baseDependencies, spawnAdapter: fakeSpawn(), verifyOsDenied: () => false },
+    );
+    await executeOllamaPreflightInvocation(['--unknown', 'value'], {
+      writeProjection: collect,
+    });
+    const unexpectedDependencies = Object.defineProperty({}, 'fileSystem', {
+      get: () => { throw new Error('unexpected'); },
+    }) as Parameters<typeof executeOllamaPreflightInvocation>[1];
+    Object.defineProperty(unexpectedDependencies, 'writeProjection', { value: collect });
+    await executeOllamaPreflightInvocation(invocation(), unexpectedDependencies);
+
+    expect(projections.map(({ status }) => status)).toEqual([
+      'PASS', 'FAIL', 'BLOCKED',
+      'ENTRYPOINT_CONFIGURATION_ERROR', 'ENTRYPOINT_UNEXPECTED_FAILURE',
+    ]);
+    const keySets = projections.map((projection) => Object.keys(projection).sort());
+    expect(keySets.every((keys) => JSON.stringify(keys) === JSON.stringify(keySets[0]))).toBe(true);
+    expect(keySets[0]).toContain('inventoryObserved');
   });
 
   it('keeps real adapters app-private and leaves app.module unwired', () => {

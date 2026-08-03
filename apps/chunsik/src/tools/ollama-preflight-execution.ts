@@ -195,8 +195,42 @@ export interface OllamaPreflightExecutionDependencies {
 }
 
 export interface OllamaPreflightExecutionOutcome {
-  readonly exitCode: 0 | 2 | 3 | 4;
+  readonly exitCode: 0 | 2 | 3 | 4 | 5;
   readonly projection: Readonly<Record<string, unknown>>;
+}
+
+type EntrypointStatus =
+  | 'ENTRYPOINT_CONFIGURATION_ERROR'
+  | 'ENTRYPOINT_UNEXPECTED_FAILURE';
+
+function entrypointProjection(
+  status: EntrypointStatus,
+  failureCode: 'INVALID_INVOCATION' | 'UNEXPECTED_ENTRYPOINT_FAILURE',
+): Readonly<Record<string, unknown>> {
+  return Object.freeze({
+    executionContractVersion: OLLAMA_PREFLIGHT_EXECUTION_CONTRACT_VERSION,
+    contractVersion: OLLAMA_PREFLIGHT_CONTRACT_VERSION,
+    parserContractVersion: OLLAMA_INVENTORY_PARSER_VERSION,
+    executableIdentityContractVersion: OLLAMA_EXECUTABLE_IDENTITY_VERSION,
+    commandPolicyVersion: OLLAMA_PREFLIGHT_COMMAND_POLICY_VERSION,
+    status,
+    failureCode,
+    externalEgressControl: null,
+    externalEgressIsolationVerified: false,
+    networkClass: null,
+    executableIdentityDigest: null,
+    normalizedVersion: null,
+    requiredModels: [],
+    installedRequiredModels: [],
+    missingRequiredModels: [],
+    inventoryObserved: false,
+    additionalModelCount: 0,
+    providerExecutionCount: 0,
+    downloadCapableCommandInvoked: false,
+    downloadObserved: false,
+    commandCount: 0,
+    checks: [],
+  });
 }
 
 function projectResult(result: OllamaPreflightResult): Readonly<Record<string, unknown>> {
@@ -216,6 +250,7 @@ function projectResult(result: OllamaPreflightResult): Readonly<Record<string, u
     requiredModels: result.requiredModels,
     installedRequiredModels: result.installedRequiredModels,
     missingRequiredModels: result.missingRequiredModels,
+    inventoryObserved: result.inventoryObserved,
     additionalModelCount: result.additionalModelCount,
     providerExecutionCount: result.providerExecutionCount,
     downloadCapableCommandInvoked: result.downloadCapableCommandInvoked,
@@ -232,21 +267,11 @@ function exitCodeFor(status: OllamaPreflightStatus): 0 | 2 | 3 {
 }
 
 function configurationErrorProjection(): Readonly<Record<string, unknown>> {
-  return Object.freeze({
-    executionContractVersion: OLLAMA_PREFLIGHT_EXECUTION_CONTRACT_VERSION,
-    contractVersion: OLLAMA_PREFLIGHT_CONTRACT_VERSION,
-    parserContractVersion: OLLAMA_INVENTORY_PARSER_VERSION,
-    executableIdentityContractVersion: OLLAMA_EXECUTABLE_IDENTITY_VERSION,
-    commandPolicyVersion: OLLAMA_PREFLIGHT_COMMAND_POLICY_VERSION,
-    status: 'ENTRYPOINT_CONFIGURATION_ERROR',
-    failureCode: 'INVALID_INVOCATION',
-    externalEgressControl: null,
-    externalEgressIsolationVerified: false,
-    networkClass: null,
-    providerExecutionCount: 0,
-    downloadCapableCommandInvoked: false,
-    commandCount: 0,
-  });
+  return entrypointProjection('ENTRYPOINT_CONFIGURATION_ERROR', 'INVALID_INVOCATION');
+}
+
+function unexpectedFailureProjection(): Readonly<Record<string, unknown>> {
+  return entrypointProjection('ENTRYPOINT_UNEXPECTED_FAILURE', 'UNEXPECTED_ENTRYPOINT_FAILURE');
 }
 
 export async function executeOllamaPreflightInvocation(
@@ -254,49 +279,67 @@ export async function executeOllamaPreflightInvocation(
   dependencies: OllamaPreflightExecutionDependencies = {},
 ): Promise<OllamaPreflightExecutionOutcome> {
   const writeProjection = dependencies.writeProjection ?? ((projection) => process.stdout.write(`${projection}\n`));
+  let projectionWritten = false;
+  const writeOnce = (projection: Readonly<Record<string, unknown>>): void => {
+    if (projectionWritten) return;
+    projectionWritten = true;
+    writeProjection(JSON.stringify(projection));
+  };
   let invocation: OllamaPreflightInvocation;
   try {
     invocation = parseOllamaPreflightInvocation(argv);
-  } catch {
+  } catch (error) {
+    if (!(error instanceof OllamaPreflightInvocationError)) {
+      const projection = unexpectedFailureProjection();
+      writeOnce(projection);
+      return { exitCode: 5, projection };
+    }
     const projection = configurationErrorProjection();
-    writeProjection(JSON.stringify(projection));
+    writeOnce(projection);
     return { exitCode: 4, projection };
   }
 
-  const fileSystem = dependencies.fileSystem ?? new NodeOllamaPreflightFileSystem();
-  const spawnAdapter = dependencies.spawnAdapter ?? ((command, args, options) =>
-    spawn(command, [...args], options));
-  const sandboxFactory = dependencies.sandboxFactory ?? createRunnerOwnedOllamaSandbox;
-  let externalEgressIsolationVerified = false;
-  if (invocation.externalEgressControl === ExternalEgressControl.OS_DENIED_VERIFIED) {
-    try {
-      externalEgressIsolationVerified = dependencies.verifyOsDenied?.() === true;
-    } catch {
-      externalEgressIsolationVerified = false;
+  try {
+    const fileSystem = dependencies.fileSystem ?? new NodeOllamaPreflightFileSystem();
+    const spawnAdapter = dependencies.spawnAdapter ?? ((command, args, options) =>
+      spawn(command, [...args], options));
+    const sandboxFactory = dependencies.sandboxFactory ?? createRunnerOwnedOllamaSandbox;
+    let externalEgressIsolationVerified = false;
+    if (invocation.externalEgressControl === ExternalEgressControl.OS_DENIED_VERIFIED) {
+      try {
+        externalEgressIsolationVerified = dependencies.verifyOsDenied?.() === true;
+      } catch {
+        externalEgressIsolationVerified = false;
+      }
     }
+    const expectedExecutable: ApprovedOllamaExecutable = Object.freeze({
+      realPath: invocation.executableRealpath,
+      identity: Object.freeze({
+        contractVersion: OLLAMA_EXECUTABLE_IDENTITY_VERSION,
+        identityDigest: invocation.expectedExecutableSha256,
+        sizeBytes: invocation.expectedExecutableSizeBytes,
+        modeClass: 'EXECUTABLE',
+        pathKind: 'ABSOLUTE_REALPATH',
+      }),
+    });
+    const runner = new ContainedOllamaPreflightProcessRunner(spawnAdapter, sandboxFactory);
+    const preflight = new OllamaInventoryPreflight(fileSystem, runner);
+    const result = await preflight.execute({
+      executablePath: invocation.executableRealpath,
+      approvedExecutable: expectedExecutable,
+      loopbackEndpoint: invocation.approvedLoopbackEndpoint,
+      externalEgressControl: invocation.externalEgressControl,
+      externalEgressIsolationVerified,
+    });
+    const projection = projectResult(result);
+    writeOnce(projection);
+    return { exitCode: exitCodeFor(result.status), projection };
+  } catch (error) {
+    if (projectionWritten) throw error;
+    const projection = unexpectedFailureProjection();
+    writeOnce(projection);
+    return { exitCode: 5, projection };
   }
-  const expectedExecutable: ApprovedOllamaExecutable = Object.freeze({
-    realPath: invocation.executableRealpath,
-    identity: Object.freeze({
-      contractVersion: OLLAMA_EXECUTABLE_IDENTITY_VERSION,
-      identityDigest: invocation.expectedExecutableSha256,
-      sizeBytes: invocation.expectedExecutableSizeBytes,
-      modeClass: 'EXECUTABLE',
-      pathKind: 'ABSOLUTE_REALPATH',
-    }),
-  });
-  const runner = new ContainedOllamaPreflightProcessRunner(spawnAdapter, sandboxFactory);
-  const preflight = new OllamaInventoryPreflight(fileSystem, runner);
-  const result = await preflight.execute({
-    executablePath: invocation.executableRealpath,
-    approvedExecutable: expectedExecutable,
-    loopbackEndpoint: invocation.approvedLoopbackEndpoint,
-    externalEgressControl: invocation.externalEgressControl,
-    externalEgressIsolationVerified,
-  });
-  const projection = projectResult(result);
-  writeProjection(JSON.stringify(projection));
-  return { exitCode: exitCodeFor(result.status), projection };
 }
 
 async function main(): Promise<void> {
@@ -306,7 +349,6 @@ async function main(): Promise<void> {
 
 if (require.main === module) {
   void main().catch(() => {
-    process.stdout.write(`${JSON.stringify(configurationErrorProjection())}\n`);
-    process.exitCode = 4;
+    process.exitCode = 5;
   });
 }

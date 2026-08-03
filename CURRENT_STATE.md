@@ -95,8 +95,12 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 
 - **Egress:** `OS_DENIED_VERIFIED` requires an independently successful verifier and projects isolation true.
   `CONFIG_RESTRICTED_RISK_ACCEPTED` projects isolation false and does not technically deny external egress.
+- **Current OS-denial mode:** the verified-mode contract exists, but no concrete OS-denial verifier is composed in
+  the current entrypoint. Therefore `OS_DENIED_VERIFIED` currently blocks and is not executable, while
+  `CONFIG_RESTRICTED_RISK_ACCEPTED` is the currently executable mode and neither technically denies nor proves
+  denial of external egress.
 - **Composition:** strict explicit inputs, concrete bounded filesystem/sandbox/spawn adapters, existing preflight,
-  one bounded console projection, and exit codes 0/2/3/4 remain app-private and absent from `app.module.ts`.
+  one bounded console projection, and exit codes 0/2/3/4/5 remain app-private and absent from `app.module.ts`.
 - **Boundary:** actual executable/version/inventory are **NOT VERIFIED**; Ollama process, daemon/network access,
   inventory read, Provider generation, persistence, and DB work were **NOT EXECUTED**.
 
