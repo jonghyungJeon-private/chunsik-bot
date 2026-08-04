@@ -4,6 +4,7 @@ import {
   OllamaPreflightFailureCode,
   REQUIRED_OLLAMA_MODELS,
 } from './contracts';
+import { createHash } from 'node:crypto';
 
 const VERSION_TOKEN = /(?<![0-9A-Za-z.-])v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?(?![0-9A-Za-z.-])/g;
 const MODEL_TAG = /^[A-Za-z0-9._:/-]+$/;
@@ -50,6 +51,7 @@ export interface ParsedOllamaInventory {
   readonly installedRequiredModels: readonly string[];
   readonly missingRequiredModels: readonly string[];
   readonly additionalModelCount: number;
+  readonly inventoryFingerprint: string;
 }
 
 export function parseOllamaInventory(input: Uint8Array): ParsedOllamaInventory {
@@ -80,6 +82,8 @@ export function parseOllamaInventory(input: Uint8Array): ParsedOllamaInventory {
     installedRequiredModels: Object.freeze([...installedRequiredModels]),
     missingRequiredModels: Object.freeze([...missingRequiredModels]),
     additionalModelCount: names.length - installedRequiredModels.length,
+    inventoryFingerprint: createHash('sha256')
+      .update(Buffer.from([...names].sort().join('\n'), 'utf8')).digest('hex'),
   });
 }
 

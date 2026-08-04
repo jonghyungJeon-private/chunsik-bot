@@ -146,3 +146,6 @@ These are retained comparison candidates, not an authorization to activate concr
   Stage 2A evidence or acceptance rules.
 - Required ADR work, implementation scope, tests, and rollout gates are identified before any code
   or Runtime change begins.
+# Slice 5B-2B-E1
+
+E1 closes the concrete-entrypoint gap and records executable rebinding evidence. The blocked E attempt performed zero preflight and zero Provider generation; execution after E1 remains separately approved.

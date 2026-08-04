@@ -380,3 +380,6 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   project, then a structure question routed to PROJECT_ANALYSIS, read real files,
   returned a grounded answer (7 ports, package→port map, tech stack), persisted as
   TOOL memory; secrets never read. Requires `DISCORD_BOT_TOKEN` + Message Content Intent.
+# Stage 2B Slice 5B-2B-E1
+
+The first 5B-2B-E execution attempt was blocked before preflight/generation by executable identity drift and the missing concrete entrypoint. E1 adds rebinding evidence and an app-private strict execution composition. Actual Provider generation remains zero and separately approved.

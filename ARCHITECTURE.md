@@ -320,3 +320,6 @@ wiring, or `[RESERVE]`/`[LATER]` seams — **never the Core contracts above.** I
 desired feature forces a Core-contract change, that is an architectural event and
 requires a `DECISIONS.md` entry amending this constitution first.
 ```
+# Stage 2B Slice 5B-2B-E1 Boundary
+
+The app-private generation entrypoint strictly parses explicit inputs, verifies executable identity, reuses the bounded Ollama preflight for PRE/POST, and invokes the existing validation harness once. It is not wired to bootstrap, Runtime, Discord, DB, package scripts, or public Core APIs.

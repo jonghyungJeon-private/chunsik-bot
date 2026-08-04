@@ -99,6 +99,8 @@ export interface OllamaPreflightResult {
   readonly missingRequiredModels: readonly string[];
   readonly inventoryObserved: boolean;
   readonly additionalModelCount: number;
+  /** Digest of the sorted normalized model tags; never exposes inventory rows. */
+  readonly inventoryFingerprint: string | null;
   readonly downloadCapableCommandInvoked: false;
   readonly downloadObserved: boolean;
   readonly externalEgressControl: ExternalEgressControl | null;

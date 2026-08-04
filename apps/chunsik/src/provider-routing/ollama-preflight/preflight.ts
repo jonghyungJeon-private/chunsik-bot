@@ -79,6 +79,7 @@ export class OllamaInventoryPreflight {
     let missing: readonly string[] = REQUIRED_OLLAMA_MODELS;
     let inventoryObserved = false;
     let additionalModelCount = 0;
+    let inventoryFingerprint: string | null = null;
     let downloadObserved = false;
     let networkClass: OllamaPreflightNetworkClass | null = null;
     let externalEgressControl: ExternalEgressControl | null = null;
@@ -136,11 +137,12 @@ export class OllamaInventoryPreflight {
       installed = parsed.installedRequiredModels;
       missing = parsed.missingRequiredModels;
       additionalModelCount = parsed.additionalModelCount;
+      inventoryFingerprint = parsed.inventoryFingerprint;
       if (missing.length > 0) {
         throw new OllamaPreflightError(OllamaPreflightFailureCode.REQUIRED_MODEL_MISSING);
       }
       return this.result(OllamaPreflightStatus.PASS, null, identityDigest, normalizedVersion,
-        installed, missing, inventoryObserved, additionalModelCount, downloadObserved,
+        installed, missing, inventoryObserved, additionalModelCount, inventoryFingerprint, downloadObserved,
         externalEgressControl, externalEgressIsolationVerified, networkClass, checks);
     } catch (error) {
       const code = error instanceof OllamaPreflightError
@@ -158,7 +160,7 @@ export class OllamaInventoryPreflight {
       }
       return this.result(blockedCodes.has(code) ? OllamaPreflightStatus.BLOCKED : OllamaPreflightStatus.FAIL,
         code, identityDigest, normalizedVersion, installed, missing, inventoryObserved,
-        additionalModelCount, downloadObserved, externalEgressControl,
+        additionalModelCount, inventoryFingerprint, downloadObserved, externalEgressControl,
         externalEgressIsolationVerified, networkClass, checks);
     }
   }
@@ -209,6 +211,7 @@ export class OllamaInventoryPreflight {
     missingRequiredModels: readonly string[],
     inventoryObserved: boolean,
     additionalModelCount: number,
+    inventoryFingerprint: string | null,
     downloadObserved: boolean,
     externalEgressControl: ExternalEgressControl | null,
     externalEgressIsolationVerified: boolean,
@@ -224,7 +227,7 @@ export class OllamaInventoryPreflight {
       requiredModels: REQUIRED_OLLAMA_MODELS,
       installedRequiredModels: Object.freeze([...installedRequiredModels]),
       missingRequiredModels: Object.freeze([...missingRequiredModels]),
-      inventoryObserved, additionalModelCount,
+      inventoryObserved, additionalModelCount, inventoryFingerprint,
       downloadCapableCommandInvoked: false,
       downloadObserved, externalEgressControl, externalEgressIsolationVerified, networkClass,
       providerExecutionCount: 0, commandCount: checks.length,

@@ -396,7 +396,8 @@ describe('Ollama preflight parsers', () => {
       'NAME ID SIZE MODIFIED\r\nllama3.1:8b a 1GB now\r\ngranite3.3:8b b 2GB now\r\nextra:1 c 3GB now\r\n',
     ));
     expect(parsed).toEqual({ installedRequiredModels: REQUIRED_OLLAMA_MODELS,
-      missingRequiredModels: [], additionalModelCount: 1 });
+      missingRequiredModels: [], additionalModelCount: 1,
+      inventoryFingerprint: '74cc1eb161de3d8d97ec3a9afa76b01e088a553145245409d0bd8d8a3c554e5c' });
     expect(JSON.stringify(parsed)).not.toContain('extra:1');
   });
 
