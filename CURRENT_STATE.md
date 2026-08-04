@@ -5,13 +5,12 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** **Stage 2B Slice 5B-2B-I — Bounded Primary-Only Provider Generation Harness** (ADR-0064).
-  App-private, unwired code composes an exact one-provider Registry/Policy/Planner/Gateway path, strict loopback
-  Ollama environment, bounded acquisition observation, pre/postflight seams, and bounded result projection.
-- **Next:** Independent implementation/architecture review, then separately approved Slice 5B-2B-E execution.
-  Actual Provider generation was **NOT EXECUTED** by 5B-2B-I.
-- **Build/Test (Stage 2B Slice 5B-2B-I):** fake preflight/provider/process seams only; no Runtime, CLI, network, Discord,
-  secret, `.env.local`, model inventory, persistence, or database execution.
+- **Phase:** **Stage 2B Slice 5B-2B-E1 implemented locally / review remediation pending** (ADR-0064).
+- **Next:** E1 targeted remediation independent delta review, then Push, then separately approved actual 5B-2B-E execution.
+- **Build/Test:** 218 focused fake-seam tests pass; typecheck and ai-cli/app builds pass. Actual Provider generation,
+  preflight, inventory, Runtime, network, Discord, persistence, and DB execution remain zero.
+- **Identity:** current executable identity is `REBOUND_CANDIDATE_NOT_APPROVED`; observed SHA is evidence only.
+  Model-download technical prevention and external-egress technical denial are **NOT VERIFIED**. Push is not approved.
 
 ## Stage 2A — Completed
 
@@ -380,6 +379,3 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   project, then a structure question routed to PROJECT_ANALYSIS, read real files,
   returned a grounded answer (7 ports, package→port map, tech stack), persisted as
   TOOL memory; secrets never read. Requires `DISCORD_BOT_TOKEN` + Message Content Intent.
-# Stage 2B Slice 5B-2B-E1
-
-The first 5B-2B-E execution attempt was blocked before preflight/generation by executable identity drift and the missing concrete entrypoint. E1 adds rebinding evidence and an app-private strict execution composition. Actual Provider generation remains zero and separately approved.

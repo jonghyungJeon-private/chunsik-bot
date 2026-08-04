@@ -186,6 +186,9 @@ fixed; the implementations are not.
     technical model-download prevention: success additionally requires exact preflight presence, no observed
     marker, and an unchanged postflight inventory fingerprint. Actual generation and risk acceptance remain a
     separate Strict gate (ADR-0064).
+12. The app-private 5B-2B-E1 entrypoint uses strict explicit invocation parsing, executable identity gating,
+    reused PRE/POST preflight, exactly one validation-harness invocation, and one fixed bounded projection contract.
+    It remains unwired from bootstrap, Runtime, Discord, DB, package scripts, and public Core APIs.
     Validation evidence is monotonic across terminal handling: observed invocation/download/timeout/overflow facts
     are never reset by a later failure. The shared runner independently validates the exact IPv4 loopback host and
     exposes opt-in structured overflow evidence; a second invocation is counted but never delegated. Only the exact
@@ -320,6 +323,3 @@ wiring, or `[RESERVE]`/`[LATER]` seams — **never the Core contracts above.** I
 desired feature forces a Core-contract change, that is an architectural event and
 requires a `DECISIONS.md` entry amending this constitution first.
 ```
-# Stage 2B Slice 5B-2B-E1 Boundary
-
-The app-private generation entrypoint strictly parses explicit inputs, verifies executable identity, reuses the bounded Ollama preflight for PRE/POST, and invokes the existing validation harness once. It is not wired to bootstrap, Runtime, Discord, DB, package scripts, or public Core APIs.

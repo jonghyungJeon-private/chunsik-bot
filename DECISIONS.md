@@ -4838,6 +4838,10 @@ remote, HTTPS, credentialed, or path/query/fragment hosts before spawn. Its opt-
 `outputOverflowed`; legacy result shape remains unchanged. Arbitrary model text is never projected: only an exact
 expected token may populate `normalizedOutput`, while bounded mismatches expose only byte count and lowercase
 SHA-256. Invalid acquisition-control input projects null rather than echoing rejected data.
-# Stage 2B Slice 5B-2B-E1
+### Slice 5B-2B-E1 — Executable Rebinding and Entrypoint Contract
 
-The first execution attempt was blocked before preflight and generation because the executable identity differed from the approved identity and no concrete entrypoint existed. Current identity is evidence only, not a production default. E1 supplies the app-private composition; actual generation still requires separate Strict approval.
+The first execution attempt was blocked before preflight and generation because the executable identity differed
+from the approved identity and no concrete entrypoint existed. Current identity is
+`REBOUND_CANDIDATE_NOT_APPROVED`; the observed SHA is evidence only and approval is not granted. E1 supplies an
+app-private fixed projection/lifecycle composition. Model-download prevention and external-egress denial remain
+**NOT VERIFIED**. Actual preflight, inventory, Provider generation, and Push remain zero/not approved.

@@ -7,6 +7,15 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Fixed — Stage 2B · Slice 5B-2B-E1 Entrypoint Contract Remediation
+
+- Hardened the app-private generation entrypoint with one explicit projection key set, monotonic lifecycle
+  evidence, uniform single-attempt writer failure handling, strict E0-aligned parsing, and injectable PRE/POST
+  preflight composition. The current executable identity remains `REBOUND_CANDIDATE_NOT_APPROVED`; its observed
+  SHA is evidence only and is not approved as a production default.
+- Model-download prevention and external-egress denial remain **NOT VERIFIED**. Actual preflight, inventory,
+  Provider generation, and Push remain zero/not approved.
+
 ### Added — Stage 2B · Slice 5B-2B-I Primary-Only Provider Generation Validation
 
 - Added an app-private one-provider Registry/Policy/Planner/Gateway harness for exact
@@ -819,6 +828,3 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 - No business logic implemented — clean architecture boundaries only.
 - `pnpm typecheck` passes; Core cannot resolve adapter packages (boundary enforced).
-# Stage 2B Slice 5B-2B-E1
-
-- Added a strict app-private Provider-generation execution entrypoint with executable identity gating, reused bounded PRE/POST preflight, one harness call, and no Runtime wiring. The prior execution attempt remained blocked with zero Provider execution.
