@@ -5,12 +5,13 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** **Stage 2B Slice 5B-2B-E1 implemented locally / review remediation pending** (ADR-0064).
-- **Next:** E1 targeted remediation independent delta review, then Push, then separately approved actual 5B-2B-E execution.
-- **Build/Test:** 220 focused fake-seam tests pass; typecheck and ai-cli/app builds pass. Actual Provider generation,
-  preflight, inventory, Runtime, network, Discord, persistence, and DB execution remain zero.
-- **Identity:** current executable identity is `REBOUND_CANDIDATE_NOT_APPROVED`; observed SHA is evidence only.
-  Model-download technical prevention and external-egress technical denial are **NOT VERIFIED**. Push is not approved.
+- **Phase:** **Stage 2B Slice 5C-0 — Production Activation Boundary Architecture Plan** (ADR-0064).
+- **5B-2B-E close-out:** `CLOSED_WITH_GENERATION_BLOCKED`. Bounded preflight/inventory is `PASS_ACCEPTED`;
+  actual generation is `NOT_EXECUTED`, Provider execution count is `0`, and model pull count is `0`.
+- **Composition:** production routing configuration remains unwired. `ConversationRuntime.runtimeProviderRouting`
+  remains uninjected in `app.module.ts`, so the legacy Runtime routing path remains active.
+- **Approval boundary:** no Runtime, Discord, DB, or Provider activation is approved. Independently verifiable
+  external-egress enforcement is an explicit activation dependency, not a hidden environmental assumption.
 
 ## Stage 2A — Completed
 
@@ -121,6 +122,20 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   bounded byte count and SHA-256 only; overflow exposes neither literal output nor a digest.
 - **Boundary:** fake seams only. Actual generation, Ollama/process/network/inventory execution, external-egress
   denial, Runtime, Discord, persistence, and DB work were **NOT EXECUTED**.
+
+## Stage 2B — Slice 5B-2B-E Re-entry Gate Close-Out
+
+- **Gate:** `CLOSED_WITH_GENERATION_BLOCKED`. E1 implementation was accepted and pushed. The bounded preflight and
+  inventory attempt passed with Ollama `0.32.5`; exact required tags `llama3.1:8b` and `granite3.3:8b` were present.
+- **Execution facts:** only the authorized `--version` and `list` child commands ran (count `2`). Provider execution,
+  generation-harness invocation, retry, fallback, escalation, model pull, and daemon lifecycle mutation were all `0`.
+- **Generation block:** actual generation was intentionally not executed because independently verified,
+  attempt-scoped external-egress denial was unavailable. Client-only restrictions do not constrain the already
+  running Ollama daemon; configuration and observation are not technical denial.
+- **Identity boundary:** the consumed executable identity approval is retained as attempt evidence only, never as a
+  standing execution approval or production default.
+- **Next boundary:** production activation remains default-off and unwired. External-egress enforcement is separate
+  architecture work and must precede any successful live activation or Provider execution approval.
 
 ## Stage 2B — Slice 3C Deterministic Validation Harness
 

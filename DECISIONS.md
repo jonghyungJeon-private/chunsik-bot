@@ -4845,3 +4845,17 @@ from the approved identity and no concrete entrypoint existed. Current identity 
 `REBOUND_CANDIDATE_NOT_APPROVED`; the observed SHA is evidence only and approval is not granted. E1 supplies an
 app-private fixed projection/lifecycle composition. Model-download prevention and external-egress denial remain
 **NOT VERIFIED**. Actual preflight, inventory, Provider generation, and Push remain zero/not approved.
+
+### Slice 5B-2B-E — Re-entry Gate Close-Out
+
+The E1 source contract is accepted. The separately approved bounded preflight/inventory attempt passed with Ollama
+`0.32.5`, and both required model tags (`llama3.1:8b`, `granite3.3:8b`) were present. Provider generation was
+intentionally not executed: independently verified, attempt-scoped external-egress denial was unavailable, so the
+gate closed as `CLOSED_WITH_GENERATION_BLOCKED` with Provider execution and model pull counts both zero.
+
+Client-process environment restriction, loopback binding, isolated directories, proxy-variable removal, and
+post-execution observation are not technical denial because the existing Ollama daemon remains outside the child
+process restriction. PF, a dedicated daemon, a container, or a VM would introduce separate host-policy,
+privileged-mutation, daemon-lifecycle, model-storage, rollback, and evidence ownership. That work is not remediation
+inside Slice 5B-2B-E; future egress enforcement requires its own architecture boundary and approval. The executable
+identity approved for the consumed preflight attempt remains evidence only, not a permanent production default.
