@@ -2,11 +2,17 @@
 
 ## Purpose and slice boundary
 
-Slice 5C activates the already implemented production routing configuration without merging implementation
-approval with live-execution approval:
+Slice 5C activates the already implemented production routing configuration without merging approval across its
+three independently governed slices:
 
-- **5C-I:** production composition activation implementation and offline validation only.
-- **5C-E:** separately approved Runtime, Discord, DB, Provider live execution and UAT.
+- **5C-I:** app-private typed parsing, default-off and explicit legacy behavior, invalid-value startup failure,
+  dormant composition, and offline tests. Enabled mode fails before Provider construction when enforcement is
+  unavailable. It changes no Core contract and performs no Runtime or Provider execution.
+- **5C-EG:** external-egress enforcement architecture, implementation, and independent verification. It owns the
+  host-policy and privilege boundary; CLI and Ollama daemon coverage; IPv4, IPv6, and DNS denial with loopback
+  allowance; independently verifiable evidence; deterministic rollback; and daemon/model-storage implications.
+- **5C-E:** independently approved live Runtime, Discord, DB, and Provider validation/UAT. It depends on completed
+  5C-EG and inherits no approval from 5C-I or 5C-EG.
 
 5C-I may add default-off wiring before host egress enforcement exists because the disabled path constructs no new
 production routing Providers and performs no probe or execution. The enabled production path must nevertheless
@@ -39,7 +45,7 @@ receive either one fully composed `RuntimeProviderRouting` collaborator or `unde
 5C-I will introduce an app-private, exhaustively parsed configuration:
 
 ```text
-Environment variable: CHUNSIK_PROVIDER_ROUTING_MODE
+Environment variable: QUOKY_PROVIDER_ROUTING_MODE
 Accepted values:       legacy | stage2b-general-chat-v1
 Missing value:         legacy
 Invalid value:         fail application startup
@@ -47,8 +53,13 @@ Development behavior: same parsing and fail-closed rules
 Production behavior:  same parsing and fail-closed rules
 ```
 
-Exact, case-sensitive matching is required. Values such as `true`, `yes`, `enabled`, and `1` are invalid. Invalid
-input fails startup rather than silently changing behavior or masking a deployment error.
+Exact, case-sensitive matching is required without trimming or truthy parsing. `true`, `1`, `yes`, `enabled`, `on`,
+`LEGACY`, `Stage2b-general-chat-v1`, `" legacy "`, and the empty string are invalid. Invalid input fails startup
+rather than silently changing behavior or masking a deployment error.
+
+This is a new application-owned setting with no compatibility surface, so it uses the `QUOKY_*` namespace. Existing
+`CHUNSIK_*` variables remain only where legacy compatibility already exists. No legacy-namespace alias is introduced
+because that would expand rather than reduce the legacy namespace.
 
 `runtimeProviderRouting` is present only when all of these conditions hold:
 
@@ -67,12 +78,30 @@ The verifier is an app/host composition concern, not a new generic Core network-
 the smallest app-private injected construction seam needed for deterministic offline tests; it must not invent an
 attestation value that impersonates OS enforcement.
 
+The composition factory must preserve this exact ordering:
+
+1. parse `QUOKY_PROVIDER_ROUTING_MODE`;
+2. for missing or exact `legacy`, return `undefined`;
+3. for any invalid value, fail startup;
+4. for `stage2b-general-chat-v1`, resolve the concrete enforcement dependency;
+5. verify enforcement independently for the exact execution scope;
+6. if enforcement is unavailable or unverified, fail startup;
+7. only after successful verification, construct the production Ollama Providers;
+8. construct `RuntimeProviderRoutingService`; and
+9. inject that exact collaborator into `ConversationRuntime`.
+
+Provider-first construction is prohibited. So is admission through
+`stage2b-general-chat-v1 → CONFIG_RESTRICTED_RISK_ACCEPTED → service construction`. Risk acceptance, operator
+assertion, boolean/string attestation, loopback binding, `OLLAMA_NO_CLOUD`, isolated environment, proxy removal,
+socket observation, and download-marker observation cannot satisfy the enforcement dependency.
+
 ## External-egress predecessor
 
 The successful enabled production branch has a hard predecessor: a separately reviewed and approved
-**Stage 2B Slice 5C-EG — External Egress Enforcement Architecture and Implementation** (working slice name).
-It owns enforcement selection, host-policy and privilege boundaries, independently verifiable evidence,
-daemon-lifecycle and model-storage implications, rollback, and failure behavior.
+**Stage 2B Slice 5C-EG — External Egress Enforcement Architecture and Implementation**. It owns enforcement
+selection, host-policy and privilege boundaries, CLI and Ollama daemon coverage, IPv4/IPv6/DNS denial with loopback
+allowance, independently verifiable evidence, daemon-lifecycle and model-storage implications, deterministic
+rollback, and failure behavior.
 
 The following remain evidence or risk controls and do not satisfy technical denial: `OLLAMA_NO_CLOUD=1`, a loopback
 endpoint, isolated `HOME`/`TMPDIR`, proxy-variable non-inheritance, post-execution `lsof`, download-marker
@@ -117,6 +146,11 @@ After independent architecture approval, the smallest implementation is:
 4. Use the existing production configuration factory and `RuntimeProviderRoutingService`; make no Core change.
 5. Keep the real enabled branch fail-closed until 5C-EG supplies a concrete independently verified enforcement
    implementation.
+6. Deliberately retarget the existing structural assertion in
+   `apps/chunsik/src/provider-routing/production-provider-routing-config.test.ts`, which currently forbids
+   `app.module.ts` from referencing `createProductionProviderRoutingConfiguration` and
+   `RuntimeProviderRoutingService`. The new intent permits composition and injection of the approved service while
+   prohibiting direct `AiProvider` or `ProviderRoutingGateway` execution.
 
 No source implementation is authorized by this plan.
 
@@ -141,9 +175,35 @@ Focused tests must prove:
 15. non-eligible capabilities and no-work chat continue through the existing legacy behavior; and
 16. the eligible new seam has no legacy fallback or shadow execution after handling begins.
 
+The app-private pure factory supplies the substantive behavioral proof. In particular, tests assert that missing
+and legacy modes return `undefined`; invalid mode throws; enabled mode without verified enforcement throws; every
+disabled or blocked path completes before Provider construction; the construction-factory call count is zero on
+those paths; availability probe and Provider execution counts are zero; and collaborator injection is absent.
+Successful offline composition may use only injected fake enforcement and fake Provider definitions, with no actual
+process or network execution.
+
+The pre-existing source-text assertion must be retargeted from “the composition root must not reference the new
+routing seam” to “the composition root may compose and inject the approved service but must not directly invoke an
+`AiProvider` or `ProviderRoutingGateway`.” Source-text checks may remain only as narrow supplements for no direct
+`AiProvider.execute()`, no direct `ProviderRoutingGateway.execute()`, and no model-specific branch in Core; they are
+not the primary correctness proof.
+
 Prefer dependency-injected app-private factories and fake construction seams. A narrowly scoped structural guard
 may supplement, but not replace, behavioral tests. Normal focused tests, typecheck, app build, and diff invariants
 are required for 5C-I; live startup and all external I/O remain prohibited there.
+
+5C-I also has a strict Core invariant: `packages/core/** = unchanged`. Validation must confirm no Core diff or
+export change, no Core contract or constructor-signature change, and no host-policy, PF, firewall, daemon, or
+egress-verifier abstraction added to Core. The complete ownership chain remains:
+
+```text
+apps/chunsik
+→ typed activation configuration
+→ app-private activation factory
+→ existing ProductionProviderRoutingConfiguration
+→ existing RuntimeProviderRoutingService
+→ existing optional ConversationRuntime collaborator
+```
 
 ## 5C-E strict live gate
 
@@ -151,7 +211,9 @@ are required for 5C-I; live startup and all external I/O remain prohibited there
 
 - exact branch, commit SHA, remote baseline, clean tracked/staged state, and preserved untracked inventory;
 - the exact activation mode and environment source;
-- concrete external-egress enforcement independently verified for the attempt scope;
+- Slice 5C-EG implementation approval;
+- completed 5C-EG implementation, independent review, and merge;
+- exact-attempt egress enforcement independently verified from the merged 5C-EG implementation;
 - freshly measured and explicitly approved executable identities;
 - freshly verified exact required model inventory;
 - independent Runtime, Discord, and DB mutation approval;
@@ -162,7 +224,17 @@ are required for 5C-I; live startup and all external I/O remain prohibited there
 - a tested rollback/deactivation procedure that restores `legacy` mode and verifies Runtime shutdown/state.
 
 5C-E must stop before Provider construction or execution if any prerequisite differs. This plan performs none of
-those checks or actions.
+those checks or actions. The mandatory progression is:
+
+```text
+5C-I implementation
+→ separate 5C-EG architecture approval
+→ 5C-EG implementation, review, and merge
+→ exact-attempt enforcement verification
+→ separate 5C-E execution approval
+```
+
+An environment variable, risk-acceptance mode, or approval from an earlier slice cannot make 5C-E reachable.
 
 ## Architecture questions answered
 
