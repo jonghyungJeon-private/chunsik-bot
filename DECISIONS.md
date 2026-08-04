@@ -4826,3 +4826,15 @@ and an unchanged postflight inventory fingerprint while projecting prevention as
 Slice 5B-2B-I is implementation and fake validation only. Actual Provider generation, localhost communication,
 model inventory execution, model acquisition, external-egress denial, Runtime, Discord, and DB work were not
 executed and remain independent approval boundaries.
+
+Targeted review hardening makes validation observations monotonic across every terminal path. Provider invocation
+count increments per request to the runner; the first may delegate and every later request fails closed without a
+second child execution. Retry count derives from the observed invocation count, while fallback/escalation derive
+from the immutable Planner output. Download, timeout, and structured overflow observations survive later audit or
+orchestration failure, with download then overflow taking precedence over generic failure.
+
+The strict runner independently accepts only `http://127.0.0.1:<valid-port>` and rejects missing, aliased, IPv6,
+remote, HTTPS, credentialed, or path/query/fragment hosts before spawn. Its opt-in result uses structured
+`outputOverflowed`; legacy result shape remains unchanged. Arbitrary model text is never projected: only an exact
+expected token may populate `normalizedOutput`, while bounded mismatches expose only byte count and lowercase
+SHA-256. Invalid acquisition-control input projects null rather than echoing rejected data.

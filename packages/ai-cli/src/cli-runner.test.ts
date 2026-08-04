@@ -398,20 +398,61 @@ describe('contained CLI runner: parent environment isolation', () => {
       expect(isolated.env.GITHUB_TOKEN).toBeUndefined();
     }
   });
+
+  it.each([
+    undefined,
+    '',
+    'http://localhost:11434',
+    'http://[::1]:11434',
+    'http://192.0.2.1:11434',
+    'https://127.0.0.1:11434',
+    'http://127.0.0.1',
+    'http://127.0.0.1:0',
+    'http://127.0.0.1:65536',
+    'http://127.0.0.1:11434/path',
+    'http://127.0.0.1:11434?query=1',
+    'http://127.0.0.1:11434#hash',
+    'http://user:pass@127.0.0.1:11434',
+  ])('rejects an invalid isolated OLLAMA_HOST without spawning: %s', async (host) => {
+    const env = {
+      NO_COLOR: '1', CLICOLOR: '0', CLICOLOR_FORCE: '0', OLLAMA_NO_CLOUD: '1',
+      ...(host === undefined ? {} : { OLLAMA_HOST: host }),
+    };
+    const run = startRun({ env, environmentProfile: 'ISOLATED_OLLAMA_VALIDATION' });
+    const result = await run.result;
+    expect(run.spawns).toHaveLength(0);
+    expect(result).toMatchObject({ code: null, stdout: '', outputOverflowed: false });
+    if (host) expect(JSON.stringify(result)).not.toContain(host);
+  });
+
+  it('rejects a disallowed isolated environment key without spawning', async () => {
+    const run = startRun({
+      environmentProfile: 'ISOLATED_OLLAMA_VALIDATION',
+      env: { OLLAMA_HOST: 'http://127.0.0.1:11434', GITHUB_TOKEN: 'raw-secret' },
+    });
+    const result = await run.result;
+    expect(run.spawns).toHaveLength(0);
+    expect(JSON.stringify(result)).not.toContain('GITHUB_TOKEN');
+    expect(JSON.stringify(result)).not.toContain('raw-secret');
+  });
 });
 
 describe('contained CLI runner: bounded Ollama download observation', () => {
   it.each([
-    ['pulling manifest'],
-    ['pulling abcdef123456'],
-    ['verifying sha256 digest'],
-    ['writing manifest'],
-  ])('terminates on the %s marker without retaining raw output', async (marker) => {
-    const run = startRun({ downloadMarkerPolicy: 'OLLAMA_PULL' });
-    run.child?.stderr.emit('data', Buffer.from(marker.slice(0, 5)));
-    run.child?.stderr.emit('data', Buffer.from(marker.slice(5)));
+    ['stdout', 'pulling manifest'], ['stderr', 'pulling manifest'],
+    ['stdout', 'pulling abcdef123456'], ['stderr', 'pulling abcdef123456'],
+    ['stdout', 'verifying sha256 digest'], ['stderr', 'verifying sha256 digest'],
+    ['stdout', 'writing manifest'], ['stderr', 'writing manifest'],
+  ] as const)('terminates on split %s %s marker without retaining raw output', async (stream, marker) => {
+    const run = startRun({
+      downloadMarkerPolicy: 'OLLAMA_PULL', environmentProfile: 'ISOLATED_OLLAMA_VALIDATION',
+      env: { OLLAMA_HOST: 'http://127.0.0.1:11434' },
+    });
+    run.child?.[stream].emit('data', Buffer.from(marker.slice(0, 5)));
+    run.child?.[stream].emit('data', Buffer.from(marker.slice(5)));
     const result = await closeWith(run, null);
     expect(result.downloadObserved).toBe(true);
+    expect(result.outputOverflowed).toBe(false);
     expect(result.stdout).toBe('');
     expect(result.stderr).toBe('');
     expect(run.child?.signals).toEqual(['SIGTERM']);
@@ -682,6 +723,7 @@ describe('contained CLI runner: output byte bounds stop decoding', () => {
     expect(snapshot.stdoutDecodeCalls).toBe(0); // the breaching chunk was never decoded
     expect(snapshot.stdoutBytes).toBe(0); // and never counted
     expect(run.child?.signals).toEqual(['SIGTERM']);
+    expect(result).not.toHaveProperty('outputOverflowed');
   });
 
   it('never decodes an oversized stderr chunk and fails closed', async () => {
@@ -695,6 +737,24 @@ describe('contained CLI runner: output byte bounds stop decoding', () => {
     const snapshot = only(run);
     expect(snapshot.stderrDecodeCalls).toBe(0);
     expect(snapshot.stderrBytes).toBe(0);
+    expect(result).not.toHaveProperty('outputOverflowed');
+  });
+
+  it.each(['stdout', 'stderr'] as const)('projects structured %s overflow only for validation profile', async (stream) => {
+    const run = startRun({
+      environmentProfile: 'ISOLATED_OLLAMA_VALIDATION',
+      env: { OLLAMA_HOST: 'http://127.0.0.1:11434' },
+    });
+    const limit = stream === 'stdout' ? MAX_STDOUT_CAPTURE_BYTES : MAX_STDERR_CAPTURE_BYTES;
+    run.child?.[stream].emit('data', Buffer.alloc(limit + 1, 0x61));
+    const result = await closeWith(run, 0);
+    expect(result.outputOverflowed).toBe(true);
+  });
+
+  it('keeps legacy successful result shape free of opt-in observations', async () => {
+    const result = await closeWith(startRun(), 0);
+    expect(result).not.toHaveProperty('downloadObserved');
+    expect(result).not.toHaveProperty('outputOverflowed');
   });
 
   it('ignores every later chunk on both streams once one has overflowed', async () => {

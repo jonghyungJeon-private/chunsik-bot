@@ -17,6 +17,11 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 - Added explicit verified-denial versus precheck/observe/postcheck risk-accepted acquisition controls. The latter
   does not prove download prevention or external-egress denial. Tests use fake Provider/preflight/process seams;
   actual Ollama generation, inventory, localhost/network, Runtime, Discord, and DB execution remain deferred.
+- Hardened validation evidence so terminal failures preserve observed invocation/download/timeout/overflow facts,
+  a second invocation is counted but never delegated, and overflow is a structured opt-in runner signal. The
+  adapter and runner independently validate exact IPv4 loopback hosts; legacy runner/provider behavior is unchanged.
+- Restricted output projection to the exact success token. Mismatches expose only bounded byte count and SHA-256,
+  and invalid model-acquisition controls project null without echoing rejected input.
 
 ### Added — Stage 2B · Slice 5B-2A-E0 Honest Egress and Execution Composition
 

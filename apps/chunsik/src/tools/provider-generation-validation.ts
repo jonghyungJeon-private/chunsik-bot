@@ -75,6 +75,7 @@ export type GenerationValidationFailureCode =
   | 'INVENTORY_CHANGED'
   | 'EXPECTED_OUTPUT_MISMATCH'
   | 'OUTPUT_OVERFLOW'
+  | 'PROVIDER_EXECUTION_COUNT_EXCEEDED'
   | 'PROVIDER_EXECUTION_FAILED';
 
 export interface GenerationInventorySnapshot {
@@ -103,6 +104,8 @@ export interface ProviderGenerationValidationDependencies {
     readonly validationHost: string;
     readonly runner: CliRunner;
   }) => AiProvider;
+  /** Test-only post-dispatch seam for terminal observation preservation. */
+  readonly afterProviderExecution?: () => void;
 }
 
 export interface ProviderGenerationValidationProjection {
@@ -114,11 +117,12 @@ export interface ProviderGenerationValidationProjection {
   readonly selectedAdapterId: AdapterId | null;
   readonly selectedModelId: string | null;
   readonly planAttemptCount: 0 | 1;
-  readonly providerExecutionCount: 0 | 1;
-  readonly retryCount: 0;
-  readonly fallbackCount: 0;
-  readonly escalationCount: 0;
+  readonly providerExecutionCount: number;
+  readonly retryCount: number;
+  readonly fallbackCount: 0 | 1;
+  readonly escalationCount: 0 | 1;
   readonly normalizedOutput: string | null;
+  readonly normalizedOutputDigest: string | null;
   readonly normalizedOutputBytes: number;
   readonly expectedOutputMatched: boolean;
   readonly modelAcquisitionControl: ModelAcquisitionControl | null;
@@ -190,19 +194,67 @@ function emptyProjection(
   status: 'FAIL' | 'BLOCKED',
   failureCode: GenerationValidationFailureCode | string,
   checks: ProviderGenerationValidationProjection['checks'],
+  observations: LifecycleObservations = lifecycleObservations(),
 ): ProviderGenerationValidationProjection {
+  const acquisitionControl = Object.values(ModelAcquisitionControl).includes(input.modelAcquisitionControl)
+    ? input.modelAcquisitionControl : null;
   return Object.freeze({
     contractVersion: PROVIDER_GENERATION_VALIDATION_CONTRACT_VERSION, status, failureCode,
-    promptDigest: VALIDATION_PROMPT_DIGEST, selectedProviderId: null, selectedAdapterId: null,
-    selectedModelId: null, planAttemptCount: 0, providerExecutionCount: 0, retryCount: 0,
-    fallbackCount: 0, escalationCount: 0, normalizedOutput: null, normalizedOutputBytes: 0,
-    expectedOutputMatched: false, modelAcquisitionControl: input.modelAcquisitionControl ?? null,
-    modelDownloadPreventionVerified: false, downloadCapableCommandInvoked: false,
-    downloadObserved: false, preflightPassed: false, postflightPassed: false,
-    inventoryUnchanged: false, timedOut: false, outputOverflowed: false,
-    externalEgressControl: null, externalEgressIsolationVerified: false, networkClass: null,
+    promptDigest: VALIDATION_PROMPT_DIGEST,
+    selectedProviderId: observations.selected ? VALIDATION_PROVIDER_ID : null,
+    selectedAdapterId: observations.selected ? VALIDATION_ADAPTER_ID : null,
+    selectedModelId: observations.selected ? VALIDATION_MODEL_ID : null,
+    planAttemptCount: observations.planAttemptCount,
+    providerExecutionCount: observations.providerInvocationCount,
+    retryCount: Math.max(0, observations.providerInvocationCount - 1),
+    fallbackCount: observations.fallbackCount, escalationCount: observations.escalationCount,
+    normalizedOutput: null, normalizedOutputDigest: observations.normalizedOutputDigest,
+    normalizedOutputBytes: observations.normalizedOutputBytes, expectedOutputMatched: false,
+    modelAcquisitionControl: acquisitionControl,
+    modelDownloadPreventionVerified: observations.modelDownloadPreventionVerified,
+    downloadCapableCommandInvoked: observations.delegatedRunnerCount > 0,
+    downloadObserved: observations.downloadObserved,
+    preflightPassed: observations.preflightPassed, postflightPassed: observations.postflightPassed,
+    inventoryUnchanged: observations.inventoryUnchanged, timedOut: observations.timedOut,
+    outputOverflowed: observations.outputOverflowed,
+    externalEgressControl: observations.externalEgressControl,
+    externalEgressIsolationVerified: observations.externalEgressIsolationVerified,
+    networkClass: observations.networkClass,
     checks: Object.freeze([...checks]),
   });
+}
+
+interface LifecycleObservations {
+  providerInvocationCount: number;
+  delegatedRunnerCount: number;
+  downloadObserved: boolean;
+  timedOut: boolean;
+  outputOverflowed: boolean;
+  preflightPassed: boolean;
+  postflightPassed: boolean;
+  inventoryUnchanged: boolean;
+  modelDownloadPreventionVerified: boolean;
+  selected: boolean;
+  planAttemptCount: 0 | 1;
+  fallbackCount: 0 | 1;
+  escalationCount: 0 | 1;
+  normalizedOutputDigest: string | null;
+  normalizedOutputBytes: number;
+  externalEgressControl: ExternalEgressControl | null;
+  externalEgressIsolationVerified: boolean;
+  networkClass: 'LOOPBACK_DAEMON' | null;
+}
+
+function lifecycleObservations(): LifecycleObservations {
+  return {
+    providerInvocationCount: 0, delegatedRunnerCount: 0, downloadObserved: false,
+    timedOut: false, outputOverflowed: false, preflightPassed: false,
+    postflightPassed: false, inventoryUnchanged: false,
+    modelDownloadPreventionVerified: false, selected: false, planAttemptCount: 0,
+    fallbackCount: 0, escalationCount: 0, normalizedOutputDigest: null,
+    normalizedOutputBytes: 0, externalEgressControl: null,
+    externalEgressIsolationVerified: false, networkClass: null,
+  };
 }
 
 export async function executeProviderGenerationValidation(
@@ -210,37 +262,46 @@ export async function executeProviderGenerationValidation(
   dependencies: ProviderGenerationValidationDependencies,
 ): Promise<ProviderGenerationValidationProjection> {
   const checks: Array<Readonly<{ code: string; status: 'PASS' | 'FAIL' | 'BLOCKED' }>> = [];
+  const observations = lifecycleObservations();
   if (!isAbsolute(input.executableRealpath) || !validEndpoint(input.approvedLoopbackEndpoint) ||
       !Object.values(ModelAcquisitionControl).includes(input.modelAcquisitionControl)) {
-    return emptyProjection(input, 'BLOCKED', 'MODEL_DOWNLOAD_RISK_UNCONTROLLED', checks);
+    return emptyProjection(input, 'BLOCKED', 'MODEL_DOWNLOAD_RISK_UNCONTROLLED', checks, observations);
   }
   let preventionVerified = false;
   if (input.modelAcquisitionControl === ModelAcquisitionControl.DENIED_VERIFIED) {
     try { preventionVerified = dependencies.verifyModelAcquisitionDenied?.() === true; } catch { preventionVerified = false; }
-    if (!preventionVerified) return emptyProjection(input, 'BLOCKED', 'MODEL_DOWNLOAD_RISK_UNCONTROLLED', checks);
+    observations.modelDownloadPreventionVerified = preventionVerified;
+    if (!preventionVerified) return emptyProjection(input, 'BLOCKED', 'MODEL_DOWNLOAD_RISK_UNCONTROLLED', checks, observations);
   }
 
   let preflight: GenerationInventorySnapshot;
   try { preflight = await dependencies.runPreflight('PRE'); } catch {
-    return emptyProjection(input, 'BLOCKED', 'PRE_GENERATION_PREFLIGHT_FAILED', checks);
+    return emptyProjection(input, 'BLOCKED', 'PRE_GENERATION_PREFLIGHT_FAILED', checks, observations);
   }
   if (!preflight.passed || preflight.inventoryFingerprint === null) {
-    return emptyProjection(input, 'BLOCKED', 'PRE_GENERATION_PREFLIGHT_FAILED', checks);
+    return emptyProjection(input, 'BLOCKED', 'PRE_GENERATION_PREFLIGHT_FAILED', checks, observations);
   }
-  if (!preflight.requiredModelPresent) return emptyProjection(input, 'BLOCKED', 'MODEL_NOT_AVAILABLE', checks);
+  if (!preflight.requiredModelPresent) return emptyProjection(input, 'BLOCKED', 'MODEL_NOT_AVAILABLE', checks, observations);
+  observations.preflightPassed = true;
+  observations.externalEgressControl = preflight.externalEgressControl;
+  observations.externalEgressIsolationVerified = preflight.externalEgressIsolationVerified;
+  observations.networkClass = preflight.networkClass;
   checks.push(Object.freeze({ code: 'PRE_GENERATION_PREFLIGHT', status: 'PASS' }));
 
-  const executionObservation: { count: number } = { count: 0 };
-  let downloadObserved = false;
-  let timedOut = false;
-  let rawOutputOverflowed = false;
   const underlyingRunner = dependencies.generationRunner ?? defaultCliRunner;
   const observingRunner: CliRunner = async (bin, args, options) => {
-    executionObservation.count = 1;
+    observations.providerInvocationCount = Math.min(2, observations.providerInvocationCount + 1);
+    if (observations.providerInvocationCount > 1) {
+      return {
+        code: null, stdout: '', stderr: 'Provider invocation count exceeded.', timedOut: false,
+        downloadObserved: false, outputOverflowed: false,
+      };
+    }
+    observations.delegatedRunnerCount += 1;
     const result = await underlyingRunner(bin, args, options);
-    downloadObserved ||= result.downloadObserved === true;
-    timedOut ||= result.timedOut;
-    rawOutputOverflowed ||= result.code === null && /capture limit/u.test(result.stderr);
+    observations.downloadObserved ||= result.downloadObserved === true;
+    observations.timedOut ||= result.timedOut;
+    observations.outputOverflowed ||= result.outputOverflowed === true;
     return result;
   };
   const providerOptions = {
@@ -268,54 +329,71 @@ export async function executeProviderGenerationValidation(
     });
     const planAttemptCount = 1 + Number(plan.operationalFallback !== null) + Number(plan.semanticEscalation !== null);
     if (planAttemptCount !== 1 || plan.primary.providerId !== VALIDATION_PROVIDER_ID) {
-      return emptyProjection(input, 'BLOCKED', 'PRIMARY_ONLY_PLAN_REQUIRED', checks);
+      return emptyProjection(input, 'BLOCKED', 'PRIMARY_ONLY_PLAN_REQUIRED', checks, observations);
     }
+    observations.selected = true;
+    observations.planAttemptCount = 1;
+    observations.fallbackCount = plan.operationalFallback === null ? 0 : 1;
+    observations.escalationCount = plan.semanticEscalation === null ? 0 : 1;
     checks.push(Object.freeze({ code: 'PRIMARY_ONLY_PLAN', status: 'PASS' }));
     const gateway = new ProviderRoutingGateway(bindings, profiles);
     const result = await gateway.execute(plan, {
       capability: Capability.GENERAL_CHAT, prompt: VALIDATION_PROMPT,
       contextFiles: [], timeoutMs: 45_000,
     });
+    dependencies.afterProviderExecution?.();
 
     let postflight: GenerationInventorySnapshot | null = null;
     try { postflight = await dependencies.runPreflight('POST'); } catch { postflight = null; }
     const postflightPassed = postflight?.passed === true && postflight.inventoryFingerprint !== null;
     const inventoryUnchanged = postflightPassed &&
       postflight?.inventoryFingerprint === preflight.inventoryFingerprint;
+    observations.postflightPassed = postflightPassed;
+    observations.inventoryUnchanged = inventoryUnchanged;
     if (postflightPassed) checks.push(Object.freeze({ code: 'POST_GENERATION_PREFLIGHT', status: 'PASS' }));
 
     const rawOutput = result.output?.text ?? '';
     const normalizedOutput = rawOutput.trim();
     const normalizedOutputBytes = Buffer.byteLength(normalizedOutput, 'utf8');
-    const outputOverflowed = rawOutputOverflowed || normalizedOutputBytes > MAX_NORMALIZED_OUTPUT_BYTES;
+    observations.normalizedOutputBytes = normalizedOutputBytes;
+    const outputOverflowed = observations.outputOverflowed || normalizedOutputBytes > MAX_NORMALIZED_OUTPUT_BYTES;
+    observations.outputOverflowed = outputOverflowed;
+    observations.normalizedOutputDigest = outputOverflowed ? null
+      : createHash('sha256').update(Buffer.from(normalizedOutput, 'utf8')).digest('hex');
     const expectedOutputMatched = !outputOverflowed && normalizedOutput === EXPECTED_VALIDATION_OUTPUT;
     let status: 'PASS' | 'FAIL' = 'PASS';
     let failureCode: string | null = null;
-    if (downloadObserved) failureCode = 'MODEL_DOWNLOAD_DETECTED';
+    if (observations.downloadObserved) failureCode = 'MODEL_DOWNLOAD_DETECTED';
+    else if (outputOverflowed) failureCode = 'OUTPUT_OVERFLOW';
+    else if (observations.providerInvocationCount > 1) failureCode = 'PROVIDER_EXECUTION_COUNT_EXCEEDED';
     else if (!postflightPassed) failureCode = 'POST_GENERATION_PREFLIGHT_FAILED';
     else if (!inventoryUnchanged) failureCode = 'INVENTORY_CHANGED';
-    else if (outputOverflowed) failureCode = 'OUTPUT_OVERFLOW';
     else if (!expectedOutputMatched) failureCode = result.failureCode ?? 'EXPECTED_OUTPUT_MISMATCH';
     if (failureCode !== null) status = 'FAIL';
     return Object.freeze({
       contractVersion: PROVIDER_GENERATION_VALIDATION_CONTRACT_VERSION, status, failureCode,
       promptDigest: VALIDATION_PROMPT_DIGEST, selectedProviderId: VALIDATION_PROVIDER_ID,
       selectedAdapterId: VALIDATION_ADAPTER_ID, selectedModelId: VALIDATION_MODEL_ID,
-      planAttemptCount: 1, providerExecutionCount: executionObservation.count === 0 ? 0 : 1,
-      retryCount: 0, fallbackCount: 0, escalationCount: 0,
-      normalizedOutput: outputOverflowed ? null : normalizedOutput, normalizedOutputBytes,
+      planAttemptCount: 1, providerExecutionCount: observations.providerInvocationCount,
+      retryCount: Math.max(0, observations.providerInvocationCount - 1),
+      fallbackCount: observations.fallbackCount, escalationCount: observations.escalationCount,
+      normalizedOutput: expectedOutputMatched ? EXPECTED_VALIDATION_OUTPUT : null,
+      normalizedOutputDigest: observations.normalizedOutputDigest, normalizedOutputBytes,
       expectedOutputMatched, modelAcquisitionControl: input.modelAcquisitionControl,
-      modelDownloadPreventionVerified: preventionVerified,
-      downloadCapableCommandInvoked: executionObservation.count > 0,
-      downloadObserved, preflightPassed: true, postflightPassed, inventoryUnchanged, timedOut,
-      outputOverflowed, externalEgressControl: preflight.externalEgressControl,
-      externalEgressIsolationVerified: preflight.externalEgressIsolationVerified,
-      networkClass: preflight.networkClass, checks: Object.freeze(checks),
+      modelDownloadPreventionVerified: observations.modelDownloadPreventionVerified,
+      downloadCapableCommandInvoked: observations.delegatedRunnerCount > 0,
+      downloadObserved: observations.downloadObserved, preflightPassed: observations.preflightPassed,
+      postflightPassed, inventoryUnchanged, timedOut: observations.timedOut,
+      outputOverflowed, externalEgressControl: observations.externalEgressControl,
+      externalEgressIsolationVerified: observations.externalEgressIsolationVerified,
+      networkClass: observations.networkClass, checks: Object.freeze(checks),
     });
   } catch (error) {
-    const failureCode = error instanceof ProviderBindingConfigurationError
-      ? error.code : 'PROVIDER_EXECUTION_FAILED';
-    return emptyProjection(input, 'BLOCKED', failureCode, checks);
+    const failureCode = observations.downloadObserved ? 'MODEL_DOWNLOAD_DETECTED'
+      : observations.outputOverflowed ? 'OUTPUT_OVERFLOW'
+        : observations.providerInvocationCount > 1 ? 'PROVIDER_EXECUTION_COUNT_EXCEEDED'
+          : error instanceof ProviderBindingConfigurationError ? error.code : 'PROVIDER_EXECUTION_FAILED';
+    return emptyProjection(input, 'BLOCKED', failureCode, checks, observations);
   }
 }
 

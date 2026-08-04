@@ -35,6 +35,12 @@ ADR-0064 is the canonical decision record when this historical plan differs from
   loopback/parent-free adapter profile, fixed prompt identity, bounded output, pull-marker observation, and fake
   pre/postflight inventory fingerprints. Risk-accepted precheck/observe/postcheck does not prove model-download
   prevention or external-egress denial. Actual Provider generation remains a separately approved gate.
+- Full-review hardening preserves invocation/download/timeout/overflow observations across terminal failure, counts
+  and blocks a second runner request before delegation, independently validates the exact IPv4 loopback host in the
+  adapter and shared runner, and replaces stderr-prose overflow inference with an opt-in structured signal.
+  Projections disclose only the exact expected token; mismatches use bounded byte count/SHA-256, and rejected
+  acquisition controls are null. Actual Provider generation remains **NOT EXECUTED** and technical model-download
+  prevention remains **NOT VERIFIED**.
 
 ## Objectives
 

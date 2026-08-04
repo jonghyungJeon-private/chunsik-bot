@@ -1,4 +1,5 @@
 import { Buffer } from 'node:buffer';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -85,6 +86,7 @@ describe('Stage 2B primary-only Provider generation validation', () => {
       selectedAdapterId: VALIDATION_ADAPTER_ID, selectedModelId: VALIDATION_MODEL_ID,
       planAttemptCount: 1, providerExecutionCount: 1, retryCount: 0,
       fallbackCount: 0, escalationCount: 0, normalizedOutput: EXPECTED_VALIDATION_OUTPUT,
+      normalizedOutputDigest: createHash('sha256').update(EXPECTED_VALIDATION_OUTPUT).digest('hex'),
       expectedOutputMatched: true, modelDownloadPreventionVerified: false,
       downloadCapableCommandInvoked: true, downloadObserved: false,
       preflightPassed: true, postflightPassed: true, inventoryUnchanged: true,
@@ -164,6 +166,58 @@ describe('Stage 2B primary-only Provider generation validation', () => {
     expect(JSON.stringify(result)).not.toContain('pulling manifest raw');
   });
 
+  it.each([
+    ['generic post-execution throw', { code: 0, stdout: EXPECTED_VALIDATION_OUTPUT, stderr: '', timedOut: false },
+      'PROVIDER_EXECUTION_FAILED', { timedOut: false, outputOverflowed: false, downloadObserved: false }],
+    ['download then throw', { code: 0, stdout: EXPECTED_VALIDATION_OUTPUT, stderr: '', timedOut: false, downloadObserved: true },
+      'MODEL_DOWNLOAD_DETECTED', { downloadObserved: true }],
+    ['timeout then throw', { code: null, stdout: '', stderr: '', timedOut: true, downloadObserved: false },
+      'PROVIDER_EXECUTION_FAILED', { timedOut: true }],
+    ['overflow then throw', { code: null, stdout: '', stderr: 'unrelated bounded reason', timedOut: false,
+      downloadObserved: false, outputOverflowed: true }, 'OUTPUT_OVERFLOW', { outputOverflowed: true }],
+  ])('preserves observations after %s', async (_label, runnerResult, failureCode, observed) => {
+    const result = await executeProviderGenerationValidation(input(), {
+      ...dependencies(), generationRunner: async () => runnerResult,
+      afterProviderExecution: () => { throw new Error('raw post-execution path'); },
+    });
+    expect(result).toMatchObject({
+      status: 'BLOCKED', failureCode, providerExecutionCount: 1,
+      downloadCapableCommandInvoked: true, ...observed,
+    });
+    expect(JSON.stringify(result)).not.toContain('raw post-execution path');
+  });
+
+  it('observes a second invocation, blocks its delegate, and reports one retry', async () => {
+    const deps = dependencies();
+    let delegatedRunnerCount = 0;
+    const result = await executeProviderGenerationValidation(input(), {
+      ...deps,
+      generationRunner: async () => {
+        delegatedRunnerCount += 1;
+        return { code: 0, stdout: EXPECTED_VALIDATION_OUTPUT, stderr: '', timedOut: false };
+      },
+      providerFactory: (options) => new (class implements AiProvider {
+        readonly id = VALIDATION_PROVIDER_ID;
+        readonly capabilities = [];
+        async isAvailable(): Promise<boolean> { return true; }
+        async execute(request: AiRequest) {
+          await options.runner(options.bin, ['run', options.model], {
+            cwd: '/neutral', input: request.prompt, timeoutMs: 45_000,
+          });
+          await options.runner(options.bin, ['run', options.model], {
+            cwd: '/neutral', input: request.prompt, timeoutMs: 45_000,
+          });
+          return { text: EXPECTED_VALIDATION_OUTPUT };
+        }
+      })(),
+    });
+    expect(result).toMatchObject({
+      status: 'FAIL', failureCode: 'PROVIDER_EXECUTION_COUNT_EXCEEDED',
+      providerExecutionCount: 2, retryCount: 1, downloadCapableCommandInvoked: true,
+    });
+    expect(delegatedRunnerCount).toBe(1);
+  });
+
   it('fails changed/postflight inventory without retry or fallback', async () => {
     const changed = snapshot({ inventoryFingerprint: 'b'.repeat(64) });
     const deps = dependencies([snapshot(), changed]);
@@ -174,15 +228,49 @@ describe('Stage 2B primary-only Provider generation validation', () => {
     });
   });
 
-  it.each([
-    [` ${EXPECTED_VALIDATION_OUTPUT}\n`, 'PASS', null],
-    [EXPECTED_VALIDATION_OUTPUT.toLowerCase(), 'FAIL', 'EXPECTED_OUTPUT_MISMATCH'],
-    [`${EXPECTED_VALIDATION_OUTPUT}.`, 'FAIL', 'EXPECTED_OUTPUT_MISMATCH'],
-    ['x'.repeat(129), 'FAIL', 'OUTPUT_OVERFLOW'],
-  ])('applies only whitespace normalization to bounded output', async (response, status, failureCode) => {
-    const result = await executeProviderGenerationValidation(input(), dependencies(undefined, response));
-    expect(result).toMatchObject({ status, failureCode });
+  it('maps structured runner overflow without depending on stderr prose', async () => {
+    const result = await executeProviderGenerationValidation(input(), {
+      ...dependencies(),
+      generationRunner: async () => ({
+        code: null, stdout: '', stderr: 'bounded reason may change', timedOut: false,
+        outputOverflowed: true,
+      }),
+    });
+    expect(result).toMatchObject({
+      status: 'FAIL', failureCode: 'OUTPUT_OVERFLOW', outputOverflowed: true,
+      normalizedOutput: null, providerExecutionCount: 1,
+    });
   });
+
+  it.each([
+    [` ${EXPECTED_VALIDATION_OUTPUT}\n`, 'PASS', null, EXPECTED_VALIDATION_OUTPUT],
+    [EXPECTED_VALIDATION_OUTPUT.toLowerCase(), 'FAIL', 'EXPECTED_OUTPUT_MISMATCH', null],
+    [`${EXPECTED_VALIDATION_OUTPUT}.`, 'FAIL', 'EXPECTED_OUTPUT_MISMATCH', null],
+    ['arbitrary private model prose fixture', 'FAIL', 'EXPECTED_OUTPUT_MISMATCH', null],
+    ['x'.repeat(129), 'FAIL', 'OUTPUT_OVERFLOW', null],
+  ])('applies only whitespace normalization without disclosing mismatch', async (response, status, failureCode, projected) => {
+    const result = await executeProviderGenerationValidation(input(), dependencies(undefined, response));
+    expect(result).toMatchObject({ status, failureCode, normalizedOutput: projected });
+    const normalized = response.trim();
+    const expectedDigest = Buffer.byteLength(normalized, 'utf8') > 128 ? null
+      : createHash('sha256').update(normalized).digest('hex');
+    expect(result.normalizedOutputDigest).toBe(expectedDigest);
+    if (projected === null) expect(JSON.stringify(result)).not.toContain(response);
+  });
+
+  it.each(['UNKNOWN_CONTROL', 'x'.repeat(2_000), 'DENIED_VERIFIED_suffix', 'prefix_DENIED_VERIFIED'])
+    ('sanitizes invalid acquisition control %s', async (control) => {
+      const deps = dependencies();
+      const result = await executeProviderGenerationValidation(
+        { ...input(), modelAcquisitionControl: control as ModelAcquisitionControl }, deps,
+      );
+      expect(result).toMatchObject({
+        status: 'BLOCKED', failureCode: 'MODEL_DOWNLOAD_RISK_UNCONTROLLED',
+        modelAcquisitionControl: null, providerExecutionCount: 0,
+      });
+      expect(JSON.stringify(result)).not.toContain(control);
+      expect(deps.calls.value).toBe(0);
+    });
 
   it('keeps the projection bounded and the validation tool unwired', async () => {
     const result = await executeProviderGenerationValidation(input(), dependencies());
@@ -193,5 +281,14 @@ describe('Stage 2B primary-only Provider generation validation', () => {
     ]) expect(serialized).not.toContain(forbidden);
     const appModule = readFileSync(resolve(__dirname, '../app.module.ts'), 'utf8');
     expect(appModule).not.toContain('provider-generation-validation');
+  });
+
+  it('uses one exact bounded key set for success and blocked projections', async () => {
+    const success = await executeProviderGenerationValidation(input(), dependencies());
+    const blocked = await executeProviderGenerationValidation(
+      { ...input(), modelAcquisitionControl: 'invalid' as ModelAcquisitionControl }, dependencies(),
+    );
+    expect(Object.keys(success).sort()).toEqual(Object.keys(blocked).sort());
+    expect(Object.keys(success).sort()).toContain('normalizedOutputDigest');
   });
 });

@@ -31,6 +31,7 @@ export interface CliRunResult {
   stderr: string;
   timedOut: boolean;
   downloadObserved?: boolean;
+  outputOverflowed?: boolean;
 }
 
 /**
@@ -90,6 +91,12 @@ const VALIDATION_ENV_ALLOWLIST = new Set([
 
 const CALLER_ENV_ALLOWED = new Set<string>(CALLER_ENV_ALLOWLIST);
 
+function isExactIpv4LoopbackEndpoint(value: string | undefined): boolean {
+  if (value === undefined || !/^http:\/\/127\.0\.0\.1:[0-9]{1,5}$/u.test(value)) return false;
+  const port = Number(value.slice(value.lastIndexOf(':') + 1));
+  return Number.isInteger(port) && port >= 1 && port <= 65_535;
+}
+
 /**
  * Bounded, GENERIC containment-failure reasons. None embeds captured output, a raw
  * OS error message, an environment name or value, a prompt, or a filesystem path.
@@ -123,6 +130,9 @@ export function buildChildEnvironment(
   profile?: CliRunOptions['environmentProfile'],
 ): ChildEnvironment {
   if (profile === 'ISOLATED_OLLAMA_VALIDATION') {
+    if (!isExactIpv4LoopbackEndpoint(callerEnv?.OLLAMA_HOST)) {
+      return { ok: false, reason: REASON_ENV_REJECTED };
+    }
     const env: Record<string, string> = {
       HOME: temporaryDirectory,
       TMPDIR: temporaryDirectory,
@@ -253,12 +263,23 @@ export function createContainedCliRunner(hooks: ContainedRunnerHooks = {}): CliR
 
   return (bin, args, options) =>
     new Promise<CliRunResult>((resolve) => {
+      const structuredValidationObservations =
+        options.environmentProfile === 'ISOLATED_OLLAMA_VALIDATION';
+      const observedResult = (result: CliRunResult): CliRunResult => ({
+        ...result,
+        ...(options.downloadMarkerPolicy === undefined ? {} : {
+          downloadObserved: result.downloadObserved ?? false,
+        }),
+        ...(structuredValidationObservations ? {
+          outputOverflowed: result.outputOverflowed ?? false,
+        } : {}),
+      });
       let temporaryDirectory: string;
       try {
         temporaryDirectory = createTempDir();
       } catch {
         // Nothing was spawned and nothing was created: fail closed immediately.
-        resolve({ code: null, stdout: '', stderr: REASON_SANDBOX_CREATE, timedOut: false });
+        resolve(observedResult({ code: null, stdout: '', stderr: REASON_SANDBOX_CREATE, timedOut: false }));
         return;
       }
 
@@ -274,7 +295,7 @@ export function createContainedCliRunner(hooks: ContainedRunnerHooks = {}): CliR
         }
         // Refused before any process exists — `code: null` keeps the providers'
         // existing "could not run" mapping (UNAVAILABLE).
-        resolve({ code: null, stdout: '', stderr: refusedReason, timedOut: false });
+        resolve(observedResult({ code: null, stdout: '', stderr: refusedReason, timedOut: false }));
         return;
       }
 
@@ -350,19 +371,20 @@ export function createContainedCliRunner(hooks: ContainedRunnerHooks = {}): CliR
         }
       };
 
-      const failClosed = (reason: string): CliRunResult => ({
+      const failClosed = (reason: string, outputOverflowed = false): CliRunResult => observedResult({
         code: null,
         stdout: '',
         stderr: reason,
         timedOut: false,
+        ...(structuredValidationObservations ? { outputOverflowed } : {}),
       });
 
       const finishResult = (code: number | null): CliRunResult => {
         // Containment failures first: each returns the same shape with a bounded
         // generic reason, and NEVER carries provider output or a real exit code.
         if (spawnFailed) return failClosed(REASON_SPAWN);
-        if (stdoutOverflowed) return failClosed(REASON_STDOUT_OVERFLOW);
-        if (stderrOverflowed) return failClosed(REASON_STDERR_OVERFLOW);
+        if (stdoutOverflowed) return failClosed(REASON_STDOUT_OVERFLOW, true);
+        if (stderrOverflowed) return failClosed(REASON_STDERR_OVERFLOW, true);
         if (stdinFailure === 'unavailable') return failClosed(REASON_STDIN_UNAVAILABLE);
         if (stdinFailure === 'delivery') return failClosed(REASON_STDIN_DELIVERY);
         // A sandbox that could not be removed is a containment failure even when the
@@ -373,10 +395,10 @@ export function createContainedCliRunner(hooks: ContainedRunnerHooks = {}): CliR
         // Timeout and normal exit share one projection: the observed exit code plus the
         // bounded output captured so far. `stdout` is returned untouched (the provider
         // adapters own response-text semantics); only the diagnostic stream is sanitized.
-        return {
+        return observedResult({
           code, stdout, stderr: sanitizeTerminalOutput(stderr), timedOut,
           ...(options.downloadMarkerPolicy === undefined ? {} : { downloadObserved }),
-        };
+        });
       };
 
       const settle = (code: number | null): void => {

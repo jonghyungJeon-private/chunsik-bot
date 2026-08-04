@@ -186,6 +186,10 @@ fixed; the implementations are not.
     technical model-download prevention: success additionally requires exact preflight presence, no observed
     marker, and an unchanged postflight inventory fingerprint. Actual generation and risk acceptance remain a
     separate Strict gate (ADR-0064).
+    Validation evidence is monotonic across terminal handling: observed invocation/download/timeout/overflow facts
+    are never reset by a later failure. The shared runner independently validates the exact IPv4 loopback host and
+    exposes opt-in structured overflow evidence; a second invocation is counted but never delegated. Only the exact
+    expected token may appear in the projection—every mismatch is represented by bounded byte count and SHA-256.
 
 ---
 

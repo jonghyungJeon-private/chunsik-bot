@@ -115,6 +115,11 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 - **Acquisition:** `DENIED_VERIFIED` requires an independent verifier. The risk-accepted mode projects technical
   prevention false and requires exact preflight presence, bounded case-insensitive pull-marker observation, and an
   unchanged postflight inventory fingerprint. Observation is not proof that no earlier bytes were transferred.
+- **Evidence hardening:** invocation count is observed per runner request; a second request is recorded but never
+  delegated. Download, timeout, and structured overflow facts survive later terminal failures. Both adapter and
+  runner independently require exact IPv4 loopback, while invalid acquisition input projects null.
+- **Output disclosure:** only the exact success token may be projected. Case/punctuation/prose mismatches expose
+  bounded byte count and SHA-256 only; overflow exposes neither literal output nor a digest.
 - **Boundary:** fake seams only. Actual generation, Ollama/process/network/inventory execution, external-egress
   denial, Runtime, Discord, persistence, and DB work were **NOT EXECUTED**.
 
