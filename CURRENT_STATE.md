@@ -5,13 +5,12 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** **Stage 2B Slice 5B-2A-E0 — Honest Egress Contract and Execution Composition** (ADR-0064).
-  App-private, unwired code now adds explicit egress-control semantics, strict invocation parsing, concrete
-  filesystem/sandbox/spawn composition, bounded console projection, and deterministic exit mapping.
-- **Next:** Independent Chief Architect implementation review, then separately approved 5B-2A-E execution. Actual executable/version and installed inventory
-  remain **NOT VERIFIED**. Ollama process, local daemon, external network, model inventory, and Provider generation
-  were **NOT EXECUTED**; actual version/inventory execution requires separately approved Slice 5B-2A-E.
-- **Build/Test (Stage 2B Slice 5B-2A-E0):** fake filesystem/process seams only; no Runtime, CLI, network, Discord,
+- **Phase:** **Stage 2B Slice 5B-2B-I — Bounded Primary-Only Provider Generation Harness** (ADR-0064).
+  App-private, unwired code composes an exact one-provider Registry/Policy/Planner/Gateway path, strict loopback
+  Ollama environment, bounded acquisition observation, pre/postflight seams, and bounded result projection.
+- **Next:** Independent implementation/architecture review, then separately approved Slice 5B-2B-E execution.
+  Actual Provider generation was **NOT EXECUTED** by 5B-2B-I.
+- **Build/Test (Stage 2B Slice 5B-2B-I):** fake preflight/provider/process seams only; no Runtime, CLI, network, Discord,
   secret, `.env.local`, model inventory, persistence, or database execution.
 
 ## Stage 2A — Completed
@@ -106,6 +105,18 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   terminates through the unexpected-failure exit path (5), never the configuration-error path.
 - **Boundary:** actual executable/version/inventory are **NOT VERIFIED**; Ollama process, daemon/network access,
   inventory read, Provider generation, persistence, and DB work were **NOT EXECUTED**.
+
+## Stage 2B — Slice 5B-2B-I Primary-Only Provider Generation Harness
+
+- **Composition:** exact `ollama-cli:llama3.1:8b` validation-only descriptor/binding through the real Registry →
+  Policy → Decision → Planner → Gateway chain; immutable primary count 1, fallback/escalation/retry 0.
+- **Environment:** caller-approved absolute executable and explicit `127.0.0.1` endpoint; runner-owned HOME/TMPDIR,
+  bounded locale/color/cloud variables, no inherited PATH, parent HOME, proxy, credential, or loader variables.
+- **Acquisition:** `DENIED_VERIFIED` requires an independent verifier. The risk-accepted mode projects technical
+  prevention false and requires exact preflight presence, bounded case-insensitive pull-marker observation, and an
+  unchanged postflight inventory fingerprint. Observation is not proof that no earlier bytes were transferred.
+- **Boundary:** fake seams only. Actual generation, Ollama/process/network/inventory execution, external-egress
+  denial, Runtime, Discord, persistence, and DB work were **NOT EXECUTED**.
 
 ## Stage 2B — Slice 3C Deterministic Validation Harness
 

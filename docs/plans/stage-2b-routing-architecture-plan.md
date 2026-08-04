@@ -1,6 +1,6 @@
 # Stage 2B Production Routing Architecture Plan
 
-- **Status:** Architecture ratified by ADR-0064. Slices 1–5A, 5B-1, and 5B-2A-I are implemented. 5B-2A-I adds
+- **Status:** Architecture ratified by ADR-0064. Slices 1–5A, 5B-1, 5B-2A, and 5B-2B-I are implemented. 5B-2A-I adds
   unwired app-private preflight contracts/runner with fake filesystem/process validation only. Actual Ollama
   version/inventory execution, activation, Provider generation, and Runtime/Discord/DB UAT remain separate gates.
 - **Input:** Completed Stage 2A Provider Evaluation Infrastructure and frozen A1+A3 evidence.
@@ -30,6 +30,11 @@ ADR-0064 is the canonical decision record when this historical plan differs from
   risk acceptance does not technically deny external egress. The runner owns exact environment construction and hard settlement.
   Actual executable/version and
   installed inventory remain **NOT VERIFIED**; process, daemon/network, inventory, and generation were not executed.
+- Slice 5B-2B-I adds a validation-only one-provider composition for exact `ollama-cli:llama3.1:8b` through the
+  existing Registry/Policy/Planner/Gateway chain. It has one primary and no fallback/escalation/retry, an explicit
+  loopback/parent-free adapter profile, fixed prompt identity, bounded output, pull-marker observation, and fake
+  pre/postflight inventory fingerprints. Risk-accepted precheck/observe/postcheck does not prove model-download
+  prevention or external-egress denial. Actual Provider generation remains a separately approved gate.
 
 ## Objectives
 

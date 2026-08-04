@@ -4807,3 +4807,22 @@ identity, exact non-generation argv, shell disabled, no prompt/secret, loopback 
 environment, at most two commands, and zero retry. A future execution packet must revalidate executable identity
 immediately before VERSION, again before INVENTORY, and after terminal completion; any mismatch is terminal and
 must not trigger recovery, download, or generation.
+
+### Slice 5B-2B-I — Bounded Primary-Only Provider Generation Harness
+
+The app-private validation composition registers exactly one descriptor and executable binding for
+`ollama-cli:llama3.1:8b`, then uses the existing `ProviderRegistry → RoutingPolicyEngine →
+ProviderExecutionPlanner → ProviderRoutingGateway` chain. The resulting immutable plan has only its primary;
+fallback, escalation, retry, direct adapter invocation, plan mutation, Runtime wiring, and persistence are absent.
+
+The exact fixed probe is identified by SHA-256 rather than projected in full. The validation Ollama instance uses
+an approved absolute executable and explicit `127.0.0.1` HTTP endpoint with a runner-owned HOME/TMPDIR and exact
+locale/color/cloud environment. Its bounded stream detector requests termination on case-insensitive Ollama pull
+markers and retains no marker output. This observes but does not technically prevent bytes transferred before a
+marker. `DENIED_VERIFIED` requires an independent successful verifier; the current executable mode is
+`PRECHECK_OBSERVE_POSTCHECK_RISK_ACCEPTED`, which requires exact preflight model presence, no observed download,
+and an unchanged postflight inventory fingerprint while projecting prevention as false.
+
+Slice 5B-2B-I is implementation and fake validation only. Actual Provider generation, localhost communication,
+model inventory execution, model acquisition, external-egress denial, Runtime, Discord, and DB work were not
+executed and remain independent approval boundaries.

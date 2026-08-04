@@ -7,6 +7,17 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Stage 2B · Slice 5B-2B-I Primary-Only Provider Generation Validation
+
+- Added an app-private one-provider Registry/Policy/Planner/Gateway harness for exact
+  `ollama-cli:llama3.1:8b`, yielding one immutable primary attempt with zero fallback, escalation, or retry.
+- Added an opt-in Ollama validation profile with an absolute executable, explicit loopback host, parent-free
+  runner-owned HOME/TMPDIR environment, bounded pull-marker observation, fixed prompt identity, 128-byte normalized
+  output contract, and bounded structured projection. Existing provider defaults remain unchanged.
+- Added explicit verified-denial versus precheck/observe/postcheck risk-accepted acquisition controls. The latter
+  does not prove download prevention or external-egress denial. Tests use fake Provider/preflight/process seams;
+  actual Ollama generation, inventory, localhost/network, Runtime, Discord, and DB execution remain deferred.
+
 ### Added — Stage 2B · Slice 5B-2A-E0 Honest Egress and Execution Composition
 
 - Replaced the boolean egress attestation with explicit `OS_DENIED_VERIFIED` and

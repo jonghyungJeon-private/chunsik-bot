@@ -463,6 +463,24 @@ describe('Provider regression through the contained runner', () => {
     expect(res.text).toBe('## 결과'); // sanitized by the adapter, exactly as before
   });
 
+  it('opts into the exact loopback validation environment without changing legacy defaults', async () => {
+    const probe = containedProbe('QUIRKYBOT_STAGE_2B_PROVIDER_OK');
+    await new OllamaCliProvider({
+      bin: '/approved/ollama', model: 'llama3.1:8b',
+      providerId: 'ollama-cli:llama3.1:8b', validationHost: 'http://127.0.0.1:11434',
+      runner: probe.runner,
+    }).execute({ capability: Capability.GENERAL_CHAT, prompt: PROMPT });
+    const env = (probe.spawns[0]?.options.env ?? {}) as Record<string, string>;
+    expect(env).toEqual({
+      HOME: FAKE_TEMP_DIR, TMPDIR: FAKE_TEMP_DIR, LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8',
+      NO_COLOR: '1', CLICOLOR: '0', CLICOLOR_FORCE: '0',
+      OLLAMA_HOST: 'http://127.0.0.1:11434', OLLAMA_NO_CLOUD: '1',
+    });
+    expect(env.PATH).toBeUndefined();
+    expect(env.GITHUB_TOKEN).toBeUndefined();
+    expect(() => new OllamaCliProvider({ validationHost: 'http://example.com:11434' })).toThrow();
+  });
+
   it('Codex spawns no process at all', async () => {
     let spawnCalls = 0;
     // Codex holds no runner by construction; this contained runner exists only to

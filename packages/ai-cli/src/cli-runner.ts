@@ -19,6 +19,10 @@ export interface CliRunOptions {
    * full parent-environment inheritance.
    */
   env?: Readonly<Record<string, string>>;
+  /** Opt-in environment used only by the app-private Ollama generation validator. */
+  environmentProfile?: 'ISOLATED_OLLAMA_VALIDATION';
+  /** Bounded observation only; this does not prevent bytes sent before a marker. */
+  downloadMarkerPolicy?: 'OLLAMA_PULL';
 }
 
 export interface CliRunResult {
@@ -26,6 +30,7 @@ export interface CliRunResult {
   stdout: string;
   stderr: string;
   timedOut: boolean;
+  downloadObserved?: boolean;
 }
 
 /**
@@ -79,6 +84,9 @@ export const INHERITED_ENV_ALLOWLIST = ['PATH', 'HOME', 'LANG', 'LC_ALL', 'LC_CT
  * runner-owned and must not be overridable by a caller.
  */
 export const CALLER_ENV_ALLOWLIST = ['NO_COLOR', 'CLICOLOR', 'CLICOLOR_FORCE'] as const;
+const VALIDATION_ENV_ALLOWLIST = new Set([
+  'NO_COLOR', 'CLICOLOR', 'CLICOLOR_FORCE', 'OLLAMA_HOST', 'OLLAMA_NO_CLOUD',
+]);
 
 const CALLER_ENV_ALLOWED = new Set<string>(CALLER_ENV_ALLOWLIST);
 
@@ -112,7 +120,22 @@ export function buildChildEnvironment(
   parent: NodeJS.ProcessEnv,
   temporaryDirectory: string,
   callerEnv?: Readonly<Record<string, string>>,
+  profile?: CliRunOptions['environmentProfile'],
 ): ChildEnvironment {
+  if (profile === 'ISOLATED_OLLAMA_VALIDATION') {
+    const env: Record<string, string> = {
+      HOME: temporaryDirectory,
+      TMPDIR: temporaryDirectory,
+      LANG: 'C.UTF-8',
+      LC_ALL: 'C.UTF-8',
+    };
+    for (const name of Object.keys(callerEnv ?? {})) {
+      if (!VALIDATION_ENV_ALLOWLIST.has(name)) return { ok: false, reason: REASON_ENV_REJECTED };
+      const value = callerEnv?.[name];
+      if (typeof value === 'string') env[name] = value;
+    }
+    return { ok: true, env };
+  }
   const env: Record<string, string> = {};
   for (const name of INHERITED_ENV_ALLOWLIST) {
     const value = parent[name];
@@ -239,7 +262,9 @@ export function createContainedCliRunner(hooks: ContainedRunnerHooks = {}): CliR
         return;
       }
 
-      const childEnv = buildChildEnvironment(parentEnvOf(), temporaryDirectory, options.env);
+      const childEnv = buildChildEnvironment(
+        parentEnvOf(), temporaryDirectory, options.env, options.environmentProfile,
+      );
       if (!childEnv.ok) {
         let refusedReason = childEnv.reason;
         try {
@@ -269,6 +294,8 @@ export function createContainedCliRunner(hooks: ContainedRunnerHooks = {}): CliR
       let spawnFailed = false;
       let stdinFailure: StdinFailure = 'none';
       let cleanupFailed = false;
+      let downloadObserved = false;
+      let markerTail = '';
       let closeObserved = false;
       let killRequested = false;
       let killEscalated = false;
@@ -283,7 +310,7 @@ export function createContainedCliRunner(hooks: ContainedRunnerHooks = {}): CliR
        * chunk may be counted, decoded, or accumulated.
        */
       const containmentFailed = (): boolean =>
-        spawnFailed || stdoutOverflowed || stderrOverflowed || stdinFailure !== 'none';
+        spawnFailed || stdoutOverflowed || stderrOverflowed || downloadObserved || stdinFailure !== 'none';
 
       const clearTimers = (): void => {
         if (timeoutTimer) {
@@ -346,7 +373,10 @@ export function createContainedCliRunner(hooks: ContainedRunnerHooks = {}): CliR
         // Timeout and normal exit share one projection: the observed exit code plus the
         // bounded output captured so far. `stdout` is returned untouched (the provider
         // adapters own response-text semantics); only the diagnostic stream is sanitized.
-        return { code, stdout, stderr: sanitizeTerminalOutput(stderr), timedOut };
+        return {
+          code, stdout, stderr: sanitizeTerminalOutput(stderr), timedOut,
+          ...(options.downloadMarkerPolicy === undefined ? {} : { downloadObserved }),
+        };
       };
 
       const settle = (code: number | null): void => {
@@ -437,6 +467,22 @@ export function createContainedCliRunner(hooks: ContainedRunnerHooks = {}): CliR
           }
           requestTermination();
           return;
+        }
+        if (options.downloadMarkerPolicy === 'OLLAMA_PULL') {
+          const observed = `${markerTail}${chunk.toString('utf8')}`.toLocaleLowerCase('en-US');
+          markerTail = observed.slice(-128);
+          if (
+            observed.includes('pulling manifest') ||
+            /pulling\s+[a-f0-9]{8,}/u.test(observed) ||
+            observed.includes('verifying sha256 digest') ||
+            observed.includes('writing manifest')
+          ) {
+            downloadObserved = true;
+            stdout = '';
+            stderr = '';
+            requestTermination();
+            return;
+          }
         }
         if (isStdout) {
           stdoutBytes = total;

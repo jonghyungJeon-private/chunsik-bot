@@ -22,6 +22,17 @@ const OLLAMA_COLOR_ENV = {
   CLICOLOR_FORCE: '0',
 } as const;
 
+function approvedLoopbackHost(value: string): string {
+  let endpoint: URL;
+  try { endpoint = new URL(value); } catch { throw new TypeError('Invalid Ollama validation host'); }
+  if (
+    endpoint.protocol !== 'http:' || endpoint.hostname !== '127.0.0.1' ||
+    endpoint.port.length === 0 || endpoint.username || endpoint.password ||
+    endpoint.pathname !== '/' || endpoint.search || endpoint.hash
+  ) throw new TypeError('Invalid Ollama validation host');
+  return endpoint.origin;
+}
+
 function sanitizedModelName(model: string): string {
   return /^[A-Za-z0-9._:/-]{1,200}$/.test(model) ? model : '[redacted]';
 }
@@ -184,6 +195,7 @@ export class OllamaCliProvider extends BaseCliAiProvider {
   private readonly model: string;
   private readonly runner: CliRunner;
   private readonly defaultTimeoutMs: number;
+  private readonly validationHost: string | null;
 
   readonly capabilities: readonly AiCapabilityDescriptor[] = [
     { capability: Capability.GENERAL_CHAT, priority: 100 },
@@ -204,6 +216,7 @@ export class OllamaCliProvider extends BaseCliAiProvider {
     providerId?: string;
     runner?: CliRunner;
     timeoutMs?: number;
+    validationHost?: string;
   } = {}) {
     super();
     this.id = options.providerId ?? 'ollama-cli';
@@ -211,6 +224,8 @@ export class OllamaCliProvider extends BaseCliAiProvider {
     this.model = options.model ?? 'llama3.1';
     this.runner = options.runner ?? defaultCliRunner;
     this.defaultTimeoutMs = options.timeoutMs ?? 120_000;
+    this.validationHost = options.validationHost === undefined
+      ? null : approvedLoopbackHost(options.validationHost);
   }
 
   /** `ollama run <model>`. The prompt is supplied via stdin, never as an argv. */
@@ -244,7 +259,15 @@ export class OllamaCliProvider extends BaseCliAiProvider {
       cwd,
       input,
       timeoutMs,
-      env: OLLAMA_COLOR_ENV,
+      env: this.validationHost === null ? OLLAMA_COLOR_ENV : {
+        ...OLLAMA_COLOR_ENV,
+        OLLAMA_HOST: this.validationHost,
+        OLLAMA_NO_CLOUD: '1',
+      },
+      ...(this.validationHost === null ? {} : {
+        environmentProfile: 'ISOLATED_OLLAMA_VALIDATION' as const,
+        downloadMarkerPolicy: 'OLLAMA_PULL' as const,
+      }),
     });
 
     // Classified failure taxonomy (ADR-0015). stderr is masked before it leaves. Ollama is

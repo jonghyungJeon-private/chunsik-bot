@@ -177,6 +177,15 @@ fixed; the implementations are not.
     egress. The runner exclusively constructs and validates the exact child environment.
     Actual executable/version/inventory, daemon/network access, and Provider generation
     require later independent gates (ADR-0064).
+11. Provider generation validation remains app-private and non-persistent. Slice 5B-2B-I composes a validation-only
+    one-descriptor Registry and one executable binding through the existing Policy → Decision → Planner → Gateway
+    chain, producing a naturally primary-only plan for exact `ollama-cli:llama3.1:8b`; it never calls the adapter
+    directly or changes Core planning semantics. Its strict adapter-local profile uses an absolute executable,
+    explicit loopback host, runner-owned HOME/TMPDIR, bounded locale/color/cloud controls, no inherited PATH or
+    parent HOME, and bounded pull-marker observation. `PRECHECK_OBSERVE_POSTCHECK_RISK_ACCEPTED` is explicitly not
+    technical model-download prevention: success additionally requires exact preflight presence, no observed
+    marker, and an unchanged postflight inventory fingerprint. Actual generation and risk acceptance remain a
+    separate Strict gate (ADR-0064).
 
 ---
 

@@ -143,6 +143,8 @@ interface StartConfig {
   env?: Readonly<Record<string, string>>;
   bin?: string;
   args?: string[];
+  environmentProfile?: CliRunOptions['environmentProfile'];
+  downloadMarkerPolicy?: CliRunOptions['downloadMarkerPolicy'];
   /** Use the production temp-dir implementation instead of the recording wrapper. */
   productionTempDir?: boolean;
   /** Make the observation hook throw AFTER recording, to prove it is isolated. */
@@ -247,6 +249,8 @@ function startRun(config: StartConfig = {}): StartedRun {
     input: config.input ?? 'the prompt',
     timeoutMs: config.timeoutMs ?? 5_000,
     ...(config.env ? { env: config.env } : {}),
+    ...(config.environmentProfile ? { environmentProfile: config.environmentProfile } : {}),
+    ...(config.downloadMarkerPolicy ? { downloadMarkerPolicy: config.downloadMarkerPolicy } : {}),
   };
   const result = runner(config.bin ?? 'provider-cli', config.args ?? ['-p'], options);
   return { result, child, spawns, created, removed, timers, snapshots };
@@ -375,6 +379,42 @@ describe('contained CLI runner: parent environment isolation', () => {
       // An absent parent name is simply not set, never set to an empty string.
       expect(Object.keys(sparseParent.env).sort()).toEqual(['PATH', 'TMPDIR']);
     }
+  });
+
+  it('uses an exact parent-free environment for isolated Ollama validation', () => {
+    const isolated = buildChildEnvironment(PARENT_WITH_SECRETS, '/tmp/owned', {
+      NO_COLOR: '1', CLICOLOR: '0', CLICOLOR_FORCE: '0',
+      OLLAMA_HOST: 'http://127.0.0.1:11434', OLLAMA_NO_CLOUD: '1',
+    }, 'ISOLATED_OLLAMA_VALIDATION');
+    expect(isolated.ok).toBe(true);
+    if (isolated.ok) {
+      expect(isolated.env).toEqual({
+        HOME: '/tmp/owned', TMPDIR: '/tmp/owned', LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8',
+        NO_COLOR: '1', CLICOLOR: '0', CLICOLOR_FORCE: '0',
+        OLLAMA_HOST: 'http://127.0.0.1:11434', OLLAMA_NO_CLOUD: '1',
+      });
+      expect(isolated.env.PATH).toBeUndefined();
+      expect(isolated.env.HTTP_PROXY).toBeUndefined();
+      expect(isolated.env.GITHUB_TOKEN).toBeUndefined();
+    }
+  });
+});
+
+describe('contained CLI runner: bounded Ollama download observation', () => {
+  it.each([
+    ['pulling manifest'],
+    ['pulling abcdef123456'],
+    ['verifying sha256 digest'],
+    ['writing manifest'],
+  ])('terminates on the %s marker without retaining raw output', async (marker) => {
+    const run = startRun({ downloadMarkerPolicy: 'OLLAMA_PULL' });
+    run.child?.stderr.emit('data', Buffer.from(marker.slice(0, 5)));
+    run.child?.stderr.emit('data', Buffer.from(marker.slice(5)));
+    const result = await closeWith(run, null);
+    expect(result.downloadObserved).toBe(true);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toBe('');
+    expect(run.child?.signals).toEqual(['SIGTERM']);
   });
 });
 
