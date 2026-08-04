@@ -4790,9 +4790,15 @@ is independent of `networkClass`, which continues to classify validated endpoint
 
 An app-private tools entrypoint requires every executable identity, endpoint, and egress input explicitly, performs
 no PATH lookup, composes concrete read-only filesystem, runner-owned sandbox, and injected spawn adapters, and emits
-one bounded projection with exit codes PASS=0, FAIL=2, BLOCKED=3, configuration error=4. It is not imported by the
-composition root. Actual executable/version/inventory, daemon/network communication, Provider generation,
-persistence, and DB work remain unexecuted and require separately approved Slice 5B-2A-E.
+one bounded projection with exit codes PASS=0, FAIL=2, BLOCKED=3, `ENTRYPOINT_CONFIGURATION_ERROR`=4, and
+`ENTRYPOINT_UNEXPECTED_FAILURE`=5. Invocation parsing/validation failures use `INVALID_INVOCATION`; unexpected
+failures after a valid invocation use `UNEXPECTED_ENTRYPOINT_FAILURE` and do not expose raw error details.
+
+Each invocation makes at most one structured-projection emission attempt. If that write fails, the entrypoint exits
+through the unexpected-failure path with code 5 and emits no fallback projection; in particular, it never
+misreports a stdout failure as an invalid configuration. The entrypoint is not imported by the composition root.
+Actual executable/version/inventory, daemon/network communication, Provider generation, persistence, and DB work
+remain unexecuted and require separately approved Slice 5B-2A-E.
 
 For the exact read-only VERSION/INVENTORY scope, the Chief Architect accepts bounded hash-to-spawn TOCTOU,
 descendant/process-tree containment, network-class run-level monotonicity, the final-settlement defensive terminate

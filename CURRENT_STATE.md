@@ -101,6 +101,9 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   denial of external egress.
 - **Composition:** strict explicit inputs, concrete bounded filesystem/sandbox/spawn adapters, existing preflight,
   one bounded console projection, and exit codes 0/2/3/4/5 remain app-private and absent from `app.module.ts`.
+- **Projection write failure:** each invocation attempts structured projection emission at most once. If the first
+  write fails, no projection is successfully emitted, no fallback projection is attempted, and the entrypoint
+  terminates through the unexpected-failure exit path (5), never the configuration-error path.
 - **Boundary:** actual executable/version/inventory are **NOT VERIFIED**; Ollama process, daemon/network access,
   inventory read, Provider generation, persistence, and DB work were **NOT EXECUTED**.
 

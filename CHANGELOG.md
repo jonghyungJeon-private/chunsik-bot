@@ -14,8 +14,11 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
   risk-accepted mode restricts binary, argv, environment, and endpoint configuration but does not technically
   deny or prove denial of external egress.
 - Added an app-private strict invocation parser, concrete read-only filesystem and runner-owned sandbox adapters,
-  injected spawn composition, bounded console projection, and deterministic PASS/FAIL/BLOCKED/configuration exit
-  codes without wiring the preflight into `app.module.ts`.
+  injected spawn composition, and deterministic PASS/FAIL/BLOCKED/configuration/unexpected-failure reporting
+  without wiring the preflight into `app.module.ts`. Invalid invocations remain
+  `ENTRYPOINT_CONFIGURATION_ERROR`/`INVALID_INVOCATION` with exit 4; post-parse failures are separately bounded as
+  `ENTRYPOINT_UNEXPECTED_FAILURE`/`UNEXPECTED_ENTRYPOINT_FAILURE` with exit 5. Each invocation attempts at most one
+  projection, and all five statuses use the same bounded key set, including `inventoryObserved`.
 - Actual executable/version and installed inventory remain **NOT VERIFIED**. Ollama process, local daemon/network,
   model inventory, and Provider generation were **NOT EXECUTED**; execution remains separately gated by 5B-2A-E.
 

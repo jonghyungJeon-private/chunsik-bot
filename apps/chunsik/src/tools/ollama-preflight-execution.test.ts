@@ -275,17 +275,21 @@ describe('Ollama preflight execution composition', () => {
   });
 
   it('never attempts a second projection after a writer reports failure', async () => {
-    const writes: string[] = [];
+    let writeAttempts = 0;
+    const emittedProjections: string[] = [];
     await expect(executeOllamaPreflightInvocation(invocation(), {
       fileSystem: new FakeFileSystem(),
       spawnAdapter: fakeSpawn(),
       sandboxFactory: () => ({ home: '/h', tmpdir: '/t', cleanup: () => undefined }),
-      writeProjection: (projection) => {
-        writes.push(projection);
+      writeProjection: () => {
+        writeAttempts += 1;
         throw new Error('post-write failure');
       },
     })).rejects.toThrow('post-write failure');
-    expect(writes).toHaveLength(1);
+    expect(writeAttempts).toBe(1);
+    expect(emittedProjections).toHaveLength(0);
+    const entrypointSource = readFileSync(resolve(__dirname, 'ollama-preflight-execution.ts'), 'utf8');
+    expect(entrypointSource).toContain('process.exitCode = 5');
   });
 
   it('uses one unified bounded key set for every projection status', async () => {
@@ -321,9 +325,50 @@ describe('Ollama preflight execution composition', () => {
       'PASS', 'FAIL', 'BLOCKED',
       'ENTRYPOINT_CONFIGURATION_ERROR', 'ENTRYPOINT_UNEXPECTED_FAILURE',
     ]);
+    const expectedKeys = [
+      'additionalModelCount',
+      'checks',
+      'commandCount',
+      'commandPolicyVersion',
+      'contractVersion',
+      'downloadCapableCommandInvoked',
+      'downloadObserved',
+      'executableIdentityContractVersion',
+      'executableIdentityDigest',
+      'executionContractVersion',
+      'externalEgressControl',
+      'externalEgressIsolationVerified',
+      'failureCode',
+      'installedRequiredModels',
+      'inventoryObserved',
+      'missingRequiredModels',
+      'networkClass',
+      'normalizedVersion',
+      'parserContractVersion',
+      'providerExecutionCount',
+      'requiredModels',
+      'status',
+    ];
     const keySets = projections.map((projection) => Object.keys(projection).sort());
-    expect(keySets.every((keys) => JSON.stringify(keys) === JSON.stringify(keySets[0]))).toBe(true);
-    expect(keySets[0]).toContain('inventoryObserved');
+    expect(keySets).toEqual(projections.map(() => expectedKeys));
+    expect(projections.every((projection) => 'inventoryObserved' in projection)).toBe(true);
+    const serializedProjections = projections.map((projection) => JSON.stringify(projection));
+    const forbiddenDetails = [
+      'raw stdout',
+      'raw stderr',
+      'stack',
+      'raw error detail',
+      '/private/path',
+      '/approved/ollama',
+      '/sandbox/',
+      'HOME',
+      'TMPDIR',
+      'environment',
+      'NAME ID SIZE MODIFIED',
+    ];
+    for (const serialized of serializedProjections) {
+      for (const forbidden of forbiddenDetails) expect(serialized).not.toContain(forbidden);
+    }
   });
 
   it('keeps real adapters app-private and leaves app.module unwired', () => {
