@@ -16,7 +16,7 @@ import {
 } from './provider-generation-validation';
 import type {
   GenerationInventorySnapshot, ProviderGenerationValidationDependencies,
-  ProviderGenerationValidationProjection,
+  ProviderGenerationValidationProjection, GenerationValidationFailureCode,
 } from './provider-generation-validation';
 
 export const PROVIDER_GENERATION_EXECUTION_CONTRACT_VERSION =
@@ -36,7 +36,12 @@ const FLAGS = Object.freeze([
   '--approved-loopback-endpoint','--model-acquisition-control','--external-egress-control',
 ] as const);
 type Status = 'PASS'|'FAIL'|'BLOCKED';
-type FailureCode = string|null;
+type EntrypointFailureCode =
+  | GenerationValidationFailureCode
+  | 'INVALID_INVOCATION'
+  | 'EXECUTABLE_IDENTITY_MISMATCH'
+  | 'UNEXPECTED_ENTRYPOINT_FAILURE'
+  | null;
 export interface Invocation {
   readonly executableRealpath:string; readonly expectedExecutableSha256:string;
   readonly expectedExecutableSizeBytes:number; readonly approvedLoopbackEndpoint:string;
@@ -46,7 +51,7 @@ export interface Invocation {
 export interface EntrypointProjection {
   readonly entrypointContractVersion:typeof PROVIDER_GENERATION_EXECUTION_CONTRACT_VERSION;
   readonly contractVersion:typeof PROVIDER_GENERATION_VALIDATION_CONTRACT_VERSION;
-  readonly status:Status; readonly failureCode:FailureCode; readonly promptDigest:typeof VALIDATION_PROMPT_DIGEST;
+  readonly status:Status; readonly failureCode:EntrypointFailureCode; readonly promptDigest:typeof VALIDATION_PROMPT_DIGEST;
   readonly harnessInvocationCount:number; readonly identityVerified:boolean;
   readonly selectedProviderId:string|null; readonly selectedAdapterId:string|null; readonly selectedModelId:string|null;
   readonly planAttemptCount:number; readonly providerExecutionCount:number; readonly retryCount:number;
@@ -100,7 +105,23 @@ export interface ExecutionDependencies {
 interface Lifecycle { identityVerified:boolean; harnessInvocationCount:number;
   latestHarnessProjection:ProviderGenerationValidationProjection|null;
   projectionEmissionAttemptCount:number; projectionEmissionSucceeded:boolean; }
-function projectionOf(lifecycle:Lifecycle,status:Status,failureCode:FailureCode):EntrypointProjection {
+const GENERATION_FAILURE_CODES = Object.freeze([
+  'PRIMARY_ONLY_PLAN_REQUIRED', 'MODEL_NOT_AVAILABLE', 'MODEL_DOWNLOAD_RISK_UNCONTROLLED',
+  'MODEL_DOWNLOAD_DETECTED', 'PRE_GENERATION_PREFLIGHT_FAILED', 'POST_GENERATION_PREFLIGHT_FAILED',
+  'INVENTORY_CHANGED', 'EXPECTED_OUTPUT_MISMATCH', 'OUTPUT_OVERFLOW',
+  'PROVIDER_EXECUTION_COUNT_EXCEEDED', 'PROVIDER_EXECUTION_FAILED',
+] as const satisfies readonly GenerationValidationFailureCode[]);
+
+function boundedHarnessFailureCode(
+  failureCode: ProviderGenerationValidationProjection['failureCode'],
+): EntrypointFailureCode {
+  if (failureCode === null) return null;
+  return GENERATION_FAILURE_CODES.includes(failureCode as GenerationValidationFailureCode)
+    ? failureCode as GenerationValidationFailureCode
+    : 'UNEXPECTED_ENTRYPOINT_FAILURE';
+}
+
+function projectionOf(lifecycle:Lifecycle,status:Status,failureCode:EntrypointFailureCode):EntrypointProjection {
   const p=lifecycle.latestHarnessProjection;
   return Object.freeze({entrypointContractVersion:PROVIDER_GENERATION_EXECUTION_CONTRACT_VERSION,
     contractVersion:PROVIDER_GENERATION_VALIDATION_CONTRACT_VERSION,status,failureCode,
@@ -141,9 +162,11 @@ async function concretePreflight(phase:'PRE'|'POST',input:Invocation,deps:Execut
     externalEgressIsolationVerified:result.externalEgressIsolationVerified,networkClass:result.networkClass});
 }
 export async function executeProviderGenerationExecution(argv:readonly string[],deps:ExecutionDependencies={}){
+  // Established bounded lifecycle facts survive every later entrypoint failure.
   const lifecycle:Lifecycle={identityVerified:false,harnessInvocationCount:0,latestHarnessProjection:null,
     projectionEmissionAttemptCount:0,projectionEmissionSucceeded:false};
   const writer=deps.writeProjection??((value:string)=>process.stdout.write(`${value}\n`));
+  // Exactly one projection write is attempted; writer failure never triggers fallback emission.
   const finish=(projection:EntrypointProjection,exitCode:number)=>{
     lifecycle.projectionEmissionAttemptCount+=1;
     try{writer(JSON.stringify(projection));lifecycle.projectionEmissionSucceeded=true;
@@ -155,7 +178,7 @@ export async function executeProviderGenerationExecution(argv:readonly string[],
   try{input=parseProviderGenerationExecutionInvocation(argv);}
   catch{return finish(projectionOf(lifecycle,'BLOCKED','INVALID_INVOCATION'),4);}
   const fileSystem=deps.fileSystem??new NodeOllamaPreflightFileSystem();
-  // Identity is fail-closed before any preflight or Provider-capable dependency is invoked.
+  // Identity must pass before any preflight or harness invocation.
   try{assertOllamaExecutableIdentity(approved(input),input.executableRealpath,fileSystem);
     lifecycle.identityVerified=true;}
   catch{return finish(projectionOf(lifecycle,'BLOCKED','EXECUTABLE_IDENTITY_MISMATCH'),3);}
@@ -169,7 +192,9 @@ export async function executeProviderGenerationExecution(argv:readonly string[],
       approvedLoopbackEndpoint:input.approvedLoopbackEndpoint,
       modelAcquisitionControl:input.modelAcquisitionControl},harnessDependencies);
     const p=lifecycle.latestHarnessProjection;
-    return finish(projectionOf(lifecycle,p.status,p.failureCode),p.status==='PASS'?0:p.status==='FAIL'?2:3);
+    const failureCode = boundedHarnessFailureCode(p.failureCode);
+    const status = failureCode === 'UNEXPECTED_ENTRYPOINT_FAILURE' ? 'BLOCKED' : p.status;
+    return finish(projectionOf(lifecycle,status,failureCode),status==='PASS'?0:status==='FAIL'?2:3);
   }catch{return finish(projectionOf(lifecycle,'BLOCKED','UNEXPECTED_ENTRYPOINT_FAILURE'),5);}
 }
 if(require.main===module)void executeProviderGenerationExecution(process.argv.slice(2)).then(({exitCode})=>{

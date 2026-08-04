@@ -186,13 +186,14 @@ fixed; the implementations are not.
     technical model-download prevention: success additionally requires exact preflight presence, no observed
     marker, and an unchanged postflight inventory fingerprint. Actual generation and risk acceptance remain a
     separate Strict gate (ADR-0064).
-12. The app-private 5B-2B-E1 entrypoint uses strict explicit invocation parsing, executable identity gating,
-    reused PRE/POST preflight, exactly one validation-harness invocation, and one fixed bounded projection contract.
-    It remains unwired from bootstrap, Runtime, Discord, DB, package scripts, and public Core APIs.
     Validation evidence is monotonic across terminal handling: observed invocation/download/timeout/overflow facts
     are never reset by a later failure. The shared runner independently validates the exact IPv4 loopback host and
     exposes opt-in structured overflow evidence; a second invocation is counted but never delegated. Only the exact
     expected token may appear in the projection—every mismatch is represented by bounded byte count and SHA-256.
+12. The app-private 5B-2B-E1 entrypoint uses strict explicit invocation parsing, an executable identity gate before
+    preflight or harness invocation, the existing PRE/POST preflight, exactly one existing generation-harness call,
+    one bounded projection, and uniform writer-failure exit handling. It remains unwired from bootstrap, Runtime,
+    Discord, DB, package scripts, and public Core APIs.
 
 ---
 
