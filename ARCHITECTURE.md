@@ -110,9 +110,10 @@ fixed; the implementations are not.
    provider-id conditionals never appear in Application policy source. The
    existing `CapabilityRouter` priority path remains the legacy invocation path.
    Stage 2B Slice 5A adds an optional Core Application integration seam only for
-   TaskRun-backed `GENERAL_CHAT` work turns; the production composition root does
-   not activate it. Project Analysis, Code Generation, no-work chat, and every
-   other Capability remain on their existing paths (ADR-0064).
+   TaskRun-backed `GENERAL_CHAT` work turns. Slice 5C-I adds a default-off app-private
+   admission boundary; enabled admission fails before Provider construction until a
+   concrete 5C-EG verifier exists. Project Analysis, Code Generation, no-work chat,
+   and every other Capability remain on their existing paths (ADR-0064).
 3. The selected provider `id` is **audit-only** (on `TaskRun`). It MUST NOT be
    surfaced to the user by default.
 4. **Provider-specific prompt shaping happens in the adapter.** Core emits a
@@ -164,9 +165,10 @@ fixed; the implementations are not.
    and opaque `modelId` identifies the exact model binding. Stage 2B Slice 5B-1 owns a
    typed static composition-root configuration for only the ratified balanced and
    semantic Ollama candidates. It binds bounded Stage 2A provenance by canonical
-   SHA-256 without importing benchmark evidence at Runtime. This configuration is not
-   wired into the app; readiness, execution, Runtime activation, and UAT remain later
-   approval boundaries (ADR-0064).
+   SHA-256 without importing benchmark evidence at Runtime. Slice 5C-I permits its
+   construction only after exact-scope 5C-EG verification; no concrete verifier exists,
+   so readiness, execution, Runtime activation, and UAT remain later approval boundaries
+   (ADR-0064).
 10. Ollama readiness preflight is an app-private, non-persistent boundary. Slice
     5B-2A-I implements typed executable identity, exact `--version`/`list` policy,
     isolated environment, bounded parsers/process lifecycle, and immutable results

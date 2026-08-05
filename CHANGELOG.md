@@ -7,6 +7,16 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Stage 2B · Slice 5C-I Dormant Production Activation Boundary
+
+- Added exact, case-sensitive `QUOKY_PROVIDER_ROUTING_MODE` parsing with a safe `legacy` default and fail-closed
+  invalid values.
+- Added an app-private, versioned exact-scope egress-enforcement contract and ordered activation factory. Legacy
+  mode constructs nothing; enabled mode remains blocked before production routing Provider construction until a
+  concrete 5C-EG verifier exists.
+- Wired the optional collaborator into `ConversationRuntime` without changing the existing `AI_PROVIDERS` path or
+  Core. No Provider, Runtime, Discord, network, or database execution was performed.
+
 ### Fixed — Stage 2B · Slice 5B-2B-E1 Entrypoint Contract Remediation
 
 - Hardened the app-private generation entrypoint with one explicit projection key set, monotonic lifecycle

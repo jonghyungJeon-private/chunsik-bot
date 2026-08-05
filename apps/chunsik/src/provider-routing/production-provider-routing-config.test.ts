@@ -236,14 +236,16 @@ describe('Stage 2B Slice 5B-1 production Provider routing configuration', () => 
     expect(Object.isFrozen(configuration.providerProvenance)).toBe(true);
   });
 
-  it('leaves app composition on the legacy providers and imports no private validation package', () => {
+  it('keeps legacy providers while allowing only the approved optional Runtime collaborator composition', () => {
     const appModule = readFileSync(resolve(__dirname, '../app.module.ts'), 'utf8');
     const productionSource = readFileSync(
       resolve(__dirname, 'production-provider-routing-config.ts'),
       'utf8',
     );
-    expect(appModule).not.toContain('createProductionProviderRoutingConfiguration');
-    expect(appModule).not.toContain('RuntimeProviderRoutingService');
+    expect(appModule).toContain('createProductionRuntimeProviderRoutingActivation');
+    expect(appModule).toContain('runtimeProviderRouting,');
+    expect(appModule).not.toMatch(/\.execute\s*\(/);
+    expect(appModule).not.toContain('ProviderRoutingGateway');
     expect(appModule).toContain('new ClaudeCliProvider(config.ai.claudeBin)');
     expect(appModule).toContain(
       'new OllamaCliProvider({ bin: config.ai.ollamaBin, model: config.ai.ollamaModel })',

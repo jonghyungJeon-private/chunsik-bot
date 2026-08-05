@@ -121,3 +121,43 @@ describe('loadConfig — GitHub App auth (Sprint 4b, ADR-0061)', () => {
     expect(loadConfig(env({ CHUNSIK_GITHUB_TOKEN: 'ghp_x' })).githubToken).toBe('ghp_x');
   });
 });
+
+describe('loadConfig — dormant Provider routing activation (Stage 2B Slice 5C-I)', () => {
+  it('maps missing and exact legacy to legacy', () => {
+    expect(loadConfig(env({})).providerRoutingMode).toBe('legacy');
+    expect(loadConfig(env({ QUOKY_PROVIDER_ROUTING_MODE: 'legacy' })).providerRoutingMode).toBe('legacy');
+  });
+
+  it('accepts only the exact enabled candidate', () => {
+    expect(loadConfig(env({ QUOKY_PROVIDER_ROUTING_MODE: 'stage2b-general-chat-v1' })).providerRoutingMode).toBe(
+      'stage2b-general-chat-v1',
+    );
+  });
+
+  it.each(['', ' ', ' legacy ', 'LEGACY', 'Stage2b-general-chat-v1', 'true', '1', 'yes', 'enabled', 'on'])(
+    'rejects invalid exact value %j',
+    (value) => {
+      expect(() => loadConfig(env({ QUOKY_PROVIDER_ROUTING_MODE: value }))).toThrow(
+        'PROVIDER_ROUTING_INVALID_MODE',
+      );
+    },
+  );
+
+  it('uses identical parsing in dev and prod', () => {
+    for (const runtime of ['dev', 'prod']) {
+      expect(
+        loadConfig(env({ QUOKY_RUNTIME_ENV: runtime, QUOKY_PROVIDER_ROUTING_MODE: 'legacy' }))
+          .providerRoutingMode,
+      ).toBe('legacy');
+      expect(() =>
+        loadConfig(env({ QUOKY_RUNTIME_ENV: runtime, QUOKY_PROVIDER_ROUTING_MODE: 'LEGACY' })),
+      ).toThrow('PROVIDER_ROUTING_INVALID_MODE');
+    }
+  });
+
+  it('does not read a CHUNSIK_PROVIDER_ROUTING_MODE alias', () => {
+    expect(loadConfig(env({ CHUNSIK_PROVIDER_ROUTING_MODE: 'stage2b-general-chat-v1' })).providerRoutingMode).toBe(
+      'legacy',
+    );
+  });
+});

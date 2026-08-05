@@ -83,9 +83,14 @@ import { V1_CONNECTORS } from '@chunsik/connectors';
 import { loadConfig } from './config';
 import { ConsoleLogger } from './console-logger';
 import { GitHubAppGitProvider } from './github-app-git-provider';
+import { createProductionRuntimeProviderRoutingActivation } from './provider-routing/provider-routing-activation';
 
 const config = loadConfig();
 const coreLogger = new ConsoleLogger('chunsik');
+const runtimeProviderRouting = createProductionRuntimeProviderRoutingActivation({
+  mode: config.providerRoutingMode,
+  ollama: { ollamaBin: config.ai.ollamaBin },
+});
 
 // Sprint 4b (ADR-0061): GitHub App authentication for RepositoryHosting (CAP-010) + git push/clone (CAP-002).
 // Resolve the reviewed identity (independent of credentials), then select the auth mode and construct the hosting
@@ -494,6 +499,7 @@ const application: Provider[] = [
         // RepositoryHostingManager (present only when a GitHub token is configured). NO token is passed here.
         // The runtime calls the manager only, never GitHubRepositoryHostingProvider directly.
         repositoryHosting,
+        runtimeProviderRouting,
         logger: coreLogger,
       });
     },

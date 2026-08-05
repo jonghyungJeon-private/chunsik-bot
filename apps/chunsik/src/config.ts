@@ -1,5 +1,7 @@
 import { readFileSync } from 'node:fs';
 import type { RepositoryIdentityConfig } from '@chunsik/core';
+import { parseProviderRoutingMode } from './provider-routing/provider-routing-activation';
+import type { ProviderRoutingMode } from './provider-routing/provider-routing-activation';
 
 /**
  * Reads runtime configuration from the environment. This is the ONLY place
@@ -39,6 +41,8 @@ export interface ChunsikConfig {
    * (`'dev'`/`'prod'`) wins; otherwise derived from `NODE_ENV` (`production` → `'prod'`, else `'dev'`).
    */
   runtimeEnv: 'dev' | 'prod';
+  /** Dormant Stage 2B routing activation. Missing is exactly equivalent to `legacy`. */
+  providerRoutingMode: ProviderRoutingMode;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ChunsikConfig {
@@ -69,6 +73,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ChunsikConfig 
     githubApp: resolveGithubApp(env),
     githubAppInstallationId: parseInstallationId(env.QUOKY_GITHUB_APP_INSTALLATION_ID),
     runtimeEnv: resolveRuntimeEnv(env),
+    providerRoutingMode: parseProviderRoutingMode(env.QUOKY_PROVIDER_ROUTING_MODE),
   };
 }
 

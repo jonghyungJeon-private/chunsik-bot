@@ -5,13 +5,15 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** **Stage 2B Slice 5C-0 — Production Activation Boundary Architecture Plan** (ADR-0064).
+- **Phase:** **Stage 2B Slice 5C-I — Dormant Production Activation Boundary Implemented** (ADR-0064).
 - **5B-2B-E close-out:** `CLOSED_WITH_GENERATION_BLOCKED`. Bounded preflight/inventory is `PASS_ACCEPTED`;
   actual generation is `NOT_EXECUTED`, Provider execution count is `0`, and model pull count is `0`.
-- **Composition:** production routing configuration remains unwired. `ConversationRuntime.runtimeProviderRouting`
-  remains uninjected in `app.module.ts`, so the legacy Runtime routing path remains active.
+- **Composition:** `QUOKY_PROVIDER_ROUTING_MODE` is parsed exactly and defaults to `legacy`. The composition root
+  injects the optional result of an app-private activation factory; legacy mode constructs no new routing Provider.
+  Enabled mode remains startup-blocked before Provider construction because no 5C-EG enforcement exists.
 - **Approval boundary:** no Runtime, Discord, DB, or Provider activation is approved. Independently verifiable
   external-egress enforcement is an explicit activation dependency, not a hidden environmental assumption.
+- **Execution facts:** actual Provider execution = `0`; Runtime/Discord/DB execution = `0`.
 
 ## Stage 2A — Completed
 

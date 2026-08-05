@@ -4859,3 +4859,23 @@ process restriction. PF, a dedicated daemon, a container, or a VM would introduc
 privileged-mutation, daemon-lifecycle, model-storage, rollback, and evidence ownership. That work is not remediation
 inside Slice 5B-2B-E; future egress enforcement requires its own architecture boundary and approval. The executable
 identity approved for the consumed preflight attempt remains evidence only, not a permanent production default.
+
+### Slice 5C-I — Dormant Production Activation Boundary
+
+The application composition root owns an app-private typed activation boundary. It reads only
+`QUOKY_PROVIDER_ROUTING_MODE`: missing and exact `legacy` select the unchanged legacy path, exact
+`stage2b-general-chat-v1` begins admission, and every other case-sensitive value fails startup. Legacy admission
+returns `undefined` before enforcement, production routing configuration, Provider construction, availability
+probing, or execution.
+
+Enabled admission requires an app-private 5C-EG dependency to verify the exact versioned Ollama executable,
+loopback endpoint, Provider/model identities, non-loopback IPv4/IPv6 denial, and DNS denial scope. Missing,
+unavailable, unverified, or mismatched enforcement fails before
+`createProductionProviderRoutingConfiguration(...)`. Only a verified exact scope may construct the existing
+configuration and `RuntimeProviderRoutingService`, which the composition root supplies as the optional
+`ConversationRuntime` collaborator. There is no fallback to the legacy selector after enabled admission begins.
+
+Slice 5C-I adds no Core change and no concrete egress enforcement, PF/firewall/sandbox, daemon, container, or VM
+implementation. The default remains legacy; production routing is not operational, and no live Provider,
+Runtime, Discord, network, or database activation was performed. Concrete enforcement remains Slice 5C-EG and
+live activation/UAT remains Slice 5C-E.
