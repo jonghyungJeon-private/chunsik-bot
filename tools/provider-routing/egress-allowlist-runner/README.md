@@ -17,10 +17,14 @@ approval-supplied expected behind/ahead counts and has a separate digest. The v2
 is `LANG=C, LC_ALL=C`, and any future environment change invalidates both digests. Dependency state is module-issued only from
 the exact closed symbol resolution and context-matching successful prior evidence; arbitrary strings are rejected.
 
-Fixture output is a sequence of stdout/stderr chunks. Caps and strict UTF-8/newline normalization are applied
-incrementally across chunk boundaries. A value equal to its byte/line cap is allowed; one greater is rejected. Raw
-accumulators are discarded after normalization or failure. Deterministic listener ordering and operator-visible
-termination failure are required. Contract/canonicalization/evidence schema are v2; v1 digests are incompatible and
+Fixture output is a sequence of stdout/stderr events. The host arbiter preserves the accepted F0-R precedence:
+both-stream cap, stderr cap, stdout cap, invalid UTF-8, then bounded non-empty stderr. Any non-empty stderr is terminal.
+Caps and strict UTF-8/newline normalization are incremental across 4096-byte segments; at most one segment is pending.
+The sequencer derives the exact 16-record order only from a validated resolved contract, so callers cannot supply or
+reorder records. Every terminal failure emits exactly one validated bounded v2 evidence record, and ordered evidence
+is successful evidence followed by that terminal record. Timeout uses a deterministic scheduled fake clock with
+per-command handles and exact cancellation. No raw output is stored. Operator-visible termination failure is required.
+Contract/canonicalization/evidence schema are v2; v1 digests are incompatible and
 cannot be reused. The canonical digest remains unfrozen, environment viability remains an unevaluated execution gate,
 and executable TOCTOU remains a live-execution feasibility blocker. Host reads, termination, and F0/F1 process
 execution remain unapproved.

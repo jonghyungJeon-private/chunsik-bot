@@ -186,9 +186,9 @@ export interface DependencyDerivationInput {
   readonly allowlistDigest: string;
   readonly repositoryHead: string;
   readonly workingDirectory: string;
-  readonly executionBaselineDigest?: string;
-  readonly sequencerRunId?: string;
-  readonly sequenceIndex?: number;
+  readonly executionBaselineDigest: string;
+  readonly sequencerRunId: string;
+  readonly sequenceIndex: number;
 }
 
 export function deriveDependencyState(input: DependencyDerivationInput): DependencyState {
@@ -200,16 +200,18 @@ export function deriveDependencyState(input: DependencyDerivationInput): Depende
   for (const evidence of input.priorEvidence) {
     assertClosedEvidence(evidence as unknown as Readonly<Record<string, unknown>>);
     const record = input.symbolResolution.contract.records.find((entry) => entry.commandId === evidence.commandId);
+    const recordIndex = input.symbolResolution.contract.records.findIndex((entry) => entry.commandId === evidence.commandId);
     if (evidence.exitClass === 'SUCCESS' && evidence.stopReason === 'NONE' &&
         evidence.normalizationResult === 'SUCCESS' && evidence.allowlistDigest === input.allowlistDigest &&
         evidence.repositoryHead === input.repositoryHead && evidence.workingDirectory === input.workingDirectory &&
         evidence.repositoryBranch === 'main' && evidence.localDaemonContact === 'NONE' &&
         evidence.contractVersion === COMMAND_EVIDENCE_CONTRACT_VERSION &&
         evidence.schemaVersion === EVIDENCE_SCHEMA_VERSION &&
-        evidence.executionBaselineDigest === (input.executionBaselineDigest ?? 'fixture-baseline-digest') &&
-        evidence.sequencerRunId === (input.sequencerRunId ?? 'fixture-run') &&
+        evidence.executionBaselineDigest === input.executionBaselineDigest &&
+        evidence.sequencerRunId === input.sequencerRunId &&
         evidence.commandOrderVersion === 'stage2b-5c-eg-f0-command-order-v1' &&
-        evidence.sequenceIndex < (input.sequenceIndex ?? 16) && record !== undefined &&
+        evidence.sequenceIndex === recordIndex && evidence.sequenceIndex < input.sequenceIndex && record !== undefined &&
+        evidence.argvDigest === sha256(canonicalize(record.argv)) && evidence.evidenceClass === record.evidenceClass &&
         evidence.executableRealpath === record.expectedRealpath && evidence.privilegeClass === record.privilegeClass) {
       established.push(`${evidence.commandId}:SUCCESS`);
     }
@@ -219,9 +221,9 @@ export function deriveDependencyState(input: DependencyDerivationInput): Depende
     allowlistDigest: input.allowlistDigest,
     repositoryHead: input.repositoryHead,
     workingDirectory: input.workingDirectory,
-    executionBaselineDigest: input.executionBaselineDigest ?? 'fixture-baseline-digest',
-    sequencerRunId: input.sequencerRunId ?? 'fixture-run',
-    sequenceIndex: input.sequenceIndex ?? 16,
+    executionBaselineDigest: input.executionBaselineDigest,
+    sequencerRunId: input.sequencerRunId,
+    sequenceIndex: input.sequenceIndex,
   });
   DEPENDENCY_STATE_BRAND.add(state);
   return state;
@@ -231,13 +233,18 @@ export function isDispatchable(record: AllowlistRecord, state: DependencyState, 
   readonly allowlistDigest: string;
   readonly repositoryHead: string;
   readonly workingDirectory: string;
+  readonly executionBaselineDigest: string;
+  readonly sequencerRunId: string;
+  readonly sequenceIndex: number;
 }): {
   readonly dispatchable: boolean;
   readonly reason: StopReason;
 } {
   if (!DEPENDENCY_STATE_BRAND.has(state)) return { dispatchable: false, reason: 'DEPENDENCY_NOT_ESTABLISHED' };
   if (state.allowlistDigest !== context.allowlistDigest || state.repositoryHead !== context.repositoryHead ||
-      state.workingDirectory !== context.workingDirectory) {
+      state.workingDirectory !== context.workingDirectory ||
+      state.executionBaselineDigest !== context.executionBaselineDigest ||
+      state.sequencerRunId !== context.sequencerRunId || state.sequenceIndex !== context.sequenceIndex) {
     return { dispatchable: false, reason: 'DEPENDENCY_NOT_ESTABLISHED' };
   }
   const available = new Set(state.established);
@@ -380,6 +387,9 @@ export function evaluateFixture(input: FixtureEvaluation): CommandEvidence {
     allowlistDigest: input.allowlistDigest,
     repositoryHead: input.repositoryHead,
     workingDirectory: input.record.workingDirectory,
+    executionBaselineDigest: input.executionBaselineDigest ?? 'fixture-baseline-digest',
+    sequencerRunId: input.sequencerRunId ?? 'fixture-run',
+    sequenceIndex: input.sequenceIndex ?? 16,
   });
   if (!dependency.dispatchable) {
     const exitClass = dependency.reason === 'ALLOWLIST_UNRESOLVED' ? 'ALLOWLIST_UNRESOLVED' : 'DEPENDENCY_UNSATISFIED';
@@ -451,7 +461,7 @@ export function assertClosedEvidence(value: Readonly<Record<string, unknown>>): 
   const exitCode = value.processExitCode;
   const signal = value.processSignal;
   if ((typeof exitCode === 'number' && signal !== 'NONE') ||
-      (exitCode === 'NONE' && signal === 'NONE' && value.stopReason !== 'PROCESS_SPAWN_FAILED')) {
+      (exitCode === 'NONE' && signal === 'NONE' && value.exitClass === 'SUCCESS')) {
     throw new Error('PROCESS_RESULT_CONTRADICTION');
   }
   if (value.exitClass !== 'SUCCESS' && canonicalize(value.normalizedFacts) !== '{}') {

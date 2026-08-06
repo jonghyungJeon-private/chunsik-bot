@@ -36,7 +36,8 @@ const BASELINE: ExecutionBaselineBinding = Object.freeze({
   environmentPolicy: { version: 'stage2b-5c-eg-f0-host-environment-v1', environment: { LANG: 'C', LC_ALL: 'C' } },
   executableIdentityPolicy: { version: 'stage2b-5c-eg-f0-executable-identity-v1', immediatePreDispatchRecheck: true },
 });
-const DEPENDENCY_CONTEXT = Object.freeze({ allowlistDigest: STATIC.digest, repositoryHead: HEAD, workingDirectory: ROOT });
+const DEPENDENCY_CONTEXT = Object.freeze({ allowlistDigest: STATIC.digest, executionBaselineDigest: 'fixture-baseline-digest',
+  sequencerRunId: 'fixture-run', sequenceIndex: 16, repositoryHead: HEAD, workingDirectory: ROOT });
 
 function chunks(...values: (string | Uint8Array)[]): readonly Uint8Array[] {
   return values.map((value) => typeof value === 'string' ? encoder.encode(value) : value);
@@ -47,22 +48,24 @@ function process(stdout: readonly Uint8Array[] = [], stderr: readonly Uint8Array
 }
 
 function evidence(commandId: string, overrides: Partial<CommandEvidence> = {}): CommandEvidence {
+  const record = STATIC.contract.records.find((entry) => entry.commandId === commandId);
   return {
     contractVersion: 'stage2b-5c-eg-f0-command-evidence-v1', schemaVersion: 'stage2b-5c-eg-f0-command-evidence-schema-v2',
     allowlistDigest: STATIC.digest, executionBaselineDigest: 'fixture-baseline-digest', sequencerRunId: 'fixture-run',
-    commandOrderVersion: 'stage2b-5c-eg-f0-command-order-v1', sequenceIndex: 0,
+    commandOrderVersion: 'stage2b-5c-eg-f0-command-order-v1', sequenceIndex: record === undefined ? 0 : STATIC.contract.records.indexOf(record),
     commandId, executableRealpath: '/usr/bin/git', executableIdentity: IDENTITY,
-    argvDigest: '3'.repeat(64), workingDirectory: ROOT, repositoryBranch: 'main', repositoryHead: HEAD,
+    argvDigest: record === undefined ? '3'.repeat(64) : sha256(canonicalize(record.argv)), workingDirectory: ROOT, repositoryBranch: 'main', repositoryHead: HEAD,
     privilegeClass: 'UNPRIVILEGED', localDaemonContact: 'NONE', exitClass: 'SUCCESS', stopReason: 'NONE',
     processExitCode: 0, processSignal: 'NONE',
     stdoutByteCount: 0, stderrByteCount: 0, normalizedFacts: {}, redactionCount: 0, outputTruncated: false,
-    normalizationResult: 'SUCCESS', evidenceClass: 'FIXTURE', observedAt: '2026-08-06T00:00:00Z', ...overrides,
+    normalizationResult: 'SUCCESS', evidenceClass: record?.evidenceClass ?? 'FIXTURE', observedAt: '2026-08-06T00:00:00Z', ...overrides,
   };
 }
 
 function dependencyState(priorEvidence: readonly CommandEvidence[] = []): DependencyState {
   return deriveDependencyState({
     symbolResolution: STATIC.symbolResolution, priorEvidence, allowlistDigest: STATIC.digest,
+    executionBaselineDigest: 'fixture-baseline-digest', sequencerRunId: 'fixture-run', sequenceIndex: 16,
     repositoryHead: HEAD, workingDirectory: ROOT,
   });
 }

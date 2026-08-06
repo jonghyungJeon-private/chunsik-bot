@@ -465,6 +465,14 @@ capability, event arbiter, exact 5000 ms timeout model, exact-child termination 
 replay-bound evidence v2, and the closed final result. No real host adapter exists. Listener ordering is deterministic,
 termination failure is operator-visible, and the exact environment remains `LANG=C, LC_ALL=C`.
 
+The remediated host arbiter preserves F0-R stream precedence: both caps, stderr cap, stdout cap, invalid UTF-8, then
+bounded non-empty stderr; non-empty stderr can never succeed. The sequencer accepts no caller record array and derives
+the exact 16-record order from the prevalidated resolved contract. Before each dispatch it derives and validates the
+branded dependency state. Every terminal path creates one closed, validated failure evidence record from active
+context values; `orderedEvidence` contains prior successes followed by that terminal record. A deterministic fake
+clock schedules and cancels a fresh 5000 ms handle for every mocked command, and timeout/stream safety share the
+mocked exact-child termination controller.
+
 ```text
 F0_H_PLAN = COMPLETE_AND_ACCEPTED
 F0_HI_IMPLEMENTATION = MOCKED_ONLY
