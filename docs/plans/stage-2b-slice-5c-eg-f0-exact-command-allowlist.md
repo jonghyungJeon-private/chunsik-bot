@@ -4,10 +4,10 @@
 
 - **Artifact:** exact allowlist and evidence-normalization contract for the first bounded F0/F1 feasibility work.
 - **Status:** plan-only; no command in this document is approved or executed by its creation.
-- **Document-construction baseline:** `main` at `492d29dafb4dc40b232d2b003186ab5b78fefe77`, local `origin/main` at
-  `eae8f802a61b65a4d0336b3d1ba69f5bc341bbff`, ahead/behind `8/0`, tracked/staged clean, 32 existing untracked files.
+- **Document-construction baseline:** `main` at `d0bdba4d72d3c6fe82f1802894a2f3bc52ec5dd6`, local `origin/main` at
+  `eae8f802a61b65a4d0336b3d1ba69f5bc341bbff`, ahead/behind `9/0`, tracked/staged clean, 32 existing untracked files.
   The later execution approval must instead bind its exact reviewed allowlist-commit HEAD; it must be the direct child
-  of this construction baseline and produce the expected `9/0` divergence. This avoids a self-referential commit SHA
+  of this construction baseline and produce the expected `10/0` divergence. This avoids a self-referential commit SHA
   in the document while preventing an unconstrained HEAD.
 - **Purpose:** let an independent reviewer and Chief Architect approve or reject each exact Tier A command for a later
   F0/F1 execution. No approval inherits into Tier B, C, or D.
@@ -111,9 +111,12 @@ and its mandatory row in the section 5 execution matrix; a missing matrix row ma
 - **Purpose:** bind the system Git shim and its bounded version result before other Git records.
 - **Expected normalized fields:** `gitVersionLine: APPROVAL_BOUND_GIT_VERSION_LINE`; the later execution approval
   supplies one exact full-line logical value and the normalizer requires equality after newline normalization.
-- **Output schema:** exact literal regex source `^git version [0-9A-Za-z][0-9A-Za-z._+-]{0,63}\n?$`, plus equality
-  to `APPROVAL_BOUND_GIT_VERSION_LINE`. This permits only the exact prefix, one bounded ASCII version token, and an
-  optional final normalized newline; arbitrary trailing text is rejected.
+- **Output schema:** exact literal regex source
+  `^git version [0-9A-Za-z][0-9A-Za-z._+-]{0,63}( \([0-9A-Za-z][0-9A-Za-z ._+-]{0,63}\))?\n?$`, plus equality to
+  `APPROVAL_BOUND_GIT_VERSION_LINE`. This permits only the exact prefix, one bounded ASCII primary version token, at
+  most one bounded parenthesized ASCII vendor suffix, and an optional final normalized newline. Arbitrary trailing
+  text and multiline output are rejected. The suffix is schema compatibility, not a claim about current host output;
+  the resolved approval-bound line must satisfy this pattern before canonicalization or execution.
 - **Maximum output:** stdout 1 line, 128 bytes; stderr must be empty under the matrix cap.
 - **Privilege / daemon / network / lifecycle:** unprivileged; none; none; one short child only.
 - **Secret/privacy risk:** low; no redaction expected.
@@ -144,7 +147,7 @@ and its mandatory row in the section 5 execution matrix; a missing matrix row ma
 - **Purpose:** bind exact execution HEAD supplied by the later approval.
 - **Expected normalized fields:** `headSha: APPROVAL_BOUND_HEAD_SHA`, resolved to exactly the full 40-hex
   allowlist-commit SHA named in that approval. The
-  approval must independently prove its parent is `492d29dafb4dc40b232d2b003186ab5b78fefe77`; an arbitrary matching SHA is
+  approval must independently prove its parent is `d0bdba4d72d3c6fe82f1802894a2f3bc52ec5dd6`; an arbitrary matching SHA is
   not accepted.
 - **Maximum output:** 1 line, 64 bytes; accepted pattern `^[0-9a-f]{40}\n?$` plus equality to the approval-bound SHA.
 - **Privilege / daemon / network / lifecycle:** unprivileged; none; none; one short child.
@@ -173,8 +176,8 @@ and its mandatory row in the section 5 execution matrix; a missing matrix row ma
 - **Exact argv:** `["rev-list","--left-right","--count","origin/main...HEAD"]`.
 - **Working directory:** repository root.
 - **Purpose:** confirm behind/ahead counts from local objects.
-- **Expected normalized fields:** `behindCount: 0`, `aheadCount: 9`.
-- **Maximum output:** 1 line, 64 bytes; accepted literal regex source `^0[ \t]+9\n?$`.
+- **Expected normalized fields:** `behindCount: 0`, `aheadCount: 10`.
+- **Maximum output:** 1 line, 64 bytes; accepted literal regex source `^0[ \t]+10\n?$`.
 - **Privilege / daemon / network / lifecycle:** unprivileged; none; no network; one child.
 - **Secret/privacy risk:** low. Retain two integers only.
 - **Stop:** material difference, parse/exit/truncation failure.
@@ -379,10 +382,10 @@ subordinate to this exact matrix if punctuation differs. Every row also fixes `n
 | `F0-GIT-06` | 1 | 1 | 1 | 512 | `NONE` | `SYMBOL_TABLE:RESOLVED;F0-GIT-00:SUCCESS` |
 | `F0-GIT-07` | 6 | 2048 | 4 | 1024 | `NONE` | `SYMBOL_TABLE:RESOLVED;F0-GIT-00:SUCCESS` |
 | `F0-GIT-08` | 256 | 32768 | 4 | 1024 | `NONE` | `SYMBOL_TABLE:RESOLVED;F0-GIT-00:SUCCESS` |
-| `F1-SRC-01` | 12 | 4096 | 4 | 1024 | `NONE` | `SYMBOL_TABLE:RESOLVED` |
-| `F1-SRC-02` | 77 | 16384 | 4 | 1024 | `NONE` | `SYMBOL_TABLE:RESOLVED` |
-| `F1-SRC-03` | 29 | 8192 | 4 | 1024 | `NONE` | `SYMBOL_TABLE:RESOLVED` |
-| `F1-SRC-04` | 33 | 8192 | 4 | 1024 | `NONE` | `SYMBOL_TABLE:RESOLVED` |
+| `F1-SRC-01` | 12 | 4096 | 4 | 1024 | `NONE` | `SYMBOL_TABLE:RESOLVED;F0-GIT-07:SUCCESS` |
+| `F1-SRC-02` | 77 | 16384 | 4 | 1024 | `NONE` | `SYMBOL_TABLE:RESOLVED;F0-GIT-07:SUCCESS` |
+| `F1-SRC-03` | 29 | 8192 | 4 | 1024 | `NONE` | `SYMBOL_TABLE:RESOLVED;F0-GIT-07:SUCCESS` |
+| `F1-SRC-04` | 33 | 8192 | 4 | 1024 | `NONE` | `SYMBOL_TABLE:RESOLVED;F0-GIT-07:SUCCESS` |
 | `F1-PATH-01` | 1 | 256 | 1 | 512 | `NONE` | `SYMBOL_TABLE:RESOLVED` |
 | `F1-PATH-02` | 1 | 256 | 1 | 512 | `NONE` | `SYMBOL_TABLE:RESOLVED` |
 | `F1-PATH-03` | 1 | 256 | 1 | 512 | `NONE` | `SYMBOL_TABLE:RESOLVED` |
@@ -526,7 +529,7 @@ as JSON requires, but deserialization must reproduce exactly the documented logi
 that logical regex source string. Decode UTF-8 strictly; invalid sequences stop with `INVALID_UTF8`. Normalize CRLF
 and CR to LF before matching. Locale character classes are prohibited; use explicit ASCII classes such as `[ \t]`. Patterns
 are full-string matches unless a record explicitly declares a bounded-line matcher, flags are fixed by the schema,
-and implementation-specific regex extensions are prohibited. F0-GIT-04 therefore uses `^0[ \t]+9\n?$` and matches
+and implementation-specific regex extensions are prohibited. F0-GIT-04 therefore uses `^0[ \t]+10\n?$` and matches
 spaces or actual tab characters, never the literal characters backslash-plus-`t` or backslash-plus-`n`.
 
 No retry, larger cap, raw-output fallback, alternate parser, or broader command follows.
@@ -545,7 +548,7 @@ MISMATCH_POLICY_VERSION = stage2b-5c-eg-f0-mismatch-v1
 ```
 
 The global canonical object includes the allowlist contract version, canonicalization version, evidence schema
-version, pattern dialect, regex-document-representation value, approval-bound-symbol policy version,
+version, `PATTERN_DIALECT`, `PATTERN_DIALECT_VERSION`, regex-document-representation value,
 raw-output-policy version and its closed contents, mismatch-policy version and its closed contents, and stream-
 precedence-policy version and its closed contents. Changing any identifier or bound policy content changes the digest.
 
@@ -612,8 +615,8 @@ inspection command is implied. If the runner lacks this capability, F0 returns `
 allowlisted command executes.
 
 The future execution approval binds branch `main`; HEAD equal to this remediation commit; parent
-`492d29dafb4dc40b232d2b003186ab5b78fefe77`; local `origin/main`
-`eae8f802a61b65a4d0336b3d1ba69f5bc341bbff`; divergence `9/0`; tracked/staged clean; 32 existing untracked files;
+`d0bdba4d72d3c6fe82f1802894a2f3bc52ec5dd6`; local `origin/main`
+`eae8f802a61b65a4d0336b3d1ba69f5bc341bbff`; divergence `10/0`; tracked/staged clean; 32 existing untracked files;
 exact allowlist-document and architecture-plan blobs; the fully resolved closed symbol table; final static allowlist
 digest; exact 16 command ids; executable identity contracts; Git version expectation; output schemas; logical regex
 source strings; policy versions; evidence schema; and approvable record count 16. Any mismatch stops.
@@ -673,9 +676,15 @@ identifiers, executable/argv, filters, caps, expected schemas, privacy analysis,
 
 ```text
 STAGE_2B_SLICE_5C_EG_F0_ALLOWLIST =
-  READY_FOR_INDEPENDENT_REVIEW
+  READY_FOR_CHIEF_ARCHITECT_FINAL_ACCEPTANCE
+
+TIER_A_RECORD_COUNT =
+  16
 
 ALLOWLIST_EXECUTION_APPROVED =
+  NO
+
+CANONICAL_DIGEST_FREEZE_APPROVED =
   NO
 
 PRIVILEGED_READ_APPROVED =
@@ -697,7 +706,7 @@ CORE_CHANGE_REQUIRED =
   NO
 
 NEXT_ACTION =
-  CLAUDE_FINAL_ALLOWLIST_DELTA_REVIEW
+  CHIEF_ARCHITECT_F0_ALLOWLIST_FINAL_ACCEPTANCE
 ```
 
 No command in this document may run until independent review and a later exact execution approval freeze the final
