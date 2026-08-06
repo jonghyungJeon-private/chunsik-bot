@@ -4,10 +4,10 @@
 
 - **Artifact:** exact allowlist and evidence-normalization contract for the first bounded F0/F1 feasibility work.
 - **Status:** plan-only; no command in this document is approved or executed by its creation.
-- **Document-construction baseline:** `main` at `029bacee07621b475d39fb1c67d5a43b822896ea`, local `origin/main` at
-  `eae8f802a61b65a4d0336b3d1ba69f5bc341bbff`, ahead/behind `7/0`, tracked/staged clean, 32 existing untracked files.
+- **Document-construction baseline:** `main` at `492d29dafb4dc40b232d2b003186ab5b78fefe77`, local `origin/main` at
+  `eae8f802a61b65a4d0336b3d1ba69f5bc341bbff`, ahead/behind `8/0`, tracked/staged clean, 32 existing untracked files.
   The later execution approval must instead bind its exact reviewed allowlist-commit HEAD; it must be the direct child
-  of this construction baseline and produce the expected `8/0` divergence. This avoids a self-referential commit SHA
+  of this construction baseline and produce the expected `9/0` divergence. This avoids a self-referential commit SHA
   in the document while preventing an unconstrained HEAD.
 - **Purpose:** let an independent reviewer and Chief Architect approve or reject each exact Tier A command for a later
   F0/F1 execution. No approval inherits into Tier B, C, or D.
@@ -85,8 +85,9 @@ Every candidate command has this fixed envelope unless its record narrows it fur
 
 - Working directory: `/Users/seongsujeonjonghyeong/demo_Project/chunsik-bot-2`.
 - No login/interactive shell, pipelines, redirections, aliases, functions, command substitution, globbing, or fallback.
-- Exact executable realpath must equal the expected realpath before invocation. Realpath confirmation itself must use
-  a separately approved mechanism; mismatch stops the run.
+- Exact executable realpath and approved identity must match before invocation. The runner performs this validation
+  internally on only the exact configured path, without a shell lookup, broad path search, or additional Tier A
+  command. Mismatch stops before launch; missing runner capability yields `COMMAND_SAFETY_BLOCKED`.
 - Environment: empty/minimal runner-owned environment, with only `LC_ALL=C` and `LANG=C`. No inherited proxy,
   credential, GitHub, Discord, Docker, OrbStack, Ollama, pager, or manual variables.
 - No stdin. One invocation per command id. Timeout: 5 seconds.
@@ -97,9 +98,10 @@ Every candidate command has this fixed envelope unless its record narrows it fur
 
 ## 5. Exact Tier A Command Records
 
-All entries have `Approval status = CANDIDATE_ONLY_NOT_APPROVED`. Exact argv below is represented as a JSON string
-array to avoid shell-quoting ambiguity. A record is the union of its narrative fields and its mandatory row in the
-section 5 execution matrix; a missing matrix row makes that record non-approvable.
+The approvable set has `TIER_A_RECORD_COUNT = 16`; its arithmetic is `original 17 + F0-GIT-00 - F1-MAN-01 -
+F1-MAN-02 = 16`. Every approvable entry has `Approval status = CANDIDATE_ONLY_NOT_APPROVED`. Exact argv below is
+represented as a JSON string array to avoid shell-quoting ambiguity. A record is the union of its narrative fields
+and its mandatory row in the section 5 execution matrix; a missing matrix row makes that record non-approvable.
 
 ### F0-GIT-00 — Effective Git identity
 
@@ -107,8 +109,12 @@ section 5 execution matrix; a missing matrix row makes that record non-approvabl
 - **Exact argv:** `["--version"]`.
 - **Working directory:** repository root from section 4.
 - **Purpose:** bind the system Git shim and its bounded version result before other Git records.
-- **Expected normalized fields:** `gitVersion`, constrained by an exact approval-bound full-line value and pattern.
-- **Maximum output:** 1 line, 128 bytes; UTF-8 single-line Git version grammar only.
+- **Expected normalized fields:** `gitVersionLine: APPROVAL_BOUND_GIT_VERSION_LINE`; the later execution approval
+  supplies one exact full-line logical value and the normalizer requires equality after newline normalization.
+- **Output schema:** exact literal regex source `^git version [0-9A-Za-z][0-9A-Za-z._+-]{0,63}\n?$`, plus equality
+  to `APPROVAL_BOUND_GIT_VERSION_LINE`. This permits only the exact prefix, one bounded ASCII version token, and an
+  optional final normalized newline; arbitrary trailing text is rejected.
+- **Maximum output:** stdout 1 line, 128 bytes; stderr must be empty under the matrix cap.
 - **Privilege / daemon / network / lifecycle:** unprivileged; none; none; one short child only.
 - **Secret/privacy risk:** low; no redaction expected.
 - **Filter/retention:** retain normalized Git version only; discard raw.
@@ -136,8 +142,9 @@ section 5 execution matrix; a missing matrix row makes that record non-approvabl
 - **Exact argv:** `["rev-parse","HEAD"]`.
 - **Working directory:** repository root.
 - **Purpose:** bind exact execution HEAD supplied by the later approval.
-- **Expected normalized fields:** `headSha`: exactly the full 40-hex allowlist-commit SHA named in that approval. The
-  approval must independently prove its parent is `029bacee07621b475d39fb1c67d5a43b822896ea`; an arbitrary matching SHA is
+- **Expected normalized fields:** `headSha: APPROVAL_BOUND_HEAD_SHA`, resolved to exactly the full 40-hex
+  allowlist-commit SHA named in that approval. The
+  approval must independently prove its parent is `492d29dafb4dc40b232d2b003186ab5b78fefe77`; an arbitrary matching SHA is
   not accepted.
 - **Maximum output:** 1 line, 64 bytes; accepted pattern `^[0-9a-f]{40}\n?$` plus equality to the approval-bound SHA.
 - **Privilege / daemon / network / lifecycle:** unprivileged; none; none; one short child.
@@ -166,8 +173,8 @@ section 5 execution matrix; a missing matrix row makes that record non-approvabl
 - **Exact argv:** `["rev-list","--left-right","--count","origin/main...HEAD"]`.
 - **Working directory:** repository root.
 - **Purpose:** confirm behind/ahead counts from local objects.
-- **Expected normalized fields:** `behindCount: 0`, `aheadCount: 8`.
-- **Maximum output:** 1 line, 64 bytes; accepted pattern `^0[ \\t]+8\\n?$`.
+- **Expected normalized fields:** `behindCount: 0`, `aheadCount: 9`.
+- **Maximum output:** 1 line, 64 bytes; accepted literal regex source `^0[ \t]+9\n?$`.
 - **Privilege / daemon / network / lifecycle:** unprivileged; none; no network; one child.
 - **Secret/privacy risk:** low. Retain two integers only.
 - **Stop:** material difference, parse/exit/truncation failure.
@@ -361,34 +368,36 @@ local-daemon-contact classification. The narrative `Maximum output` for a record
 subordinate to this exact matrix if punctuation differs. Every row also fixes `network=NONE`,
 `processLifecycle=ONE_BOUNDED_CHILD_NO_DESCENDANTS`, and `timeoutMs=5000`.
 
-| commandId | stdoutMaxLines | stdoutMaxBytes | stderrMaxLines | stderrMaxBytes | localDaemonContact |
-|---|---:|---:|---:|---:|---|
-| `F0-GIT-00` | 1 | 128 | 1 | 512 | `NONE` |
-| `F0-GIT-01` | 1 | 64 | 1 | 512 | `NONE` |
-| `F0-GIT-02` | 1 | 64 | 1 | 512 | `NONE` |
-| `F0-GIT-03` | 1 | 64 | 1 | 512 | `NONE` |
-| `F0-GIT-04` | 1 | 64 | 1 | 512 | `NONE` |
-| `F0-GIT-05` | 64 | 8192 | 4 | 1024 | `NONE` |
-| `F0-GIT-06` | 1 | 1 | 1 | 512 | `NONE` |
-| `F0-GIT-07` | 6 | 2048 | 4 | 1024 | `NONE` |
-| `F0-GIT-08` | 256 | 32768 | 4 | 1024 | `NONE` |
-| `F1-SRC-01` | 12 | 4096 | 4 | 1024 | `NONE` |
-| `F1-SRC-02` | 77 | 16384 | 4 | 1024 | `NONE` |
-| `F1-SRC-03` | 29 | 8192 | 4 | 1024 | `NONE` |
-| `F1-SRC-04` | 33 | 8192 | 4 | 1024 | `NONE` |
-| `F1-PATH-01` | 1 | 256 | 1 | 512 | `NONE` |
-| `F1-PATH-02` | 1 | 256 | 1 | 512 | `NONE` |
-| `F1-PATH-03` | 1 | 256 | 1 | 512 | `NONE` |
+| commandId | stdoutMaxLines | stdoutMaxBytes | stderrMaxLines | stderrMaxBytes | localDaemonContact | explicitDependencies |
+|---|---:|---:|---:|---:|---|---|
+| `F0-GIT-00` | 1 | 128 | 1 | 512 | `NONE` | `SYMBOL_TABLE:RESOLVED` |
+| `F0-GIT-01` | 1 | 64 | 1 | 512 | `NONE` | `SYMBOL_TABLE:RESOLVED;F0-GIT-00:SUCCESS` |
+| `F0-GIT-02` | 1 | 64 | 1 | 512 | `NONE` | `SYMBOL_TABLE:RESOLVED;F0-GIT-00:SUCCESS` |
+| `F0-GIT-03` | 1 | 64 | 1 | 512 | `NONE` | `SYMBOL_TABLE:RESOLVED;F0-GIT-00:SUCCESS` |
+| `F0-GIT-04` | 1 | 64 | 1 | 512 | `NONE` | `SYMBOL_TABLE:RESOLVED;F0-GIT-00:SUCCESS` |
+| `F0-GIT-05` | 64 | 8192 | 4 | 1024 | `NONE` | `SYMBOL_TABLE:RESOLVED;F0-GIT-00:SUCCESS` |
+| `F0-GIT-06` | 1 | 1 | 1 | 512 | `NONE` | `SYMBOL_TABLE:RESOLVED;F0-GIT-00:SUCCESS` |
+| `F0-GIT-07` | 6 | 2048 | 4 | 1024 | `NONE` | `SYMBOL_TABLE:RESOLVED;F0-GIT-00:SUCCESS` |
+| `F0-GIT-08` | 256 | 32768 | 4 | 1024 | `NONE` | `SYMBOL_TABLE:RESOLVED;F0-GIT-00:SUCCESS` |
+| `F1-SRC-01` | 12 | 4096 | 4 | 1024 | `NONE` | `SYMBOL_TABLE:RESOLVED` |
+| `F1-SRC-02` | 77 | 16384 | 4 | 1024 | `NONE` | `SYMBOL_TABLE:RESOLVED` |
+| `F1-SRC-03` | 29 | 8192 | 4 | 1024 | `NONE` | `SYMBOL_TABLE:RESOLVED` |
+| `F1-SRC-04` | 33 | 8192 | 4 | 1024 | `NONE` | `SYMBOL_TABLE:RESOLVED` |
+| `F1-PATH-01` | 1 | 256 | 1 | 512 | `NONE` | `SYMBOL_TABLE:RESOLVED` |
+| `F1-PATH-02` | 1 | 256 | 1 | 512 | `NONE` | `SYMBOL_TABLE:RESOLVED` |
+| `F1-PATH-03` | 1 | 256 | 1 | 512 | `NONE` | `SYMBOL_TABLE:RESOLVED` |
 
 `localDaemonContact` is a closed enum: `NONE | POSSIBLE | REQUIRED`. Every approvable Tier A record is `NONE`.
 `F1-MAN-01` and `F1-MAN-02` are templates, have no execution-matrix row, and cannot be executed.
+The approvable ids are exactly `F0-GIT-00` through `F0-GIT-08`, `F1-SRC-01` through `F1-SRC-04`, and
+`F1-PATH-01` through `F1-PATH-03`; no other record enters canonical bytes or the digest.
 
 ## 6. Commands Excluded from the First Allowlist
 
 The exact allowlist contains no `pfctl`, `ps`, `pgrep`, `lsof`, `launchctl`, `dscl`, Docker client, `orb`, `orbctl`,
 Ollama, `du`, `find`, model/home-path `ls`/`stat`, route/socket/network utility, packet capture, Provider, Runtime,
-Discord, DB, or cleanup command. `/sbin/pfctl -h` is also excluded: F1 uses the local `pfctl(8)` manual and does not
-execute PF tooling.
+Discord, DB, or cleanup command. `/sbin/pfctl -h` is also excluded. PF manual evidence remains deferred to a later,
+separately reviewed allowlist delta.
 
 The following are illustrative only and are not digest inputs:
 
@@ -423,14 +432,16 @@ CommandEvidence {
   repositoryBranch: "main"
   repositoryHead: exact approval-bound remediation commit SHA
   privilegeClass: "UNPRIVILEGED"
-  exitClass: SUCCESS | EXPECTED_NOT_FOUND | PERMISSION_DENIED | STDERR_NONEMPTY | SCHEMA_MISMATCH |
-    OUTPUT_LIMIT_EXCEEDED | EXECUTABLE_MISMATCH | BASELINE_MISMATCH | EXECUTION_ERROR | UNEXPECTED_EXIT
-  stopReason: closed command-specific stop code
+  localDaemonContact: NONE | POSSIBLE | REQUIRED
+  exitClass: SUCCESS | ALLOWLIST_UNRESOLVED | EXPECTED_NOT_FOUND | PERMISSION_DENIED | STDERR_NONEMPTY |
+    SCHEMA_MISMATCH | OUTPUT_LIMIT_EXCEEDED | EXECUTABLE_MISMATCH | BASELINE_MISMATCH |
+    COMMAND_SAFETY_BLOCKED | EXECUTION_ERROR | UNEXPECTED_EXIT
+  stopReason: closed StopReason enum
   stdoutByteCount: non-negative integer
   stderrByteCount: non-negative integer
   normalizedFacts: command-specific closed object
   redactionCount: non-negative integer
-  outputTruncated: false
+  outputTruncated: boolean
   normalizationResult: SUCCESS | NOT_ATTEMPTED | REJECTED
   evidenceClass: command-specific enum
   observedAt: UTC RFC3339 timestamp supplied by the evidence runner
@@ -442,26 +453,81 @@ Rules:
 - `normalizedFacts` accepts only the fields and value constraints in section 5; unknown fields reject the record.
 - `argvDigest` hashes UTF-8 canonical JSON of the exact argv array, not a shell command string.
 - `observedAt` is audit metadata, not feasibility evidence and not part of the allowlist digest.
+- Every current Tier A evidence record carries `localDaemonContact=NONE` directly; the field is not inferred from the
+  allowlist digest.
 - A success record requires exit code zero, empty stderr, `exitClass=SUCCESS`, `stopReason=NONE`,
   `outputTruncated=false`, and complete stdout schema validation. No current Tier A record defines
   `EXPECTED_NOT_FOUND`; that class is available only where a future record explicitly defines it.
-- Any stderr byte yields `exitClass=STDERR_NONEMPTY` and `stopReason=STDERR_NONEMPTY`; no positive evidence or
-  partial facts survive. Every other error likewise retains `normalizedFacts={}` and no raw stderr/stdout.
-- `redactionCount` counts discarded path/manual/source records; it never contains redacted values.
-- Raw output is discarded for every command. Only normalized records and approved bounded manual citations/digests
-  may persist only under a future separately approved deterministic-provenance record.
+- Every non-success class maps deterministically to exactly one closed stop reason. All failures retain
+  `normalizedFacts={}`; no positive or partial facts survive.
+- `outputTruncated=true` is permitted only on a rejected output-limit/truncation record and never preserves facts.
+- `redactionCount` counts discarded path/source records; it never contains redacted values.
+- Raw output is discarded for every command. Current execution retains no manual citations or manual-derived facts.
+
+The complete closed stop-reason enum is:
+
+```text
+StopReason =
+  NONE |
+  ALLOWLIST_UNRESOLVED |
+  EXPECTED_NOT_FOUND |
+  BASELINE_MISMATCH |
+  EXECUTABLE_MISMATCH |
+  GIT_IDENTITY_NOT_ESTABLISHED |
+  NONZERO_EXIT |
+  UNEXPECTED_EXIT |
+  PERMISSION_DENIED |
+  STDERR_NONEMPTY |
+  STDERR_OUTPUT_LIMIT_EXCEEDED |
+  STDOUT_OUTPUT_LIMIT_EXCEEDED |
+  BOTH_STREAM_OUTPUT_LIMIT_EXCEEDED |
+  SCHEMA_MISMATCH |
+  INVALID_UTF8 |
+  PATTERN_MISMATCH |
+  OUTPUT_TRUNCATED |
+  NORMALIZATION_FAILED |
+  LOCAL_DAEMON_CONTACT_DETECTED |
+  NETWORK_ACTIVITY_DETECTED |
+  COMMAND_SAFETY_BLOCKED
+```
+
+Free-form and unknown stop reasons are rejected. `SUCCESS` maps only to `NONE`; `EXPECTED_NOT_FOUND` maps only to
+`EXPECTED_NOT_FOUND` when a future record explicitly permits it. `PERMISSION_DENIED` maps to the same stop reason;
+`STDERR_NONEMPTY`, `OUTPUT_LIMIT_EXCEEDED`, `EXECUTABLE_MISMATCH`, `BASELINE_MISMATCH`, and `UNEXPECTED_EXIT` map to
+their exact same-named or stream-specific reasons. A nonzero exit otherwise maps to
+`EXECUTION_ERROR/NONZERO_EXIT`; schema subfailures map deterministically to the most specific listed schema reason.
+The remaining exact mappings are: unresolved symbols → `ALLOWLIST_UNRESOLVED/ALLOWLIST_UNRESOLVED`; missing Git
+identity evidence → `EXECUTABLE_MISMATCH/GIT_IDENTITY_NOT_ESTABLISHED`; invalid UTF-8, pattern mismatch, output
+truncation, or normalization failure → `SCHEMA_MISMATCH` with its same-named stop reason; detected local-daemon or
+network activity → `COMMAND_SAFETY_BLOCKED` with its same-named detection reason; and any other safety block →
+`COMMAND_SAFETY_BLOCKED/COMMAND_SAFETY_BLOCKED`.
 
 ### Output enforcement
 
-The runner applies stdout and stderr byte and line caps independently while streaming, before full buffering. Either
-stream reaching a cap sets `OUTPUT_LIMIT_EXCEEDED`, discards both buffers, stops F0/F1, and emits no partial facts.
+The runner applies stdout and stderr byte and line caps independently while streaming, before full buffering. Stream
+classification follows `STREAM_PRECEDENCE_POLICY_VERSION = stage2b-5c-eg-f0-stream-precedence-v1`: if both caps are
+exceeded, use `OUTPUT_LIMIT_EXCEEDED/BOTH_STREAM_OUTPUT_LIMIT_EXCEEDED`; otherwise stderr cap exceedance uses
+`OUTPUT_LIMIT_EXCEEDED/STDERR_OUTPUT_LIMIT_EXCEEDED`, stdout cap exceedance uses
+`OUTPUT_LIMIT_EXCEEDED/STDOUT_OUTPUT_LIMIT_EXCEEDED`, and within-cap non-empty stderr uses
+`STDERR_NONEMPTY/STDERR_NONEMPTY`. Cap classification precedes generic stderr classification. Every case discards
+both buffers, stops F0/F1, and emits no partial facts.
 UTF-8 decode failure, NUL, unexpected control bytes, unknown fields, extra records, pattern mismatch, or filter
 exception sets `SCHEMA_MISMATCH`, discards raw output, and stops. Empty stdout is valid only for F0-GIT-06.
 
-`PATTERN_DIALECT = ECMASCRIPT_2023_UNICODE`. Decode UTF-8 strictly; invalid sequences stop. Normalize CRLF and CR to
-LF before matching. Locale character classes are prohibited; use explicit ASCII classes such as `[ \\t]`. Patterns
+```text
+PATTERN_DIALECT = ECMASCRIPT_2023_UNICODE
+PATTERN_DIALECT_VERSION = stage2b-5c-eg-f0-pattern-ecmascript-2023-unicode-v1
+REGEX_DOCUMENT_REPRESENTATION = LITERAL_REGEX_SOURCE_TEXT
+```
+
+Regexes in this document are the exact logical source text passed to that compiler; Markdown adds no second escaping
+layer. A tab escape is written `\t`, a newline escape `\n`, and a literal backslash `\\`. JSON may escape the string
+as JSON requires, but deserialization must reproduce exactly the documented logical source, and canonical bytes hash
+that logical regex source string. Decode UTF-8 strictly; invalid sequences stop with `INVALID_UTF8`. Normalize CRLF
+and CR to LF before matching. Locale character classes are prohibited; use explicit ASCII classes such as `[ \t]`. Patterns
 are full-string matches unless a record explicitly declares a bounded-line matcher, flags are fixed by the schema,
-and implementation-specific regex extensions are prohibited. F0-GIT-04 therefore uses `^0[ \\t]+8\\n?$`.
+and implementation-specific regex extensions are prohibited. F0-GIT-04 therefore uses `^0[ \t]+9\n?$` and matches
+spaces or actual tab characters, never the literal characters backslash-plus-`t` or backslash-plus-`n`.
 
 No retry, larger cap, raw-output fallback, alternate parser, or broader command follows.
 
@@ -473,7 +539,15 @@ Contract version: `stage2b-5c-eg-f0-allowlist-v1`.
 ALLOWLIST_CANONICALIZATION_VERSION = stage2b-5c-eg-f0-canonical-json-v1
 DIGEST_CIRCULARITY = ABSENT
 RUNNER_EXECUTABLE_IDENTITY_CAPABILITY = REQUIRED_BEFORE_EXECUTION
+APPROVAL_BOUND_SYMBOL_POLICY_VERSION = stage2b-5c-eg-f0-approval-bound-symbols-v1
+RAW_OUTPUT_POLICY_VERSION = stage2b-5c-eg-f0-raw-output-v1
+MISMATCH_POLICY_VERSION = stage2b-5c-eg-f0-mismatch-v1
 ```
+
+The global canonical object includes the allowlist contract version, canonicalization version, evidence schema
+version, pattern dialect, regex-document-representation value, approval-bound-symbol policy version,
+raw-output-policy version and its closed contents, mismatch-policy version and its closed contents, and stream-
+precedence-policy version and its closed contents. Changing any identifier or bound policy content changes the digest.
 
 The canonical allowlist representation is a UTF-8 JSON array ordered by `commandId` ascending. Every object,
 including nested objects in expected facts, output schemas, redaction policies, stop conditions, and environment,
@@ -483,7 +557,7 @@ recursively sorts keys by Unicode code-point lexicographic order. Each record co
 commandId, executable, expectedRealpath, approvedExecutableIdentityContract, argv, workingDirectory, environment,
 privilegeClass, localDaemonContact, networkPolicy, processLifecyclePolicy, timeoutMs, stdoutMaxLines, stdoutMaxBytes,
 stderrMaxLines, stderrMaxBytes, patternDialect, outputSchema, expectedNormalizedFacts, redactionPolicy,
-stopConditions, evidenceClass, contractVersion, schemaVersion, canonicalizationVersion
+stopConditions, evidenceClass, explicitDependencies, contractVersion, schemaVersion, canonicalizationVersion
 ```
 
 Serialization rules:
@@ -492,11 +566,16 @@ Serialization rules:
   order. Integers are base-10 with no leading zero; floats are prohibited. Null, undefined, optional, and unknown
   fields are prohibited. Strings and enum values are case-sensitive.
 - `environment` is a closed recursively canonical object of exact values; no inherited environment participates.
-- `expectedNormalizedFacts` contains the exact closed expected values or constraints from section 5. For
-  F0-GIT-02, the independent execution approval replaces the single symbolic value `APPROVAL_BOUND_HEAD_SHA` with
-  its exact reviewed allowlist-commit SHA before canonicalization; no command may run while it remains symbolic.
+- `expectedNormalizedFacts` contains the exact closed expected values or constraints from section 5.
+- The approval supplies a closed symbol table under
+  `APPROVAL_BOUND_SYMBOL_POLICY_VERSION=stage2b-5c-eg-f0-approval-bound-symbols-v1`. Every value whose name begins
+  `APPROVAL_BOUND_` must be resolved before canonical serialization, digest computation, command execution, or
+  evidence-record creation. The current required names are exactly `APPROVAL_BOUND_HEAD_SHA`,
+  `APPROVAL_BOUND_ARCHITECTURE_PLAN_BLOB_ID`, and `APPROVAL_BOUND_GIT_VERSION_LINE`, plus no unknown or extra names.
+  An unresolved symbol yields `ALLOWLIST_UNRESOLVED/ALLOWLIST_UNRESOLVED` before the first command. No symbolic value
+  enters canonical bytes. `APPROVAL_BOUND_SYMBOL_POLICY_VERSION` is the policy identifier, not a symbol-table key.
 - Expected HEAD, local origin SHA, divergence, untracked count, tracked blob ids, Docker symlink target, and the Git
-  version expectation are `APPROVAL_BOUND_EXPECTATIONS`, not observations. No timestamp or observed host fact enters
+  version expectation belong to `APPROVAL_EXPECTATION_CLASS`, not observations. No timestamp or observed host fact enters
   the static digest.
 - The digest is lowercase hex SHA-256 of the canonical UTF-8 bytes.
 - The execution approval cites the reviewed digest. The runner recomputes it before the first command and records it
@@ -506,16 +585,24 @@ The static digest excludes raw output, `observedAt`, all execution observations,
 future final documentation commit SHA. It is separate from (1) the execution-baseline binding and (2) the committed
 document/blob binding; neither is folded into the static digest. Thus the digest includes neither itself nor a future
 commit SHA. This document contains exact Tier A executable/argv entries, but no final digest is calculated or claimed. Independent
-review may reject or remove entries, and the later approval must resolve `APPROVAL_BOUND_HEAD_SHA`. Only then can that
+review may reject or remove entries, and the later approval must resolve the complete closed symbol table. Only then can that
 approval freeze the final canonical bytes and digest. Any command, argv, expected facts, environment, directory,
 privilege, cap, schema, redaction, timeout, or stop-condition difference is a new allowlist requiring new approval.
+
+`RAW_OUTPUT_POLICY_VERSION` binds separate stdout/stderr capture, pre-buffer streaming caps, transient in-memory-only
+raw bytes, no raw logging or persistence, both-buffer discard on failure, no partial facts, no larger-cap retry, no
+alternate parser, and no broader-command fallback.
+
+`MISMATCH_POLICY_VERSION` binds stop before the first non-baseline command and prohibits fetch, repair, clean, stage,
+reset, executable fallback, command substitution, alternate source, privilege escalation, broader output, and
+automatic retry.
 
 ## 9. Baseline Mismatch and Stop Policy
 
 The future execution stops before non-Git Tier A commands if branch, HEAD, local `origin/main`, divergence, tracked/
 staged cleanliness, untracked count, accepted plan/source identities, repository root, or allowlist digest differs.
-It also stops when an executable is absent or has a different realpath; output schema cannot be enforced; a manual or
-path read attempts network/local-daemon contact; an excluded command becomes necessary; or repository/host state
+It also stops when an executable is absent or has a different realpath; output schema cannot be enforced; a path read
+attempts network/local-daemon contact; an excluded command becomes necessary; or repository/host state
 materially differs from the approval.
 
 The runner must resolve each exact executable path without a shell before launch, collect the approved bounded file
@@ -525,11 +612,13 @@ inspection command is implied. If the runner lacks this capability, F0 returns `
 allowlisted command executes.
 
 The future execution approval binds branch `main`; HEAD equal to this remediation commit; parent
-`029bacee07621b475d39fb1c67d5a43b822896ea`; local `origin/main`
-`eae8f802a61b65a4d0336b3d1ba69f5bc341bbff`; expected divergence; tracked/staged clean; exact committed document
-blob ids; final static allowlist digest; executable identities; and approvable record count 16. Any mismatch stops.
+`492d29dafb4dc40b232d2b003186ab5b78fefe77`; local `origin/main`
+`eae8f802a61b65a4d0336b3d1ba69f5bc341bbff`; divergence `9/0`; tracked/staged clean; 32 existing untracked files;
+exact allowlist-document and architecture-plan blobs; the fully resolved closed symbol table; final static allowlist
+digest; exact 16 command ids; executable identity contracts; Git version expectation; output schemas; logical regex
+source strings; policy versions; evidence schema; and approvable record count 16. Any mismatch stops.
 
-There is no fetch, repair, clean, stage, reset, command substitution, executable fallback, alternate manual source,
+There is no fetch, repair, clean, stage, reset, command substitution, executable fallback, alternate source,
 broader output, privilege escalation, or automatic retry. A mismatch produces only a bounded failure result and
 returns for new direction.
 
@@ -562,7 +651,8 @@ F0_F1_RESULT =
 - Git/file identity mismatch yields `BASELINE_MISMATCH`.
 - daemon/network contact risk, executable/read-only uncertainty, excluded-command need, or filter safety failure yields
   `COMMAND_SAFETY_BLOCKED`.
-- Missing/ambiguous/conflicting static or manual facts yield `EVIDENCE_INCONCLUSIVE`.
+- Missing, ambiguous, or conflicting current static/path facts yield `EVIDENCE_INCONCLUSIVE`. PF manual evidence is
+  not part of the current execution and remains deferred.
 
 ## 11. Later Approval Groups
 
@@ -607,7 +697,7 @@ CORE_CHANGE_REQUIRED =
   NO
 
 NEXT_ACTION =
-  CLAUDE_TARGETED_ALLOWLIST_DELTA_REVIEW
+  CLAUDE_FINAL_ALLOWLIST_DELTA_REVIEW
 ```
 
 No command in this document may run until independent review and a later exact execution approval freeze the final
