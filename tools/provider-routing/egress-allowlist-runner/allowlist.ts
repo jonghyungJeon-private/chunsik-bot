@@ -16,9 +16,11 @@ import {
 const ROOT = '/Users/seongsujeonjonghyeong/demo_Project/chunsik-bot-2';
 const ENVIRONMENT = Object.freeze({ LANG: 'C', LC_ALL: 'C' });
 const STOP_CONDITIONS = Object.freeze([
-  'BASELINE_MISMATCH', 'EXECUTABLE_MISMATCH', 'NONZERO_EXIT', 'STDERR_NONEMPTY',
-  'STDOUT_OUTPUT_LIMIT_EXCEEDED', 'STDERR_OUTPUT_LIMIT_EXCEEDED',
-  'BOTH_STREAM_OUTPUT_LIMIT_EXCEEDED', 'INVALID_UTF8', 'PATTERN_MISMATCH',
+  'ALLOWLIST_UNRESOLVED', 'BASELINE_MISMATCH', 'EXECUTABLE_MISMATCH', 'COMMAND_SAFETY_BLOCKED',
+  'DEPENDENCY_NOT_ESTABLISHED', 'GIT_IDENTITY_NOT_ESTABLISHED', 'NONZERO_EXIT', 'UNEXPECTED_EXIT',
+  'STDERR_NONEMPTY', 'STDOUT_OUTPUT_LIMIT_EXCEEDED', 'STDERR_OUTPUT_LIMIT_EXCEEDED',
+  'BOTH_STREAM_OUTPUT_LIMIT_EXCEEDED', 'INVALID_UTF8', 'SCHEMA_MISMATCH', 'PATTERN_MISMATCH',
+  'NORMALIZATION_FAILED', 'LOCAL_DAEMON_CONTACT_DETECTED', 'NETWORK_ACTIVITY_DETECTED',
 ] as const);
 
 interface RecordInput {
@@ -39,6 +41,7 @@ interface RecordInput {
 
 function record(input: RecordInput): AllowlistRecord {
   return Object.freeze({
+    approvalStatus: 'CANDIDATE_ONLY_NOT_APPROVED',
     commandId: input.commandId,
     executable: input.executable,
     expectedRealpath: input.executable,
@@ -82,7 +85,7 @@ export const TIER_A_RECORDS: readonly AllowlistRecord[] = Object.freeze([
   record({ commandId: 'F0-GIT-01', executable: GIT[0], argv: ['rev-parse', '--abbrev-ref', 'HEAD'], stdoutMaxLines: 1, stdoutMaxBytes: 64, stderrMaxLines: 1, stderrMaxBytes: 512, schemaKind: 'PATTERN', schemaSource: '^main\\n?$', expected: { branch: 'main' }, evidenceClass: 'REPOSITORY_BASELINE', dependencies: GIT_DEPENDENCIES }),
   record({ commandId: 'F0-GIT-02', executable: GIT[0], argv: ['rev-parse', 'HEAD'], stdoutMaxLines: 1, stdoutMaxBytes: 64, stderrMaxLines: 1, stderrMaxBytes: 512, schemaKind: 'PATTERN', schemaSource: '^[0-9a-f]{40}\\n?$', expected: { headSha: 'APPROVAL_BOUND_HEAD_SHA' }, evidenceClass: 'REPOSITORY_BASELINE', dependencies: GIT_DEPENDENCIES }),
   record({ commandId: 'F0-GIT-03', executable: GIT[0], argv: ['rev-parse', 'origin/main'], stdoutMaxLines: 1, stdoutMaxBytes: 64, stderrMaxLines: 1, stderrMaxBytes: 512, schemaKind: 'PATTERN', schemaSource: '^[0-9a-f]{40}\\n?$', expected: { localOriginMainSha: 'eae8f802a61b65a4d0336b3d1ba69f5bc341bbff' }, evidenceClass: 'REPOSITORY_BASELINE', dependencies: GIT_DEPENDENCIES }),
-  record({ commandId: 'F0-GIT-04', executable: GIT[0], argv: ['rev-list', '--left-right', '--count', 'origin/main...HEAD'], stdoutMaxLines: 1, stdoutMaxBytes: 64, stderrMaxLines: 1, stderrMaxBytes: 512, schemaKind: 'PATTERN', schemaSource: '^0[ \\t]+10\\n?$', expected: { aheadCount: 10, behindCount: 0 }, evidenceClass: 'REPOSITORY_BASELINE', dependencies: GIT_DEPENDENCIES }),
+  record({ commandId: 'F0-GIT-04', executable: GIT[0], argv: ['rev-list', '--left-right', '--count', 'origin/main...HEAD'], stdoutMaxLines: 1, stdoutMaxBytes: 64, stderrMaxLines: 1, stderrMaxBytes: 512, schemaKind: 'PATTERN', schemaSource: '^([0-9]{1,6})[ \\t]+([0-9]{1,6})\\n?$', expected: { normalization: 'behindCount,aheadCount:canonical-base10-integers' }, evidenceClass: 'REPOSITORY_BASELINE', dependencies: GIT_DEPENDENCIES }),
   record({ commandId: 'F0-GIT-05', executable: GIT[0], argv: ['status', '--short'], stdoutMaxLines: 64, stdoutMaxBytes: 8192, stderrMaxLines: 4, stderrMaxBytes: 1024, schemaKind: 'CLOSED_GRAMMAR', schemaSource: 'git-status-short-v1', expected: { stagedChangeCount: 0, trackedChangeCount: 0, untrackedCount: 32 }, evidenceClass: 'REPOSITORY_BASELINE_REDACTED', dependencies: GIT_DEPENDENCIES, redactionPolicy: 'discard-paths-v1' }),
   record({ commandId: 'F0-GIT-06', executable: GIT[0], argv: ['diff', '--cached', '--name-only'], stdoutMaxLines: 1, stdoutMaxBytes: 1, stderrMaxLines: 1, stderrMaxBytes: 512, schemaKind: 'PATTERN', schemaSource: '^$', expected: { stagedPathCount: 0 }, evidenceClass: 'REPOSITORY_BASELINE', dependencies: GIT_DEPENDENCIES }),
   record({ commandId: 'F0-GIT-07', executable: GIT[0], argv: ['ls-files', '--stage', 'docs/plans/stage-2b-slice-5c-eg-external-egress-enforcement-architecture-plan.md', 'docs/plans/stage-2b-slice-5c-eg-f-read-only-feasibility-probe-plan.md', 'apps/chunsik/src/tools/provider-generation-execution.ts', 'apps/chunsik/src/tools/provider-generation-validation.ts', 'apps/chunsik/src/provider-routing/ollama-preflight/preflight.ts', 'apps/chunsik/src/provider-routing/provider-routing-activation.ts'], stdoutMaxLines: 6, stdoutMaxBytes: 2048, stderrMaxLines: 4, stderrMaxBytes: 1024, schemaKind: 'CLOSED_GRAMMAR', schemaSource: 'git-index-six-records-v1', expected: { architectureBlobId: 'APPROVAL_BOUND_ARCHITECTURE_PLAN_BLOB_ID', recordCount: 6 }, evidenceClass: 'REPOSITORY_FILE_IDENTITY', dependencies: GIT_DEPENDENCIES }),

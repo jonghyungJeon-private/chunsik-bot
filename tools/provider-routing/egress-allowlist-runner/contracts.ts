@@ -22,7 +22,7 @@ export type ExitClass =
   | 'SUCCESS' | 'ALLOWLIST_UNRESOLVED' | 'EXPECTED_NOT_FOUND' | 'PERMISSION_DENIED'
   | 'STDERR_NONEMPTY' | 'SCHEMA_MISMATCH' | 'OUTPUT_LIMIT_EXCEEDED'
   | 'EXECUTABLE_MISMATCH' | 'BASELINE_MISMATCH' | 'COMMAND_SAFETY_BLOCKED'
-  | 'EXECUTION_ERROR' | 'UNEXPECTED_EXIT';
+  | 'DEPENDENCY_UNSATISFIED' | 'EXECUTION_ERROR' | 'UNEXPECTED_EXIT';
 
 export type StopReason =
   | 'NONE' | 'ALLOWLIST_UNRESOLVED' | 'EXPECTED_NOT_FOUND' | 'BASELINE_MISMATCH'
@@ -30,7 +30,7 @@ export type StopReason =
   | 'UNEXPECTED_EXIT' | 'PERMISSION_DENIED' | 'STDERR_NONEMPTY'
   | 'STDERR_OUTPUT_LIMIT_EXCEEDED' | 'STDOUT_OUTPUT_LIMIT_EXCEEDED'
   | 'BOTH_STREAM_OUTPUT_LIMIT_EXCEEDED' | 'SCHEMA_MISMATCH' | 'INVALID_UTF8'
-  | 'PATTERN_MISMATCH' | 'OUTPUT_TRUNCATED' | 'NORMALIZATION_FAILED'
+  | 'PATTERN_MISMATCH' | 'OUTPUT_TRUNCATED' | 'NORMALIZATION_FAILED' | 'DEPENDENCY_NOT_ESTABLISHED'
   | 'LOCAL_DAEMON_CONTACT_DETECTED' | 'NETWORK_ACTIVITY_DETECTED' | 'COMMAND_SAFETY_BLOCKED';
 
 export interface ExecutableIdentity {
@@ -52,6 +52,7 @@ export interface OutputSchema {
 }
 
 export interface AllowlistRecord {
+  readonly approvalStatus: 'CANDIDATE_ONLY_NOT_APPROVED';
   readonly commandId: string;
   readonly executable: string;
   readonly expectedRealpath: string;
@@ -126,16 +127,16 @@ export interface ExecutableIdentityVerifier {
 
 export interface FixtureProcessResult {
   readonly exitCode: number;
-  readonly stdout: Uint8Array;
-  readonly stderr: Uint8Array;
+  readonly stdoutChunks: readonly Uint8Array[];
+  readonly stderrChunks: readonly Uint8Array[];
 }
 
 export interface ExecutionBaselineBinding {
   readonly branch: string;
   readonly repositoryHead: string;
   readonly originMain: string;
-  readonly behindCount: number;
-  readonly aheadCount: number;
+  readonly expectedBehindCount: number;
+  readonly expectedAheadCount: number;
   readonly trackedClean: boolean;
   readonly stagedClean: boolean;
   readonly untrackedCount: number;
