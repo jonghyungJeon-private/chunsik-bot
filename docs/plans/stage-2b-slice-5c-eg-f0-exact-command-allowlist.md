@@ -14,6 +14,9 @@
 - **Non-goals:** no PF, process, socket, identity, service, Docker/OrbStack, Ollama, daemon, model-store, network,
   Provider, Runtime, Discord, or database observation or mutation.
 - **Architecture status:** remains `BLOCKED_FEASIBILITY_GAP`; no enforcement mechanism is recommended.
+- **Executable representation:** `tools/provider-routing/egress-allowlist-runner/allowlist.ts` is the single
+  machine-readable command contract consumed by the offline runner. This document remains the accepted Architecture
+  and Safety specification; drift tests bind the exact 16 ids and keep non-approvable templates out.
 
 ## 2. Accepted Static Current-Path Evidence
 
