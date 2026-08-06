@@ -127,8 +127,8 @@ approved or recommended architecture.
 
 The protected-process state mitigation is ordering-based: prevalidate absence of the controlled daemon/listener;
 select a fresh dedicated non-login identity; prove no Slice-owned process or socket exists; apply and independently
-verify enforcement; only then launch the dedicated daemon and permitted CLI invocations. **No relevant
-protected-process connection may exist before enforcement application.** This excludes protected-process
+verify enforcement; only then launch the dedicated daemon and permitted CLI invocations.
+**No protected-process connection may exist before enforcement application.** This excludes protected-process
 pre-existing state by construction; it does not claim unrelated global state is harmless and never permits global PF
 state flushing.
 
