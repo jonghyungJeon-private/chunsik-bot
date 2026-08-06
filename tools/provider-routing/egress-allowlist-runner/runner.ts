@@ -37,6 +37,9 @@ export interface DependencyState {
   readonly allowlistDigest: string;
   readonly repositoryHead: string;
   readonly workingDirectory: string;
+  readonly executionBaselineDigest: string;
+  readonly sequencerRunId: string;
+  readonly sequenceIndex: number;
 }
 
 function resolveValue(value: unknown, symbols: ApprovalSymbolTable): unknown {
@@ -72,7 +75,7 @@ export function resolveApprovalSymbolsClosed(contract: AllowlistContract, input:
 const CONTRACT_KEYS = Object.freeze([
   'contractVersion', 'canonicalizationVersion', 'evidenceSchemaVersion', 'patternDialect',
   'patternDialectVersion', 'regexDocumentRepresentation', 'approvalBoundSymbolPolicyVersion',
-  'rawOutputPolicyVersion', 'mismatchPolicyVersion', 'streamPrecedencePolicyVersion', 'records',
+  'rawOutputPolicyVersion', 'mismatchPolicyVersion', 'streamPrecedencePolicyVersion', 'commandOrderVersion', 'records',
 ].sort());
 const RECORD_KEYS = Object.freeze([
   'approvalStatus', 'commandId', 'executable', 'expectedRealpath', 'approvedExecutableIdentityContract', 'argv',
@@ -117,6 +120,12 @@ function validateDependencyGraph(records: readonly AllowlistRecord[]): void {
 
 export function validateContract(contract: AllowlistContract): void {
   if (!exactKeys(contract, CONTRACT_KEYS)) throw new Error('ALLOWLIST_CONTRACT_SCHEMA_MISMATCH');
+  if (contract.contractVersion !== 'stage2b-5c-eg-f0-allowlist-v2' ||
+      contract.canonicalizationVersion !== 'stage2b-5c-eg-f0-canonical-json-v2' ||
+      contract.evidenceSchemaVersion !== 'stage2b-5c-eg-f0-command-evidence-schema-v2') {
+    throw new Error('ALLOWLIST_CONTRACT_VERSION_MISMATCH');
+  }
+  if (contract.commandOrderVersion !== 'stage2b-5c-eg-f0-command-order-v1') throw new Error('COMMAND_ORDER_VERSION_MISMATCH');
   if (contract.records.length !== 16) throw new Error('TIER_A_RECORD_COUNT_MISMATCH');
   const ids = contract.records.map((entry) => entry.commandId);
   if (new Set(ids).size !== ids.length || ids.some((id, index) => id !== TIER_A_COMMAND_IDS[index])) {
@@ -135,7 +144,8 @@ export function validateContract(contract: AllowlistContract): void {
           'DEPENDENCY_NOT_ESTABLISHED', 'GIT_IDENTITY_NOT_ESTABLISHED', 'STDOUT_OUTPUT_LIMIT_EXCEEDED',
           'STDERR_OUTPUT_LIMIT_EXCEEDED', 'BOTH_STREAM_OUTPUT_LIMIT_EXCEEDED', 'STDERR_NONEMPTY',
           'INVALID_UTF8', 'SCHEMA_MISMATCH', 'PATTERN_MISMATCH', 'NORMALIZATION_FAILED', 'NONZERO_EXIT',
-          'UNEXPECTED_EXIT', 'LOCAL_DAEMON_CONTACT_DETECTED', 'NETWORK_ACTIVITY_DETECTED']
+          'UNEXPECTED_EXIT', 'LOCAL_DAEMON_CONTACT_DETECTED', 'NETWORK_ACTIVITY_DETECTED', 'COMMAND_TIMEOUT',
+          'PROCESS_SPAWN_FAILED', 'STREAM_READ_FAILED', 'PROCESS_TERMINATION_FAILED']
           .every((reason) => record.stopConditions.includes(reason as StopReason))) {
       throw new Error('STOP_CONDITIONS_INCOMPLETE');
     }
@@ -176,6 +186,9 @@ export interface DependencyDerivationInput {
   readonly allowlistDigest: string;
   readonly repositoryHead: string;
   readonly workingDirectory: string;
+  readonly executionBaselineDigest?: string;
+  readonly sequencerRunId?: string;
+  readonly sequenceIndex?: number;
 }
 
 export function deriveDependencyState(input: DependencyDerivationInput): DependencyState {
@@ -192,7 +205,11 @@ export function deriveDependencyState(input: DependencyDerivationInput): Depende
         evidence.repositoryHead === input.repositoryHead && evidence.workingDirectory === input.workingDirectory &&
         evidence.repositoryBranch === 'main' && evidence.localDaemonContact === 'NONE' &&
         evidence.contractVersion === COMMAND_EVIDENCE_CONTRACT_VERSION &&
-        evidence.schemaVersion === EVIDENCE_SCHEMA_VERSION && record !== undefined &&
+        evidence.schemaVersion === EVIDENCE_SCHEMA_VERSION &&
+        evidence.executionBaselineDigest === (input.executionBaselineDigest ?? 'fixture-baseline-digest') &&
+        evidence.sequencerRunId === (input.sequencerRunId ?? 'fixture-run') &&
+        evidence.commandOrderVersion === 'stage2b-5c-eg-f0-command-order-v1' &&
+        evidence.sequenceIndex < (input.sequenceIndex ?? 16) && record !== undefined &&
         evidence.executableRealpath === record.expectedRealpath && evidence.privilegeClass === record.privilegeClass) {
       established.push(`${evidence.commandId}:SUCCESS`);
     }
@@ -202,6 +219,9 @@ export function deriveDependencyState(input: DependencyDerivationInput): Depende
     allowlistDigest: input.allowlistDigest,
     repositoryHead: input.repositoryHead,
     workingDirectory: input.workingDirectory,
+    executionBaselineDigest: input.executionBaselineDigest ?? 'fixture-baseline-digest',
+    sequencerRunId: input.sequencerRunId ?? 'fixture-run',
+    sequenceIndex: input.sequenceIndex ?? 16,
   });
   DEPENDENCY_STATE_BRAND.add(state);
   return state;
@@ -318,6 +338,10 @@ export interface FixtureEvaluation {
   readonly repositoryHead: string;
   readonly observedAt: string;
   readonly executionBaseline?: ExecutionBaselineBinding;
+  readonly executionBaselineDigest?: string;
+  readonly sequencerRunId?: string;
+  readonly sequenceIndex?: number;
+  readonly processSignal?: CommandEvidence['processSignal'];
 }
 
 function identityMatches(left: ExecutableIdentity, right: ExecutableIdentity): boolean {
@@ -330,11 +354,17 @@ function evidence(input: FixtureEvaluation, identity: ExecutableIdentity, exitCl
   normalizationResult: CommandEvidence['normalizationResult']): CommandEvidence {
   return Object.freeze({
     contractVersion: COMMAND_EVIDENCE_CONTRACT_VERSION, schemaVersion: EVIDENCE_SCHEMA_VERSION,
-    allowlistDigest: input.allowlistDigest, commandId: input.record.commandId,
+    allowlistDigest: input.allowlistDigest,
+    executionBaselineDigest: input.executionBaselineDigest ?? 'fixture-baseline-digest',
+    sequencerRunId: input.sequencerRunId ?? 'fixture-run',
+    commandOrderVersion: 'stage2b-5c-eg-f0-command-order-v1', sequenceIndex: input.sequenceIndex ?? 0,
+    commandId: input.record.commandId,
     executableRealpath: identity.realpath, executableIdentity: identity,
     argvDigest: sha256(canonicalize(input.record.argv)), workingDirectory: input.record.workingDirectory,
     repositoryBranch: 'main', repositoryHead: input.repositoryHead, privilegeClass: input.record.privilegeClass,
-    localDaemonContact: input.record.localDaemonContact, exitClass, stopReason, stdoutByteCount: stdoutBytes,
+    localDaemonContact: input.record.localDaemonContact, exitClass, stopReason,
+    processExitCode: input.processSignal === undefined || input.processSignal === 'NONE' ? input.processResult.exitCode : 'NONE',
+    processSignal: input.processSignal ?? 'NONE', stdoutByteCount: stdoutBytes,
     stderrByteCount: stderrBytes, normalizedFacts: Object.freeze({ ...facts }), redactionCount: 0,
     outputTruncated, normalizationResult, evidenceClass: input.record.evidenceClass, observedAt: input.observedAt,
   });
@@ -400,12 +430,31 @@ export function evaluateFixture(input: FixtureEvaluation): CommandEvidence {
 
 const EVIDENCE_KEYS = Object.freeze([
   'contractVersion', 'schemaVersion', 'allowlistDigest', 'commandId', 'executableRealpath',
+  'executionBaselineDigest', 'sequencerRunId', 'commandOrderVersion', 'sequenceIndex',
   'executableIdentity', 'argvDigest', 'workingDirectory', 'repositoryBranch', 'repositoryHead',
-  'privilegeClass', 'localDaemonContact', 'exitClass', 'stopReason', 'stdoutByteCount',
+  'privilegeClass', 'localDaemonContact', 'exitClass', 'stopReason', 'processExitCode', 'processSignal', 'stdoutByteCount',
   'stderrByteCount', 'normalizedFacts', 'redactionCount', 'outputTruncated', 'normalizationResult',
   'evidenceClass', 'observedAt',
 ].sort());
 
 export function assertClosedEvidence(value: Readonly<Record<string, unknown>>): void {
   if (!exactKeys(value, EVIDENCE_KEYS)) throw new Error('EVIDENCE_UNKNOWN_FIELD');
+  if (value.schemaVersion !== EVIDENCE_SCHEMA_VERSION) throw new Error('EVIDENCE_SCHEMA_VERSION_MISMATCH');
+  if (value.commandOrderVersion !== 'stage2b-5c-eg-f0-command-order-v1') throw new Error('COMMAND_ORDER_VERSION_MISMATCH');
+  if (!Number.isInteger(value.sequenceIndex) || (value.sequenceIndex as number) < 0 || (value.sequenceIndex as number) > 15) {
+    throw new Error('EVIDENCE_SEQUENCE_INDEX_INVALID');
+  }
+  if (typeof value.sequencerRunId !== 'string' || value.sequencerRunId.length < 1 || value.sequencerRunId.length > 128 ||
+      typeof value.executionBaselineDigest !== 'string' || value.executionBaselineDigest.length < 1) {
+    throw new Error('EVIDENCE_REPLAY_BINDING_INVALID');
+  }
+  const exitCode = value.processExitCode;
+  const signal = value.processSignal;
+  if ((typeof exitCode === 'number' && signal !== 'NONE') ||
+      (exitCode === 'NONE' && signal === 'NONE' && value.stopReason !== 'PROCESS_SPAWN_FAILED')) {
+    throw new Error('PROCESS_RESULT_CONTRADICTION');
+  }
+  if (value.exitClass !== 'SUCCESS' && canonicalize(value.normalizedFacts) !== '{}') {
+    throw new Error('FAILED_EVIDENCE_FACTS_NOT_EMPTY');
+  }
 }

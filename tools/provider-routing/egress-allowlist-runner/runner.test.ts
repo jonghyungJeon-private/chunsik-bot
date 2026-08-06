@@ -25,8 +25,16 @@ const IDENTITY: ExecutableIdentity = Object.freeze({
   uid: 0, gid: 0, sizeBytes: 100, codeSignature: 'fixture-signature',
 });
 const BASELINE: ExecutionBaselineBinding = Object.freeze({
-  branch: 'main', repositoryHead: HEAD, originMain: '2'.repeat(40), expectedBehindCount: 0,
+  branch: 'main', repositoryHead: HEAD, repositoryParent: '0'.repeat(40), originMain: '2'.repeat(40), expectedBehindCount: 0,
   expectedAheadCount: 12, trackedClean: true, stagedClean: true, untrackedCount: 32,
+  untrackedPolicy: 'PRESERVE_EXACT_COUNT', repositoryRoot: ROOT, allowlistDocumentBlobId: '4'.repeat(40),
+  architecturePlanBlobId: '5'.repeat(40), staticAllowlistDigest: STATIC.digest,
+  sequencerPolicy: { version: 'stage2b-5c-eg-f0-stop-first-sequencer-v1', stopOnFirstFailure: true },
+  processAdapterPolicy: { version: 'stage2b-5c-eg-f0-process-adapter-v1', topology: 'ONE_BOUNDED_CHILD_NO_DESCENDANTS', timeoutMs: 5000 },
+  streamAdapterPolicy: { version: 'stage2b-5c-eg-f0-real-stream-adapter-v1', maxSegmentBytes: 4096, maxPendingSegmentsPerStream: 1 },
+  terminationPolicy: { version: 'stage2b-5c-eg-f0-exact-child-termination-v1', termSignal: 'SIGTERM', termGraceMs: 500, killSignal: 'SIGKILL', closeDeadlineMs: 500 },
+  environmentPolicy: { version: 'stage2b-5c-eg-f0-host-environment-v1', environment: { LANG: 'C', LC_ALL: 'C' } },
+  executableIdentityPolicy: { version: 'stage2b-5c-eg-f0-executable-identity-v1', immediatePreDispatchRecheck: true },
 });
 const DEPENDENCY_CONTEXT = Object.freeze({ allowlistDigest: STATIC.digest, repositoryHead: HEAD, workingDirectory: ROOT });
 
@@ -40,10 +48,13 @@ function process(stdout: readonly Uint8Array[] = [], stderr: readonly Uint8Array
 
 function evidence(commandId: string, overrides: Partial<CommandEvidence> = {}): CommandEvidence {
   return {
-    contractVersion: 'stage2b-5c-eg-f0-command-evidence-v1', schemaVersion: 'stage2b-5c-eg-f0-command-evidence-schema-v1',
-    allowlistDigest: STATIC.digest, commandId, executableRealpath: '/usr/bin/git', executableIdentity: IDENTITY,
+    contractVersion: 'stage2b-5c-eg-f0-command-evidence-v1', schemaVersion: 'stage2b-5c-eg-f0-command-evidence-schema-v2',
+    allowlistDigest: STATIC.digest, executionBaselineDigest: 'fixture-baseline-digest', sequencerRunId: 'fixture-run',
+    commandOrderVersion: 'stage2b-5c-eg-f0-command-order-v1', sequenceIndex: 0,
+    commandId, executableRealpath: '/usr/bin/git', executableIdentity: IDENTITY,
     argvDigest: '3'.repeat(64), workingDirectory: ROOT, repositoryBranch: 'main', repositoryHead: HEAD,
     privilegeClass: 'UNPRIVILEGED', localDaemonContact: 'NONE', exitClass: 'SUCCESS', stopReason: 'NONE',
+    processExitCode: 0, processSignal: 'NONE',
     stdoutByteCount: 0, stderrByteCount: 0, normalizedFacts: {}, redactionCount: 0, outputTruncated: false,
     normalizationResult: 'SUCCESS', evidenceClass: 'FIXTURE', observedAt: '2026-08-06T00:00:00Z', ...overrides,
   };

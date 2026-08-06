@@ -458,7 +458,28 @@ execution approval. No approval inherits between slices; Push/PR/Merge remain se
 `ENVIRONMENT_VIABILITY` is an execution gate rather than an architecture decision status. A failed gate does not
 reclassify or relax `ENVIRONMENT_CONTRACT`.
 
-## 18. Approval Boundary
+## 18. F0-HI Offline Implementation Alignment
+
+F0-H is accepted and F0-HI now supplies only deterministic mocked ports, a runtime-unforgeable single-use dispatch
+capability, event arbiter, exact 5000 ms timeout model, exact-child termination state machine, bounded stream model,
+replay-bound evidence v2, and the closed final result. No real host adapter exists. Listener ordering is deterministic,
+termination failure is operator-visible, and the exact environment remains `LANG=C, LC_ALL=C`.
+
+```text
+F0_H_PLAN = COMPLETE_AND_ACCEPTED
+F0_HI_IMPLEMENTATION = MOCKED_ONLY
+PRIOR_STATIC_DIGEST_COMPATIBLE = NO
+PRIOR_BASELINE_DIGEST_COMPATIBLE = NO
+FINAL_DIGEST_FROZEN = NO
+ENVIRONMENT_VIABILITY = EXECUTION_GATE_NOT_EVALUATED
+EXECUTABLE_IDENTITY_TOCTOU_CONTROL = BLOCKED_FEASIBILITY_GAP_FOR_LIVE_EXECUTION
+```
+
+The sequence remains `F0-H -> F0-HI -> F0-HV -> F0-XR -> F0-XG -> F0-XF -> F0-XA -> F0-E`, with no inherited
+approval. HI exposes no API that performs host reads, Git-version execution, digest freeze, authorization, or live
+execution.
+
+## 19. Approval Boundary
 
 ```text
 STAGE_2B_SLICE_5C_EG_F0_H_PLAN = READY_FOR_INDEPENDENT_REVIEW

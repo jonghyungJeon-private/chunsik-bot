@@ -430,7 +430,7 @@ They must not be normalized as evidence that the identity exists, and they remai
 ```text
 CommandEvidence {
   contractVersion: "stage2b-5c-eg-f0-command-evidence-v1"
-  schemaVersion: "stage2b-5c-eg-f0-command-evidence-schema-v1"
+  schemaVersion: "stage2b-5c-eg-f0-command-evidence-schema-v2"
   allowlistDigest: lowercase SHA-256
   commandId: exact allowlist id
   executableRealpath: exact absolute path
@@ -546,10 +546,34 @@ No retry, larger cap, raw-output fallback, alternate parser, or broader command 
 
 ## 8. Canonical Allowlist and Digest Contract
 
-Contract version: `stage2b-5c-eg-f0-allowlist-v1`.
+Contract version: `stage2b-5c-eg-f0-allowlist-v2`.
+
+F0-HI migration status:
 
 ```text
-ALLOWLIST_CANONICALIZATION_VERSION = stage2b-5c-eg-f0-canonical-json-v1
+ALLOWLIST_CANONICALIZATION_VERSION = stage2b-5c-eg-f0-canonical-json-v2
+EVIDENCE_SCHEMA_VERSION = stage2b-5c-eg-f0-command-evidence-schema-v2
+COMMAND_ORDER_VERSION = stage2b-5c-eg-f0-command-order-v1
+PRIOR_STATIC_DIGEST_COMPATIBLE = NO
+PRIOR_BASELINE_DIGEST_COMPATIBLE = NO
+FINAL_DIGEST_FROZEN = NO
+```
+
+The recursive canonical algorithm is unchanged, but the closed object shape, mandatory evidence fields, static
+command-order field, and reachable stop conditions changed. Therefore v1 canonical bytes and both prior digest
+classes are incompatible and cannot be upgraded or reused in place. `commandOrderVersion` is mandatory in canonical
+static bytes and cannot be caller-selected. `COMMAND_TIMEOUT`, `PROCESS_SPAWN_FAILED`, `STREAM_READ_FAILED`, and
+`PROCESS_TERMINATION_FAILED` are ordered static stop-condition inputs on all 16 records.
+
+Evidence v2 additionally requires `executionBaselineDigest`, factory-created `sequencerRunId`,
+`commandOrderVersion`, zero-based `sequenceIndex`, and separate `processExitCode`/`processSignal`. Failed evidence has
+empty normalized facts and never contains raw streams. The execution-baseline digest covers closed sequencer,
+process-adapter, stream-adapter, exact-child termination, environment, and executable-identity policy versions and
+values. Because the exact environment is both a record contract input and live-policy input, an environment change
+invalidates the static and execution-baseline digests.
+
+```text
+ALLOWLIST_CANONICALIZATION_VERSION = stage2b-5c-eg-f0-canonical-json-v2
 DIGEST_CIRCULARITY = ABSENT
 RUNNER_EXECUTABLE_IDENTITY_CAPABILITY = REQUIRED_BEFORE_EXECUTION
 APPROVAL_BOUND_SYMBOL_POLICY_VERSION = stage2b-5c-eg-f0-approval-bound-symbols-v1
