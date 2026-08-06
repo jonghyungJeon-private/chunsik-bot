@@ -238,7 +238,8 @@ app privilege escalation. The plan requires:
 2. prove no process is already listening on `127.0.0.1:11434`, `[::1]:11434`, wildcard addresses, or an alternate
    approved-conflicting endpoint before apply;
 3. prove no GUI/launch agent/daemon can automatically spawn or restart an uncontrolled daemon;
-4. prove no Slice-owned process, socket, or relevant protected-process connection exists before apply;
+4. prove the invariant `No protected-process connection may exist before enforcement application.` and prove no
+   Slice-owned process or socket exists before apply;
 5. apply and independently verify enforcement before launching the dedicated daemon;
 6. have the proven non-app launch boundary create only the dedicated daemon under the verified identity and confirm
    its PID, effective owner, parent/launch owner, executable identity, descendants, and exact IPv4 loopback listener;
@@ -348,7 +349,8 @@ project `VERIFIED` by echoing input.
 
 1. expected mechanism/contract version and unique rule/isolation identity are active;
 2. IPv4 and IPv6 non-loopback denial, DNS/direct-IP/alternate-port denial, and exact loopback allowance are present;
-3. rules are attached at effective precedence; no relevant protected-process connection existed before apply; and no
+3. rules are attached at effective precedence; the invariant `No protected-process connection may exist before
+   enforcement application.` holds; and no
    bypassing rule, unexpected Slice-owned process, or socket appears inside the window;
 4. controlled deterministic negative targets for IPv4, IPv6, DNS, and alternate HTTPS/QUIC attempts fail with the
    expected kernel/isolation denial, while the exact loopback daemon check succeeds;

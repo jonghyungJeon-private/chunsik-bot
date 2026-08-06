@@ -4,10 +4,10 @@
 
 - **Artifact:** exact allowlist and evidence-normalization contract for the first bounded F0/F1 feasibility work.
 - **Status:** plan-only; no command in this document is approved or executed by its creation.
-- **Document-construction baseline:** `main` at `97a8f26f4094c195335c27d058efea9bddd4a2ea`, local `origin/main` at
-  `eae8f802a61b65a4d0336b3d1ba69f5bc341bbff`, ahead/behind `6/0`, tracked/staged clean, 32 existing untracked files.
+- **Document-construction baseline:** `main` at `029bacee07621b475d39fb1c67d5a43b822896ea`, local `origin/main` at
+  `eae8f802a61b65a4d0336b3d1ba69f5bc341bbff`, ahead/behind `7/0`, tracked/staged clean, 32 existing untracked files.
   The later execution approval must instead bind its exact reviewed allowlist-commit HEAD; it must be the direct child
-  of this construction baseline and produce the expected `7/0` divergence. This avoids a self-referential commit SHA
+  of this construction baseline and produce the expected `8/0` divergence. This avoids a self-referential commit SHA
   in the document while preventing an unconstrained HEAD.
 - **Purpose:** let an independent reviewer and Chief Architect approve or reject each exact Tier A command for a later
   F0/F1 execution. No approval inherits into Tier B, C, or D.
@@ -57,7 +57,7 @@ static source facts and records the unknown boundary.
 ### Tier A — Exact repository and local static-document reads
 
 Only the exact entries in section 5 are candidates for the first later execution approval. They cover Git baseline,
-tracked plan/source identities, static source excerpts, local PF manuals, and metadata for two known installed paths.
+tracked plan/source identities, static source excerpts, and metadata for two known installed paths.
 Each entry is individually rejectable. Approval of one does not approve the others.
 
 ### Tier B — Narrow unprivileged host reads
@@ -87,9 +87,9 @@ Every candidate command has this fixed envelope unless its record narrows it fur
 - No login/interactive shell, pipelines, redirections, aliases, functions, command substitution, globbing, or fallback.
 - Exact executable realpath must equal the expected realpath before invocation. Realpath confirmation itself must use
   a separately approved mechanism; mismatch stops the run.
-- Environment: empty/minimal runner-owned environment, with only `LC_ALL=C`, `LANG=C`, and for manual commands
-  `MANPAGER=cat`, `PAGER=cat`. No inherited proxy, credential, GitHub, Discord, Docker, OrbStack, or Ollama variables.
-- No stdin. One invocation per command id. Timeout: 5 seconds for Git/path commands; 10 seconds for `man`.
+- Environment: empty/minimal runner-owned environment, with only `LC_ALL=C` and `LANG=C`. No inherited proxy,
+  credential, GitHub, Discord, Docker, OrbStack, Ollama, pager, or manual variables.
+- No stdin. One invocation per command id. Timeout: 5 seconds.
 - Capture is bounded before parsing. Raw bytes are held only in memory, never logged or persisted, and discarded after
   normalization. An error path stores only an `exitClass` and bounded reason code.
 - `Unexpected or unfilterable output → discard → stop → do not retain raw output.`
@@ -98,7 +98,23 @@ Every candidate command has this fixed envelope unless its record narrows it fur
 ## 5. Exact Tier A Command Records
 
 All entries have `Approval status = CANDIDATE_ONLY_NOT_APPROVED`. Exact argv below is represented as a JSON string
-array to avoid shell-quoting ambiguity.
+array to avoid shell-quoting ambiguity. A record is the union of its narrative fields and its mandatory row in the
+section 5 execution matrix; a missing matrix row makes that record non-approvable.
+
+### F0-GIT-00 — Effective Git identity
+
+- **Exact executable / expected realpath:** `/usr/bin/git` / `/usr/bin/git`.
+- **Exact argv:** `["--version"]`.
+- **Working directory:** repository root from section 4.
+- **Purpose:** bind the system Git shim and its bounded version result before other Git records.
+- **Expected normalized fields:** `gitVersion`, constrained by an exact approval-bound full-line value and pattern.
+- **Maximum output:** 1 line, 128 bytes; UTF-8 single-line Git version grammar only.
+- **Privilege / daemon / network / lifecycle:** unprivileged; none; none; one short child only.
+- **Secret/privacy risk:** low; no redaction expected.
+- **Filter/retention:** retain normalized Git version only; discard raw.
+- **Stop:** executable identity mismatch, nonzero exit, stderr, malformed/extra output, truncation, or approval-bound
+  version mismatch.
+- **Evidence class / approval:** `EXECUTABLE_IDENTITY` / candidate only.
 
 ### F0-GIT-01 — Branch
 
@@ -121,7 +137,7 @@ array to avoid shell-quoting ambiguity.
 - **Working directory:** repository root.
 - **Purpose:** bind exact execution HEAD supplied by the later approval.
 - **Expected normalized fields:** `headSha`: exactly the full 40-hex allowlist-commit SHA named in that approval. The
-  approval must independently prove its parent is `97a8f26f4094c195335c27d058efea9bddd4a2ea`; an arbitrary matching SHA is
+  approval must independently prove its parent is `029bacee07621b475d39fb1c67d5a43b822896ea`; an arbitrary matching SHA is
   not accepted.
 - **Maximum output:** 1 line, 64 bytes; accepted pattern `^[0-9a-f]{40}\n?$` plus equality to the approval-bound SHA.
 - **Privilege / daemon / network / lifecycle:** unprivileged; none; none; one short child.
@@ -150,8 +166,8 @@ array to avoid shell-quoting ambiguity.
 - **Exact argv:** `["rev-list","--left-right","--count","origin/main...HEAD"]`.
 - **Working directory:** repository root.
 - **Purpose:** confirm behind/ahead counts from local objects.
-- **Expected normalized fields:** `behindCount: 0`, `aheadCount: 7`.
-- **Maximum output:** 1 line, 64 bytes; accepted pattern `^0[[:space:]]+7\n?$`.
+- **Expected normalized fields:** `behindCount: 0`, `aheadCount: 8`.
+- **Maximum output:** 1 line, 64 bytes; accepted pattern `^0[ \\t]+8\\n?$`.
 - **Privilege / daemon / network / lifecycle:** unprivileged; none; no network; one child.
 - **Secret/privacy risk:** low. Retain two integers only.
 - **Stop:** material difference, parse/exit/truncation failure.
@@ -197,7 +213,7 @@ array to avoid shell-quoting ambiguity.
 
   | Path | Blob id |
   |---|---|
-  | `docs/plans/stage-2b-slice-5c-eg-external-egress-enforcement-architecture-plan.md` | `4bf15edf1b5a4a2cc81bcbdd3bd9739dfef7e71d` |
+  | `docs/plans/stage-2b-slice-5c-eg-external-egress-enforcement-architecture-plan.md` | `APPROVAL_BOUND_ARCHITECTURE_PLAN_BLOB_ID` |
   | `docs/plans/stage-2b-slice-5c-eg-f-read-only-feasibility-probe-plan.md` | `7940ab4858b93400273fbf800545459d307114ce` |
   | `apps/chunsik/src/tools/provider-generation-execution.ts` | `c9eb9f9fc1a264dd911d05b003d6e06c0506412c` |
   | `apps/chunsik/src/tools/provider-generation-validation.ts` | `ba91f0aa8be8a256790c63a9b4ac50cab611ba20` |
@@ -216,7 +232,7 @@ array to avoid shell-quoting ambiguity.
 - **Exact executable / expected realpath:** `/usr/bin/git` / `/usr/bin/git`.
 - **Exact argv:** `["diff","--name-only","eae8f802a61b65a4d0336b3d1ba69f5bc341bbff..HEAD"]`.
 - **Working directory:** repository root.
-- **Purpose:** project the local six-commit chain's paths and confirm no `packages/core/` path appears.
+- **Purpose:** project the approved local commit range's paths and confirm no `packages/core/` path appears.
 - **Expected normalized fields:** `changedPathCount`, `coreChangedPathCount: 0`, `allPathsRepositoryRelative: true`;
   retain only sorted SHA-256 digest of the path list plus counts, not path names.
 - **Maximum output:** 256 lines, 32,768 bytes; repository-relative path grammar only.
@@ -282,38 +298,19 @@ array to avoid shell-quoting ambiguity.
 - **Stop:** blob identity absent, ordering/marker mismatch, truncation/control data.
 - **Evidence class / approval:** `STATIC_ACTIVATION_CONTRACT` / candidate only.
 
-### F1-MAN-01 — Local `pf.conf(5)`
+### F1-MAN-01 — Local `pf.conf(5)` template
 
-- **Exact executable / expected realpath:** `/usr/bin/man` / `/usr/bin/man`.
-- **Exact argv:** `["5","pf.conf"]`.
-- **Working directory:** repository root; fixed manual environment from section 4.
-- **Purpose:** cite installed authoritative semantics for anchors, `quick`, `user`/`group`, effective credential timing,
-  TCP/UDP limitation, `inet`/`inet6`, labels/counters, and state behavior.
-- **Expected normalized fields:** manual title/section plus bounded semantic facts and source paragraph digests; no raw
-  full manual retained.
-- **Maximum output:** 4,096 lines, 262,144 bytes; printable text only. Accepted semantic extractor permits at most 16
-  fact records and 32 cited lines, each at most 240 bytes.
-- **Privilege / daemon / network / lifecycle:** unprivileged; no daemon/network; `man` may spawn local formatters only.
-- **Secret/privacy risk:** low installed public documentation. `redactionCount` covers all uncited lines.
-- **Stop:** manual absent, any network attempt, pager interaction, unexpected escape/control sequence after local
-  overstrike normalization, truncation, or required semantics absent.
-- **Evidence class / approval:** `AUTHORITATIVE_LOCAL_DOCUMENTATION` / candidate only.
+- **Status:** `NOT_YET_APPROVABLE_TEMPLATE`.
+- **Purpose:** reserve a future deterministic-provenance local-documentation record.
+- **Reason excluded:** the exact installed manual source identity is unresolved. This template defines no executable,
+  argv, evidence claim, or digest input and is excluded from the Tier A count.
 
-### F1-MAN-02 — Local `pfctl(8)`
+### F1-MAN-02 — Local `pfctl(8)` template
 
-- **Exact executable / expected realpath:** `/usr/bin/man` / `/usr/bin/man`.
-- **Exact argv:** `["8","pfctl"]`.
-- **Working directory:** repository root; fixed manual environment.
-- **Purpose:** cite read versus mutating command surface, anchors, labels/counters, enable references, and state
-  inspection capabilities without invoking `pfctl`.
-- **Expected normalized fields:** manual title/section, bounded option-semantics facts and paragraph digests; no raw
-  manual retained.
-- **Maximum output:** 4,096 lines, 262,144 bytes; printable text; at most 16 facts/32 cited lines/240 bytes per line.
-- **Privilege / daemon / network / lifecycle:** unprivileged; no PF device, daemon, or network; local formatters only.
-- **Secret/privacy risk:** low. Uncited lines counted as redacted and discarded.
-- **Stop:** missing manual, network/pager interaction, control/schema error, truncation, required option semantics
-  absent.
-- **Evidence class / approval:** `AUTHORITATIVE_LOCAL_DOCUMENTATION` / candidate only.
+- **Status:** `NOT_YET_APPROVABLE_TEMPLATE`.
+- **Purpose:** reserve a future deterministic-provenance local-documentation record.
+- **Reason excluded:** the exact installed manual source identity is unresolved. This template defines no executable,
+  argv, evidence claim, or digest input and is excluded from the Tier A count.
 
 ### F1-PATH-01 — Docker symlink target
 
@@ -357,6 +354,35 @@ array to avoid shell-quoting ambiguity.
 - **Stop:** missing/nondirectory/malformed/extra/truncated output or executable mismatch.
 - **Evidence class / approval:** `INSTALLED_PATH_METADATA` / candidate only.
 
+### Tier A per-record execution matrix
+
+The following 16 rows are the complete approvable Tier A set. Each row independently defines both streams and the
+local-daemon-contact classification. The narrative `Maximum output` for a record means its stdout limit and is
+subordinate to this exact matrix if punctuation differs. Every row also fixes `network=NONE`,
+`processLifecycle=ONE_BOUNDED_CHILD_NO_DESCENDANTS`, and `timeoutMs=5000`.
+
+| commandId | stdoutMaxLines | stdoutMaxBytes | stderrMaxLines | stderrMaxBytes | localDaemonContact |
+|---|---:|---:|---:|---:|---|
+| `F0-GIT-00` | 1 | 128 | 1 | 512 | `NONE` |
+| `F0-GIT-01` | 1 | 64 | 1 | 512 | `NONE` |
+| `F0-GIT-02` | 1 | 64 | 1 | 512 | `NONE` |
+| `F0-GIT-03` | 1 | 64 | 1 | 512 | `NONE` |
+| `F0-GIT-04` | 1 | 64 | 1 | 512 | `NONE` |
+| `F0-GIT-05` | 64 | 8192 | 4 | 1024 | `NONE` |
+| `F0-GIT-06` | 1 | 1 | 1 | 512 | `NONE` |
+| `F0-GIT-07` | 6 | 2048 | 4 | 1024 | `NONE` |
+| `F0-GIT-08` | 256 | 32768 | 4 | 1024 | `NONE` |
+| `F1-SRC-01` | 12 | 4096 | 4 | 1024 | `NONE` |
+| `F1-SRC-02` | 77 | 16384 | 4 | 1024 | `NONE` |
+| `F1-SRC-03` | 29 | 8192 | 4 | 1024 | `NONE` |
+| `F1-SRC-04` | 33 | 8192 | 4 | 1024 | `NONE` |
+| `F1-PATH-01` | 1 | 256 | 1 | 512 | `NONE` |
+| `F1-PATH-02` | 1 | 256 | 1 | 512 | `NONE` |
+| `F1-PATH-03` | 1 | 256 | 1 | 512 | `NONE` |
+
+`localDaemonContact` is a closed enum: `NONE | POSSIBLE | REQUIRED`. Every approvable Tier A record is `NONE`.
+`F1-MAN-01` and `F1-MAN-02` are templates, have no execution-matrix row, and cannot be executed.
+
 ## 6. Commands Excluded from the First Allowlist
 
 The exact allowlist contains no `pfctl`, `ps`, `pgrep`, `lsof`, `launchctl`, `dscl`, Docker client, `orb`, `orbctl`,
@@ -379,19 +405,33 @@ F3: controlled fixture commands under a separate network/lifecycle design
 Templates contain no executable/argv and cannot be executed, substituted, or included in the allowlist digest. A
 command moves tiers only through an explicit delta plan and approval.
 
+Future `id`/`dscl` dedicated-identity lookups initially test only absence or conflict for a not-yet-created identity.
+They must not be normalized as evidence that the identity exists, and they remain outside Tier A.
+
 ## 7. Normalized Evidence Contract
 
 ```text
 CommandEvidence {
   contractVersion: "stage2b-5c-eg-f0-command-evidence-v1"
+  schemaVersion: "stage2b-5c-eg-f0-command-evidence-schema-v1"
   allowlistDigest: lowercase SHA-256
   commandId: exact allowlist id
   executableRealpath: exact absolute path
+  executableIdentity: exact approved bounded identity object
   argvDigest: lowercase SHA-256 of canonical argv JSON
-  exitClass: ZERO | NONZERO | TIMEOUT | OUTPUT_LIMIT | SCHEMA_REJECTED | EXECUTABLE_MISMATCH
+  workingDirectory: exact repository root
+  repositoryBranch: "main"
+  repositoryHead: exact approval-bound remediation commit SHA
+  privilegeClass: "UNPRIVILEGED"
+  exitClass: SUCCESS | EXPECTED_NOT_FOUND | PERMISSION_DENIED | STDERR_NONEMPTY | SCHEMA_MISMATCH |
+    OUTPUT_LIMIT_EXCEEDED | EXECUTABLE_MISMATCH | BASELINE_MISMATCH | EXECUTION_ERROR | UNEXPECTED_EXIT
+  stopReason: closed command-specific stop code
+  stdoutByteCount: non-negative integer
+  stderrByteCount: non-negative integer
   normalizedFacts: command-specific closed object
   redactionCount: non-negative integer
   outputTruncated: false
+  normalizationResult: SUCCESS | NOT_ATTEMPTED | REJECTED
   evidenceClass: command-specific enum
   observedAt: UTC RFC3339 timestamp supplied by the evidence runner
 }
@@ -402,18 +442,26 @@ Rules:
 - `normalizedFacts` accepts only the fields and value constraints in section 5; unknown fields reject the record.
 - `argvDigest` hashes UTF-8 canonical JSON of the exact argv array, not a shell command string.
 - `observedAt` is audit metadata, not feasibility evidence and not part of the allowlist digest.
-- A success record requires `exitClass=ZERO`, `outputTruncated=false`, and complete schema validation.
-- Nonzero/timeout/limit/schema failures retain `normalizedFacts={}` and no raw stderr/stdout.
+- A success record requires exit code zero, empty stderr, `exitClass=SUCCESS`, `stopReason=NONE`,
+  `outputTruncated=false`, and complete stdout schema validation. No current Tier A record defines
+  `EXPECTED_NOT_FOUND`; that class is available only where a future record explicitly defines it.
+- Any stderr byte yields `exitClass=STDERR_NONEMPTY` and `stopReason=STDERR_NONEMPTY`; no positive evidence or
+  partial facts survive. Every other error likewise retains `normalizedFacts={}` and no raw stderr/stdout.
 - `redactionCount` counts discarded path/manual/source records; it never contains redacted values.
 - Raw output is discarded for every command. Only normalized records and approved bounded manual citations/digests
-  may persist.
+  may persist only under a future separately approved deterministic-provenance record.
 
 ### Output enforcement
 
-The runner applies both byte and line caps while streaming, before full buffering. A cap hit sets `OUTPUT_LIMIT`,
-discards the buffer, stops F0/F1, and emits no partial facts. UTF-8 decode failure, NUL, unexpected control bytes,
-unknown fields, extra records, pattern mismatch, or filter exception sets `SCHEMA_REJECTED`, discards raw output, and
-stops. Empty output is valid only for F0-GIT-06.
+The runner applies stdout and stderr byte and line caps independently while streaming, before full buffering. Either
+stream reaching a cap sets `OUTPUT_LIMIT_EXCEEDED`, discards both buffers, stops F0/F1, and emits no partial facts.
+UTF-8 decode failure, NUL, unexpected control bytes, unknown fields, extra records, pattern mismatch, or filter
+exception sets `SCHEMA_MISMATCH`, discards raw output, and stops. Empty stdout is valid only for F0-GIT-06.
+
+`PATTERN_DIALECT = ECMASCRIPT_2023_UNICODE`. Decode UTF-8 strictly; invalid sequences stop. Normalize CRLF and CR to
+LF before matching. Locale character classes are prohibited; use explicit ASCII classes such as `[ \\t]`. Patterns
+are full-string matches unless a record explicitly declares a bounded-line matcher, flags are fixed by the schema,
+and implementation-specific regex extensions are prohibited. F0-GIT-04 therefore uses `^0[ \\t]+8\\n?$`.
 
 No retry, larger cap, raw-output fallback, alternate parser, or broader command follows.
 
@@ -421,41 +469,43 @@ No retry, larger cap, raw-output fallback, alternate parser, or broader command 
 
 Contract version: `stage2b-5c-eg-f0-allowlist-v1`.
 
-The canonical allowlist representation is a UTF-8 JSON array ordered by `commandId` ascending. Each element has
-exactly these keys in this order:
+```text
+ALLOWLIST_CANONICALIZATION_VERSION = stage2b-5c-eg-f0-canonical-json-v1
+DIGEST_CIRCULARITY = ABSENT
+RUNNER_EXECUTABLE_IDENTITY_CAPABILITY = REQUIRED_BEFORE_EXECUTION
+```
+
+The canonical allowlist representation is a UTF-8 JSON array ordered by `commandId` ascending. Every object,
+including nested objects in expected facts, output schemas, redaction policies, stop conditions, and environment,
+recursively sorts keys by Unicode code-point lexicographic order. Each record contains exactly these inputs:
 
 ```text
-commandId
-executableRealpath
-argv
-workingDirectory
-environment
-privilegeClass
-timeoutMs
-maxLines
-maxBytes
-outputSchemaVersion
-expectedNormalizedFacts
-redactionPolicyVersion
-stopConditionCodes
+commandId, executable, expectedRealpath, approvedExecutableIdentityContract, argv, workingDirectory, environment,
+privilegeClass, localDaemonContact, networkPolicy, processLifecyclePolicy, timeoutMs, stdoutMaxLines, stdoutMaxBytes,
+stderrMaxLines, stderrMaxBytes, patternDialect, outputSchema, expectedNormalizedFacts, redactionPolicy,
+stopConditions, evidenceClass, contractVersion, schemaVersion, canonicalizationVersion
 ```
 
 Serialization rules:
 
-- JSON strings use standard escaping, no insignificant whitespace, no trailing newline, and Unicode code points as
-  literal UTF-8 except JSON-required escapes.
-- Arrays retain documented order. Object key order is fixed above; nested schema/redaction definitions are referred
-  to by version and separately hashed into their version identifiers.
-- Integers are base-10 JSON numbers. No null/optional/unknown key exists.
-- `environment` is a sorted array of exact `NAME=value` strings; no inherited environment participates.
+- Encode UTF-8 with standard JSON escaping, no whitespace, BOM, or trailing newline. Arrays preserve documented
+  order. Integers are base-10 with no leading zero; floats are prohibited. Null, undefined, optional, and unknown
+  fields are prohibited. Strings and enum values are case-sensitive.
+- `environment` is a closed recursively canonical object of exact values; no inherited environment participates.
 - `expectedNormalizedFacts` contains the exact closed expected values or constraints from section 5. For
   F0-GIT-02, the independent execution approval replaces the single symbolic value `APPROVAL_BOUND_HEAD_SHA` with
   its exact reviewed allowlist-commit SHA before canonicalization; no command may run while it remains symbolic.
+- Expected HEAD, local origin SHA, divergence, untracked count, tracked blob ids, Docker symlink target, and the Git
+  version expectation are `APPROVAL_BOUND_EXPECTATIONS`, not observations. No timestamp or observed host fact enters
+  the static digest.
 - The digest is lowercase hex SHA-256 of the canonical UTF-8 bytes.
 - The execution approval cites the reviewed digest. The runner recomputes it before the first command and records it
   in every `CommandEvidence`.
 
-This document contains exact Tier A executable/argv entries, but no final digest is calculated or claimed. Independent
+The static digest excludes raw output, `observedAt`, all execution observations, the digest field itself, and the
+future final documentation commit SHA. It is separate from (1) the execution-baseline binding and (2) the committed
+document/blob binding; neither is folded into the static digest. Thus the digest includes neither itself nor a future
+commit SHA. This document contains exact Tier A executable/argv entries, but no final digest is calculated or claimed. Independent
 review may reject or remove entries, and the later approval must resolve `APPROVAL_BOUND_HEAD_SHA`. Only then can that
 approval freeze the final canonical bytes and digest. Any command, argv, expected facts, environment, directory,
 privilege, cap, schema, redaction, timeout, or stop-condition difference is a new allowlist requiring new approval.
@@ -468,6 +518,17 @@ It also stops when an executable is absent or has a different realpath; output s
 path read attempts network/local-daemon contact; an excluded command becomes necessary; or repository/host state
 materially differs from the approval.
 
+The runner must resolve each exact executable path without a shell before launch, collect the approved bounded file
+identity (realpath, file type, device/inode, mode, owner, size, and code-signing identity where the record requires
+it), and compare it to the approval. Prohibited symlink or path drift stops with `EXECUTABLE_MISMATCH`. No new
+inspection command is implied. If the runner lacks this capability, F0 returns `COMMAND_SAFETY_BLOCKED` before any
+allowlisted command executes.
+
+The future execution approval binds branch `main`; HEAD equal to this remediation commit; parent
+`029bacee07621b475d39fb1c67d5a43b822896ea`; local `origin/main`
+`eae8f802a61b65a4d0336b3d1ba69f5bc341bbff`; expected divergence; tracked/staged clean; exact committed document
+blob ids; final static allowlist digest; executable identities; and approvable record count 16. Any mismatch stops.
+
 There is no fetch, repair, clean, stage, reset, command substitution, executable fallback, alternate manual source,
 broader output, privilege escalation, or automatic retry. A mismatch produces only a bounded failure result and
 returns for new direction.
@@ -476,15 +537,14 @@ returns for new direction.
 
 Execution order, if later approved:
 
-1. F0-GIT-01 through F0-GIT-07 establish the exact baseline and identities.
+1. F0-GIT-00 through F0-GIT-07 establish the exact baseline and identities.
 2. F0-GIT-08 confirms the accepted chain/Core path invariant.
 3. F1-SRC-01 through F1-SRC-04 normalize static direct-spawn and activation facts.
-4. F1-MAN-01 and F1-MAN-02 normalize local authoritative documentation.
-5. F1-PATH-01 through F1-PATH-03 inspect only the two exact known installed paths.
-6. Stop and normalize the result. Do not advance to Tier B/C/D.
+4. F1-PATH-01 through F1-PATH-03 inspect only the two exact known installed paths.
+5. Stop and normalize the result. Do not execute the manual templates or advance to Tier B/C/D.
 
 A successful first execution may establish only repository baseline validity, accepted source-derived invocation
-facts, locally citable PF documentation semantics, exact OrbStack installation path metadata, absence of mutation/
+facts, exact OrbStack installation path metadata, absence of mutation/
 daemon/network/secret contact in the approved command set, and the Tier B/C approvals still needed.
 
 It cannot establish PF feasibility, OrbStack isolation, CLI identity-launch feasibility, model-store feasibility,
@@ -498,7 +558,7 @@ F0_F1_RESULT =
   EVIDENCE_INCONCLUSIVE
 ```
 
-- All exact baseline/schema/source/manual/path checks passing yields `BASELINE_AND_STATIC_EVIDENCE_ACCEPTED` only.
+- All 16 exact baseline/schema/source/path checks passing yields `BASELINE_AND_STATIC_EVIDENCE_ACCEPTED` only.
 - Git/file identity mismatch yields `BASELINE_MISMATCH`.
 - daemon/network contact risk, executable/read-only uncertainty, excluded-command need, or filter safety failure yields
   `COMMAND_SAFETY_BLOCKED`.
@@ -547,7 +607,7 @@ CORE_CHANGE_REQUIRED =
   NO
 
 NEXT_ACTION =
-  CLAUDE_INDEPENDENT_ALLOWLIST_REVIEW
+  CLAUDE_TARGETED_ALLOWLIST_DELTA_REVIEW
 ```
 
 No command in this document may run until independent review and a later exact execution approval freeze the final
