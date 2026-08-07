@@ -63,6 +63,13 @@ it does not claim physical cancellation. `ETIMEDOUT` signals suspect provenance 
 failure. Provenance and cancellation remain feasibility blockers, so XR-AX and XG/XF/XA/E remain ineligible. Any
 temporary or synthetic filesystem read still requires separate approval.
 
+XR-AV replaces declaration-only import manifests with static inspection of the actual offline engine and real-adapter
+TypeScript sources. Adapter construction consumes no deadline; `beginRecord` starts a fresh 10000 ms budget and
+`endRecord` closes it, with overlap/re-entry failing closed. XR-I and future fake real-adapter orchestration share the
+same `XrReadAccounting` and `XR_LIMITS` authority. All XR-AV validation is source-level or in-memory fake-only;
+production filesystem primitives remain unconstructed and uninvoked. Unknown host failures intentionally map to
+`COMMAND_SAFETY_BLOCKED`.
+
 Validation:
 
 ```text

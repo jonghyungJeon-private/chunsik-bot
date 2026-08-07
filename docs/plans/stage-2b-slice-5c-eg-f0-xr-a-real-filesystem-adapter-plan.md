@@ -280,6 +280,21 @@ NEXT_ACTION = CLAUDE_INDEPENDENT_F0_XR_A_PLAN_REVIEW
 
 ## 16. XR-AI Offline Implementation Alignment
 
+The original plan state above remains historical: `XR_REAL_ADAPTER_IMPLEMENTATION_APPROVED = NO`. After independent
+review, the Chief Architect accepted F0-XR-A with the clarification that XR-AI offline implementation is permitted
+while every real filesystem read remains blocked by the provenance and cancellation feasibility gaps.
+
+```text
+CHIEF_ARCHITECT_POST_REVIEW_DECISION = XR-AI_OFFLINE_IMPLEMENTATION_APPROVED
+XR_REAL_ADAPTER_VALIDATION = OFFLINE_STATIC_AND_IN_MEMORY_FAKE_ONLY
+XR_ACTUAL_HOST_READ_APPROVED = NO
+```
+
+XR-AV validates actual source imports rather than hand-maintained manifests, uses a true begin/end record deadline,
+and reuses XR-I's single `XR_LIMITS`/accounting authority for path, hop, call, link-target and evidence caps. Unknown
+host errors intentionally normalize to `COMMAND_SAFETY_BLOCKED` so unreviewed host detail cannot widen the public
+failure taxonomy.
+
 XR-AI implements the gated adapter module without constructing or invoking its production filesystem façade. Exactly
 `lstat`, `readlink`, `realpath`, and `stat` are imported from `node:fs/promises`; there is no default port, CLI/runtime
 wiring, production factory authority, or live readiness path. Tests inject only synthetic in-memory primitive results.

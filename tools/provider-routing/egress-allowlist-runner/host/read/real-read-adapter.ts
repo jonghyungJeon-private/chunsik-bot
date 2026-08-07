@@ -5,8 +5,6 @@ import {
 } from './offline-read';
 
 export const XR_REAL_ADAPTER_IMPLEMENTED = true;
-export const REAL_ADAPTER_IMPORT_MANIFEST = Object.freeze({ module: 'node:fs/promises',
-  symbols: Object.freeze(['lstat', 'readlink', 'realpath', 'stat'] as const) } as const);
 export const XR_REAL_ADAPTER_EXECUTION_APPROVED = false;
 export const XR_ACTUAL_HOST_READ_APPROVED = false;
 export const LOCAL_FILESYSTEM_PROVENANCE_PREFLIGHT = 'BLOCKED_FEASIBILITY_GAP';
@@ -64,10 +62,11 @@ export function normalizeRealAdapterError(error: unknown): XrError {
 }
 
 export class RealExactHostReadPort implements ExactHostReadPort {
-  private stateValue: RealAdapterState = 'ACTIVE'; private readonly startedAt: number; private outstanding = 0;
+  private stateValue: RealAdapterState = 'ACTIVE'; private recordStartedAt: number | undefined; private outstanding = 0;
+  private activeRecord: Readonly<{ readId: string; context: string }> | undefined;
   private revokedValue = false;
   private constructor(private readonly primitives: RealFsPrimitivePort, private readonly deadline: LogicalDeadlinePort,
-    private readonly expectedBindings: ApprovedPathTokenBinding[]) { this.startedAt = deadline.nowMs(); }
+    private readonly expectedBindings: ApprovedPathTokenBinding[]) {}
   get state(): RealAdapterState { return this.stateValue; } get outstandingCalls(): number { return this.outstanding; }
   get revoked(): boolean { return this.revokedValue; }
   lstatExact(token: ApprovedPathToken): Promise<Metadata> { return this.metadata('LSTAT', token); }
@@ -75,9 +74,28 @@ export class RealExactHostReadPort implements ExactHostReadPort {
   readlinkExact(token: ApprovedPathToken): Promise<string> { return this.path('READLINK', token); }
   realpathExact(token: ApprovedPathToken): Promise<string> { return this.path('REALPATH', token); }
   revoke(): void { this.revokedValue = true; this.stateValue = 'REVOKED'; }
+  beginRecord(readId: string, context: string): void {
+    if (this.revokedValue || this.activeRecord !== undefined || this.outstanding !== 0) {
+      this.revoke(); throw new XrError('COMMAND_SAFETY_BLOCKED');
+    }
+    this.activeRecord = Object.freeze({ readId, context }); this.recordStartedAt = this.deadline.nowMs();
+    this.stateValue = 'ACTIVE';
+  }
+  endRecord(): void {
+    if (this.activeRecord === undefined || this.outstanding !== 0 || this.stateValue !== 'ACTIVE') {
+      this.revoke(); throw new XrError('COMMAND_SAFETY_BLOCKED');
+    }
+    this.activeRecord = undefined; this.recordStartedAt = undefined; this.stateValue = 'COMPLETED';
+  }
   private expected(operation: XrReadOperation, token: ApprovedPathToken): ApprovedPathTokenBinding {
-    if (this.stateValue !== 'ACTIVE') throw new XrError('COMMAND_SAFETY_BLOCKED');
+    if (this.stateValue !== 'ACTIVE' || this.activeRecord === undefined) {
+      this.revoke(); throw new XrError('COMMAND_SAFETY_BLOCKED');
+    }
     const expected = this.expectedBindings.shift(); if (expected === undefined || expected.operation !== operation) {
+      this.revoke(); throw new XrError('XR_PATH_TOKEN_BINDING_MISMATCH');
+    }
+    if (expected.readId !== this.activeRecord.readId ||
+        expected.approvedReadContextIdentity !== this.activeRecord.context) {
       this.revoke(); throw new XrError('XR_PATH_TOKEN_BINDING_MISMATCH');
     }
     try { return consumeApprovedPathToken(token, expected); } catch (error) { this.revoke(); throw error; }
@@ -98,7 +116,8 @@ export class RealExactHostReadPort implements ExactHostReadPort {
     return `${result}`;
   }
   private async invoke<T>(operation: () => Promise<T>): Promise<T> {
-    const remaining = PER_RECORD_TARGET_MS - (this.deadline.nowMs() - this.startedAt);
+    if (this.recordStartedAt === undefined) { this.revoke(); throw new XrError('COMMAND_SAFETY_BLOCKED'); }
+    const remaining = PER_RECORD_TARGET_MS - (this.deadline.nowMs() - this.recordStartedAt);
     if (remaining <= 0) { this.revokedValue = true; this.stateValue = 'DEADLINE_EXCEEDED';
       throw new XrError('XR_READ_TIMEOUT'); }
     this.stateValue = 'CALL_OUTSTANDING'; this.outstanding += 1;
@@ -107,12 +126,15 @@ export class RealExactHostReadPort implements ExactHostReadPort {
       throw new XrError('XR_READ_TIMEOUT'); }
     this.outstanding -= 1;
     if (outcome.kind === 'FAILED') { this.revoke(); throw normalizeRealAdapterError(outcome.error); }
-    this.stateValue = this.expectedBindings.length === 0 ? 'COMPLETED' : 'ACTIVE'; return outcome.value;
+    if (!this.revokedValue) this.stateValue = 'ACTIVE'; return outcome.value;
   }
 }
 
 /** Test-only creation seam. Production construction authority is deliberately absent in XR-AI. */
 export function createRealAdapterTestHarness(primitives: RealFsPrimitivePort, deadline: LogicalDeadlinePort,
-  expectedBindings: readonly ApprovedPathTokenBinding[]): RealExactHostReadPort {
-  return RealExactHostReadPort.createTestOnly(primitives, deadline, [...expectedBindings]);
+  expectedBindings: readonly ApprovedPathTokenBinding[], autoBegin = true): RealExactHostReadPort {
+  const port = RealExactHostReadPort.createTestOnly(primitives, deadline, [...expectedBindings]);
+  const first = expectedBindings[0];
+  if (autoBegin && first !== undefined) port.beginRecord(first.readId, first.approvedReadContextIdentity);
+  return port;
 }

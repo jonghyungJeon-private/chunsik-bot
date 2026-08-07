@@ -10,7 +10,6 @@ export const CODE_SIGN_READ_FEASIBILITY = 'BLOCKED_FEASIBILITY_GAP';
 export const CODE_SIGN_GATE_EFFECT = 'BLOCKS_XG_XF_XA_E';
 export const XR_REAL_FILESYSTEM_ADAPTER = 'IMPLEMENTED_GATED_NOT_WIRED';
 export const XR_HOST_READ_EXECUTION = 'NOT_PERFORMED';
-export const OFFLINE_ENGINE_HOST_IMPORTS = Object.freeze([] as const);
 export const XR_LIMITS = Object.freeze({ pathEntriesPerPass: 16, symlinkHopsPerPass: 8, lstat: 32,
   readlink: 16, realpath: 2, stat: 2, total: 52, linkTargetBytes: 4096,
   aggregateLinkTargetBytes: 32768, evidenceBytes: 32768 } as const);
@@ -127,13 +126,25 @@ export function assertClosedHostReadEvidence(value: Readonly<Record<string, unkn
 }
 
 export class XrError extends Error { constructor(readonly reason: XrFailureReason) { super(reason); } }
-class Counts {
+export class XrReadAccounting {
   lstat = 0; readlink = 0; realpath = 0; stat = 0; total = 0; linkBytes = 0;
+  private pathEntries = 0; private symlinkHops = 0;
+  beginPass(): void { this.pathEntries = 0; this.symlinkHops = 0; }
+  observePathEntry(): void { if (this.pathEntries + 1 > XR_LIMITS.pathEntriesPerPass) {
+    throw new XrError('XR_PATH_COMPONENT_LIMIT_EXCEEDED'); } this.pathEntries += 1; }
+  observeSymlinkHop(): void { if (this.symlinkHops + 1 > XR_LIMITS.symlinkHopsPerPass) {
+    throw new XrError('XR_SYMLINK_DEPTH_EXCEEDED'); } this.symlinkHops += 1; }
   call(kind: 'lstat' | 'readlink' | 'realpath' | 'stat'): number { const next = this[kind] + 1;
     if (next > XR_LIMITS[kind] || this.total + 1 > XR_LIMITS.total) throw new XrError('XR_READ_CALL_CAP_EXCEEDED');
     this[kind] = next; this.total += 1; return this.total; }
   snapshot(): PrimitiveCallCounts { return Object.freeze({ lstat: this.lstat, readlink: this.readlink,
     realpath: this.realpath, stat: this.stat, total: this.total }); }
+  addLinkTarget(value: string): void { const bytes = utf8(value);
+    if (bytes > XR_LIMITS.linkTargetBytes || this.linkBytes + bytes > XR_LIMITS.aggregateLinkTargetBytes) {
+      throw new XrError('XR_READ_BYTE_CAP_EXCEEDED');
+    }
+    this.linkBytes += bytes;
+  }
 }
 function utf8(value: string): number { return new TextEncoder().encode(value).byteLength; }
 function normalizeAbsolute(path: string): string {
@@ -169,24 +180,21 @@ export function executablePaths(contract: AllowlistContract): Readonly<Record<Xr
 }
 
 function observe(readId: XrReadId, context: ApprovedReadContext, pass: XrReadPass, configuredPath: string,
-  port: OfflineExactHostReadPort, counts: Counts): HostReadExecutableObservation {
+  port: OfflineExactHostReadPort, counts: XrReadAccounting): HostReadExecutableObservation {
+  counts.beginPass();
   let pending = normalizeAbsolute(configuredPath).split('/').filter(Boolean); let resolved: string[] = [];
   const components: ComponentObservation[] = []; const links: SymlinkObservation[] = []; const seen = new Set<string>();
-  let entries = 0; let hops = 0;
   while (pending.length > 0) {
-    if (entries >= XR_LIMITS.pathEntriesPerPass) throw new XrError('XR_PATH_COMPONENT_LIMIT_EXCEEDED');
-    const part = pending.shift()!; const candidate = `/${[...resolved, part].join('/')}`; entries += 1;
+    counts.observePathEntry();
+    const part = pending.shift()!; const candidate = `/${[...resolved, part].join('/')}`;
     const metadata = port.lstatExact(token({ readId, approvedReadContextIdentity: context.identity, pass,
       operation: 'LSTAT', exactPath: candidate, callIndex: counts.call('lstat') }));
     if (metadata.fileType === 'SYMLINK') {
-      if (hops >= XR_LIMITS.symlinkHopsPerPass) throw new XrError('XR_SYMLINK_DEPTH_EXCEEDED');
-      if (seen.has(candidate)) throw new XrError('XR_SYMLINK_CYCLE'); seen.add(candidate); hops += 1;
+      counts.observeSymlinkHop();
+      if (seen.has(candidate)) throw new XrError('XR_SYMLINK_CYCLE'); seen.add(candidate);
       const target = port.readlinkExact(token({ readId, approvedReadContextIdentity: context.identity, pass,
-        operation: 'READLINK', exactPath: candidate, callIndex: counts.call('readlink') })); const bytes = utf8(target);
-      if (bytes > XR_LIMITS.linkTargetBytes || counts.linkBytes + bytes > XR_LIMITS.aggregateLinkTargetBytes) {
-        throw new XrError('XR_READ_BYTE_CAP_EXCEEDED');
-      }
-      counts.linkBytes += bytes; links.push(Object.freeze({ path: candidate, target, metadata }));
+        operation: 'READLINK', exactPath: candidate, callIndex: counts.call('readlink') }));
+      counts.addLinkTarget(target); links.push(Object.freeze({ path: candidate, target, metadata }));
       const next = join(parent(candidate), target); pending = [...next.split('/').filter(Boolean), ...pending]; resolved = [];
     } else { components.push(Object.freeze({ path: candidate, metadata })); resolved.push(part); }
   }
@@ -215,7 +223,7 @@ function deepFreeze<T>(value: T): T { if (value !== null && typeof value === 'ob
 export function runApprovedHostReadSequence(context: ApprovedReadContext, contract: AllowlistContract,
   port: OfflineExactHostReadPort, records: readonly XrReadRecord[] = XR_READ_ALLOWLIST): HostReadSequenceResult {
   validateXrReadAllowlist(records); const paths = executablePaths(contract); const evidence: HostReadEvidenceBinding[] = [];
-  for (const record of records) { const counts = new Counts(); const path = paths[record.readId];
+  for (const record of records) { const counts = new XrReadAccounting(); const path = paths[record.readId];
     try { const pre = observe(record.readId, context, 'PRE_READ_PASS', path, port, counts);
       const post = observe(record.readId, context, 'POST_READ_PASS', path, port, counts);
       if (pre.canonicalRealpath !== context.expectedRealpaths[record.readId]) throw new XrError('XR_REALPATH_MISMATCH');
@@ -282,5 +290,5 @@ export function createApprovedPathTokenTestHarness(binding: ApprovedPathTokenBin
   const issued = token(binding); return Object.freeze({ token: issued,
     consume: (expected: ApprovedPathTokenBinding = binding) => consumeApprovedPathToken(issued, expected) });
 }
-export function createCallAccountingTestHarness() { const counts = new Counts(); return Object.freeze({
+export function createCallAccountingTestHarness() { const counts = new XrReadAccounting(); return Object.freeze({
   call: (kind: 'lstat' | 'readlink' | 'realpath' | 'stat') => counts.call(kind), snapshot: () => counts.snapshot() }); }

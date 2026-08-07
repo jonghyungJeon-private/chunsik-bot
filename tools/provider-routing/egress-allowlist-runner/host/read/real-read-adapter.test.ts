@@ -1,12 +1,14 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { Metadata, OFFLINE_ENGINE_HOST_IMPORTS, ScriptedExactHostReadPort, ScriptedReadEntry,
+import { Metadata, ScriptedExactHostReadPort, ScriptedReadEntry, XR_LIMITS, XrReadAccounting,
   createApprovedPathTokenTestHarness } from './offline-read';
 import {
   BigIntMetadataLike, EXACT_BOUNDED_FILESYSTEM_CANCELLATION, EXPECTED_PLATFORM_PROFILE,
   FILESYSTEM_PROVENANCE_MODEL, LOCAL_FILESYSTEM_PROVENANCE_PREFLIGHT, LogicalDeadlinePort,
-  PER_CALL_TARGET_MS, REAL_ADAPTER_IMPORT_MANIFEST, RealFsPrimitivePort, XR_ACTUAL_HOST_READ_APPROVED,
+  PER_CALL_TARGET_MS, RealFsPrimitivePort, XR_ACTUAL_HOST_READ_APPROVED,
   XR_AX_ELIGIBLE, createRealAdapterTestHarness, normalizeBigIntMetadata, normalizeRealAdapterError,
 } from './real-read-adapter';
+import { assertOfflineSourceBoundary, assertRealAdapterSourceBoundary } from './source-boundary';
 
 const binding = Object.freeze({ readId: 'XR-EXEC-GIT' as const, approvedReadContextIdentity: 'synthetic-context',
   pass: 'PRE_READ_PASS' as const, operation: 'LSTAT' as const, exactPath: '/synthetic/approved', callIndex: 1 });
@@ -22,9 +24,21 @@ const primitives = (overrides: Partial<RealFsPrimitivePort> = {}): RealFsPrimiti
   realpath: async () => '/synthetic/approved', ...overrides });
 
 describe('XR-AI import and platform gates', () => {
-  it('keeps the offline engine host-import manifest empty', () => expect(OFFLINE_ENGINE_HOST_IMPORTS).toEqual([]));
-  it('allows exactly four read-only fs/promises symbols in the real adapter', () => expect(REAL_ADAPTER_IMPORT_MANIFEST)
-    .toEqual({ module: 'node:fs/promises', symbols: ['lstat', 'readlink', 'realpath', 'stat'] }));
+  it('inspects actual offline source and rejects host APIs', () => {
+    const sources = ['./offline-read.ts', '../../runner.ts', '../offline.ts'].map((path) =>
+      readFileSync(new URL(path, import.meta.url), 'utf8'));
+    expect(() => assertOfflineSourceBoundary(sources)).not.toThrow();
+    expect(() => assertOfflineSourceBoundary(["import * as fs from 'node:fs'"])).toThrow('COMMAND_SAFETY_BLOCKED');
+  });
+  it('inspects the actual real adapter exact named import', () => {
+    const source = readFileSync(new URL('./real-read-adapter.ts', import.meta.url), 'utf8');
+    expect(() => assertRealAdapterSourceBoundary(source)).not.toThrow();
+  });
+  it.each(["import fs from 'node:fs/promises';", "import * as fs from 'node:fs/promises';",
+    "import { lstat, readlink, realpath, stat, open } from 'node:fs/promises';",
+    "const fs = import('node:fs/promises');", "const fs = require('node:fs/promises');"])
+  ('rejects non-exact real adapter source: %s', (source) =>
+    expect(() => assertRealAdapterSourceBoundary(source)).toThrow('COMMAND_SAFETY_BLOCKED'));
   it('keeps expected platform as policy and provenance/cancellation blocked', () => {
     expect(EXPECTED_PLATFORM_PROFILE).toMatchObject({ expectedOS: 'darwin', expectedArch: 'arm64', expectedNodeMajor: 22,
       classification: 'EXPECTED_POLICY_NOT_OBSERVED_HOST_FACT' });
@@ -77,6 +91,31 @@ describe('XR-AI error and metadata normalization', () => {
 });
 
 describe('XR-AI deadline, quarantine, parity, and freshness', () => {
+  it('starts a fresh record budget at beginRecord, not construction', async () => { let now = 0; let received = 0;
+    const deadline: LogicalDeadlinePort = { nowMs: () => now, execute: async (ms, operation) => { received = ms;
+      return { kind: 'COMPLETED', value: await operation() }; } };
+    const port = createRealAdapterTestHarness(primitives(), deadline, [binding], false); now = 50000;
+    port.beginRecord(binding.readId, binding.approvedReadContextIdentity);
+    await port.lstatExact(createApprovedPathTokenTestHarness(binding).token); expect(received).toBe(PER_CALL_TARGET_MS);
+    port.endRecord(); expect(port.state).toBe('COMPLETED');
+  });
+  it('rejects overlapping record scope and revokes', () => { const port = createRealAdapterTestHarness(primitives(),
+    new ImmediateDeadline(), [binding], false); port.beginRecord(binding.readId, binding.approvedReadContextIdentity);
+    expect(() => port.beginRecord(binding.readId, binding.approvedReadContextIdentity)).toThrow('COMMAND_SAFETY_BLOCKED');
+    expect(port.revoked).toBe(true);
+  });
+  it('revokes a reentrant call without starting a second primitive', async () => { let calls = 0;
+    let release!: (value: BigIntMetadataLike) => void;
+    const pending = new Promise<BigIntMetadataLike>((resolve) => { release = resolve; });
+    const second = { ...binding, callIndex: 2 };
+    const port = createRealAdapterTestHarness(primitives({ lstat: async () => { calls += 1; return pending; } }),
+      new ImmediateDeadline(), [binding, second]);
+    const firstCall = port.lstatExact(createApprovedPathTokenTestHarness(binding).token);
+    await Promise.resolve();
+    await expect(port.lstatExact(createApprovedPathTokenTestHarness(second).token)).rejects.toThrow('COMMAND_SAFETY_BLOCKED');
+    expect(calls).toBe(1); expect(port.revoked).toBe(true); release(metadata()); await firstCall;
+    expect(port.revoked).toBe(true);
+  });
   it('uses the per-call target when the record has more time', async () => { let received = 0;
     const deadline: LogicalDeadlinePort = { nowMs: () => 0, execute: async (ms, operation) => { received = ms;
       return { kind: 'COMPLETED', value: await operation() }; } };
@@ -121,4 +160,52 @@ describe('XR-AI deadline, quarantine, parity, and freshness', () => {
     inode: 2, uid: 3, gid: 4, mode: 5, size: 6, mtime: 7 } as Metadata; const fixture = new ScriptedExactHostReadPort([
       { ...binding, result: mutable }]); mutable.inode = 999; const result = fixture.lstatExact(
       createApprovedPathTokenTestHarness(binding).token); expect(result.inode).toBe(2); expect(Object.isFrozen(result)).toBe(true); });
+});
+
+describe('XR-AV shared accounting authority', () => {
+  it('drives the fake real adapter through 52 shared-authority tokens and blocks 53 before a primitive', async () => {
+    const accounting = new XrReadAccounting(); let primitiveCalls = 0;
+    const operations = [...Array(32).fill('LSTAT'), ...Array(16).fill('READLINK'),
+      ...Array(2).fill('REALPATH'), ...Array(2).fill('STAT')] as ('LSTAT' | 'READLINK' | 'REALPATH' | 'STAT')[];
+    const bindings = operations.map((operation) => ({ ...binding, operation, callIndex: accounting.call(
+      operation.toLowerCase() as 'lstat' | 'readlink' | 'realpath' | 'stat') }));
+    const fake = primitives({ lstat: async () => { primitiveCalls += 1; return metadata(); },
+      readlink: async () => { primitiveCalls += 1; return 'synthetic-target'; },
+      realpath: async () => { primitiveCalls += 1; return '/synthetic/approved'; },
+      stat: async () => { primitiveCalls += 1; return metadata(); } });
+    const port = createRealAdapterTestHarness(fake, new ImmediateDeadline(), bindings);
+    for (const expected of bindings) { const approved = createApprovedPathTokenTestHarness(expected).token;
+      if (expected.operation === 'LSTAT') await port.lstatExact(approved);
+      else if (expected.operation === 'READLINK') await port.readlinkExact(approved);
+      else if (expected.operation === 'REALPATH') await port.realpathExact(approved);
+      else await port.statExact(approved);
+    }
+    expect(primitiveCalls).toBe(52);
+    expect(() => accounting.call('stat')).toThrow('XR_READ_CALL_CAP_EXCEEDED'); expect(primitiveCalls).toBe(52);
+    port.endRecord();
+  });
+  it('permits exactly 52 calls and rejects the 53rd before any adapter call', () => {
+    const accounting = new XrReadAccounting();
+    for (let index = 0; index < XR_LIMITS.lstat; index += 1) accounting.call('lstat');
+    for (let index = 0; index < XR_LIMITS.readlink; index += 1) accounting.call('readlink');
+    for (let index = 0; index < XR_LIMITS.realpath; index += 1) accounting.call('realpath');
+    for (let index = 0; index < XR_LIMITS.stat; index += 1) accounting.call('stat');
+    expect(accounting.snapshot().total).toBe(52);
+    expect(() => accounting.call('stat')).toThrow('XR_READ_CALL_CAP_EXCEEDED');
+  });
+  it('enforces individual and aggregate link target byte caps', () => {
+    const individual = new XrReadAccounting(); individual.addLinkTarget('a'.repeat(4096));
+    expect(() => individual.addLinkTarget('b'.repeat(4097))).toThrow('XR_READ_BYTE_CAP_EXCEEDED');
+    const aggregate = new XrReadAccounting();
+    for (let index = 0; index < 8; index += 1) aggregate.addLinkTarget('a'.repeat(4096));
+    expect(() => aggregate.addLinkTarget('b')).toThrow('XR_READ_BYTE_CAP_EXCEEDED');
+  });
+  it('resets path and hop accounting for PRE and POST while sharing record call totals', () => {
+    const accounting = new XrReadAccounting();
+    accounting.beginPass(); for (let index = 0; index < 16; index += 1) accounting.observePathEntry();
+    for (let index = 0; index < 8; index += 1) accounting.observeSymlinkHop(); accounting.call('lstat');
+    accounting.beginPass(); for (let index = 0; index < 16; index += 1) accounting.observePathEntry();
+    for (let index = 0; index < 8; index += 1) accounting.observeSymlinkHop(); accounting.call('lstat');
+    expect(accounting.snapshot()).toMatchObject({ lstat: 2, total: 2 });
+  });
 });
