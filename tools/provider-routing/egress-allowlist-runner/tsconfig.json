@@ -6,8 +6,8 @@
     "declarationMap": false,
     "incremental": false,
     "noEmit": true,
-    "rootDir": ".",
+    "rootDir": "..",
     "types": ["node", "vitest/globals"]
   },
-  "include": ["**/*.ts"]
+  "include": ["**/*.ts", "../egress-allowlist-runner-test-support/**/*.ts"]
 }

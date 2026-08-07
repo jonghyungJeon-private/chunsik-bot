@@ -64,7 +64,9 @@ failure. Provenance and cancellation remain feasibility blockers, so XR-AX and X
 temporary or synthetic filesystem read still requires separate approval.
 
 XR-AV replaces declaration-only import manifests with recursively derived static inspection of every production
-TypeScript source under this runner plus structural inspection of the real adapter. This verification may enumerate
+TypeScript source under this runner plus structural inspection of the real adapter. The analyzer and its read-only
+source-tree capability live in the sibling test-support tree and production runner modules are forbidden from
+importing them. This verification may enumerate
 the runner tree and read repository TypeScript source solely as bounded, read-only test infrastructure; it does not
 inspect `.git`, executables, signatures, mounts, or provenance and is not a real-adapter host read. Adapter
 construction consumes no deadline; `beginRecord` starts a fresh 10000 ms budget and

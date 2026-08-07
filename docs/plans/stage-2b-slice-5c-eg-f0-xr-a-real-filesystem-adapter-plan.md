@@ -304,7 +304,8 @@ widen the public failure taxonomy.
 
 XR-AV static source-boundary verification may recursively enumerate the runner source tree and perform bounded,
 read-only repository TypeScript source reads solely for import/export regression analysis. That approved test
-infrastructure activity is distinct from prohibited real-adapter host reads and inspects no `.git` internals,
+support capability remains outside the production runner source tree and cannot be imported by production modules.
+This activity is distinct from prohibited real-adapter host reads and inspects no `.git` internals,
 executables, code signatures, mount metadata, or filesystem provenance.
 
 XR-AI implements the gated adapter module without constructing or invoking its production filesystem façade. Exactly

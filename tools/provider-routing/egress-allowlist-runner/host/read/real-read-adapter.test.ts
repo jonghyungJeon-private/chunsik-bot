@@ -10,7 +10,7 @@ import {
   XR_AX_ELIGIBLE, createRealAdapterTestHarness, normalizeBigIntMetadata, normalizeRealAdapterError,
 } from './real-read-adapter';
 import { SourceTreePort, assertOfflineSourceBoundary, assertRealAdapterSourceBoundary,
-  deriveOfflineProductionSources } from './source-boundary';
+  deriveOfflineProductionSources } from '../../../egress-allowlist-runner-test-support/source-boundary';
 
 const binding = Object.freeze({ readId: 'XR-EXEC-GIT' as const, approvedReadContextIdentity: 'synthetic-context',
   pass: 'PRE_READ_PASS' as const, operation: 'LSTAT' as const, exactPath: '/synthetic/approved', callIndex: 1 });
@@ -46,6 +46,11 @@ describe('XR-AI import and platform gates', () => {
     expect(deriveOfflineProductionSources('/runner', tree)).toEqual(['/runner/index.ts', '/runner/nested/new-module.ts']);
     expect(() => assertOfflineSourceBoundary('/runner', tree)).toThrow('COMMAND_SAFETY_BLOCKED');
   });
+  it('rejects production imports of the test-only analyzer', () => {
+    const tree: SourceTreePort = { list: () => [{ name: 'index.ts', directory: false }],
+      read: () => "import { assertOfflineSourceBoundary } from '../egress-allowlist-runner-test-support/source-boundary';" };
+    expect(() => assertOfflineSourceBoundary('/runner', tree)).toThrow('COMMAND_SAFETY_BLOCKED');
+  });
   it('inspects the actual real adapter exact named import', () => {
     const source = readFileSync(new URL('./real-read-adapter.ts', import.meta.url), 'utf8');
     expect(() => assertRealAdapterSourceBoundary(source)).not.toThrow();
@@ -55,6 +60,12 @@ describe('XR-AI import and platform gates', () => {
     "const fs = import('node:fs/promises');", "const fs = require('node:fs/promises');"])
   ('rejects non-exact real adapter source: %s', (source) =>
     expect(() => assertRealAdapterSourceBoundary(source)).toThrow('COMMAND_SAFETY_BLOCKED'));
+  it.each(['fs', 'node:child_process', 'node:net', 'http', 'worker_threads'])
+  ('rejects non-allowlisted host import %s', (moduleName) => {
+    const source = `import { lstat, readlink, realpath, stat } from 'node:fs/promises';
+      import value from '${moduleName}'; void value;`;
+    expect(() => assertRealAdapterSourceBoundary(source)).toThrow('COMMAND_SAFETY_BLOCKED');
+  });
   it.each([
     ['direct export', 'export { facade };'], ['export alias', 'export { facade as anything };'],
     ['exported value alias', 'export const anything = facade;'],
@@ -64,6 +75,14 @@ describe('XR-AI import and platform gates', () => {
   ])('rejects structural production façade escape: %s', (_label, escape) => {
     const source = `import { lstat, readlink, realpath, stat } from 'node:fs/promises';
       const facade = { lstat, readlink, realpath, stat }; ${escape}`;
+    expect(() => assertRealAdapterSourceBoundary(source)).toThrow('COMMAND_SAFETY_BLOCKED');
+  });
+  it.each([
+    ['single raw primitive', 'export const rawLstat = lstat;'],
+    ['single primitive factory', 'export function readOne() { return lstat(); }'],
+    ['split façade', 'const left = { lstat, readlink }; const right = { realpath, stat }; export { left, right };'],
+  ])('seeds taint from any primitive authority: %s', (_label, escape) => {
+    const source = `import { lstat, readlink, realpath, stat } from 'node:fs/promises'; ${escape}`;
     expect(() => assertRealAdapterSourceBoundary(source)).toThrow('COMMAND_SAFETY_BLOCKED');
   });
   it('allows an injected test factory that cannot obtain the production façade', () => {
