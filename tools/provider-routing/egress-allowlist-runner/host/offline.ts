@@ -209,7 +209,7 @@ export interface SequencerResult { readonly resultClass: SequencerResultClass; r
   readonly terminalEvidence: CommandEvidence | 'NONE'; readonly orderedEvidence: readonly CommandEvidence[]; }
 export interface OfflineExecutionContext { readonly staticAllowlistDigest: string; readonly executionBaselineDigest: string;
   readonly sequencerRunId: string; readonly repositoryBranch: string; readonly repositoryHead: string;
-  readonly canonicalContract: AllowlistContract; readonly resolvedContract: AllowlistContract; readonly symbolResolution: SymbolResolutionResult;
+  readonly resolvedContract: AllowlistContract; readonly symbolResolution: SymbolResolutionResult;
   readonly approvedIdentities: Readonly<Record<string, ExecutableIdentity>>; readonly observedAt: string; }
 
 export class StopOnFirstFailureSequencer {
@@ -278,7 +278,7 @@ export class StopOnFirstFailureSequencer {
     try { validateContract(context.resolvedContract); } catch { return 'SCHEMA_MISMATCH'; }
     if (context.resolvedContract.commandOrderVersion !== COMMAND_ORDER_VERSION || context.resolvedContract.records.length !== 16 ||
         context.resolvedContract.records.some((record, index) => record.commandId !== TIER_A_COMMAND_IDS[index]) ||
-        context.canonicalContract.records.some((record, index) => canonicalize(record) !== canonicalize(TIER_A_RECORDS[index])) ||
+        canonicalize(context.resolvedContract) !== canonicalize(context.symbolResolution.contract) ||
         sha256(canonicalize(context.resolvedContract)) !== context.staticAllowlistDigest) return 'BASELINE_MISMATCH';
     return undefined;
   }

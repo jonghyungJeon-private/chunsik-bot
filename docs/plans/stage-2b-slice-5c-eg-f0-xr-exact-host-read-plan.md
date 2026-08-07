@@ -504,3 +504,30 @@ NEXT_ACTION = CLAUDE_TARGETED_F0_XR_PLAN_REVIEW
 ```text
 XR metadata-read plan acceptance does not make XR evidence execution-eligible.
 ```
+
+## 20. XR-I Authority Remediation Alignment
+
+XR-I is an offline fixture-only engine. The real filesystem adapter remains `NOT_IMPLEMENTED`, actual host reads are
+`NOT_PERFORMED`, and `XR_READ_TIMEOUT` is `RESERVED_FOR_FUTURE_REAL_FILESYSTEM_ADAPTER`. XR-I implements no real
+deadline or timer. Any future adapter must define a separately reviewed cancellable deadline; the reserved reason
+neither authorizes nor implies that adapter.
+
+Every fixture operation consumes a module-branded, single-use authority binding containing the exact `readId`,
+approved context identity, pass, operation, absolute path, and per-record call index. The fixture entry independently
+binds the same fields and is checked in deterministic order before returning its result. Forgery, reuse, or any
+binding mismatch fails closed without a partial normalized observation.
+
+The resolved contract is the sole dispatch contract and must equal its module-issued symbol-resolution contract and
+static digest before dependency, identity, capability, or dispatch work. XR executable selection uses the explicit
+closed mapping `XR-EXEC-GIT=/usr/bin/git`, `XR-EXEC-SED=/usr/bin/sed`,
+`XR-EXEC-READLINK=/usr/bin/readlink`, and `XR-EXEC-STAT=/usr/bin/stat`; collection insertion order has no authority.
+
+`mtime` remains audit-only in every component, symlink-entry, and final-target observation and is symmetrically
+excluded from consistency-token identity. Evidence byte-count convergence is limited to eight iterations;
+non-convergence fails closed, and the inclusive 32768-byte evidence cap is checked before acceptance.
+`XR_READ_CALL_CAP_EXCEEDED` remains defence-in-depth because normal traversal reaches the 16-entry and eight-hop
+per-pass structural bounds before exceeding the derived 52-call aggregate.
+
+The corrected pre-remediation focused baseline is `137/137`; remediation validation reports its actual new total.
+Code-sign identity and live-execution TOCTOU remain unresolved, XR evidence remains execution-ineligible, XG/XF/XA/E
+remain blocked, and no digest freeze or execution approval is granted.

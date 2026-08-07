@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ALLOWLIST_CONTRACT, TIER_A_COMMAND_IDS, TIER_A_RECORDS } from '../allowlist';
+import { TIER_A_COMMAND_IDS, TIER_A_RECORDS } from '../allowlist';
 import { canonicalize, sha256 } from '../canonical';
 import { AllowlistContract, AllowlistRecord, COMMAND_ORDER_VERSION, ExecutableIdentity, StopReason } from '../contracts';
 import { createStaticAllowlistDigest } from '../runner';
@@ -46,7 +46,7 @@ const identityPort = { verifyExactPath: (record: AllowlistRecord) => IDENTITIES[
 const closedTermination = (): TerminationPort => ({ signalExactChild: () => true, isExactChildClosed: () => true });
 const context = (overrides: Partial<OfflineExecutionContext> = {}): OfflineExecutionContext => Object.freeze({
   staticAllowlistDigest: STATIC.digest, executionBaselineDigest: 'b'.repeat(64), sequencerRunId: 'factory-run-1',
-  repositoryBranch: 'main', repositoryHead: '1'.repeat(40), canonicalContract: ALLOWLIST_CONTRACT, resolvedContract: STATIC.contract,
+  repositoryBranch: 'main', repositoryHead: '1'.repeat(40), resolvedContract: STATIC.contract,
   symbolResolution: STATIC.symbolResolution, approvedIdentities: IDENTITIES, observedAt: '2026-08-07T00:00:00Z',
   ...overrides,
 });
@@ -155,10 +155,11 @@ describe('terminal evidence, dependencies, and mappings', () => {
       executionBaselineDigest: 'b'.repeat(64), sequencerRunId: 'factory-run-1', processExitCode: 'NONE' });
     expect((result.terminalEvidence as { argvDigest: string }).argvDigest).toBe(sha256(canonicalize(TIER_A_RECORDS[0]!.argv)));
   });
-  it('rejects a canonical record mismatch before dispatch', () => { let calls = 0;
-    const canonicalContract = { ...ALLOWLIST_CONTRACT, records: ALLOWLIST_CONTRACT.records.map((record, index) =>
+  it('rejects a resolved record mismatch against its authoritative resolution before dispatch', () => { let calls = 0;
+    const resolvedContract = { ...STATIC.contract, records: STATIC.contract.records.map((record, index) =>
       index === 0 ? { ...record, timeoutMs: record.timeoutMs + 1 } : record) };
-    const result = run({ dispatch: () => { calls += 1; } }, { canonicalContract });
+    const result = run({ dispatch: () => { calls += 1; } }, { resolvedContract,
+      staticAllowlistDigest: sha256(canonicalize(resolvedContract)) });
     expect(calls).toBe(0); expect(result.resultClass).toBe('BASELINE_FAILED');
   });
   it('stops before dispatch on a missing dependency', () => { const contract = { ...STATIC.contract,

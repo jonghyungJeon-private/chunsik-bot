@@ -43,6 +43,16 @@ execution is `NOT_PERFORMED`, and this Slice freezes no digest and grants no exe
 `COMPLETE_AND_ACCEPTED_BY_INDEPENDENT_REVIEW` at reviewed HEAD `b36aad6423f11f38c062e3d3c034c934d1e0de20`;
 no separate commit or plan document is required.
 
+XR-I authority remediation makes each approved-path token single-use and binds its read ID, approved context, pass,
+operation, exact path, and call index. Scripted fixture entries verify the same complete binding before returning a
+result. The module-issued resolved contract is the single sequencer authority, while the four XR IDs use an explicit
+Tier-A-verified executable map independent of collection ordering. Component, symlink-entry, and final-target `mtime`
+values remain audit data but are excluded symmetrically from consistency tokens. Evidence-size fixed-point calculation
+is bounded to eight iterations, and call-cap failure remains defence-in-depth behind the 16-entry/eight-hop per-pass
+bounds. `XR_READ_TIMEOUT` is reserved only for a future separately reviewed real adapter; XR-I implements no host-read
+timer. The corrected earlier focused baseline is `137/137`. Real reads remain absent, and the code-sign and live
+TOCTOU gates continue to block XG/XF/XA/E.
+
 Validation:
 
 ```text
