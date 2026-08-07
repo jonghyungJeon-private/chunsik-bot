@@ -264,8 +264,8 @@ local-filesystem provenance have an approved solution.
 
 ```text
 STAGE_2B_SLICE_5C_EG_F0_XR_A_PLAN = READY_FOR_INDEPENDENT_REVIEW
-XR_REAL_ADAPTER_IMPLEMENTATION_APPROVED = XR_AI_OFFLINE_ONLY
-XR_REAL_ADAPTER_VALIDATION_APPROVED = OFFLINE_FAKE_ONLY
+XR_REAL_ADAPTER_IMPLEMENTATION_APPROVED = NO
+XR_REAL_ADAPTER_VALIDATION_APPROVED = NO
 XR_ACTUAL_HOST_READ_APPROVED = NO
 EXECUTABLE_METADATA_READ_APPROVED = NO
 CODE_SIGN_READ_APPROVED = NO
@@ -280,20 +280,32 @@ NEXT_ACTION = CLAUDE_INDEPENDENT_F0_XR_A_PLAN_REVIEW
 
 ## 16. XR-AI Offline Implementation Alignment
 
-The original plan state above remains historical: `XR_REAL_ADAPTER_IMPLEMENTATION_APPROVED = NO`. After independent
-review, the Chief Architect accepted F0-XR-A with the clarification that XR-AI offline implementation is permitted
-while every real filesystem read remains blocked by the provenance and cancellation feasibility gaps.
+The original plan state above remains historical. In an out-of-band project conversation on 2026-08-07 KST, the
+Chief Architect accepted F0-XR-A with the clarification that XR-AI offline implementation and XR-AV offline/static/fake
+validation are permitted while every real filesystem read remains blocked by provenance and cancellation feasibility
+gaps. This records no repository approval artifact, packet, evidence document, or approval commit.
 
 ```text
-CHIEF_ARCHITECT_POST_REVIEW_DECISION = XR-AI_OFFLINE_IMPLEMENTATION_APPROVED
-XR_REAL_ADAPTER_VALIDATION = OFFLINE_STATIC_AND_IN_MEMORY_FAKE_ONLY
+CHIEF_ARCHITECT_POST_REVIEW_DECISION_DATE = 2026-08-07_KST
+F0-XR-A_PLAN = COMPLETE_AND_ACCEPTED_WITH_CA_CLARIFICATIONS
+XR-AI_OFFLINE_IMPLEMENTATION = APPROVED
+XR-AV_OFFLINE_STATIC_FAKE_VALIDATION = APPROVED
+F0-XR-AI = COMPLETE_AND_ACCEPTED_WITH_CARRYOVER
+F0-XR-AV = REMEDIATION_IN_PROGRESS
 XR_ACTUAL_HOST_READ_APPROVED = NO
 ```
 
 XR-AV validates actual source imports rather than hand-maintained manifests, uses a true begin/end record deadline,
-and reuses XR-I's single `XR_LIMITS`/accounting authority for path, hop, call, link-target and evidence caps. Unknown
-host errors intentionally normalize to `COMMAND_SAFETY_BLOCKED` so unreviewed host detail cannot widen the public
-failure taxonomy.
+and uses XR-I's single `XR_LIMITS`/`XrReadAccounting` authority for path, hop, call, link-target and evidence caps.
+`RealExactHostReadPort` does not itself enforce those caps: future async real-read orchestration must route every call
+through the shared authority before token issuance, and XR-AX cannot proceed until that orchestration is independently
+validated. Unknown host errors intentionally normalize to `COMMAND_SAFETY_BLOCKED` so unreviewed host detail cannot
+widen the public failure taxonomy.
+
+XR-AV static source-boundary verification may recursively enumerate the runner source tree and perform bounded,
+read-only repository TypeScript source reads solely for import/export regression analysis. That approved test
+infrastructure activity is distinct from prohibited real-adapter host reads and inspects no `.git` internals,
+executables, code signatures, mount metadata, or filesystem provenance.
 
 XR-AI implements the gated adapter module without constructing or invoking its production filesystem façade. Exactly
 `lstat`, `readlink`, `realpath`, and `stat` are imported from `node:fs/promises`; there is no default port, CLI/runtime

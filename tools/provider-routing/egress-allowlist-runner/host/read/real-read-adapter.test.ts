@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { Metadata, ScriptedExactHostReadPort, ScriptedReadEntry, XR_LIMITS, XrReadAccounting,
   createApprovedPathTokenTestHarness } from './offline-read';
@@ -8,7 +9,8 @@ import {
   PER_CALL_TARGET_MS, RealFsPrimitivePort, XR_ACTUAL_HOST_READ_APPROVED,
   XR_AX_ELIGIBLE, createRealAdapterTestHarness, normalizeBigIntMetadata, normalizeRealAdapterError,
 } from './real-read-adapter';
-import { assertOfflineSourceBoundary, assertRealAdapterSourceBoundary } from './source-boundary';
+import { SourceTreePort, assertOfflineSourceBoundary, assertRealAdapterSourceBoundary,
+  deriveOfflineProductionSources } from './source-boundary';
 
 const binding = Object.freeze({ readId: 'XR-EXEC-GIT' as const, approvedReadContextIdentity: 'synthetic-context',
   pass: 'PRE_READ_PASS' as const, operation: 'LSTAT' as const, exactPath: '/synthetic/approved', callIndex: 1 });
@@ -24,11 +26,25 @@ const primitives = (overrides: Partial<RealFsPrimitivePort> = {}): RealFsPrimiti
   realpath: async () => '/synthetic/approved', ...overrides });
 
 describe('XR-AI import and platform gates', () => {
-  it('inspects actual offline source and rejects host APIs', () => {
-    const sources = ['./offline-read.ts', '../../runner.ts', '../offline.ts'].map((path) =>
-      readFileSync(new URL(path, import.meta.url), 'utf8'));
-    expect(() => assertOfflineSourceBoundary(sources)).not.toThrow();
-    expect(() => assertOfflineSourceBoundary(["import * as fs from 'node:fs'"])).toThrow('COMMAND_SAFETY_BLOCKED');
+  it('recursively derives and inspects every production source under the runner root', () => {
+    const root = fileURLToPath(new URL('../../', import.meta.url));
+    const paths = assertOfflineSourceBoundary(root);
+    expect(paths.map((path) => path.slice(root.length)).sort()).toEqual(expect.arrayContaining([
+      'allowlist.ts', 'canonical.ts', 'contracts.ts', 'runner.ts', 'host/offline.ts', 'host/read/offline-read.ts',
+      'index.ts', 'host/index.ts', 'host/read/index.ts']));
+  });
+  it('automatically scans a newly introduced production module and rejects its host access', () => {
+    const contents = new Map([['/runner/index.ts', 'export {};'], ['/runner/nested/new-module.ts',
+      "export const escaped = import('node:worker_threads');"], ['/runner/nested/ignored.test.ts',
+      "import fs from 'node:fs';"], ['/runner/host/read/real-read-adapter.ts', "import fs from 'node:fs';"]]);
+    const tree: SourceTreePort = { list: (path) => path === '/runner' ? [
+      { name: 'index.ts', directory: false }, { name: 'nested', directory: true }, { name: 'host', directory: true }] :
+      path === '/runner/nested' ? [{ name: 'new-module.ts', directory: false }, { name: 'ignored.test.ts', directory: false }] :
+      path === '/runner/host' ? [{ name: 'read', directory: true }] :
+      path === '/runner/host/read' ? [{ name: 'real-read-adapter.ts', directory: false }] : [],
+      read: (path) => contents.get(path) ?? '' };
+    expect(deriveOfflineProductionSources('/runner', tree)).toEqual(['/runner/index.ts', '/runner/nested/new-module.ts']);
+    expect(() => assertOfflineSourceBoundary('/runner', tree)).toThrow('COMMAND_SAFETY_BLOCKED');
   });
   it('inspects the actual real adapter exact named import', () => {
     const source = readFileSync(new URL('./real-read-adapter.ts', import.meta.url), 'utf8');
@@ -39,6 +55,23 @@ describe('XR-AI import and platform gates', () => {
     "const fs = import('node:fs/promises');", "const fs = require('node:fs/promises');"])
   ('rejects non-exact real adapter source: %s', (source) =>
     expect(() => assertRealAdapterSourceBoundary(source)).toThrow('COMMAND_SAFETY_BLOCKED'));
+  it.each([
+    ['direct export', 'export { facade };'], ['export alias', 'export { facade as anything };'],
+    ['exported value alias', 'export const anything = facade;'],
+    ['multiline factory', 'export function createPort() {\n return facade;\n}'],
+    ['arrow factory', 'export const createPort = () =>\n facade;'],
+    ['renamed facade', 'const renamedProductionFacade = facade; export function make() { return renamedProductionFacade; }'],
+  ])('rejects structural production façade escape: %s', (_label, escape) => {
+    const source = `import { lstat, readlink, realpath, stat } from 'node:fs/promises';
+      const facade = { lstat, readlink, realpath, stat }; ${escape}`;
+    expect(() => assertRealAdapterSourceBoundary(source)).toThrow('COMMAND_SAFETY_BLOCKED');
+  });
+  it('allows an injected test factory that cannot obtain the production façade', () => {
+    const source = `import { lstat, readlink, realpath, stat } from 'node:fs/promises';
+      const facade = { lstat, readlink, realpath, stat }; void facade;
+      export function createTestOnly<T>(injected: T): T { return injected; }`;
+    expect(() => assertRealAdapterSourceBoundary(source)).not.toThrow();
+  });
   it('keeps expected platform as policy and provenance/cancellation blocked', () => {
     expect(EXPECTED_PLATFORM_PROFILE).toMatchObject({ expectedOS: 'darwin', expectedArch: 'arm64', expectedNodeMajor: 22,
       classification: 'EXPECTED_POLICY_NOT_OBSERVED_HOST_FACT' });
@@ -207,5 +240,17 @@ describe('XR-AV shared accounting authority', () => {
     accounting.beginPass(); for (let index = 0; index < 16; index += 1) accounting.observePathEntry();
     for (let index = 0; index < 8; index += 1) accounting.observeSymlinkHop(); accounting.call('lstat');
     expect(accounting.snapshot()).toMatchObject({ lstat: 2, total: 2 });
+  });
+  it('accepts 16 path entries and rejects the 17th before the next primitive', () => {
+    const accounting = new XrReadAccounting(); let primitiveCalls = 0; accounting.beginPass();
+    for (let index = 0; index < 16; index += 1) { accounting.observePathEntry(); primitiveCalls += 1; }
+    expect(primitiveCalls).toBe(16);
+    expect(() => accounting.observePathEntry()).toThrow('XR_PATH_COMPONENT_LIMIT_EXCEEDED');
+    expect(primitiveCalls).toBe(16);
+  });
+  it('counts UTF-8 bytes rather than JavaScript characters', () => {
+    const accounting = new XrReadAccounting(); accounting.addLinkTarget('가'.repeat(1365));
+    expect(accounting.linkBytes).toBe(4095);
+    expect(() => accounting.addLinkTarget('가'.repeat(1366))).toThrow('XR_READ_BYTE_CAP_EXCEEDED');
   });
 });

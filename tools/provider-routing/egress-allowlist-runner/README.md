@@ -63,12 +63,16 @@ it does not claim physical cancellation. `ETIMEDOUT` signals suspect provenance 
 failure. Provenance and cancellation remain feasibility blockers, so XR-AX and XG/XF/XA/E remain ineligible. Any
 temporary or synthetic filesystem read still requires separate approval.
 
-XR-AV replaces declaration-only import manifests with static inspection of the actual offline engine and real-adapter
-TypeScript sources. Adapter construction consumes no deadline; `beginRecord` starts a fresh 10000 ms budget and
+XR-AV replaces declaration-only import manifests with recursively derived static inspection of every production
+TypeScript source under this runner plus structural inspection of the real adapter. This verification may enumerate
+the runner tree and read repository TypeScript source solely as bounded, read-only test infrastructure; it does not
+inspect `.git`, executables, signatures, mounts, or provenance and is not a real-adapter host read. Adapter
+construction consumes no deadline; `beginRecord` starts a fresh 10000 ms budget and
 `endRecord` closes it, with overlap/re-entry failing closed. XR-I and future fake real-adapter orchestration share the
-same `XrReadAccounting` and `XR_LIMITS` authority. All XR-AV validation is source-level or in-memory fake-only;
-production filesystem primitives remain unconstructed and uninvoked. Unknown host failures intentionally map to
-`COMMAND_SAFETY_BLOCKED`.
+same `XrReadAccounting` and `XR_LIMITS` authority. The adapter alone does not enforce these caps; every future async
+sequencer must route authority through `XrReadAccounting`, and XR-AX remains blocked until that path is independently
+validated. All adapter validation is source-level or in-memory fake-only; production filesystem primitives remain
+unconstructed and uninvoked. Unknown host failures intentionally map to `COMMAND_SAFETY_BLOCKED`.
 
 Validation:
 
