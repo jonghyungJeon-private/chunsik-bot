@@ -36,8 +36,8 @@ const BASELINE: ExecutionBaselineBinding = Object.freeze({
   environmentPolicy: { version: 'stage2b-5c-eg-f0-host-environment-v1', environment: { LANG: 'C', LC_ALL: 'C' } },
   executableIdentityPolicy: { version: 'stage2b-5c-eg-f0-executable-identity-v1', immediatePreDispatchRecheck: true },
 });
-const DEPENDENCY_CONTEXT = Object.freeze({ allowlistDigest: STATIC.digest, executionBaselineDigest: 'fixture-baseline-digest',
-  sequencerRunId: 'fixture-run', sequenceIndex: 16, repositoryHead: HEAD, workingDirectory: ROOT });
+const DEPENDENCY_CONTEXT = Object.freeze({ allowlistDigest: STATIC.digest, executionBaselineDigest: 'test-baseline-digest',
+  sequencerRunId: 'test-run', sequenceIndex: 16, repositoryHead: HEAD, workingDirectory: ROOT });
 
 function chunks(...values: (string | Uint8Array)[]): readonly Uint8Array[] {
   return values.map((value) => typeof value === 'string' ? encoder.encode(value) : value);
@@ -51,7 +51,7 @@ function evidence(commandId: string, overrides: Partial<CommandEvidence> = {}): 
   const record = STATIC.contract.records.find((entry) => entry.commandId === commandId);
   return {
     contractVersion: 'stage2b-5c-eg-f0-command-evidence-v1', schemaVersion: 'stage2b-5c-eg-f0-command-evidence-schema-v2',
-    allowlistDigest: STATIC.digest, executionBaselineDigest: 'fixture-baseline-digest', sequencerRunId: 'fixture-run',
+    allowlistDigest: STATIC.digest, executionBaselineDigest: 'test-baseline-digest', sequencerRunId: 'test-run',
     commandOrderVersion: 'stage2b-5c-eg-f0-command-order-v1', sequenceIndex: record === undefined ? 0 : STATIC.contract.records.indexOf(record),
     commandId, executableRealpath: '/usr/bin/git', executableIdentity: IDENTITY,
     argvDigest: record === undefined ? '3'.repeat(64) : sha256(canonicalize(record.argv)), workingDirectory: ROOT, repositoryBranch: 'main', repositoryHead: HEAD,
@@ -62,10 +62,10 @@ function evidence(commandId: string, overrides: Partial<CommandEvidence> = {}): 
   };
 }
 
-function dependencyState(priorEvidence: readonly CommandEvidence[] = []): DependencyState {
+function dependencyState(priorEvidence: readonly CommandEvidence[] = [], sequenceIndex = 16): DependencyState {
   return deriveDependencyState({
     symbolResolution: STATIC.symbolResolution, priorEvidence, allowlistDigest: STATIC.digest,
-    executionBaselineDigest: 'fixture-baseline-digest', sequencerRunId: 'fixture-run', sequenceIndex: 16,
+    executionBaselineDigest: 'test-baseline-digest', sequencerRunId: 'test-run', sequenceIndex,
     repositoryHead: HEAD, workingDirectory: ROOT,
   });
 }
@@ -79,15 +79,17 @@ function evaluate(record: AllowlistRecord, result: FixtureProcessResult, options
   readonly baseline?: ExecutionBaselineBinding;
 } = {}) {
   const identity = options.identity ?? { ...IDENTITY, realpath: record.expectedRealpath };
+  const sequenceIndex = STATIC.contract.records.findIndex((entry) => entry.commandId === record.commandId);
+  const priorEvidence = [evidence('F0-GIT-00'), evidence('F0-GIT-07')]
+    .filter((entry) => entry.sequenceIndex < sequenceIndex);
   return evaluateFixture({
     record, processResult: result, approvedIdentity: identity,
     identityVerifier: options.capability === false ? undefined : { verify: () => identity },
-    dependencyState: options.state ?? dependencyState([
-      evidence('F0-GIT-00'), evidence('F0-GIT-07'),
-    ]),
+    dependencyState: options.state ?? dependencyState(priorEvidence, sequenceIndex),
     normalizedFacts: options.facts ?? record.expectedNormalizedFacts, schemaValid: options.schemaValid ?? true,
     allowlistDigest: STATIC.digest, repositoryHead: HEAD, observedAt: '2026-08-06T00:00:00Z',
-    executionBaseline: options.baseline,
+    executionBaseline: options.baseline, executionBaselineDigest: 'test-baseline-digest',
+    sequencerRunId: 'test-run', sequenceIndex,
   });
 }
 

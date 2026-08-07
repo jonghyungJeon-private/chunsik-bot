@@ -2,7 +2,7 @@
 
 ## 1. Status and Boundary
 
-- **Status:** documentation-only, plan-only, ready for independent review.
+- **Status:** accepted plan; XR-I offline fixture-port implementation complete and read allowlist unfrozen.
 - **Objective:** define bounded exact executable metadata observations without creating a process or mutating the
   host. These observations remain non-execution-eligible while mandatory code-sign identity is unresolved.
 - **Accepted predecessors:** F0 contract, F0-R, F0-H, F0-HI, and F0-HV.
@@ -12,6 +12,7 @@
 ```text
 F0-XR = EXACT_HOST_READS_ONLY
 REAL_HOST_ADAPTER = NOT_IMPLEMENTED
+XR_HOST_READ_EXECUTION = NOT_PERFORMED
 XR_READ_ALLOWLIST = CANDIDATE_ONLY_NOT_APPROVED
 XR_DIGEST = NOT_FROZEN
 XR_METADATA_READ_IMPLEMENTATION_FEASIBLE = YES
@@ -101,7 +102,7 @@ XR may bind the approved expected values into its context, but does not emit fre
 
 ## 5. Exact Executable Metadata Read Model
 
-The future private XR reader accepts an approved `readId`, never a path. The resolved static contract supplies the
+The private offline XR-I reader accepts an approved `readId`, never a path. The resolved static contract supplies the
 configured absolute path. The unique candidate executable paths are limited to the contract paths represented by:
 
 ```text
@@ -111,7 +112,7 @@ XR-EXEC-READLINK
 XR-EXEC-STAT
 ```
 
-For each ID the future operation is:
+For each ID the fixture-only operation is:
 
 ```text
 approved readId -> exact contract path
@@ -225,27 +226,27 @@ Architect, XR cannot make XA or E eligible.
 
 ## 9. Proposed Host Read API
 
-The future private API is conceptually:
+The private fixture-port API is conceptually:
 
 ```text
 readApprovedHostFact(readId, approvedReadContext)
 ```
 
-It does not expose `readFile(path)`, raw paths, filesystem options, or generic operations. Candidate implementation
-primitives are narrowly wrapped `node:fs/promises` equivalents of `lstat`, `readlink`, `realpath`, and `stat`.
-`open/read` and `readFile` are not selected for executable metadata because no file contents are required.
+It does not expose `readFile(path)`, raw paths, filesystem options, or generic operations. The implementation accepts
+only injected fixture capabilities equivalent to `lstat`, `readlink`, `realpath`, and `stat`; no real filesystem
+adapter or host API import exists. `open/read` and `readFile` remain excluded.
 
 Per approved executable read ID:
 
 | Primitive | Allowed input | Maximum | Byte cap/cancellation |
 |---|---|---:|---|
-| `lstat` | exact ordered components, link targets, and entry rechecks | 32 | metadata only; one 1000 ms cancellable deadline |
-| `readlink` | only an entry just proven to be a symlink | 8 | 4096 UTF-8 bytes per target |
-| `realpath` | configured path | 1 | result 4096 UTF-8 bytes; same deadline |
-| `stat` | exact final target | 2 | metadata only; same deadline |
+| `lstat` | exact ordered components in two full passes | 32 | metadata only |
+| `readlink` | entries proven to be symlinks in two full passes | 16 | 4096 UTF-8 bytes per target |
+| `realpath` | configured path, once per pass | 2 | exact normalized result |
+| `stat` | exact final target, once per pass | 2 | metadata only |
 
-The closed total is `32 + 8 + 1 + 2 = 43` primitive calls per executable read ID. Component and total call caps are
-checked before issuing the next read; reaching exactly the cap is allowed, while a 44th total call or any per-kind
+The closed total is `32 + 16 + 2 + 2 = 52` primitive calls per executable read ID. Component and total call caps are
+checked before issuing the next read; reaching exactly the cap is allowed, while a 53rd total call or any per-kind
 call above its cap is rejected.
 
 Byte caps are inclusive and applied before accumulation:
@@ -277,11 +278,11 @@ readId
 purpose = EXECUTABLE_IDENTITY_CAPTURE
 exactPathSource = RESOLVED_STATIC_ALLOWLIST_CONTRACT
 operation = LSTAT_READLINK_REALPATH_STAT_RECHECK
-maximumComponentEntryLstatCalls = 32
-maximumReadlinkCalls = 8
-maximumRealpathCalls = 1
-maximumFinalStatRecheckCalls = 2
-maximumTotalPrimitiveCalls = 43
+maximumLstatCalls = 32
+maximumReadlinkCalls = 16
+maximumRealpathCalls = 2
+maximumStatCalls = 2
+maximumTotalPrimitiveCalls = 52
 maximumBytes = 32768
 expectedFileType = REGULAR_FILE
 symlinkPolicy = APPROVAL_BOUND_DEPTH_8_EXACT_TARGET
@@ -470,7 +471,7 @@ No approval inherits to XG, XF, XA, or E.
 | `CODE_SIGN_READ_FEASIBILITY` | `BLOCKED_FEASIBILITY_GAP` | No authoritative bounded passive mechanism has been approved. |
 | `CODE_SIGN_GATE_EFFECT` | `DECIDED` | Mandatory code-sign identity remains unresolved and blocks XG/XF/XA/E. |
 | `HOST_READ_API` | `DECIDED` | Private `readApprovedHostFact(readId, context)` with fixed wrappers and caps. |
-| `READ_CAP_MODEL` | `DECIDED` | Inclusive pre-accumulation byte caps and pre-call 32/8/1/2/43 limits. |
+| `READ_CAP_MODEL` | `DECIDED` | Inclusive pre-accumulation byte caps and pre-call 32/16/2/2/52 limits. |
 | `READ_CONSISTENCY_MODEL` | `DECIDED` | Pre/post identity tokens; any change discards facts and stops without retry. |
 | `XR_EVIDENCE_OWNER` | `DECIDED` | Separate immutable `HostReadEvidenceBinding`, optionally consumed later by XF. |
 | `TOCTOU_RELATIONSHIP` | `BLOCKED_FEASIBILITY_GAP` | XR snapshot cannot bind later spawn identity. |

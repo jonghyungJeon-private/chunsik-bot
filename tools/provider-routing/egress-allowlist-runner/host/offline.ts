@@ -209,7 +209,7 @@ export interface SequencerResult { readonly resultClass: SequencerResultClass; r
   readonly terminalEvidence: CommandEvidence | 'NONE'; readonly orderedEvidence: readonly CommandEvidence[]; }
 export interface OfflineExecutionContext { readonly staticAllowlistDigest: string; readonly executionBaselineDigest: string;
   readonly sequencerRunId: string; readonly repositoryBranch: string; readonly repositoryHead: string;
-  readonly resolvedContract: AllowlistContract; readonly symbolResolution: SymbolResolutionResult;
+  readonly canonicalContract: AllowlistContract; readonly resolvedContract: AllowlistContract; readonly symbolResolution: SymbolResolutionResult;
   readonly approvedIdentities: Readonly<Record<string, ExecutableIdentity>>; readonly observedAt: string; }
 
 export class StopOnFirstFailureSequencer {
@@ -256,8 +256,8 @@ export class StopOnFirstFailureSequencer {
       catch { outcome = arbiter.accept({ type: 'SPAWN_ERROR', message: 'FIXTURE_DISPATCH_ERROR' }); }
       if (outcome === undefined) this.clock.advanceBy(Math.max(0, COMMAND_TIMEOUT_MS - (this.clock.nowMs() - startedAt)));
       this.clock.cancel(timer);
-      const finalOutcome = outcome ?? arbiter.accept({ type: 'TIMEOUT' });
-      if (finalOutcome === undefined) throw new Error('ARBITER_DID_NOT_TERMINALIZE');
+      if (outcome === undefined) throw new Error('SCHEDULED_TIMEOUT_DID_NOT_TERMINALIZE');
+      const finalOutcome = outcome;
       if (!finalOutcome.completed) {
         authority.revoke(); let reason = finalOutcome.stopReason;
         if (this.requiresTermination(reason) &&
@@ -278,6 +278,7 @@ export class StopOnFirstFailureSequencer {
     try { validateContract(context.resolvedContract); } catch { return 'SCHEMA_MISMATCH'; }
     if (context.resolvedContract.commandOrderVersion !== COMMAND_ORDER_VERSION || context.resolvedContract.records.length !== 16 ||
         context.resolvedContract.records.some((record, index) => record.commandId !== TIER_A_COMMAND_IDS[index]) ||
+        context.canonicalContract.records.some((record, index) => canonicalize(record) !== canonicalize(TIER_A_RECORDS[index])) ||
         sha256(canonicalize(context.resolvedContract)) !== context.staticAllowlistDigest) return 'BASELINE_MISMATCH';
     return undefined;
   }
@@ -306,8 +307,7 @@ export class StopOnFirstFailureSequencer {
     identity = context.approvedIdentities[record.commandId] ?? Object.freeze({ realpath: record.expectedRealpath,
       fileType: 'REGULAR_FILE' as const, device: 0, inode: 0, mode: 0, uid: 0, gid: 0, sizeBytes: 0,
       codeSignature: 'FIXTURE_UNAVAILABLE' }), outcome: ArbiterResult = Object.freeze({ completed: false, stopReason: reason,
-      exitCode: reason === 'PROCESS_SPAWN_FAILED' ? 'NONE' : 1, signal: 'NONE', stdout: emptyStream(), stderr: emptyStream(),
-      childExited: reason !== 'COMMAND_TIMEOUT' })): SequencerResult {
+      exitCode: 'NONE', signal: 'NONE', stdout: emptyStream(), stderr: emptyStream(), childExited: false })): SequencerResult {
     const terminal = this.buildEvidence(context, record, index, identity, outcome, reason);
     try { assertClosedEvidence(terminal as unknown as Readonly<Record<string, unknown>>); }
     catch { return this.result('EVIDENCE_VALIDATION_FAILED', context, successes, record.commandId, index, 'NONE', successes.length); }

@@ -26,8 +26,22 @@ is successful evidence followed by that terminal record. Timeout uses a determin
 per-command handles and exact cancellation. No raw output is stored. Operator-visible termination failure is required.
 Contract/canonicalization/evidence schema are v2; v1 digests are incompatible and
 cannot be reused. The canonical digest remains unfrozen, environment viability remains an unevaluated execution gate,
-and executable TOCTOU remains a live-execution feasibility blocker. Host reads, termination, and F0/F1 process
-execution remain unapproved.
+and executable TOCTOU remains a live-execution feasibility blocker. Termination and F0/F1 process execution remain
+unapproved.
+
+XR-I adds a private offline exact-host-read engine backed only by deterministic fixture ports. Its closed, unfrozen
+allowlist contains `XR-EXEC-GIT`, `XR-EXEC-SED`, `XR-EXEC-READLINK`, and `XR-EXEC-STAT`; callers provide neither paths
+nor operations. Each record performs two complete component/symlink observations with inclusive limits of 16 path
+entries and eight symlink hops per pass, and `32/16/2/2/52` total `lstat/readlink/realpath/stat/all` calls. UTF-8 link
+and normalized-evidence caps are checked before accumulation; excess fails closed, including with
+`XR_READ_CALL_CAP_EXCEEDED`. Full canonical-v2 consistency tokens must match across both passes.
+
+`HostReadExecutableObservation` remains separate from `ExecutableIdentity`: it has the required unresolved code-sign
+sentinel and no `codeSignature`. XR evidence is therefore execution-ineligible, code-sign feasibility blocks
+XG/XF/XA/E, and live-execution TOCTOU remains unresolved. The real filesystem adapter is `NOT_IMPLEMENTED`, host-read
+execution is `NOT_PERFORMED`, and this Slice freezes no digest and grants no execution approval. F0-HV remains
+`COMPLETE_AND_ACCEPTED_BY_INDEPENDENT_REVIEW` at reviewed HEAD `b36aad6423f11f38c062e3d3c034c934d1e0de20`;
+no separate commit or plan document is required.
 
 Validation:
 

@@ -345,9 +345,9 @@ export interface FixtureEvaluation {
   readonly repositoryHead: string;
   readonly observedAt: string;
   readonly executionBaseline?: ExecutionBaselineBinding;
-  readonly executionBaselineDigest?: string;
-  readonly sequencerRunId?: string;
-  readonly sequenceIndex?: number;
+  readonly executionBaselineDigest: string;
+  readonly sequencerRunId: string;
+  readonly sequenceIndex: number;
   readonly processSignal?: CommandEvidence['processSignal'];
 }
 
@@ -362,9 +362,9 @@ function evidence(input: FixtureEvaluation, identity: ExecutableIdentity, exitCl
   return Object.freeze({
     contractVersion: COMMAND_EVIDENCE_CONTRACT_VERSION, schemaVersion: EVIDENCE_SCHEMA_VERSION,
     allowlistDigest: input.allowlistDigest,
-    executionBaselineDigest: input.executionBaselineDigest ?? 'fixture-baseline-digest',
-    sequencerRunId: input.sequencerRunId ?? 'fixture-run',
-    commandOrderVersion: 'stage2b-5c-eg-f0-command-order-v1', sequenceIndex: input.sequenceIndex ?? 0,
+    executionBaselineDigest: input.executionBaselineDigest,
+    sequencerRunId: input.sequencerRunId,
+    commandOrderVersion: 'stage2b-5c-eg-f0-command-order-v1', sequenceIndex: input.sequenceIndex,
     commandId: input.record.commandId,
     executableRealpath: identity.realpath, executableIdentity: identity,
     argvDigest: sha256(canonicalize(input.record.argv)), workingDirectory: input.record.workingDirectory,
@@ -387,9 +387,9 @@ export function evaluateFixture(input: FixtureEvaluation): CommandEvidence {
     allowlistDigest: input.allowlistDigest,
     repositoryHead: input.repositoryHead,
     workingDirectory: input.record.workingDirectory,
-    executionBaselineDigest: input.executionBaselineDigest ?? 'fixture-baseline-digest',
-    sequencerRunId: input.sequencerRunId ?? 'fixture-run',
-    sequenceIndex: input.sequenceIndex ?? 16,
+    executionBaselineDigest: input.executionBaselineDigest,
+    sequencerRunId: input.sequencerRunId,
+    sequenceIndex: input.sequenceIndex,
   });
   if (!dependency.dispatchable) {
     const exitClass = dependency.reason === 'ALLOWLIST_UNRESOLVED' ? 'ALLOWLIST_UNRESOLVED' : 'DEPENDENCY_UNSATISFIED';
