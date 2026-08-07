@@ -162,6 +162,10 @@ describe('terminal evidence, dependencies, and mappings', () => {
       staticAllowlistDigest: sha256(canonicalize(resolvedContract)) });
     expect(calls).toBe(0); expect(result.resultClass).toBe('BASELINE_FAILED');
   });
+  it('rejects a forged symbol resolution before dispatch', () => { let calls = 0;
+    const result = run({ dispatch: () => { calls += 1; } }, { symbolResolution: { contract: STATIC.contract } });
+    expect(calls).toBe(0); expect(result.resultClass).toBe('BASELINE_FAILED');
+  });
   it('stops before dispatch on a missing dependency', () => { const contract = { ...STATIC.contract,
     records: STATIC.contract.records.map((record, index) => index === 0 ? { ...record, explicitDependencies: ['MISSING:SUCCESS'] } : record) };
     let calls = 0; const result = run({ dispatch: () => { calls += 1; } }, { resolvedContract: contract,

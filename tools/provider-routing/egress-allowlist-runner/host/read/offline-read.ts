@@ -8,8 +8,9 @@ export const XR_METADATA_READ_IMPLEMENTATION_FEASIBLE = true;
 export const XR_METADATA_EVIDENCE_EXECUTION_ELIGIBLE = false;
 export const CODE_SIGN_READ_FEASIBILITY = 'BLOCKED_FEASIBILITY_GAP';
 export const CODE_SIGN_GATE_EFFECT = 'BLOCKS_XG_XF_XA_E';
-export const XR_REAL_FILESYSTEM_ADAPTER = 'NOT_IMPLEMENTED';
+export const XR_REAL_FILESYSTEM_ADAPTER = 'IMPLEMENTED_GATED_NOT_WIRED';
 export const XR_HOST_READ_EXECUTION = 'NOT_PERFORMED';
+export const OFFLINE_ENGINE_HOST_IMPORTS = Object.freeze([] as const);
 export const XR_LIMITS = Object.freeze({ pathEntriesPerPass: 16, symlinkHopsPerPass: 8, lstat: 32,
   readlink: 16, realpath: 2, stat: 2, total: 52, linkTargetBytes: 4096,
   aggregateLinkTargetBytes: 32768, evidenceBytes: 32768 } as const);
@@ -21,7 +22,9 @@ export type XrFailureReason = 'NONE' | 'XR_READ_ID_UNKNOWN' | 'XR_READ_ID_DUPLIC
   'XR_UNEXPECTED_FILE_TYPE' | 'XR_METADATA_MISMATCH' | 'XR_PERMISSION_DENIED' | 'XR_FILE_MISSING' |
   'XR_UNSUPPORTED_FILESYSTEM_IDENTITY' | 'XR_READ_CALL_CAP_EXCEEDED' | 'XR_READ_BYTE_CAP_EXCEEDED' |
   'XR_EVIDENCE_CAP_EXCEEDED' | 'XR_BASELINE_CHANGED' | 'XR_EVIDENCE_SCHEMA_MISMATCH' | 'XR_READ_TIMEOUT' |
-  'XR_PATH_TOKEN_FORGED' | 'XR_PATH_TOKEN_CONSUMED' | 'XR_PATH_TOKEN_BINDING_MISMATCH' | 'COMMAND_SAFETY_BLOCKED';
+  'XR_EVIDENCE_SIZE_NONCONVERGENT' | 'XR_READ_ALLOWLIST_VERSION_MISMATCH' |
+  'XR_FILESYSTEM_PROVENANCE_SUSPECT' | 'XR_PATH_LENGTH_UNSUPPORTED' | 'XR_PATH_TOKEN_FORGED' |
+  'XR_PATH_TOKEN_CONSUMED' | 'XR_PATH_TOKEN_BINDING_MISMATCH' | 'COMMAND_SAFETY_BLOCKED';
 
 export interface XrReadRecord { readonly readId: XrReadId; readonly purpose: 'EXECUTABLE_IDENTITY_CAPTURE';
   readonly exactPathSource: 'RESOLVED_STATIC_ALLOWLIST_CONTRACT'; readonly operationPolicy: 'TWO_PASS_COMPONENT_OBSERVATION_V1';
@@ -41,6 +44,8 @@ const FAILURES = Object.freeze(['XR_READ_ID_UNKNOWN', 'XR_READ_ID_DUPLICATE', 'X
   'XR_UNEXPECTED_FILE_TYPE', 'XR_METADATA_MISMATCH', 'XR_PERMISSION_DENIED', 'XR_FILE_MISSING',
   'XR_UNSUPPORTED_FILESYSTEM_IDENTITY', 'XR_READ_CALL_CAP_EXCEEDED', 'XR_READ_BYTE_CAP_EXCEEDED',
   'XR_EVIDENCE_CAP_EXCEEDED', 'XR_BASELINE_CHANGED', 'XR_EVIDENCE_SCHEMA_MISMATCH', 'XR_READ_TIMEOUT',
+  'XR_EVIDENCE_SIZE_NONCONVERGENT', 'XR_READ_ALLOWLIST_VERSION_MISMATCH',
+  'XR_FILESYSTEM_PROVENANCE_SUSPECT', 'XR_PATH_LENGTH_UNSUPPORTED',
   'XR_PATH_TOKEN_FORGED', 'XR_PATH_TOKEN_CONSUMED', 'XR_PATH_TOKEN_BINDING_MISMATCH',
   'COMMAND_SAFETY_BLOCKED'] as XrFailureReason[]);
 function record(readId: XrReadId): XrReadRecord { return Object.freeze({ readId, purpose: 'EXECUTABLE_IDENTITY_CAPTURE',
@@ -65,7 +70,7 @@ export interface Metadata { readonly fileType: 'DIRECTORY' | 'REGULAR_FILE' | 'S
   readonly mtime: number; }
 export type XrReadPass = 'PRE_READ_PASS' | 'POST_READ_PASS';
 export type XrReadOperation = 'LSTAT' | 'READLINK' | 'REALPATH' | 'STAT';
-interface ApprovedPathTokenBinding { readonly readId: XrReadId; readonly approvedReadContextIdentity: string;
+export interface ApprovedPathTokenBinding { readonly readId: XrReadId; readonly approvedReadContextIdentity: string;
   readonly pass: XrReadPass; readonly operation: XrReadOperation; readonly exactPath: string; readonly callIndex: number; }
 export interface ApprovedPathToken { readonly kind: 'XR_APPROVED_PATH_TOKEN'; }
 const TOKEN_BRAND = new WeakSet<object>(); const TOKEN_BINDING = new WeakMap<object, ApprovedPathTokenBinding>();
@@ -74,17 +79,21 @@ function token(binding: ApprovedPathTokenBinding): ApprovedPathToken {
   const value = Object.freeze({ kind: 'XR_APPROVED_PATH_TOKEN' as const }); TOKEN_BRAND.add(value);
   TOKEN_BINDING.set(value, Object.freeze({ ...binding })); return value;
 }
-function consumeToken(value: ApprovedPathToken, expected: ApprovedPathTokenBinding): void {
+export function consumeApprovedPathToken(value: ApprovedPathToken, expected: ApprovedPathTokenBinding): ApprovedPathTokenBinding {
   if (!TOKEN_BRAND.has(value as object) || !TOKEN_BINDING.has(value as object)) throw new XrError('XR_PATH_TOKEN_FORGED');
   if (CONSUMED_TOKENS.has(value as object)) throw new XrError('XR_PATH_TOKEN_CONSUMED');
   CONSUMED_TOKENS.add(value as object); const actual = TOKEN_BINDING.get(value as object)!;
-  if (canonicalize(actual) !== canonicalize(expected)) throw new XrError('XR_PATH_TOKEN_BINDING_MISMATCH');
+  if (canonicalize(actual) !== canonicalize(expected)) throw new XrError('XR_PATH_TOKEN_BINDING_MISMATCH'); return actual;
 }
 export function assertApprovedPathToken(value: ApprovedPathToken): void {
   if (!TOKEN_BRAND.has(value as object) || !TOKEN_BINDING.has(value as object)) throw new XrError('XR_PATH_TOKEN_FORGED');
 }
-export interface ExactHostReadPort { lstatExact(path: ApprovedPathToken): Metadata; readlinkExact(path: ApprovedPathToken): string;
-  realpathExact(path: ApprovedPathToken): string; statExact(path: ApprovedPathToken): Metadata; }
+export interface ExactHostReadPort { lstatExact(path: ApprovedPathToken): Metadata | Promise<Metadata>;
+  readlinkExact(path: ApprovedPathToken): string | Promise<string>; realpathExact(path: ApprovedPathToken): string | Promise<string>;
+  statExact(path: ApprovedPathToken): Metadata | Promise<Metadata>; }
+export interface OfflineExactHostReadPort extends ExactHostReadPort { lstatExact(path: ApprovedPathToken): Metadata;
+  readlinkExact(path: ApprovedPathToken): string; realpathExact(path: ApprovedPathToken): string;
+  statExact(path: ApprovedPathToken): Metadata; }
 export interface ComponentObservation { readonly path: string; readonly metadata: Metadata; }
 export interface SymlinkObservation { readonly path: string; readonly target: string; readonly metadata: Metadata; }
 export interface HostReadExecutableObservation { readonly configuredPath: string; readonly canonicalRealpath: string;
@@ -117,7 +126,7 @@ export function assertClosedHostReadEvidence(value: Readonly<Record<string, unkn
   }
 }
 
-class XrError extends Error { constructor(readonly reason: XrFailureReason) { super(reason); } }
+export class XrError extends Error { constructor(readonly reason: XrFailureReason) { super(reason); } }
 class Counts {
   lstat = 0; readlink = 0; realpath = 0; stat = 0; total = 0; linkBytes = 0;
   call(kind: 'lstat' | 'readlink' | 'realpath' | 'stat'): number { const next = this[kind] + 1;
@@ -138,7 +147,8 @@ function join(base: string, target: string): string {
 }
 
 export function validateXrReadAllowlist(records: readonly XrReadRecord[], version = XR_READ_ALLOWLIST_VERSION): void {
-  if (version !== XR_READ_ALLOWLIST_VERSION || records.length !== 4) throw new XrError('XR_READ_ORDER_INVALID');
+  if (version !== XR_READ_ALLOWLIST_VERSION) throw new XrError('XR_READ_ALLOWLIST_VERSION_MISMATCH');
+  if (records.length !== 4) throw new XrError('XR_READ_ORDER_INVALID');
   const ids = records.map((entry) => entry.readId);
   if (new Set(ids).size !== ids.length) throw new XrError('XR_READ_ID_DUPLICATE');
   if (ids.some((id, index) => id !== XR_READ_IDS[index])) throw new XrError('XR_READ_ORDER_INVALID');
@@ -159,7 +169,7 @@ export function executablePaths(contract: AllowlistContract): Readonly<Record<Xr
 }
 
 function observe(readId: XrReadId, context: ApprovedReadContext, pass: XrReadPass, configuredPath: string,
-  port: ExactHostReadPort, counts: Counts): HostReadExecutableObservation {
+  port: OfflineExactHostReadPort, counts: Counts): HostReadExecutableObservation {
   let pending = normalizeAbsolute(configuredPath).split('/').filter(Boolean); let resolved: string[] = [];
   const components: ComponentObservation[] = []; const links: SymlinkObservation[] = []; const seen = new Set<string>();
   let entries = 0; let hops = 0;
@@ -203,7 +213,7 @@ function deepFreeze<T>(value: T): T { if (value !== null && typeof value === 'ob
   for (const child of Object.values(value as object)) deepFreeze(child); Object.freeze(value); } return value; }
 
 export function runApprovedHostReadSequence(context: ApprovedReadContext, contract: AllowlistContract,
-  port: ExactHostReadPort, records: readonly XrReadRecord[] = XR_READ_ALLOWLIST): HostReadSequenceResult {
+  port: OfflineExactHostReadPort, records: readonly XrReadRecord[] = XR_READ_ALLOWLIST): HostReadSequenceResult {
   validateXrReadAllowlist(records); const paths = executablePaths(contract); const evidence: HostReadEvidenceBinding[] = [];
   for (const record of records) { const counts = new Counts(); const path = paths[record.readId];
     try { const pre = observe(record.readId, context, 'PRE_READ_PASS', path, port, counts);
@@ -235,15 +245,18 @@ export function runApprovedHostReadSequence(context: ApprovedReadContext, contra
 }
 
 /** Fixture-only scripted port. It never imports a host API. */
-export class ScriptedExactHostReadPort implements ExactHostReadPort {
+export class ScriptedExactHostReadPort implements OfflineExactHostReadPort {
   readonly calls: string[] = [];
-  constructor(private readonly script: ScriptedReadEntry[]) {}
+  private readonly script: ScriptedReadEntry[];
+  constructor(script: readonly ScriptedReadEntry[]) { this.script = script.map((entry) => deepFreeze({ ...entry,
+    result: typeof entry.result === 'string' ? `${entry.result}` : { ...entry.result } })); }
   private take<T>(operation: XrReadOperation, tokenValue: ApprovedPathToken): T {
     const entry = this.script.shift(); if (entry === undefined) throw new XrError('XR_PATH_TOKEN_BINDING_MISMATCH');
     const expected = { readId: entry.readId, approvedReadContextIdentity: entry.approvedReadContextIdentity,
       pass: entry.pass, operation: entry.operation, exactPath: entry.exactPath, callIndex: entry.callIndex };
-    consumeToken(tokenValue, expected); if (operation !== entry.operation) throw new XrError('XR_PATH_TOKEN_BINDING_MISMATCH');
-    this.calls.push(operation); return entry.result as T;
+    consumeApprovedPathToken(tokenValue, expected); if (operation !== entry.operation) throw new XrError('XR_PATH_TOKEN_BINDING_MISMATCH');
+    this.calls.push(operation); const supplied = entry.result;
+    return deepFreeze((typeof supplied === 'string' ? `${supplied}` : { ...supplied }) as T);
   }
   lstatExact(path: ApprovedPathToken): Metadata { return this.take('LSTAT', path); }
   readlinkExact(path: ApprovedPathToken): string { return this.take('READLINK', path); }
@@ -260,14 +273,14 @@ export function calculateEvidenceSize(value: Readonly<Record<string, unknown>>, 
     const next = byteCounter(canonicalize({ ...value, normalizedEvidenceByteCount: size }));
     if (next === size) return size; size = next;
   }
-  throw new XrError('XR_EVIDENCE_SCHEMA_MISMATCH');
+  throw new XrError('XR_EVIDENCE_SIZE_NONCONVERGENT');
 }
 export function assertEvidenceSizeWithinCap(size: number): void {
   if (size > XR_LIMITS.evidenceBytes) throw new XrError('XR_EVIDENCE_CAP_EXCEEDED');
 }
 export function createApprovedPathTokenTestHarness(binding: ApprovedPathTokenBinding) {
   const issued = token(binding); return Object.freeze({ token: issued,
-    consume: (expected: ApprovedPathTokenBinding = binding) => consumeToken(issued, expected) });
+    consume: (expected: ApprovedPathTokenBinding = binding) => consumeApprovedPathToken(issued, expected) });
 }
 export function createCallAccountingTestHarness() { const counts = new Counts(); return Object.freeze({
   call: (kind: 'lstat' | 'readlink' | 'realpath' | 'stat') => counts.call(kind), snapshot: () => counts.snapshot() }); }

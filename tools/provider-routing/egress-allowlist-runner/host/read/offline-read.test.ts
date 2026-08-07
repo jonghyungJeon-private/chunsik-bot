@@ -99,7 +99,7 @@ describe('XR-I closed allowlist and executable mapping', () => {
     expect(() => validateXrReadAllowlist([XR_READ_ALLOWLIST[1]!, XR_READ_ALLOWLIST[0]!, ...XR_READ_ALLOWLIST.slice(2)]))
       .toThrow('XR_READ_ORDER_INVALID');
     expect(() => validateXrReadAllowlist(XR_READ_ALLOWLIST.slice(1))).toThrow();
-    expect(() => validateXrReadAllowlist(XR_READ_ALLOWLIST, 'wrong')).toThrow();
+    expect(() => validateXrReadAllowlist(XR_READ_ALLOWLIST, 'wrong')).toThrow('XR_READ_ALLOWLIST_VERSION_MISMATCH');
   });
   it('does not expose caller paths or operations in records', () => expect(Object.keys(XR_READ_ALLOWLIST[0]!))
     .not.toEqual(expect.arrayContaining(['path', 'operation', 'options'])));
@@ -225,7 +225,7 @@ describe('XR-I bounded accounting and safety gates', () => {
     const size = calculateEvidenceSize(value); expect(size).toBe(new TextEncoder().encode(canonicalize({
       ...value, normalizedEvidenceByteCount: size })).byteLength); });
   it('fails closed when the size calculation cannot converge within eight iterations', () => { let call = 0;
-    expect(() => calculateEvidenceSize({}, () => ++call)).toThrow('XR_EVIDENCE_SCHEMA_MISMATCH'); expect(call).toBe(8); });
+    expect(() => calculateEvidenceSize({}, () => ++call)).toThrow('XR_EVIDENCE_SIZE_NONCONVERGENT'); expect(call).toBe(8); });
   it('accepts evidence-size equality and rejects one-byte overflow', () => {
     expect(() => assertEvidenceSizeWithinCap(32768)).not.toThrow();
     expect(() => assertEvidenceSizeWithinCap(32769)).toThrow('XR_EVIDENCE_CAP_EXCEEDED');
@@ -235,5 +235,6 @@ describe('XR-I bounded accounting and safety gates', () => {
     linkTargetBytes: 4096, aggregateLinkTargetBytes: 32768, evidenceBytes: 32768 });
     expect(XR_METADATA_EVIDENCE_EXECUTION_ELIGIBLE).toBe(false); expect(CODE_SIGN_GATE_EFFECT).toBe('BLOCKS_XG_XF_XA_E');
     expect(CODE_SIGN_READ_FEASIBILITY).toBe('BLOCKED_FEASIBILITY_GAP');
-    expect(XR_REAL_FILESYSTEM_ADAPTER).toBe('NOT_IMPLEMENTED'); expect(XR_HOST_READ_EXECUTION).toBe('NOT_PERFORMED'); });
+    expect(XR_REAL_FILESYSTEM_ADAPTER).toBe('IMPLEMENTED_GATED_NOT_WIRED');
+    expect(XR_HOST_READ_EXECUTION).toBe('NOT_PERFORMED'); });
 });

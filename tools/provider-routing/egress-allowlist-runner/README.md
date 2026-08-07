@@ -38,8 +38,9 @@ and normalized-evidence caps are checked before accumulation; excess fails close
 
 `HostReadExecutableObservation` remains separate from `ExecutableIdentity`: it has the required unresolved code-sign
 sentinel and no `codeSignature`. XR evidence is therefore execution-ineligible, code-sign feasibility blocks
-XG/XF/XA/E, and live-execution TOCTOU remains unresolved. The real filesystem adapter is `NOT_IMPLEMENTED`, host-read
-execution is `NOT_PERFORMED`, and this Slice freezes no digest and grants no execution approval. F0-HV remains
+XG/XF/XA/E, and live-execution TOCTOU remains unresolved. The original XR-I boundary had no real filesystem adapter;
+XR-AI now adds an unconstructed and unwired gated implementation while host-read execution remains `NOT_PERFORMED`.
+This Slice freezes no digest and grants no execution approval. F0-HV remains
 `COMPLETE_AND_ACCEPTED_BY_INDEPENDENT_REVIEW` at reviewed HEAD `b36aad6423f11f38c062e3d3c034c934d1e0de20`;
 no separate commit or plan document is required.
 
@@ -52,6 +53,15 @@ is bounded to eight iterations, and call-cap failure remains defence-in-depth be
 bounds. `XR_READ_TIMEOUT` is reserved only for a future separately reviewed real adapter; XR-I implements no host-read
 timer. The corrected earlier focused baseline is `137/137`. Real reads remain absent, and the code-sign and live
 TOCTOU gates continue to block XG/XF/XA/E.
+
+XR-AI now contains a gated real-adapter implementation with exactly four reviewed `node:fs/promises` imports, but no
+default port, construction authority, runtime wiring, or actual read. Its tests use only in-memory primitive façades.
+The expected Darwin/arm64/Node 22 profile models sealed System/Data volumes, firmlinks, mounts, APFS locality,
+provider/FUSE backing, and daemon mediation without observing them. Effective logical deadline is the smaller of the
+1000 ms call target and remaining 10000 ms record target. Timeout quarantines outstanding I/O and revokes the adapter;
+it does not claim physical cancellation. `ETIMEDOUT` signals suspect provenance and `ENAMETOOLONG` has a distinct path
+failure. Provenance and cancellation remain feasibility blockers, so XR-AX and XG/XF/XA/E remain ineligible. Any
+temporary or synthetic filesystem read still requires separate approval.
 
 Validation:
 

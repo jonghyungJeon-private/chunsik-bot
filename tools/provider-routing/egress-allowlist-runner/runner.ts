@@ -31,6 +31,9 @@ export class AllowlistError extends Error {
 export interface SymbolResolutionResult {
   readonly contract: AllowlistContract;
 }
+export function isIssuedSymbolResolution(value: SymbolResolutionResult): boolean {
+  return RESOLUTION_BRAND.has(value as object);
+}
 
 export interface DependencyState {
   readonly established: readonly string[];

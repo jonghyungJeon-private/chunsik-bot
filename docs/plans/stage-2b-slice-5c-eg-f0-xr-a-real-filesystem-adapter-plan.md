@@ -264,8 +264,8 @@ local-filesystem provenance have an approved solution.
 
 ```text
 STAGE_2B_SLICE_5C_EG_F0_XR_A_PLAN = READY_FOR_INDEPENDENT_REVIEW
-XR_REAL_ADAPTER_IMPLEMENTATION_APPROVED = NO
-XR_REAL_ADAPTER_VALIDATION_APPROVED = NO
+XR_REAL_ADAPTER_IMPLEMENTATION_APPROVED = XR_AI_OFFLINE_ONLY
+XR_REAL_ADAPTER_VALIDATION_APPROVED = OFFLINE_FAKE_ONLY
 XR_ACTUAL_HOST_READ_APPROVED = NO
 EXECUTABLE_METADATA_READ_APPROVED = NO
 CODE_SIGN_READ_APPROVED = NO
@@ -276,4 +276,35 @@ PROCESS_EXECUTION_APPROVED = NO
 F0_F1_EXECUTION_APPROVED = NO
 PUSH_APPROVED = NO
 NEXT_ACTION = CLAUDE_INDEPENDENT_F0_XR_A_PLAN_REVIEW
+```
+
+## 16. XR-AI Offline Implementation Alignment
+
+XR-AI implements the gated adapter module without constructing or invoking its production filesystem façade. Exactly
+`lstat`, `readlink`, `realpath`, and `stat` are imported from `node:fs/promises`; there is no default port, CLI/runtime
+wiring, production factory authority, or live readiness path. Tests inject only synthetic in-memory primitive results.
+
+Metadata uses bigint host projections with safe-number bounds and fails closed on overflow or unsupported file types.
+`ETIMEDOUT` is normalized to `XR_FILESYSTEM_PROVENANCE_SUSPECT`, while `ENAMETOOLONG` uses the distinct
+`XR_PATH_LENGTH_UNSUPPORTED` reason. Host errors, Node Stats, buffers, native handles, and timer objects do not escape.
+
+The expected profile remains policy—not observation—and explicitly accounts for the sealed System volume, Data
+volume, firmlinks, mount identity, APFS type, local attachment, provider/FUSE backing, and daemon mediation. Provenance
+attestation must itself satisfy `networkPolicy=NONE` and `localDaemonContact=NONE`; no `statfs`, mount-table, IOKit,
+Disk Arbitration, process, or real path access is implemented.
+
+The logical controller uses `min(1000 ms per call, remaining 10000 ms record target)`. Deadline detection is not
+physical cancellation. An outstanding deadline enters `OUTSTANDING_IO_QUARANTINED`, burns authority, revokes future
+calls and POST, ignores late fulfillment/rejection, and cannot emit success evidence. Temporary paths and synthetic
+real filesystem fixtures remain actual reads and require separate approval.
+
+```text
+XR_REAL_ADAPTER_IMPLEMENTED = YES
+XR_REAL_ADAPTER_EXECUTION_APPROVED = NO
+XR_ACTUAL_HOST_READ_APPROVED = NO
+LOCAL_FILESYSTEM_PROVENANCE_PREFLIGHT = BLOCKED_FEASIBILITY_GAP
+EXACT_BOUNDED_FILESYSTEM_CANCELLATION = BLOCKED_FEASIBILITY_GAP
+XR_AX_ELIGIBLE = NO
+XR_METADATA_EVIDENCE_EXECUTION_ELIGIBLE = NO
+CODE_SIGN_GATE = BLOCKS_XG_XF_XA_E
 ```

@@ -5,7 +5,8 @@ import {
   CommandEvidence, EVIDENCE_SCHEMA_VERSION, ExecutableIdentity, ExitClass, StopReason,
 } from '../contracts';
 import {
-  SymbolResolutionResult, assertClosedEvidence, deriveDependencyState, isDispatchable, validateContract,
+  SymbolResolutionResult, assertClosedEvidence, deriveDependencyState, isDispatchable, isIssuedSymbolResolution,
+  validateContract,
 } from '../runner';
 
 export const HOST_EXECUTION_ELIGIBILITY = Object.freeze({ mockedImplementation: true, liveAuthorization: false,
@@ -275,6 +276,7 @@ export class StopOnFirstFailureSequencer {
     return this.result('COMPLETED', context, accepted, 'NONE', 'NONE', 'NONE', accepted.length);
   }
   private validateExecutionContract(context: OfflineExecutionContext): StopReason | undefined {
+    if (!isIssuedSymbolResolution(context.symbolResolution)) return 'BASELINE_MISMATCH';
     try { validateContract(context.resolvedContract); } catch { return 'SCHEMA_MISMATCH'; }
     if (context.resolvedContract.commandOrderVersion !== COMMAND_ORDER_VERSION || context.resolvedContract.records.length !== 16 ||
         context.resolvedContract.records.some((record, index) => record.commandId !== TIER_A_COMMAND_IDS[index]) ||
