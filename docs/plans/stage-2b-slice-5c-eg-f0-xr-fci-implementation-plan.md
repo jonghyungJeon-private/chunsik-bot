@@ -49,8 +49,8 @@ tools/provider-routing/egress-allowlist-runner/
     failure-precedence.ts
     observer-entrypoint.ts
     *.test.ts
-  test-support/
-    fake-observer-lifecycle.ts
+tools/provider-routing/egress-allowlist-runner-test-support/
+  fake-observer-lifecycle.ts
 tools/provider-routing/egress-allowlist-runner-host-adapter/
   node-observer-lifecycle.ts            # future, separately approved live adapter
   node-observer-lifecycle.test.ts
@@ -68,15 +68,15 @@ future node-observer-lifecycle
   -> contracts + protocol only
 
 observer-entrypoint
-  -> contracts + protocol + the four already-approved exact read primitives only
+  -> contracts + protocol + exactly lstatExact, readlinkExact, realpathExact, and statExact
 
-test-support
+egress-allowlist-runner-test-support
   -> contracts only
 ```
 
 `contracts.ts` defines the private port, lifecycle observations, identity values, protocol DTOs, terminal result, and failure codes. `record-observer.ts` owns policy and state transitions. The future host adapter owns concrete process APIs but no XR policy. The entrypoint cannot import the sequencer, token issuer, accounting, provenance, eligibility, evidence, or retry modules. Neither the controller nor adapter may import Core-facing provider/application composition.
 
-The existing runner production-tree guard currently forbids process APIs. It remains intact. Any future concrete adapter is physically outside that tree and receives a separate exact allowlist; moving it does not authorize it. The sibling directory is not created by this plan.
+The existing runner production-tree guard currently forbids process APIs. It remains intact. Fake lifecycle support is physically outside the production runner root, and production runner code must never import that test-support sibling. Any future concrete adapter is also physically outside the runner tree and receives a separate exact allowlist; moving it does not authorize it. Neither sibling directory is created by this plan.
 
 ## 3. Observer identity model
 
@@ -103,6 +103,12 @@ Rules:
 4. The fixed entrypoint is the only program argument. Target `exactPath` values travel only inside framed stdin requests, never in argv, environment, CWD, process title, stderr, or logs.
 5. Identity reads concern only the pre-approved control-plane executable and bundle. They do not consume or depend on XR target observations, PRE/POST evidence, or the child, so the design has no circular dependence on the reads it is meant to isolate.
 6. A future live identity reader itself requires an approved, bounded control-plane filesystem-read mechanism. Offline implementation uses exact fakes.
+
+There remains a time-of-check/time-of-use interval between identity realpath/hash validation and the concrete spawn. Pure Node composition does not close that interval. This control-plane observer residual is recorded without conflating it with downstream executable code-sign or target-observation TOCTOU:
+
+```text
+OBSERVER_IDENTITY_PRESPAWN_TOCTOU = NOT_CLOSED_BY_PURE_NODE_PLAN
+```
 
 ## 4. One child per record and sole authority
 
@@ -136,7 +142,7 @@ version, nonce, sequence, pass, op, exactPath
 
 - `version`: literal `1`.
 - `pass`: `PRE | POST`.
-- `op`: exactly `REALPATH | LSTAT | READLINK | READ_FILE`.
+- `op`: exactly `LSTAT | READLINK | REALPATH | STAT`.
 - `exactPath`: non-empty absolute path already selected by the parent; it is opaque to the child other than exact primitive invocation.
 
 The sole close request contains exactly `version`, `nonce`, `sequence`, and `close: true`. It consumes the next sequence but not an XR read budget unit.
@@ -150,7 +156,7 @@ An operation response contains exactly `version`, `nonce`, `sequence`, `status`,
 
 It does not echo `exactPath`. A close acknowledgment contains exactly `version`, `nonce`, `sequence`, and `status: CLOSED`.
 
-Allowed primitive errors are `ENOENT`, `ENOTDIR`, `ELOOP`, `EACCES`, `EPERM`, `EISDIR`, `EINVAL`, `ENAMETOOLONG`, and `IO_UNCLASSIFIED`. Platform error messages and stacks never cross the protocol.
+Allowed primitive errors are `ENOENT`, `ENOTDIR`, `ELOOP`, `EACCES`, `EPERM`, `EINVAL`, `ENAMETOOLONG`, and `IO_UNCLASSIFIED`. This closed set is justified by `lstat`, `readlink`, `realpath`, and `stat`; content-read-only errors are excluded. Platform error messages and stacks never cross the protocol.
 
 ### Ordering and terminal rules
 
@@ -198,6 +204,14 @@ Allowed primitive errors are `ENOENT`, `ENOTDIR`, `ELOOP`, `EACCES`, `EPERM`, `E
 ## 7. Darwin orphan disposition and reap proof
 
 Darwin reparents a surviving child when its parent exits; it has no Linux `PR_SET_PDEATHSIG` equivalent in the proposed Node-only boundary. Stdin EOF plus a child self-deadline are useful defenses, but both rely on the child runtime/event loop making progress and therefore do not prove bounded termination of a stuck child. Process groups do not provide parent-death termination. An external supervisor would introduce another process and conflict with the one-child-per-record invariant.
+
+Self-watchdog defenses may reduce practical residual exposure, but they are not yet proof of ADR-0065 orphan containment; the uninterruptible-wait case remains unresolved. This remediation records rather than starts that feasibility work.
+
+```text
+ORPHAN_DISPOSITION = BLOCKED_FEASIBILITY_GAP
+ORPHAN_NEXT_DECISION = SELF_WATCHDOG_FEASIBILITY
+SELF_WATCHDOG = NOT_YET_PROOF_OF_ADR_0065_ORPHAN_CONTAINMENT
+```
 
 Likewise, Node's `exit` and `close` observations are distinct lifecycle facts, but the proposed TypeScript surface must not equate either event with an independently proven reap. The lifecycle port therefore exposes separate observations:
 
@@ -316,12 +330,13 @@ The first implementation slice is process-free and filesystem-metadata-free. Tes
 - exact identity success; each identity field mismatch; unreadable identity; no spawn after failure;
 - exact executable binding and rejection of PATH, shell, caller argv, alternate entrypoint, inherited env, or target path in argv/env/CWD/diagnostics;
 - one child per record, no overlap, no pooling, and whole-attempt halt after uncertain terminal;
-- all four operations in PRE/POST, one outstanding request, exact contiguous sequence, and close handshake;
+- exactly `LSTAT`, `READLINK`, `REALPATH`, and `STAT` in PRE/POST, one outstanding request, exact contiguous sequence, and close handshake;
 - split prefixes/payloads, coalesced frames, invalid UTF-8, zero/oversized length, duplicate JSON keys, extra/missing fields, wrong nonce/version/pass/op, duplicate/gap/out-of-order response;
 - output/stderr/request caps at boundary and one byte beyond; EOF mid-prefix/mid-payload; trailing bytes; response-before-request; result-before-exit remains provisional;
 - voluntary normal exit sends no TERM/KILL;
 - operation timeout, TERM success, TERM grace then KILL, TERM failure, KILL failure, exit missing, reap missing, streams missing, cleanup failure, and every combination needed to prove precedence;
 - callback permutations and late callbacks cannot double-settle or alter primary failure;
+- named regression — final timer fires without exit, reap, stream-close, or cleanup proof: it MUST NOT produce `CLEAN_TERMINAL` (`FINAL_TIMER_FIRED != EXIT_PROVEN`, `FINAL_TIMER_FIRED != REAP_PROVEN`, and `FINAL_TIMER_FIRED != CLEAN_TERMINAL`);
 - exact sandbox cleanup only, idempotent cleanup, cleanup timeout, and no sibling deletion;
 - uid/gid policy mismatch and umask-ready failure;
 - stdin EOF/self-deadline defenses are recorded but never accepted as Darwin orphan proof;
@@ -335,7 +350,9 @@ Add exact guards with the offline implementation:
 
 - production isolation controller has no import of `node:child_process`, `node:fs`, `node:worker_threads`, shell libraries, provider adapters, Core, evidence/provenance, retry, or token issuers;
 - concrete process APIs are forbidden everywhere except the future exact host-adapter file;
-- observer entrypoint imports only protocol/contracts and the four exact read primitive modules; AST checks reject write/mutate APIs, dynamic import/require, networking, subprocesses, IPC, timers beyond the fixed self-deadline, and environment/path discovery;
+- observer entrypoint imports only protocol/contracts and the exact `lstatExact`, `readlinkExact`, `realpathExact`, and `statExact` primitive modules; AST checks reject content reads, write/mutate APIs, dynamic import/require, networking, subprocesses, IPC, timers beyond the fixed self-deadline, and environment/path discovery;
+- production XR-FCI modules mechanically reject `@chunsik/command-local` (CAP-007), every generic command runner, the Ollama preflight/process runner, and every provider-specific runner. A policy-neutral extracted utility is separately admissible only when static inspection proves it contains neither capability ownership nor process policy;
+- production runner code mechanically rejects imports from `egress-allowlist-runner-test-support`;
 - protocol DTOs reject index signatures, arbitrary metadata, unbounded strings, and unknown fields;
 - no `PATH`, shell, alternate executable, caller `execArgv`, inherited environment spread, target-path logging, or error-message forwarding;
 - parent-only symbols (`ApprovedPathToken`, `XR_LIMITS`, `XrReadAccounting`, provenance, eligibility, evidence, retry) cannot be imported by child or host adapter;
@@ -354,7 +371,7 @@ Before live adapter implementation, supply Darwin-specific evidence and choose o
 1. approve a minimal native mechanism that preserves exactly one observer child and produces bounded orphan disposition plus explicit reap proof; or
 2. ratify a revised invariant/residual-risk decision.
 
-This is an architecture boundary decision and cannot be inferred by the implementer.
+This is an architecture boundary decision and cannot be inferred by the implementer. Its next decision is `SELF_WATCHDOG_FEASIBILITY`; this plan does not begin that work or claim it resolves the uninterruptible-wait case.
 
 ### Gate C — offline implementation
 
@@ -372,20 +389,30 @@ Only after independent architecture and implementation reviews may the parent se
 
 - The private capability boundary is small enough and preserves parent authority.
 - Observer identity is defined without PATH, caller executables, alternates, or circular target reads.
-- Protocol, channels, lifecycle states, failure precedence, fake suite, guards, and validation gates are closed enough for independent plan review.
+- Protocol, channels, lifecycle states, failure precedence, fake suite, guards, and validation gates are closed enough for targeted plan review.
 - Darwin parent-death orphan disposition and concrete reap proof remain genuine feasibility gaps; stdin EOF, timers, Node events, or PID disappearance are not promoted into proof.
-- Therefore the plan is ready for independent review, while implementation approval remains no.
+- Therefore the remediated plan is ready for targeted review, while implementation approval remains no.
 
 ```text
-STAGE_2B_SLICE_5C_EG_F0_XR_FCI_PLAN = READY_FOR_INDEPENDENT_REVIEW
+STAGE_2B_SLICE_5C_EG_F0_XR_FCI_PLAN = READY_FOR_TARGETED_REVIEW
 XR_PROCESS_ISOLATION_CAPABILITY_BOUNDARY = ACCEPTABLE_DESIGN
 OBSERVER_IDENTITY_MODEL = DEFINED
+OBSERVER_IDENTITY_PRESPAWN_TOCTOU = NOT_CLOSED_BY_PURE_NODE_PLAN
 ORPHAN_DISPOSITION = BLOCKED_FEASIBILITY_GAP
+ORPHAN_NEXT_DECISION = SELF_WATCHDOG_FEASIBILITY
+SELF_WATCHDOG = NOT_YET_PROOF_OF_ADR_0065_ORPHAN_CONTAINMENT
 XR_FCI_IMPLEMENTATION_APPROVED = NO
 PROCESS_EXECUTION_APPROVED = NO
 SIGNAL_EXECUTION_APPROVED = NO
-PROVENANCE_STATUS = BLOCKED
-XR_AX_APPROVED = NO
+XR_ACTUAL_HOST_READ_APPROVED = NO
+NETWORK_APPROVED = NO
+LOCAL_DAEMON_CONTACT_APPROVED = NO
+CODE_SIGN_READ_APPROVED = NO
+LOCAL_FILESYSTEM_PROVENANCE_PREFLIGHT = BLOCKED_FEASIBILITY_GAP
+XR_METADATA_EVIDENCE_EXECUTION_ELIGIBLE = NO
+CODE_SIGN_GATE = BLOCKS_XG_XF_XA_E
+CANONICAL_DIGEST_FREEZE_APPROVED = NO
+XR_AX_ELIGIBLE = NO
 PUSH_APPROVED = NO
-NEXT_STEP = CLAUDE_INDEPENDENT_F0_XR_FCI_PLAN_REVIEW
+NEXT_ACTION = CLAUDE_TARGETED_F0_XR_FCI_PLAN_REVIEW
 ```
