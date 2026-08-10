@@ -67,6 +67,21 @@ describe('XR-AI import and platform gates', () => {
     expect(() => assertRealAdapterSourceBoundary(source)).toThrow('COMMAND_SAFETY_BLOCKED');
   });
   it.each([
+    '../../../egress-allowlist-runner-test-support/source-boundary',
+    '../../../../some-other-tool',
+    './helper.test',
+    './test-support/helper',
+  ])('rejects relative adapter authority escape %s', (moduleName) => {
+    const source = `import { lstat, readlink, realpath, stat } from 'node:fs/promises';
+      import { anything } from '${moduleName}'; void anything;`;
+    expect(() => assertRealAdapterSourceBoundary(source)).toThrow('COMMAND_SAFETY_BLOCKED');
+  });
+  it('allows production-internal relative imports', () => {
+    const source = `import { lstat, readlink, realpath, stat } from 'node:fs/promises';
+      import { XrError } from './offline-read'; void XrError;`;
+    expect(() => assertRealAdapterSourceBoundary(source)).not.toThrow();
+  });
+  it.each([
     ['direct export', 'export { facade };'], ['export alias', 'export { facade as anything };'],
     ['exported value alias', 'export const anything = facade;'],
     ['multiline factory', 'export function createPort() {\n return facade;\n}'],
@@ -82,6 +97,14 @@ describe('XR-AI import and platform gates', () => {
     ['single primitive factory', 'export function readOne() { return lstat(); }'],
     ['split façade', 'const left = { lstat, readlink }; const right = { realpath, stat }; export { left, right };'],
   ])('seeds taint from any primitive authority: %s', (_label, escape) => {
+    const source = `import { lstat, readlink, realpath, stat } from 'node:fs/promises'; ${escape}`;
+    expect(() => assertRealAdapterSourceBoundary(source)).toThrow('COMMAND_SAFETY_BLOCKED');
+  });
+  it.each([
+    ['class field', 'export class Leak { read = lstat; }'],
+    ['class method return', 'export class Leak { read() { return lstat; } }'],
+    ['class method invocation', 'export class Leak { read(path: string) { return lstat(path); } }'],
+  ])('rejects primitive authority in an exported %s', (_label, escape) => {
     const source = `import { lstat, readlink, realpath, stat } from 'node:fs/promises'; ${escape}`;
     expect(() => assertRealAdapterSourceBoundary(source)).toThrow('COMMAND_SAFETY_BLOCKED');
   });

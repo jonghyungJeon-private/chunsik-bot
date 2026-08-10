@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, posix, relative } from 'node:path';
 import * as ts from 'typescript';
 import { XrError } from '../egress-allowlist-runner/host/read/offline-read';
 
@@ -42,9 +42,30 @@ export function assertOfflineSourceBoundary(root: string, tree: SourceTreePort =
 function hasExport(node: ts.Node): boolean {
   return ts.canHaveModifiers(node) && (ts.getModifiers(node)?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) ?? false);
 }
+function isExportedValueDeclaration(node: ts.Statement): boolean {
+  return hasExport(node) && (ts.isClassDeclaration(node) || ts.isFunctionDeclaration(node) ||
+    ts.isVariableStatement(node) || ts.isEnumDeclaration(node) || ts.isModuleDeclaration(node));
+}
 function identifiers(node: ts.Node): readonly string[] {
   const values: string[] = [];
-  const visit = (child: ts.Node): void => { if (ts.isIdentifier(child)) values.push(child.text); ts.forEachChild(child, visit); };
+  const visit = (child: ts.Node): void => {
+    if (ts.isTypeNode(child)) return;
+    if (ts.isIdentifier(child)) values.push(child.text);
+    if (ts.isPropertyAccessExpression(child)) { visit(child.expression); return; }
+    if (ts.isPropertyAssignment(child)) { visit(child.initializer); return; }
+    if (ts.isMethodDeclaration(child)) {
+      child.modifiers?.forEach(visit); child.typeParameters?.forEach(visit); child.parameters.forEach(visit);
+      if (child.type !== undefined) visit(child.type); if (child.body !== undefined) visit(child.body); return;
+    }
+    if (ts.isPropertyDeclaration(child)) {
+      child.modifiers?.forEach(visit); if (child.type !== undefined) visit(child.type);
+      if (child.initializer !== undefined) visit(child.initializer); return;
+    }
+    if (ts.isClassDeclaration(child) || ts.isFunctionDeclaration(child) || ts.isVariableDeclaration(child)) {
+      ts.forEachChild(child, (nested) => { if (nested !== child.name) visit(nested); }); return;
+    }
+    ts.forEachChild(child, visit);
+  };
   visit(node); return values;
 }
 function yieldsTainted(node: ts.Node, tainted: ReadonlySet<string>): boolean {
@@ -58,9 +79,17 @@ export function assertRealAdapterSourceBoundary(source: string): void {
   const imports = file.statements.filter(ts.isImportDeclaration);
   const hostImports = imports.filter((statement) =>
     ts.isStringLiteral(statement.moduleSpecifier) && statement.moduleSpecifier.text === 'node:fs/promises');
+  const adapterDirectory = '/runner/host/read';
+  const relativeImportAllowed = (specifier: string): boolean => {
+    if (!specifier.startsWith('./') && !specifier.startsWith('../')) return false;
+    const resolved = posix.resolve(adapterDirectory, specifier);
+    return resolved.startsWith('/runner/') && !/(?:^|\/)(?:[^/]*\.test(?:\.[^/]*)?|test-support|egress-allowlist-runner-test-support)(?:\/|$)/
+      .test(resolved);
+  };
   if (hostImports.length !== 1 || imports.some((statement) => !ts.isStringLiteral(statement.moduleSpecifier) ||
-      (statement.moduleSpecifier.text !== 'node:fs/promises' && !statement.moduleSpecifier.text.startsWith('./') &&
-       !statement.moduleSpecifier.text.startsWith('../')))) throw new XrError('COMMAND_SAFETY_BLOCKED');
+      (statement.moduleSpecifier.text !== 'node:fs/promises' && !relativeImportAllowed(statement.moduleSpecifier.text)))) {
+    throw new XrError('COMMAND_SAFETY_BLOCKED');
+  }
   const declaration = hostImports[0];
   if (declaration === undefined || declaration.importClause?.name !== undefined ||
       declaration.importClause?.namedBindings === undefined ||
@@ -99,6 +128,9 @@ export function assertRealAdapterSourceBoundary(source: string): void {
   }
   const escaping = new Set([...tainted, ...factories]);
   for (const statement of file.statements) {
+    if (isExportedValueDeclaration(statement) && yieldsTainted(statement, tainted)) {
+      throw new XrError('COMMAND_SAFETY_BLOCKED');
+    }
     if (hasExport(statement) && ts.isFunctionDeclaration(statement) && statement.name !== undefined &&
         factories.has(statement.name.text)) throw new XrError('COMMAND_SAFETY_BLOCKED');
     if (hasExport(statement) && ts.isVariableStatement(statement) && statement.declarationList.declarations.some((item) =>
