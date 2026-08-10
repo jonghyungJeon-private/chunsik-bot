@@ -5026,3 +5026,228 @@ CODE_SIGN_GATE = BLOCKS_XG_XF_XA_E
 CANONICAL_DIGEST_FREEZE_APPROVED = NO
 PUSH_APPROVED = NO
 ```
+
+## ADR-0066 — Darwin XR Self-Watchdog and Orphan Residual Acceptance
+
+- **Status:** ✅ Accepted (Stage 2B Slice 5C-EG-F0-XR-FCI-SW)
+- **Date:** 2026-08-11
+- **Decision authority:** Chief Architect
+- **Extends:** ADR-0065 — XR Bounded Child-Process Containment
+
+### Context
+
+ADR-0065 remains unchanged and authoritative. It accepted bounded child-process containment for one XR record per
+observer while explicitly declining to claim exact physical filesystem cancellation or a universal maximum
+SIGKILL-to-reap interval. The accepted F0-XR-FCI plan subsequently identified Darwin parent-loss/orphan disposition
+as an unresolved feasibility gap.
+
+The F0-XR-FCI-SW feasibility review found that a uniquely owned parent-to-child stdin pipe plus a child-local hard
+lifetime materially narrows ordinary parent-loss exposure when the child runtime can progress. It also found that
+no child-internal watchdog proves bounded termination when the child cannot execute userspace logic or remains in
+an uninterruptible kernel/filesystem wait. This ADR records the Chief Architect's explicit acceptance of that
+narrowed residual. It does not convert practical defense-in-depth into technical proof.
+
+```text
+CA_ORPHAN_RESIDUAL_RISK_DECISION = ACCEPTED
+ORPHAN_DISPOSITION = REDUCED_RESIDUAL_ACCEPTED_BY_CHIEF_ARCHITECT
+SELF_WATCHDOG_COMBINED_MODEL = REQUIRED_DEFENSE_IN_DEPTH
+SELF_WATCHDOG_PROVES_FULL_ADR_CONTAINMENT = NO
+UNINTERRUPTIBLE_WAIT_RESIDUAL = REAL
+```
+
+### Decision
+
+#### Required minimal self-watchdog
+
+Every future XR-FCI observer must use the smallest accepted model:
+
+```text
+unique parent-owned observer stdin writer
++ child read endpoint
++ child-local fixed hard lifetime
+```
+
+Heartbeat, `getppid` polling, `kqueue`, an external supervisor, and process-group parent-death logic are not default
+parts of the architecture. The feasibility review did not show that their added authority and complexity produce
+the missing full proof. Reconsidering any of them requires a new Architecture decision.
+
+#### Process-wide writer correctness invariant
+
+`XR_OBSERVER_STDIN_WRITER_INVARIANT` is load-bearing and process-wide, not merely capability-local:
+
+1. The parent holds the only write descriptor for the observer stdin pipe.
+2. The child holds no writer for its own stdin pipe.
+3. No sibling, helper, or descendant retains a writer.
+4. No descriptor duplication or transfer retains a writer.
+5. Every unrelated spawn while the observer pipe is alive preserves close-on-exec and no-writer-inheritance.
+6. The child creates no descendants.
+
+Failure to prove the complete invariant stops before observer readiness. A duplicate or inherited writer is a
+preflight failure and cannot be repaired by waiting for EOF. Under this invariant, stdin EOF is a reliable
+parent-loss indication, but only after lifecycle context classifies it:
+
+```text
+STDIN_EOF_PARENT_DEATH_DETECTION = RELIABLE_UNDER_FD_INVARIANT
+STDIN_EOF_PROVES_CHILD_TERMINATION = NO
+```
+
+#### Closed EOF classification
+
+Any EOF is not automatically watchdog failure. The observer lifecycle must distinguish exactly these semantic
+conditions or an equivalent closed state model:
+
+```text
+NORMAL_CLOSE_EOF
+PARENT_CONTAINMENT_EOF
+UNEXPECTED_PARENT_LOSS_EOF
+```
+
+- `NORMAL_CLOSE_EOF` follows the completed normal close handshake and remains eligible to reach `CLEAN_TERMINAL`
+  after every ADR-0065 exit, reap, stream, cleanup, and consistency proof succeeds.
+- `PARENT_CONTAINMENT_EOF` occurs after the parent has already entered its failure-containment lifecycle. It does
+  not reclassify the failure as orphan watchdog activation and cannot manufacture terminal success.
+- `UNEXPECTED_PARENT_LOSS_EOF` is EOF outside both completed normal close and parent-initiated containment. Only
+  this condition activates parent-loss watchdog failure semantics.
+
+The classification is monotonic. Callback order cannot turn unexpected parent loss into normal close or erase a
+previous containment decision.
+
+#### Child-local hard lifetime
+
+```text
+CHILD_SELF_DEADLINE = REQUIRED_PARTIAL_DEFENSE
+CHILD_SELF_DEADLINE_PROVES_BOUNDED_EXIT = NO
+```
+
+The deadline is fixed, monotonic, armed before readiness and the first XR request, not caller-configurable, and
+independent of the parent timer. Expiration atomically invalidates every provisional observation, stops new work,
+and initiates child self-termination. It creates no retry or replacement authority and can never manufacture
+`CLEAN_TERMINAL`.
+
+#### Parent-loss safety transition
+
+When `UNEXPECTED_PARENT_LOSS_EOF` is observed while userspace can still progress, the child must perform one
+absorbing fail-closed transition:
+
+```text
+parent-loss indication
+→ atomically invalidate every provisional observation
+→ stop accepting new work
+→ initiate child self-termination
+```
+
+No observation may become valid after the first parent-loss indication. A late result cannot restore eligibility.
+The child never retries and the architecture never starts a replacement child for that attempt.
+
+#### Explicitly accepted residual
+
+The Chief Architect accepts that all of the following remain unproven after the mandatory watchdog defense:
+
+```text
+child cannot execute userspace watchdog logic
+uninterruptible kernel/filesystem wait
+watchdog requests termination but bounded exit is not proven
+bounded parent-death-to-orphan-exit interval
+bounded orphan reap interval once the original parent no longer exists
+physical filesystem cancellation
+```
+
+This is residual-risk acceptance, not proof. Missing terminal knowledge remains missing; the watchdog, a timer, EOF,
+or self-termination intent cannot synthesize exit, reap, stream-close, cleanup, or physical-cancellation evidence.
+
+#### Feasibility conclusions retained
+
+```text
+KQUEUE_PARENT_DEATH_DETECTION = PARTIAL_ONLY
+KQUEUE_NEW_AUTHORITY_REQUIRED = YES
+HEARTBEAT_MODEL = REDUNDANT
+EXTERNAL_SUPERVISION_ADDS_PROOF = PARTIAL_ONLY
+PROCESS_GROUP_PARENT_DEATH_SOLUTION = NO
+```
+
+None is mandatory architecture at this stage.
+
+### Relation to ADR-0065
+
+ADR-0065 is neither rewritten nor replaced. It established:
+
+```text
+EXACT_PHYSICAL_FILESYSTEM_CANCELLATION = NOT_PROVEN
+XR_BOUNDED_PROCESS_CONTAINMENT = ACCEPTED_AND_RATIFIED
+XR_OBSERVER_PROCESS_LIFETIME = ONE_CHILD_PER_XR_RECORD
+```
+
+ADR-0066 adds only the required Darwin parent-loss defense-in-depth and explicit acceptance of the remaining orphan
+residual. It does not retroactively prove any property that ADR-0065 listed as unproven.
+
+### XR-FCI implementation acceptance requirements
+
+Before an XR-FCI implementation can be accepted, fake/static validation must prove:
+
+- unique process-wide writer ownership and duplicate-writer preflight failure;
+- normal close handshake EOF does not trigger watchdog failure;
+- parent-initiated containment EOF does not trigger orphan-watchdog classification;
+- unexpected parent-loss EOF does trigger the fail-closed watchdog state;
+- parent disappearance while idle, with a request outstanding, and after a provisional result;
+- child self-deadline expiration;
+- EOF/deadline races in both orders and parent-loss/result races;
+- late results after watchdog activation never restore eligibility;
+- watchdog activation with terminal completion uncertain never becomes `CLEAN_TERMINAL`;
+- simulated inability to progress preserves unavailable proof and never manufactures terminal success;
+- no retry and no replacement child.
+
+These are future fake/static requirements, not implementation authorization.
+
+### What this ADR does not accept
+
+This ADR does not accept or authorize:
+
+```text
+network filesystem access
+provider-backed filesystem access
+daemon mediation
+unknown filesystem provenance
+actual XR host read
+partial or late evidence
+retry or replacement child
+XR-AX execution
+```
+
+### Consequences and gates
+
+- **+** Ordinary Darwin parent loss gains a required child-owned fail-closed response under the complete FD
+  invariant.
+- **+** A parent that remains alive but stops driving the protocol is bounded by an independent child-local
+  deadline when the child runtime can progress.
+- **+** Normal close, parent containment, and unexpected parent loss remain distinguishable and testable.
+- **−** Process-wide descriptor discipline becomes a load-bearing proof obligation for every concurrent spawn.
+- **−** Uninterruptible/non-runnable child states still have no proven bounded orphan-exit or reap interval.
+- **Risk:** acceptance is conditional on defense-in-depth and fail-closed evidence rules; it is not a claim that
+  orphan disposition is technically resolved.
+
+After ratification, Architecture status is:
+
+```text
+ORPHAN_DISPOSITION = RESIDUAL_ACCEPTED_WITH_REQUIRED_SELF_WATCHDOG
+SELF_WATCHDOG = REQUIRED_FOR_XR_FCI
+UNINTERRUPTIBLE_WAIT_RESIDUAL = ACCEPTED_BY_CHIEF_ARCHITECT
+EXACT_PHYSICAL_FILESYSTEM_CANCELLATION = NOT_PROVEN
+```
+
+Independent downstream gates remain closed:
+
+```text
+XR_FCI_IMPLEMENTATION_APPROVED = NO
+PROCESS_EXECUTION_APPROVED = NO
+SIGNAL_EXECUTION_APPROVED = NO
+XR_ACTUAL_HOST_READ_APPROVED = NO
+NETWORK_APPROVED = NO
+LOCAL_DAEMON_CONTACT_APPROVED = NO
+LOCAL_FILESYSTEM_PROVENANCE_PREFLIGHT = BLOCKED_FEASIBILITY_GAP
+XR_AX_ELIGIBLE = NO
+CODE_SIGN_READ_APPROVED = NO
+XR_METADATA_EVIDENCE_EXECUTION_ELIGIBLE = NO
+CODE_SIGN_GATE = BLOCKS_XG_XF_XA_E
+CANONICAL_DIGEST_FREEZE_APPROVED = NO
+PUSH_APPROVED = NO
+```
