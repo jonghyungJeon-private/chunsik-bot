@@ -134,8 +134,9 @@ CANONICAL_DIGEST_FREEZE_APPROVED = NO
 
 ## 6. Smallest Future Approval Split
 
-Use three slices; provenance and cancellation cannot be safely combined because they require different authorities
-and independent conclusions.
+Use four approval boundaries grouped into three planning tracks. Provenance and cancellation cannot be safely
+combined because they require different authorities and independent conclusions; `XR-AX-P` and `XR-AX` remain two
+distinct approvals even though they share one row below.
 
 | Slice | Scope | Stop condition / explicitly excluded |
 |---|---|---|
@@ -162,5 +163,10 @@ XR_METADATA_EVIDENCE_EXECUTION_ELIGIBLE = NO
 CODE_SIGN_GATE = BLOCKS_XG_XF_XA_E
 CANONICAL_DIGEST_FREEZE_APPROVED = NO
 PUSH_APPROVED = NO
+PROCESS_EXECUTION_APPROVED = NO
+SIGNAL_EXECUTION_APPROVED = NO
+NETWORK_APPROVED = NO
+LOCAL_DAEMON_CONTACT_APPROVED = NO
+CODE_SIGN_READ_APPROVED = NO
 NEXT_ACTION = CLAUDE_INDEPENDENT_F0_XR_F_PLAN_REVIEW
 ```
