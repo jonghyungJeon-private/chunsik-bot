@@ -170,3 +170,26 @@ LOCAL_DAEMON_CONTACT_APPROVED = NO
 CODE_SIGN_READ_APPROVED = NO
 NEXT_ACTION = CLAUDE_INDEPENDENT_F0_XR_F_PLAN_REVIEW
 ```
+
+## 8. Post-XR-FC Architecture Alignment
+
+The Section 7 feasibility conclusions remain the historical pre-decision result. F0-XR-FC subsequently refined the
+cancellation transition to `CONDITIONALLY_RESOLVABLE_BY_CA_RISK_ACCEPTANCE`, and ADR-0065 records the Chief Architect
+acceptance. The canonical architecture now distinguishes unproven physical cancellation from accepted process
+containment:
+
+```text
+EXACT_PHYSICAL_FILESYSTEM_CANCELLATION = NOT_PROVEN
+XR_BOUNDED_PROCESS_CONTAINMENT = ACCEPTED_BY_CHIEF_ARCHITECT
+EXACT_BOUNDED_FILESYSTEM_CANCELLATION = REFRAMED_TO_BOUNDED_PROCESS_CONTAINMENT
+```
+
+This alignment does not resolve the independent provenance blocker or authorize implementation/execution:
+
+```text
+LOCAL_FILESYSTEM_PROVENANCE_PREFLIGHT = BLOCKED_FEASIBILITY_GAP
+XR_AX_ELIGIBLE = NO
+PROCESS_EXECUTION_APPROVED = NO
+SIGNAL_EXECUTION_APPROVED = NO
+XR_ACTUAL_HOST_READ_APPROVED = NO
+```

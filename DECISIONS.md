@@ -4879,3 +4879,150 @@ Slice 5C-I adds no Core change and no concrete egress enforcement, PF/firewall/s
 implementation. The default remains legacy; production routing is not operational, and no live Provider,
 Runtime, Discord, network, or database activation was performed. Concrete enforcement remains Slice 5C-EG and
 live activation/UAT remains Slice 5C-E.
+
+## ADR-0065 — XR Bounded Child-Process Containment
+
+- **Status:** ✅ Accepted (Stage 2B Slice 5C-EG-F0-XR-FC)
+- **Date:** 2026-08-10
+- **Decision authority:** Chief Architect
+
+### Context
+
+The accepted XR exact-host-read design requires bounded termination before a provisional metadata observation can
+become evidence. Node's `lstat`, `readlink`, `realpath`, and `stat` do not prove physical cancellation after their
+libuv filesystem work has started. Direct adapter quarantine bounds the caller's wait but leaves an outstanding
+request in the application process; worker isolation does not establish reclamation of process-shared native
+resources. A killed and reaped child provides a stronger userspace and authority boundary, but still cannot prove
+the exact instant at which kernel, filesystem, provider, automount, network, or daemon work stops.
+
+F0-XR-FC therefore proposed an explicit architecture choice: retain an unprovable exact physical-cancellation
+requirement and block indefinitely, or accept a precisely bounded child-process containment invariant without
+misrepresenting it as kernel cancellation. The Chief Architect accepts the latter residual-risk model.
+
+```text
+ADR_REQUIRED = YES
+CA_BOUNDED_CONTAINMENT_DECISION = ACCEPTED
+EXACT_PHYSICAL_FILESYSTEM_CANCELLATION = NOT_PROVEN
+XR_BOUNDED_PROCESS_CONTAINMENT = ACCEPTED_BY_CHIEF_ARCHITECT
+EXACT_BOUNDED_FILESYSTEM_CANCELLATION = REFRAMED_TO_BOUNDED_PROCESS_CONTAINMENT
+```
+
+This is a risk/invariant decision, not technical proof of physical filesystem cancellation and not execution
+approval.
+
+### Decision
+
+#### Accepted invariant
+
+`XR_BOUNDED_PROCESS_CONTAINMENT_INVARIANT` requires all of the following:
+
+1. One isolated child process owns exactly one XR record: the bounded observation of one approved executable
+   identity. A record is not an arbitrary path set.
+2. The parent exclusively owns `ApprovedPathToken`, `XR_LIMITS`, the single `XrReadAccounting` instance, PRE/POST
+   sequencing, record authority, evidence construction, and execution eligibility.
+3. The child receives only a closed protocol version, record identity/nonce, sequence/pass, closed operation enum,
+   and the exact approved path for the one outstanding request.
+4. The child owns no token minting, path discovery, arbitrary command, arbitrary operation enum, evidence
+   eligibility, retry, fallback, or replacement authority.
+5. Any deadline, protocol, output, or safety failure discards provisional observation and transitions through
+   `SIGTERM → bounded grace → SIGKILL → exit observation → reap proof → stream/channel closure → cleanup proof`.
+   Signal delivery, process exit, reap, channel closure, and cleanup are distinct facts.
+6. Success requires `CLEAN_TERMINAL`: complete validated PRE/POST record, child exit observed, child reaped, every
+   channel closed, cleanup proven, no pending request, and parent consistency validation complete.
+7. Any uncertain termination, reap, descriptor/channel closure, or cleanup yields `UNCERTAIN_TERMINAL`. The whole
+   XR attempt fails closed with no replacement child, retry, successful evidence, or execution eligibility.
+8. No new XR record may begin until the prior child terminal and reap state is proven. One unreaped child halts the
+   whole attempt, bounding cumulative child/libuv exhaustion to one unresolved observer process per attempt.
+
+#### Proven or required after successful terminal verification
+
+```text
+child process exit observed
+child reaped
+child userspace address space gone
+child-owned libuv/threadpool resource domain gone
+parent evidence channel closed
+late child result cannot enter evidence
+parent XR authority consumed/revoked
+no partial record accepted
+```
+
+#### Explicitly not proven
+
+```text
+physical kernel/filesystem operation cancelled exactly at deadline
+maximum universal SIGKILL-to-reap interval
+provider/automount/network/daemon side effect cannot finish later
+kernel/driver did zero work after child stopped producing evidence
+```
+
+The Chief Architect accepts only these unproven kernel-level residuals and only under the complete containment
+invariant above. The acceptance does not authorize network filesystems, provider-backed filesystems, daemon
+mediation, unknown provenance, or any actual XR host read.
+
+#### Capability ownership and dependency direction
+
+```text
+XR_PROCESS_ISOLATION_OWNER = NEW_STRICT_CAPABILITY_REQUIRED
+XR_OBSERVER_PROCESS_LIFETIME = ONE_CHILD_PER_XR_RECORD
+
+XR orchestration
+  → XR process isolation capability
+      → injected low-level lifecycle adapter
+```
+
+Process isolation never owns XR policy. CAP-007 `CommandExecution` and `@chunsik/command-local` retain generic
+workspace-command semantics: their argv/history persistence conflicts with private XR paths, their current
+`spawnSync` lifecycle has no XR request/response protocol or staged reap proof, and widening them would alter CAP-007
+ownership. The Ollama preflight runner remains provider-specific; its terminal timer may settle containment failure
+without proving reap and is not a generic lifecycle capability.
+
+Low-level policy-neutral primitives may later be extracted or reused: a bounded/capped pipe reader, TERM→KILL
+escalation primitive, and runner-owned sandbox cleanup primitive. Such primitives contain no Ollama policy,
+workspace-command policy, XR token/path policy, or Provider policy. Capability ownership remains separate.
+
+One child per primitive is rejected because it multiplies spawn/lifecycle failure surface. One child for the full
+multi-record sequence is rejected because it holds every path and creates an excessive failure blast radius. One
+child per XR record aligns process lifetime with the evidence and failure boundary.
+
+### XR-FCI required follow-ups
+
+Before implementation can be accepted, XR-FCI must define and fake-test parent-exit-before-reap/orphan disposition,
+uid/gid handling, umask, resource limits where available or required, exact inherited-FD policy, cwd/environment,
+bounded protocol encoding, stdout/stderr limits, TERM/KILL/reap deadlines, idempotent exact-root sandbox cleanup,
+and deterministic failure precedence. It must preserve:
+
+```text
+one unreaped child
+→ halt whole XR attempt
+→ never spawn a replacement
+```
+
+XR-FCI implementation, process execution, signals, filesystem reads, and XR-AX each require their own later
+approval. This ADR alone authorizes none of them.
+
+### Consequences and gates
+
+- **+** XR no longer depends on a physical-cancellation claim that the selected APIs cannot prove.
+- **+** Parent policy, token authority, accounting, sequencing, and evidence eligibility remain outside the child.
+- **+** Proven reap contains child userspace, libuv/threadpool, descriptors, and late evidence to one record.
+- **−** Kernel/provider activity after the logical deadline remains an explicitly accepted residual risk.
+- **−** A new private Strict process capability and independent implementation/review slices are required.
+- **Risk:** missing reap or cleanup proof halts the entire attempt; availability is sacrificed for fail-closed safety.
+
+Filesystem provenance remains independently unresolved, so the ADR does not make XR-AX eligible:
+
+```text
+LOCAL_FILESYSTEM_PROVENANCE_PREFLIGHT = BLOCKED_FEASIBILITY_GAP
+XR_AX_ELIGIBLE = NO
+PROCESS_EXECUTION_APPROVED = NO
+SIGNAL_EXECUTION_APPROVED = NO
+NETWORK_APPROVED = NO
+LOCAL_DAEMON_CONTACT_APPROVED = NO
+CODE_SIGN_READ_APPROVED = NO
+XR_ACTUAL_HOST_READ_APPROVED = NO
+XR_METADATA_EVIDENCE_EXECUTION_ELIGIBLE = NO
+CODE_SIGN_GATE = BLOCKS_XG_XF_XA_E
+CANONICAL_DIGEST_FREEZE_APPROVED = NO
+PUSH_APPROVED = NO
+```

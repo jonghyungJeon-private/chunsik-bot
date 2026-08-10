@@ -216,12 +216,26 @@ That acceptance must be an ADR and cannot be inferred from implementation, tests
 
 ```text
 CHILD_PROCESS_ISOLATION_FEASIBILITY = REQUIRES_EXPLICIT_CA_RISK_ACCEPTANCE
-EXACT_BOUNDED_FILESYSTEM_CANCELLATION = CONDITIONALLY_RESOLVABLE
+EXACT_BOUNDED_FILESYSTEM_CANCELLATION = CONDITIONALLY_RESOLVABLE_BY_CA_RISK_ACCEPTANCE
 ```
 
 “Conditionally resolvable” means only that an accepted architecture may substitute the precisely stated containment
 invariant. Until that ADR and a separately approved implementation/fake validation complete, the operational blocker
 remains effective and no actual read is eligible.
+
+### 9.1 Post-review canonical resolution
+
+The historical feasibility conclusion above remains the pre-decision result. ADR-0065 records the subsequent Chief
+Architect acceptance and is now canonical:
+
+```text
+CA_BOUNDED_CONTAINMENT_DECISION = ACCEPTED
+EXACT_PHYSICAL_FILESYSTEM_CANCELLATION = NOT_PROVEN
+XR_BOUNDED_PROCESS_CONTAINMENT = ACCEPTED_BY_CHIEF_ARCHITECT
+EXACT_BOUNDED_FILESYSTEM_CANCELLATION = REFRAMED_TO_BOUNDED_PROCESS_CONTAINMENT
+```
+
+This resolution changes no execution gate. XR-FCI implementation and validation remain future approval boundaries.
 
 ## 10. Provenance and Downstream Gates
 
@@ -254,7 +268,7 @@ No approval inherits to network, daemon, code-sign, digest freeze, XG/XF/XA/E, R
 STAGE_2B_SLICE_5C_EG_F0_XR_FC_PLAN = READY_FOR_INDEPENDENT_REVIEW
 XR_PROCESS_ISOLATION_OWNER = NEW_STRICT_CAPABILITY_REQUIRED
 CHILD_PROCESS_ISOLATION_FEASIBILITY = REQUIRES_EXPLICIT_CA_RISK_ACCEPTANCE
-EXACT_BOUNDED_FILESYSTEM_CANCELLATION = CONDITIONALLY_RESOLVABLE
+EXACT_BOUNDED_FILESYSTEM_CANCELLATION = CONDITIONALLY_RESOLVABLE_BY_CA_RISK_ACCEPTANCE
 LOCAL_FILESYSTEM_PROVENANCE_PREFLIGHT = BLOCKED_FEASIBILITY_GAP
 XR_AX_ELIGIBLE = NO
 PROCESS_EXECUTION_APPROVED = NO
@@ -268,4 +282,10 @@ CODE_SIGN_GATE = BLOCKS_XG_XF_XA_E
 CANONICAL_DIGEST_FREEZE_APPROVED = NO
 PUSH_APPROVED = NO
 NEXT_ACTION = CLAUDE_INDEPENDENT_F0_XR_FC_PLAN_REVIEW
+```
+
+The block above is the historical F0-XR-FC conclusion token. ADR-0065 supplies the canonical post-review status:
+
+```text
+EXACT_BOUNDED_FILESYSTEM_CANCELLATION = REFRAMED_TO_BOUNDED_PROCESS_CONTAINMENT
 ```
