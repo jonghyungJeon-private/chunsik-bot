@@ -7,4 +7,5 @@ export type {
   OfflineExecutionContext, ProcessEvent, ProcessSignal, SequencerClock, SequencerResult, SequencerResultClass,
   TerminationPort,
 } from './offline';
+export * from './isolation';
 export * from './read';
