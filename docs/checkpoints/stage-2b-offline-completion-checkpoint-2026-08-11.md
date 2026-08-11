@@ -1,6 +1,6 @@
 # Stage 2B Offline Completion Checkpoint — 2026-08-11
 
-## Baseline
+## CURRENT MAIN
 
 ```text
 Branch = main
@@ -15,6 +15,7 @@ Tracked / staged diff at sync start = none
 ```text
 STAGE_2B_OFFLINE_COMPLETION = COMPLETE_AND_ACCEPTED
 STAGE_2B_OFFLINE_BLOCKERS = NONE
+XR_AX_STAGE_2B_NECESSITY = OPTIONAL
 XR_AX = BLOCKED_CARRYOVER
 XR_FILESYSTEM_PROVENANCE = STABLE_BLOCKER
 F0_XR_FCI = COMPLETE_AND_ACCEPTED
@@ -27,7 +28,7 @@ LIVE_PROVIDER_ACTIVATION = BLOCKED
 LIVE_RUNTIME_DISCORD_DB_UAT = BLOCKED
 ```
 
-## Completed Offline Surface
+## COMPLETED
 
 The accepted Stage 2B offline surface is Slices 1–4, 5A, 5B, 5C-I, ADR-0065, ADR-0066, F0-XR-FCI,
 F0-XR-FP, and 5C-EG-F′. F0-XR-FP completed the feasibility assessment without proving filesystem provenance.
@@ -46,7 +47,7 @@ OFFLINE COMPLETE != production ready
 Provider activation and Runtime/Discord/DB UAT remain blocked. No live execution approval is inherited from this
 checkpoint.
 
-## XR-FCI Carryover
+## BLOCKED CARRYOVER
 
 ```text
 CLEAN_TERMINAL = containment proof
@@ -64,7 +65,7 @@ outcome === SUCCESS
 
 This is future carryover and not an offline completion blocker.
 
-## Accepted Validation
+## KNOWN VALIDATION
 
 The accepted checkpoint carried the following previously completed validation; this document-only sync did not
 rerun the product suite:
@@ -83,7 +84,30 @@ Real process / signal / kqueue / XR host-read counts = 0
 The canonical status sync itself requires scoped diff review and `git diff --check`. Product tests and builds are
 not required for this document-only change.
 
-## Approval Boundary
+## SAFETY
+
+The closeout and canonical sync are documentation-only. They performed no Runtime, Provider, network, daemon, PF,
+container/VM, Discord, DB, Live UAT, XR-AX, or provenance execution and changed no code or Core package.
+
+## APPROVAL BOUNDARY
 
 This checkpoint authorizes no push, PR, merge, Runtime, Provider, network, daemon, PF, container/VM, Discord, DB,
 Live UAT, XR-AX, provenance execution, or concrete 5C-EG implementation. Any such work requires separate approval.
+
+## NEXT STAGE ENTRY CONDITIONS
+
+```text
+Stage 2B offline work = CLOSED
+```
+
+Do not reopen XR filesystem provenance feasibility, the PF feasibility loop, the container/VM feasibility loop, or
+the 5C-EG mechanism search. The activation track may reopen only when a new platform capability, new enforcement
+authority, approved product architecture change, or new evidence materially changes feasibility.
+
+Actual activation continues to require:
+
+```text
+5C-EG or equivalently strong enforcement
++
+required Strict approval
+```

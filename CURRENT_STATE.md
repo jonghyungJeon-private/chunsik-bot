@@ -9,7 +9,8 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   implementation are closed with no remaining offline blocker.
 - **Offline checkpoint:** `STAGE_2B_OFFLINE_COMPLETION = COMPLETE_AND_ACCEPTED` and
   `STAGE_2B_OFFLINE_BLOCKERS = NONE`.
-- **Blocked carryover:** XR-AX is `BLOCKED_CARRYOVER`; XR filesystem provenance is a `STABLE_BLOCKER`;
+- **Blocked carryover:** XR-AX is optional for Stage 2B offline completion and is `BLOCKED_CARRYOVER`; XR
+  filesystem provenance is a `STABLE_BLOCKER`;
   concrete 5C-EG enforcement is `BLOCKED_CARRYOVER`; 5C-EG-I1/I2/V/E are `NOT_ELIGIBLE`.
 - **Accepted closeout surface:** ADR-0065 and ADR-0066 are ratified; F0-XR-FCI is
   `COMPLETE_AND_ACCEPTED`; F0-XR-FP is `COMPLETE_AND_ACCEPTED_WITH_CARRYOVER`; 5C-EG-F′ is `ACCEPTED`,
@@ -23,6 +24,8 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   external-egress enforcement is an explicit activation dependency, not a hidden environmental assumption.
 - **Live status:** Provider activation and Runtime/Discord/DB UAT remain `BLOCKED`. Offline completion is not
   external-egress proof, filesystem-provenance proof, live-activation readiness, or production readiness.
+  Concrete 5C-EG or equivalently strong enforcement plus the required Strict approval remains mandatory for live
+  activation.
 - **Execution facts:** actual Provider execution = `0`; Runtime/Discord/DB execution = `0`.
 
 ## Stage 2A — Completed

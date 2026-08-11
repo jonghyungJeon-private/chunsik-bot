@@ -5265,6 +5265,7 @@ an enforcement architecture.
 ```text
 STAGE_2B_OFFLINE_COMPLETION = COMPLETE_AND_ACCEPTED
 STAGE_2B_OFFLINE_BLOCKERS = NONE
+XR_AX_STAGE_2B_NECESSITY = OPTIONAL
 XR_AX = BLOCKED_CARRYOVER
 XR_FILESYSTEM_PROVENANCE = STABLE_BLOCKER
 F0_XR_FCI = COMPLETE_AND_ACCEPTED
@@ -5278,6 +5279,7 @@ LIVE_RUNTIME_DISCORD_DB_UAT = BLOCKED
 ```
 
 Offline completion is not live-activation readiness, proof of external-egress denial, proof of filesystem
-provenance, or production readiness. `CLEAN_TERMINAL` remains containment proof rather than operation success.
+provenance, or production readiness. Concrete 5C-EG or equivalently strong enforcement remains required for live
+activation and still requires separate Strict approval. `CLEAN_TERMINAL` remains containment proof rather than operation success.
 `XrIsolationAttemptGate.completeRecord()` remains a containment-release gate; a future XR consumer/orchestration
 success decision must require both `state === CLEAN_TERMINAL` and `outcome === SUCCESS`.
