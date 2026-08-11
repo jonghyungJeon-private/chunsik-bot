@@ -60,6 +60,7 @@ export interface CandidateStaticProviderProfile {
   readonly suitability: ProviderSuitability;
   readonly reasonCodes: readonly SuitabilityReasonCode[];
   readonly evidenceDigest: string;
+  readonly descriptorConfigurationDigest: string;
   readonly candidateProfileDigest: string;
   readonly descriptorCandidate: ProviderDescriptor;
   readonly ratificationStatus: 'RATIFICATION_REQUIRED';
@@ -105,14 +106,20 @@ function canonical(value: unknown): unknown {
   return value;
 }
 
-function sha256(value: unknown): string {
+export function computeSuitabilityCanonicalDigest(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex');
 }
 
 export function computeSuitabilityDescriptorConfigurationDigest(
   template: SuitabilityProjectionInput['descriptorTemplate'],
 ): string {
-  return sha256(template);
+  return computeSuitabilityCanonicalDigest(template);
+}
+
+export function computeCandidateProfileDigest(
+  candidate: Omit<CandidateStaticProviderProfile, 'candidateProfileDigest'>,
+): string {
+  return computeSuitabilityCanonicalDigest(candidate);
 }
 
 function assertSha(value: string, code: string): void {
@@ -251,7 +258,7 @@ function projectValidatedProviderSuitability(
     scorecard: boundedScorecard(scorecard),
     hardFailures: input.hardFailures,
   };
-  const evidenceDigest = sha256(evidencePayload);
+  const evidenceDigest = computeSuitabilityCanonicalDigest(evidencePayload);
   const descriptorCandidate: ProviderDescriptor = {
     providerId: providerId(binding.providerId),
     adapterId: adapterId(binding.adapterId),
@@ -280,7 +287,7 @@ function projectValidatedProviderSuitability(
   return Object.freeze({
     ...candidatePayload,
     reasonCodes: Object.freeze([...classification.reasonCodes]),
-    candidateProfileDigest: sha256(candidatePayload),
+    candidateProfileDigest: computeCandidateProfileDigest(candidatePayload),
   });
 }
 

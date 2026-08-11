@@ -7,6 +7,16 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Stage 2C · Slice 2 Static Suitability Profile Ratification
+
+- Added app-private offline ratification from an exact `ELIGIBLE` Slice 1 candidate plus an independently supplied,
+  exact approval binding to an immutable approved static Provider profile with a deterministic approved digest.
+- Bound approval identity and authority to the candidate, benchmark evidence, descriptor configuration,
+  Provider/model identity, and projection/ratification versions; stale, mismatched, malformed, ineligible,
+  unproven, or unsupported-version inputs reject fail-closed.
+- Kept ratification independent of `ApprovalManager` and free of Registry, policy, production configuration,
+  persistence, Runtime, Provider, process, or network mutation. The approved descriptor remains disabled.
+
 ### Added — Stage 2C · Slice 1 Model Suitability Evidence Projection
 
 - Added an app-private offline projector from bounded Stage 2A benchmark report/decision evidence to an

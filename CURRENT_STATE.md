@@ -5,9 +5,9 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** **Stage 2C Slice 1 — Model Suitability Evidence Projection Implemented**. Accepted benchmark evidence
-  can be deterministically projected into a bounded candidate static Provider profile without changing Core or
-  mutating Runtime routing; every candidate remains behind explicit ratification.
+- **Phase:** **Stage 2C Slice 2 — Static Suitability Profile Ratification Implemented**. An exact eligible candidate
+  and its independently supplied approval binding can be deterministically ratified into an immutable approved
+  static Provider profile without changing Core or mutating Runtime routing.
 - **Offline checkpoint:** `STAGE_2B_OFFLINE_COMPLETION = COMPLETE_AND_ACCEPTED` and
   `STAGE_2B_OFFLINE_BLOCKERS = NONE`.
 - **Blocked carryover:** XR-AX is optional for Stage 2B offline completion and is `BLOCKED_CARRYOVER`; XR
@@ -28,6 +28,20 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   Concrete 5C-EG or equivalently strong enforcement plus the required Strict approval remains mandatory for live
   activation.
 - **Execution facts:** actual Provider execution = `0`; Runtime/Discord/DB execution = `0`.
+
+## Stage 2C — Slice 2 Static Suitability Profile Ratification
+
+- **Boundary:** app-private offline tooling validates one Slice 1 candidate and one explicit approval binding; it
+  does not query `ApprovalManager`, add a Core approval type, or update Registry, policy, production configuration,
+  persistence, Runtime composition, or Provider activation.
+- **Eligibility:** only an internally valid `ELIGIBLE` candidate with `RATIFICATION_REQUIRED`, `runtimeMutation =
+  NONE`, and a disabled descriptor can be ratified. `INELIGIBLE`, `UNPROVEN`, malformed, stale, mismatched, or
+  unsupported-version inputs reject fail-closed.
+- **Binding:** ratification binds approval identity and authority to the exact candidate, benchmark evidence,
+  descriptor configuration, Provider/model identity, and projection/ratification contract versions.
+- **Output:** the approved static profile and nested descriptor are immutable and carry a deterministic approved
+  profile digest. Ratification remains offline evidence processing; the approved descriptor stays disabled and is
+  not a live activation or production-configuration mutation.
 
 ## Stage 2C — Slice 1 Model Suitability Evidence Projection
 
