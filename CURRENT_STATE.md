@@ -42,6 +42,17 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 - **Output:** the approved static profile and nested descriptor are immutable and carry a deterministic approved
   profile digest. Ratification remains offline evidence processing; the approved descriptor stays disabled and is
   not a live activation or production-configuration mutation.
+- **Approval authority constraint:** `SuitabilityRatificationApprovalBinding` is an independently supplied offline
+  binding. `APPROVED` means that candidate identity and the supplied binding passed deterministic checks; operator
+  authority, ApprovalManager decision, uniqueness, expiry, revocation, Runtime activation, and production
+  authorization are not proven.
+- **Runtime gate:** `STAGE_2C_RUNTIME_PROFILE_APPLICATION = NOT_YET_ELIGIBLE` because authenticated approval
+  authority is not closed. Approval identity/authority authentication, its relationship to Core approval contracts,
+  replay/uniqueness, expiry, revocation, and rejected/withdrawn semantics require Architecture Review before a
+  future Runtime profile-application slice.
+- **Evidence authenticity:** candidate self-consistency is verified, but unkeyed candidate/evidence digests do not
+  cryptographically prove benchmark provenance. Authoritative Runtime/audit use requires separate consideration of
+  persisted evidence artifacts or authenticated/signature-backed provenance; this is not a Slice 2 blocker.
 
 ## Stage 2C — Slice 1 Model Suitability Evidence Projection
 
@@ -55,6 +66,9 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 - **Ratification:** output is always `RATIFICATION_REQUIRED` with `runtimeMutation = NONE`. Evidence changes create
   another candidate and never alter routing automatically; its descriptor remains disabled until a separately
   approved composition profile is created.
+- **V1 correction:** commit `ff1a356` is the accepted Slice 1 remediation within projection/profile v1. It narrows
+  eligibility by preserving observed hard-safety disqualifications as `INELIGIBLE` when scorecard evidence is
+  missing; it is neither a new profile schema nor a broader eligibility semantic, so no version bump is required.
 
 ## Stage 2A — Completed
 

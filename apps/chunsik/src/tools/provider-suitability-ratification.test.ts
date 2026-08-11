@@ -195,6 +195,29 @@ describe('suitability profile ratification', () => {
       unknown as SuitabilityRatificationApprovalBinding })).toThrowError('APPROVAL_BINDING_MALFORMED');
   });
 
+  it('rejects a supplied approval whose decision is not APPROVED', () => {
+    const value = candidate();
+    expect(() => ratifySuitabilityProfile({ candidate: value, approval: { ...approval(value),
+      decision: 'REJECTED' } as unknown as SuitabilityRatificationApprovalBinding }))
+      .toThrowError('APPROVAL_DECISION_INVALID');
+  });
+
+  it('rejects a supplied approval missing a required exact key', () => {
+    const value = candidate();
+    const { authorityId: _missing, ...incomplete } = approval(value);
+    expect(() => ratifySuitabilityProfile({ candidate: value,
+      approval: incomplete as unknown as SuitabilityRatificationApprovalBinding }))
+      .toThrowError('APPROVAL_BINDING_MALFORMED');
+  });
+
+  it('rejects an approval for a real candidate when used with a distinct real candidate', () => {
+    const first = candidate();
+    const second = candidate({ report: report(scorecard({ sampleCount: 101 })) });
+    expect(second.candidateProfileDigest).not.toBe(first.candidateProfileDigest);
+    expect(() => ratifySuitabilityProfile({ candidate: second, approval: approval(first) }))
+      .toThrowError('APPROVAL_CANDIDATE_MISMATCH');
+  });
+
   it('is deterministic for identical input and object-key permutation', () => {
     const value = candidate();
     const binding = approval(value);

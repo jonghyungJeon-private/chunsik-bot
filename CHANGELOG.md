@@ -7,6 +7,20 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Changed — Stage 2C · Slice 2 Contract Review Remediation
+
+- Ratified `ff1a356` as a fail-closed correction within the existing projection/profile v1 contract: observed hard
+  safety disqualifications remain `INELIGIBLE` when scorecard evidence is missing. This narrows eligibility without
+  introducing a new profile schema or broader eligibility semantics.
+- Clarified that suitability `APPROVED` validates candidate identity plus an independently supplied offline binding;
+  it does not authenticate operator authority, prove an ApprovalManager decision, or verify uniqueness, expiry,
+  revocation, Runtime activation approval, or production authorization.
+- Marked Runtime profile application `NOT_YET_ELIGIBLE` pending Architecture Review of authenticated approval
+  authority and lifecycle semantics. Candidate digest consistency also remains distinct from cryptographically
+  authenticated benchmark provenance.
+- Added negative coverage for non-approved decisions, missing exact approval keys, and approval reuse across two
+  distinct valid candidates.
+
 ### Added — Stage 2C · Slice 2 Static Suitability Profile Ratification
 
 - Added app-private offline ratification from an exact `ELIGIBLE` Slice 1 candidate plus an independently supplied,

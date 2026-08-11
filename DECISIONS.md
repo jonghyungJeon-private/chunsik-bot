@@ -5283,3 +5283,37 @@ provenance, or production readiness. Concrete 5C-EG or equivalently strong enfor
 activation and still requires separate Strict approval. `CLEAN_TERMINAL` remains containment proof rather than operation success.
 `XrIsolationAttemptGate.completeRecord()` remains a containment-release gate; a future XR consumer/orchestration
 success decision must require both `state === CLEAN_TERMINAL` and `outcome === SUCCESS`.
+
+## Stage 2C Suitability Contract Review Decisions
+
+- **Status:** ✅ Accepted as pass with changes
+- **Date:** 2026-08-11
+- **Authority:** Chief Architect
+
+Commit `ff1a356` is ratified as the Stage 2C Slice 1 remediation and a fail-closed correction within
+`stage2c-suitability-projection-v1` and `stage2c-candidate-provider-profile-v1`. It preserves observed hard-safety
+disqualifications as `INELIGIBLE` when scorecard evidence is missing. This narrows eligibility; it does not add a
+profile schema or broaden eligibility semantics, so no version bump is required.
+
+```text
+FF1A356_CLASSIFICATION_CHANGE = RATIFIED_V1_FAIL_CLOSED_CORRECTION
+SUITABILITY_RATIFICATION_BINDING = INDEPENDENTLY_SUPPLIED_OFFLINE_BINDING
+AUTHENTICATED_APPROVAL_AUTHORITY = NO
+APPROVAL_MANAGER_VERIFIED = NO
+REVOCATION_VERIFIED = NO
+UNIQUENESS_VERIFIED = NO
+EXPIRY_VERIFIED = NO
+STAGE_2C_RUNTIME_PROFILE_APPLICATION = NOT_YET_ELIGIBLE
+REASON = AUTHENTICATED_APPROVAL_AUTHORITY_NOT_CLOSED
+```
+
+Slice 2 `APPROVED` means only that candidate identity and the supplied approval binding passed deterministic offline
+ratification checks. It is not authenticated operator authority, a proven ApprovalManager decision, Runtime
+activation approval, or production authorization. Before Runtime profile application, Architecture Review must
+close approval/authority identity authentication, the relationship to `ApprovalRequest`/`ApprovalRef`, replay and
+uniqueness, expiry, revocation, and rejected/withdrawn semantics.
+
+Candidate self-consistency is verified, but its unkeyed candidate/evidence digests do not cryptographically prove
+benchmark provenance. If future Runtime or audit architecture treats an approved profile as authoritative evidence,
+persisted evidence artifacts or authenticated/signature-backed provenance require separate review. This is a
+carryover, not a Slice 2 correctness blocker.
