@@ -4364,9 +4364,9 @@ Gate 6. Each requires separate explicit approval.
 
 ## ADR-0064 — Provider Routing Policy and Registry Ownership
 
-- **Status:** ✅ Accepted — Stage 2B Architecture and Slices 1–5A implemented under Chief Architect direction.
-  Slice 5A is offline integration only; real app activation and actual external Provider execution require later
-  approval.
+- **Status:** ✅ Accepted — Stage 2B routing architecture and offline implementation are complete under Chief
+  Architect direction. The later offline closeout checkpoint records the full accepted surface and blocked
+  carryover; real app activation and actual external Provider execution still require later approval.
 - **Date:** 2026-08-02
 - **Scope:** Core Application routing contracts, immutable descriptor and executable-binding registries, typed
   policy evaluation, deterministic selection decisions, immutable executable-binding and validation-profile
@@ -5251,3 +5251,33 @@ CODE_SIGN_GATE = BLOCKS_XG_XF_XA_E
 CANONICAL_DIGEST_FREEZE_APPROVED = NO
 PUSH_APPROVED = NO
 ```
+
+## Stage 2B Offline Completion Checkpoint
+
+- **Status:** ✅ Accepted
+- **Date:** 2026-08-11
+- **Authority:** Chief Architect accepted the offline completion readiness and 5C-EG-F′ result.
+
+The completed offline surface is Slices 1–4, 5A, 5B, 5C-I, ratified ADR-0065 and ADR-0066, accepted F0-XR-FCI,
+F0-XR-FP completed with carryover, and accepted 5C-EG-F′. The latter closed the feasibility loop without selecting
+an enforcement architecture.
+
+```text
+STAGE_2B_OFFLINE_COMPLETION = COMPLETE_AND_ACCEPTED
+STAGE_2B_OFFLINE_BLOCKERS = NONE
+XR_AX = BLOCKED_CARRYOVER
+XR_FILESYSTEM_PROVENANCE = STABLE_BLOCKER
+F0_XR_FCI = COMPLETE_AND_ACCEPTED
+F0_XR_FP = COMPLETE_AND_ACCEPTED_WITH_CARRYOVER
+5C_EG_F_PRIME = ACCEPTED
+5C_EG_FEASIBILITY_LOOP = CLOSED
+5C_EG = BLOCKED_CARRYOVER
+5C_EG_I1_I2_V_E = NOT_ELIGIBLE
+LIVE_PROVIDER_ACTIVATION = BLOCKED
+LIVE_RUNTIME_DISCORD_DB_UAT = BLOCKED
+```
+
+Offline completion is not live-activation readiness, proof of external-egress denial, proof of filesystem
+provenance, or production readiness. `CLEAN_TERMINAL` remains containment proof rather than operation success.
+`XrIsolationAttemptGate.completeRecord()` remains a containment-release gate; a future XR consumer/orchestration
+success decision must require both `state === CLEAN_TERMINAL` and `outcome === SUCCESS`.

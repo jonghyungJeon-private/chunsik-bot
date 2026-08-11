@@ -7,6 +7,17 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Changed — Stage 2B Offline Completion Closeout
+
+- Closed Stage 2B offline architecture, contract, and implementation scope as
+  `COMPLETE_AND_ACCEPTED` with `STAGE_2B_OFFLINE_BLOCKERS = NONE`.
+- Recorded ADR-0065/ADR-0066 ratification, accepted offline F0-XR-FCI containment, and F0-XR-FP completion with
+  stable filesystem-provenance carryover.
+- Accepted 5C-EG-F′ with `NO_FEASIBLE_ARCHITECTURE_YET`, closed the 5C-EG feasibility loop, and moved concrete
+  enforcement to blocked carryover; I1/I2/V/E remain ineligible.
+- Kept XR-AX, live Provider activation, and live Runtime/Discord/DB UAT blocked. Offline completion does not claim
+  external-egress denial, filesystem provenance, live activation readiness, or production readiness.
+
 ### Added — Stage 2B · Slice 5C-I Dormant Production Activation Boundary
 
 - Added exact, case-sensitive `QUOKY_PROVIDER_ROUTING_MODE` parsing with a safe `legacy` default and fail-closed

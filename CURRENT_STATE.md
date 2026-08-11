@@ -5,7 +5,15 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** **Stage 2B Slice 5C-I — Dormant Production Activation Boundary Implemented** (ADR-0064).
+- **Phase:** **Stage 2B Offline Completion — Complete and Accepted**. Offline architecture, contracts, and
+  implementation are closed with no remaining offline blocker.
+- **Offline checkpoint:** `STAGE_2B_OFFLINE_COMPLETION = COMPLETE_AND_ACCEPTED` and
+  `STAGE_2B_OFFLINE_BLOCKERS = NONE`.
+- **Blocked carryover:** XR-AX is `BLOCKED_CARRYOVER`; XR filesystem provenance is a `STABLE_BLOCKER`;
+  concrete 5C-EG enforcement is `BLOCKED_CARRYOVER`; 5C-EG-I1/I2/V/E are `NOT_ELIGIBLE`.
+- **Accepted closeout surface:** ADR-0065 and ADR-0066 are ratified; F0-XR-FCI is
+  `COMPLETE_AND_ACCEPTED`; F0-XR-FP is `COMPLETE_AND_ACCEPTED_WITH_CARRYOVER`; 5C-EG-F′ is `ACCEPTED`,
+  its feasibility loop is `CLOSED`, and its result remains `NO_FEASIBLE_ARCHITECTURE_YET`.
 - **5B-2B-E close-out:** `CLOSED_WITH_GENERATION_BLOCKED`. Bounded preflight/inventory is `PASS_ACCEPTED`;
   actual generation is `NOT_EXECUTED`, Provider execution count is `0`, and model pull count is `0`.
 - **Composition:** `QUOKY_PROVIDER_ROUTING_MODE` is parsed exactly and defaults to `legacy`. The composition root
@@ -13,6 +21,8 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   Enabled mode remains startup-blocked before Provider construction because no 5C-EG enforcement exists.
 - **Approval boundary:** no Runtime, Discord, DB, or Provider activation is approved. Independently verifiable
   external-egress enforcement is an explicit activation dependency, not a hidden environmental assumption.
+- **Live status:** Provider activation and Runtime/Discord/DB UAT remain `BLOCKED`. Offline completion is not
+  external-egress proof, filesystem-provenance proof, live-activation readiness, or production readiness.
 - **Execution facts:** actual Provider execution = `0`; Runtime/Discord/DB execution = `0`.
 
 ## Stage 2A — Completed
