@@ -5,8 +5,9 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** **Stage 2B Offline Completion — Complete and Accepted**. Offline architecture, contracts, and
-  implementation are closed with no remaining offline blocker.
+- **Phase:** **Stage 2C Slice 1 — Model Suitability Evidence Projection Implemented**. Accepted benchmark evidence
+  can be deterministically projected into a bounded candidate static Provider profile without changing Core or
+  mutating Runtime routing; every candidate remains behind explicit ratification.
 - **Offline checkpoint:** `STAGE_2B_OFFLINE_COMPLETION = COMPLETE_AND_ACCEPTED` and
   `STAGE_2B_OFFLINE_BLOCKERS = NONE`.
 - **Blocked carryover:** XR-AX is optional for Stage 2B offline completion and is `BLOCKED_CARRYOVER`; XR
@@ -27,6 +28,19 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   Concrete 5C-EG or equivalently strong enforcement plus the required Strict approval remains mandatory for live
   activation.
 - **Execution facts:** actual Provider execution = `0`; Runtime/Discord/DB execution = `0`.
+
+## Stage 2C — Slice 1 Model Suitability Evidence Projection
+
+- **Boundary:** app-private offline tooling consumes bounded Stage 2A campaign/decision evidence and produces an
+  existing-Core-compatible `ProviderDescriptor` candidate. It does not update a Registry, policy, production
+  configuration, Runtime collaborator, persistence, or Provider binding.
+- **Suitability:** exact `ELIGIBLE | INELIGIBLE | UNPROVEN`; hard safety/containment/download failures cannot be
+  offset by scores, while malformed, identity-mismatched, digest-mismatched, and stale bindings reject fail-closed.
+- **Binding:** campaign/configuration/fingerprint, decision policy, Provider/adapter/model, descriptor configuration,
+  prompt/scenario/evaluator versions, projection version, evidence digest, and candidate profile digest.
+- **Ratification:** output is always `RATIFICATION_REQUIRED` with `runtimeMutation = NONE`. Evidence changes create
+  another candidate and never alter routing automatically; its descriptor remains disabled until a separately
+  approved composition profile is created.
 
 ## Stage 2A — Completed
 

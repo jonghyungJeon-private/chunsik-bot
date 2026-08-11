@@ -7,6 +7,15 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Stage 2C · Slice 1 Model Suitability Evidence Projection
+
+- Added an app-private offline projector from bounded Stage 2A benchmark report/decision evidence to an
+  existing-Core-compatible candidate static Provider profile with deterministic evidence/profile digests.
+- Added fail-closed `ELIGIBLE`, `INELIGIBLE`, and `UNPROVEN` semantics, hard disqualification for safety,
+  containment, multi-entry echo, and download evidence, and rejection for malformed or stale identity/binding data.
+- Kept candidate application behind `RATIFICATION_REQUIRED`: projection performs no Registry, policy, Runtime,
+  Provider, process, network, or persistence mutation, and the projected descriptor remains disabled.
+
 ### Changed — Stage 2B Offline Completion Closeout
 
 - Closed Stage 2B offline architecture, contract, and implementation scope as
