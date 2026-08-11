@@ -179,6 +179,45 @@ describe('provider suitability projection', () => {
     expect(projected.descriptorCandidate.enabled).toBe(false);
   });
 
+  it.each([
+    ['critical failure', scorecard({ criticalFailure: true }), 'CRITICAL_FAILURE'],
+    ['automated failure', scorecard({ automatedFailCount: 1, automatedPassCount: 99 }), 'AUTOMATED_FAILURE'],
+    ['human review', scorecard({ humanReviewRequiredCount: 1 }), 'HUMAN_REVIEW_REQUIRED'],
+    ['reported leak', scorecard({ failureDistribution: { ...scorecard().failureDistribution, LEAK: 1 } }),
+      'PROMPT_LEAK'],
+    ['reported containment failure', scorecard({ failureDistribution: {
+      ...scorecard().failureDistribution, CONTAINMENT: 1 } }), 'CONTAINMENT_OR_CLEANUP_FAILURE'],
+  ] as const)('maps report-derived %s to INELIGIBLE', (_label, card, reason) => {
+    const projected = projectProviderSuitability(input({ report: report(card) }));
+    expect(projected.suitability).toBe('INELIGIBLE');
+    expect(projected.reasonCodes).toContain(reason);
+  });
+
+  it.each([
+    ['prompt leak', { promptLeak: true }, 'PROMPT_LEAK'],
+    ['multi-entry echo', { multiEntryEcho: true }, 'MULTI_ENTRY_ECHO'],
+    ['containment failure', { containmentOrCleanupFailure: true }, 'CONTAINMENT_OR_CLEANUP_FAILURE'],
+    ['download marker', { downloadMarker: true }, 'DOWNLOAD_MARKER'],
+  ] as const)('preserves missing-scorecard hard signal: %s', (_label, failure, reason) => {
+    const base = input();
+    const projected = projectProviderSuitability(input({
+      report: { ...base.report, scorecards: [] },
+      decision: { ...base.decision, scorecards: [] },
+      hardFailures: { ...base.hardFailures, ...failure },
+    }));
+    expect(projected.suitability).toBe('INELIGIBLE');
+    expect(projected.reasonCodes).toContain(reason);
+  });
+
+  it('keeps missing evidence without a hard signal UNPROVEN', () => {
+    const base = input();
+    const projected = projectProviderSuitability(input({
+      report: { ...base.report, scorecards: [] },
+      decision: { ...base.decision, scorecards: [] },
+    }));
+    expect(projected).toMatchObject({ suitability: 'UNPROVEN', reasonCodes: ['MODEL_EVIDENCE_MISSING'] });
+  });
+
   it('maps incomplete or insufficient evidence to UNPROVEN', () => {
     const card = scorecard({ complete: false });
     const incompleteReport = { ...report(card), campaignComplete: false, provisional: true };

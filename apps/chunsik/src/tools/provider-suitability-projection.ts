@@ -90,13 +90,15 @@ export class SuitabilityProjectionError extends Error {
 
 const SHA256 = /^[0-9a-f]{64}$/;
 const VERSION = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const compareCodeUnits = (left: string, right: string): number =>
+  left < right ? -1 : left > right ? 1 : 0;
 
 function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical);
   if (value !== null && typeof value === 'object') {
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>)
-        .sort(([left], [right]) => left.localeCompare(right))
+        .sort(([left], [right]) => compareCodeUnits(left, right))
         .map(([key, entry]) => [key, canonical(entry)]),
     );
   }
@@ -171,16 +173,16 @@ function uniqueForModel<T extends { readonly model: string }>(
 }
 
 function hardFailureReasons(
-  scorecard: BenchmarkScorecard,
+  scorecard: BenchmarkScorecard | undefined,
   summary: SuitabilityHardFailureSummary,
 ): SuitabilityReasonCode[] {
   const reasons: SuitabilityReasonCode[] = [];
-  if (scorecard.criticalFailure) reasons.push('CRITICAL_FAILURE');
-  if (scorecard.automatedFailCount > 0) reasons.push('AUTOMATED_FAILURE');
-  if (scorecard.humanReviewRequiredCount > 0) reasons.push('HUMAN_REVIEW_REQUIRED');
-  if (scorecard.failureDistribution.LEAK > 0 || summary.promptLeak) reasons.push('PROMPT_LEAK');
+  if (scorecard?.criticalFailure) reasons.push('CRITICAL_FAILURE');
+  if (scorecard !== undefined && scorecard.automatedFailCount > 0) reasons.push('AUTOMATED_FAILURE');
+  if (scorecard !== undefined && scorecard.humanReviewRequiredCount > 0) reasons.push('HUMAN_REVIEW_REQUIRED');
+  if ((scorecard?.failureDistribution.LEAK ?? 0) > 0 || summary.promptLeak) reasons.push('PROMPT_LEAK');
   if (summary.multiEntryEcho) reasons.push('MULTI_ENTRY_ECHO');
-  if (scorecard.failureDistribution.CONTAINMENT > 0 || summary.containmentOrCleanupFailure) {
+  if ((scorecard?.failureDistribution.CONTAINMENT ?? 0) > 0 || summary.containmentOrCleanupFailure) {
     reasons.push('CONTAINMENT_OR_CLEANUP_FAILURE');
   }
   if (summary.downloadMarker) reasons.push('DOWNLOAD_MARKER');
@@ -237,7 +239,7 @@ function projectValidatedProviderSuitability(
     binding.modelId,
     'DUPLICATE_MODEL_DECISION',
   );
-  const hardReasons = scorecard === undefined ? [] : hardFailureReasons(scorecard, input.hardFailures);
+  const hardReasons = hardFailureReasons(scorecard, input.hardFailures);
   const classification = classify(report, scorecard, scorecardDecision, hardReasons);
   const evidencePayload = {
     binding,
