@@ -5,9 +5,9 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** **Stage 2C Slice 3A — Profile Configuration Application Architecture Ratified**. ADR-0067 selects an
-  M1 build/configuration-time application model with an app-private admission gate, exact before-to-after subject
-  binding, unchanged plan-scoped Approval semantics, and no Runtime Registry mutation.
+- **Phase:** **Stage 2C Slice 3B — Profile Configuration Application Gate Implemented**. The app-private offline
+  gate validates a ratified profile and exact current/target production routing declarations, derives the bounded
+  before-to-after subject and digest, and performs no plan creation, approval, mutation, or Provider execution.
 - **Offline checkpoint:** `STAGE_2B_OFFLINE_COMPLETION = COMPLETE_AND_ACCEPTED` and
   `STAGE_2B_OFFLINE_BLOCKERS = NONE`.
 - **Blocked carryover:** XR-AX is optional for Stage 2B offline completion and is `BLOCKED_CARRYOVER`; XR
@@ -29,6 +29,21 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   activation.
 - **Execution facts:** actual Provider execution = `0`; Runtime/Discord/DB execution = `0`.
 
+## Stage 2C — Slice 3B Profile Configuration Application Gate
+
+- **Boundary:** pure app-private admission and deterministic projection only. It creates an application candidate,
+  not an `ExecutionPlan`, `ApprovalRef`, Patch, mutation authorization, or Runtime object.
+- **Configuration identity:** the gate recomputes the exact existing production Registry/policy/configuration
+  identity from declarations. The expected result replaces only the ratified provider/model profile while retaining
+  unrelated descriptors, policy, ordering semantics, enabled state, validation, and deadline configuration.
+- **Safety:** the ratified profile is independently revalidated; the exact Stage 2B provider/model egress scope
+  cannot expand; expiry is bounded to 24 hours and uses explicit canonical UTC inputs; malformed, expired,
+  unsupported, mismatched, or stale third-state input fails closed.
+- **Idempotency:** exact before-state yields `APPLY_REQUIRED`; exact derived after-state yields `VERIFIED_NOOP`;
+  every other valid configuration identity is stale and rejected.
+- **Provenance/mutation:** candidates bind `SELF_CONSISTENT_UNSIGNED` and `executionMutation = NONE`. No filesystem,
+  Registry, policy, Runtime, Provider, process, network, persistence, or Approval mutation is performed.
+
 ## Stage 2C — Slice 3A Profile Configuration Application Architecture
 
 - **Decision:** ADR-0067 selects M1 build/configuration-time application. M2 live Runtime Registry mutation is
@@ -44,8 +59,9 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   all mismatched, malformed, expired, unsupported, or unreadable state fails closed.
 - **Provenance:** assurance is `SELF_CONSISTENT_UNSIGNED`; digest consistency is checked, but benchmark provenance
   authenticity is not cryptographically proven.
-- **Implementation:** not started. Profile application, Workspace/Patch apply, Core/Approval changes, Runtime or
-  ProviderRegistry mutation, and live activation remain outside this architecture-only slice.
+- **Implementation:** the Slice 3B application gate now implements admission and deterministic subject derivation.
+  Plan/Patch creation, Workspace apply, Core/Approval changes, Runtime or ProviderRegistry mutation, and live
+  activation remain outside the implemented boundary.
 
 ## Stage 2C — Slice 2 Static Suitability Profile Ratification
 

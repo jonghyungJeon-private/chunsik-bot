@@ -61,6 +61,12 @@ const APPROVAL_KEYS = Object.freeze([
   'descriptorConfigurationDigest', 'evidenceBindingDigest', 'modelId', 'projectionVersion',
   'providerId', 'ratificationContractVersion',
 ]);
+const RATIFIED_PROFILE_KEYS = Object.freeze([
+  'adapterId', 'approvalId', 'approvedDescriptor', 'approvedProfileDigest', 'authorityId',
+  'candidateProfileDigest', 'descriptorConfigurationDigest', 'evidenceBindingDigest', 'modelId',
+  'profileVersion', 'projectionVersion', 'providerId', 'ratificationContractVersion',
+  'ratificationStatus', 'runtimeMutation',
+]);
 
 function exactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
   const actual = Object.keys(value).sort();
@@ -167,6 +173,58 @@ function freezeApprovedDescriptor(descriptor: ProviderDescriptor): ProviderDescr
     }),
     operationalProfile: Object.freeze({ ...descriptor.operationalProfile }),
   });
+}
+
+export function validateRatifiedSuitabilityProfile(
+  profile: RatifiedSuitabilityProfile,
+): void {
+  try {
+    if (!isObject(profile) || !exactKeys(profile, RATIFIED_PROFILE_KEYS)) {
+      throw new SuitabilityRatificationError('RATIFIED_PROFILE_MALFORMED');
+    }
+    if (
+      profile.ratificationStatus !== 'APPROVED' ||
+      profile.ratificationContractVersion !== SUITABILITY_RATIFICATION_CONTRACT_VERSION ||
+      profile.projectionVersion !== SUITABILITY_PROJECTION_VERSION ||
+      profile.profileVersion !== SUITABILITY_PROFILE_VERSION ||
+      profile.runtimeMutation !== 'NONE'
+    ) {
+      throw new SuitabilityRatificationError('RATIFIED_PROFILE_VERSION_UNSUPPORTED');
+    }
+    if (
+      !SHA256.test(profile.approvedProfileDigest) ||
+      !SHA256.test(profile.candidateProfileDigest) ||
+      !SHA256.test(profile.evidenceBindingDigest) ||
+      !SHA256.test(profile.descriptorConfigurationDigest)
+    ) {
+      throw new SuitabilityRatificationError('RATIFIED_PROFILE_DIGEST_INVALID');
+    }
+    if (
+      profile.approvedDescriptor.enabled !== false ||
+      profile.approvedDescriptor.providerId !== profile.providerId ||
+      profile.approvedDescriptor.adapterId !== profile.adapterId ||
+      profile.approvedDescriptor.modelId !== profile.modelId ||
+      profile.providerId !== `${profile.adapterId}:${profile.modelId}` ||
+      profile.approvedDescriptor.evidenceBindingDigest !== profile.evidenceBindingDigest
+    ) {
+      throw new SuitabilityRatificationError('RATIFIED_PROFILE_IDENTITY_MISMATCH');
+    }
+    if (
+      computeSuitabilityDescriptorConfigurationDigest({
+        capabilities: profile.approvedDescriptor.capabilities,
+        operationalProfile: profile.approvedDescriptor.operationalProfile,
+      }) !== profile.descriptorConfigurationDigest
+    ) {
+      throw new SuitabilityRatificationError('RATIFIED_PROFILE_DESCRIPTOR_MISMATCH');
+    }
+    const { approvedProfileDigest: _digest, ...payload } = profile;
+    if (computeSuitabilityCanonicalDigest(payload) !== profile.approvedProfileDigest) {
+      throw new SuitabilityRatificationError('RATIFIED_PROFILE_DIGEST_MISMATCH');
+    }
+  } catch (error) {
+    if (error instanceof SuitabilityRatificationError) throw error;
+    throw new SuitabilityRatificationError('RATIFIED_PROFILE_MALFORMED');
+  }
 }
 
 export function ratifySuitabilityProfile(

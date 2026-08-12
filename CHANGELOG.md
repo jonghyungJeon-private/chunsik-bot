@@ -7,6 +7,17 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Stage 2C · Slice 3B Profile Configuration Application Gate
+
+- Added an app-private, offline deterministic gate that revalidates ratified suitability profiles, recomputes exact
+  current/target production routing identities, and derives a canonical SHA-256 before-to-after application subject.
+- Restricted application to the exact ratified provider/model profile without changing unrelated descriptors,
+  policy, enabled state, validation, or deadline configuration; exact Stage 2B egress scope cannot expand.
+- Added bounded 24-hour explicit expiry, `APPLY_REQUIRED` versus `VERIFIED_NOOP` idempotency, stale third-state
+  rejection, bounded fail-closed errors, and `SELF_CONSISTENT_UNSIGNED`/`executionMutation = NONE` projection.
+- Kept candidate generation separate from ExecutionPlan/Patch creation, Approval, filesystem/configuration apply,
+  Registry/Runtime mutation, Provider construction/execution, persistence, process, and network behavior.
+
 ### Changed — Stage 2C · Slice 2 Contract Review Remediation
 
 - Ratified `ff1a356` as a fail-closed correction within the existing projection/profile v1 contract: observed hard
