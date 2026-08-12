@@ -5303,17 +5303,119 @@ APPROVAL_MANAGER_VERIFIED = NO
 REVOCATION_VERIFIED = NO
 UNIQUENESS_VERIFIED = NO
 EXPIRY_VERIFIED = NO
-STAGE_2C_RUNTIME_PROFILE_APPLICATION = NOT_YET_ELIGIBLE
-REASON = AUTHENTICATED_APPROVAL_AUTHORITY_NOT_CLOSED
+STAGE_2C_PROFILE_APPLICATION_ARCHITECTURE = CLOSED_BY_ADR_0067
+STAGE_2C_PROFILE_APPLICATION_IMPLEMENTATION = NOT_YET_ELIGIBLE
+REASON = IMPLEMENTATION_NOT_APPROVED
 ```
 
 Slice 2 `APPROVED` means only that candidate identity and the supplied approval binding passed deterministic offline
 ratification checks. It is not authenticated operator authority, a proven ApprovalManager decision, Runtime
-activation approval, or production authorization. Before Runtime profile application, Architecture Review must
-close approval/authority identity authentication, the relationship to `ApprovalRequest`/`ApprovalRef`, replay and
-uniqueness, expiry, revocation, and rejected/withdrawn semantics.
+activation approval, or production authorization. ADR-0067 subsequently closes the v1 application architecture by
+keeping authority on a real configuration-change `ExecutionPlan`/Patch under existing plan-scoped Approval,
+requiring exact subject binding and bounded expiry, and deferring separate authorization persistence/revocation.
+It does not approve application implementation or mutation.
 
 Candidate self-consistency is verified, but its unkeyed candidate/evidence digests do not cryptographically prove
 benchmark provenance. If future Runtime or audit architecture treats an approved profile as authoritative evidence,
 persisted evidence artifacts or authenticated/signature-backed provenance require separate review. This is a
 carryover, not a Slice 2 correctness blocker.
+
+## ADR-0067 — Stage 2C Profile Configuration Application Model
+
+- **Status:** ✅ Accepted (v1)
+- **Date:** 2026-08-12
+- **Authority:** Chief Architect
+- **Extends:** ADR-0064 — Provider Routing Policy and Registry Ownership
+
+### Context
+
+Stage 2C Slice 2 can deterministically ratify an eligible suitability candidate into an immutable approved static
+profile, but ratification is not authorization to change configuration. V1 needs an exact, fail-closed bridge from
+that offline result to a future configuration change without weakening existing `ExecutionPlan`-scoped Approval,
+expanding Stage 2B egress scope, or introducing live ProviderRegistry mutation.
+
+### Decision
+
+V1 selects **M1 build/configuration-time application**. M2 live Runtime Registry mutation is deferred. V1 adds no
+Core authorization aggregate, approval database, ApprovalRef meaning, or ApprovalManager behavior.
+
+A future app-private `ProfileConfigurationApplicationGate` owns admission before creation of a real
+configuration-change `ExecutionPlan` or Patch. It validates the ratified profile, exact current configuration
+identity, expected-result derivation, application-contract version, bounded expiry, projection fields, and egress
+compatibility. It does not decide or persist Approval, mutate a Workspace or Registry, execute a Provider, or own
+retry, backoff, and partial-failure behavior.
+
+The canonical subject is:
+
+```text
+ProfileConfigurationApplicationSubject {
+  approvedProfileDigest
+  targetConfigurationIdentity
+  expectedResultConfigurationDigest
+  runtimeApplicationContractVersion
+}
+
+applicationSubjectDigest = SHA256(canonical subject)
+```
+
+Any audit projection of Provider, model, descriptor-configuration digest, or ratification-contract version must be
+re-derived from the ratified profile and match exactly. The target identity is the exact before-state; the expected
+result digest is the exact after-state.
+
+### Approval Boundary
+
+Authority remains attached only to the real configuration-change `ExecutionPlan`/Patch through the existing
+plan-scoped `ApprovalRequest`/`ApprovalRef` boundary:
+
+```text
+profile ratification != configuration change approval
+valid application subject != execution approval
+approved execution plan != mutation already performed
+```
+
+A profile digest must never be converted into a synthetic execution-plan reference. The existing mutation owner
+must freshly verify plan approval, the application subject, and current configuration immediately before execution.
+Rejected, withdrawn, or non-approved plans remain non-executable under existing Approval semantics.
+
+### Egress, Replay, and Expiry
+
+Profile application must not expand the protected Stage 2B egress scope. A Provider/model outside that scope is
+ineligible. Any necessary egress change is a separate architecture slice, not profile application.
+
+An exact repeat is idempotent only when approved profile, target identity, expected-result digest, and application
+contract all match. If the expected result is already present, the application path may return verified no-op
+success. No authorization or plan may be reused for a different subject.
+
+Expiry is mandatory and fail-closed. The app-private gate contract owns an immutable maximum-lifetime policy; the
+caller and ratified profile cannot loosen it, and a deployment may choose only an equal or shorter lifetime.
+Missing clock capability, malformed timestamps, non-positive or above-policy lifetimes, and expired subjects reject.
+V1 adds no authorization persistence, revocation lifecycle, or replay-record store.
+
+### Provenance and Failure Policy
+
+V1 provenance assurance is `SELF_CONSISTENT_UNSIGNED`: candidate/profile digest consistency is verified, while
+cryptographic authenticity of benchmark provenance is not proven. PKI/signing is deferred.
+
+The gate fails closed for malformed or stale profiles; digest recomputation failure; approved-profile, target,
+expected-result, contract-version, or projection mismatch; invalid expiry; egress incompatibility; and current
+configuration read or derivation failure.
+
+### Consequences
+
+- **+** Profile application is exactly bound to one before-to-after configuration transition.
+- **+** Existing Approval meaning and mutation ownership remain intact.
+- **+** Egress scope cannot silently grow through model/profile selection.
+- **−** Application requires a real configuration-change plan/Patch and fresh pre-execution validation.
+- **−** V1 proves self-consistency, not authenticated benchmark provenance.
+
+### V1 / V2
+
+- **V1 `[RESERVE]`:** app-private application gate and canonical subject; implementation requires a later approved
+  slice.
+- **V1 `[NOW]`:** immutable ProviderRegistry, build/configuration-time composition, existing plan-scoped Approval,
+  and Stage 2B protected egress boundary remain authoritative.
+- **V2 `[LATER]`:** live Registry/profile mutation, dedicated authorization persistence and revocation, replay
+  records, and authenticated/signature-backed provenance.
+
+This ADR does not authorize profile application implementation, Workspace/Patch apply, Core or ApprovalManager
+changes, DB migration, Runtime/ProviderRegistry mutation, Provider execution, or live activation.

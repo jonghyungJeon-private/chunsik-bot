@@ -196,6 +196,15 @@ fixed; the implementations are not.
     preflight or harness invocation, the existing PRE/POST preflight, exactly one existing generation-harness call,
     one bounded projection, and uniform writer-failure exit handling. It remains unwired from bootstrap, Runtime,
     Discord, DB, package scripts, and public Core APIs.
+13. Stage 2C profile application uses an M1 build/configuration-time model. An app-private
+    `ProfileConfigurationApplicationGate` validates a ratified profile against the exact current configuration and
+    derives an immutable before-to-after application subject before any real configuration-change `ExecutionPlan`
+    or Patch is created. The subject binds the approved profile digest, target configuration identity,
+    expected-result configuration digest, and application-contract version by canonical SHA-256. It must not
+    expand the Stage 2B protected egress scope. Existing plan-scoped Approval semantics remain unchanged: profile
+    ratification and subject validity grant no execution or mutation authority. Live ProviderRegistry mutation, a
+    profile-authorization aggregate, approval persistence/revocation, and authenticated benchmark provenance are
+    deferred (ADR-0067).
 
 ---
 

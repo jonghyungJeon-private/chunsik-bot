@@ -5,9 +5,9 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** **Stage 2C Slice 2 — Static Suitability Profile Ratification Implemented**. An exact eligible candidate
-  and its independently supplied approval binding can be deterministically ratified into an immutable approved
-  static Provider profile without changing Core or mutating Runtime routing.
+- **Phase:** **Stage 2C Slice 3A — Profile Configuration Application Architecture Ratified**. ADR-0067 selects an
+  M1 build/configuration-time application model with an app-private admission gate, exact before-to-after subject
+  binding, unchanged plan-scoped Approval semantics, and no Runtime Registry mutation.
 - **Offline checkpoint:** `STAGE_2B_OFFLINE_COMPLETION = COMPLETE_AND_ACCEPTED` and
   `STAGE_2B_OFFLINE_BLOCKERS = NONE`.
 - **Blocked carryover:** XR-AX is optional for Stage 2B offline completion and is `BLOCKED_CARRYOVER`; XR
@@ -29,6 +29,24 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   activation.
 - **Execution facts:** actual Provider execution = `0`; Runtime/Discord/DB execution = `0`.
 
+## Stage 2C — Slice 3A Profile Configuration Application Architecture
+
+- **Decision:** ADR-0067 selects M1 build/configuration-time application. M2 live Runtime Registry mutation is
+  deferred; no new Core authorization aggregate, approval database, ApprovalRef, or ApprovalManager behavior is
+  introduced.
+- **Application gate:** a future app-private `ProfileConfigurationApplicationGate` validates the ratified profile,
+  exact current configuration identity, expected-result digest, application-contract version, bounded expiry, and
+  Stage 2B egress compatibility before producing a deterministic application subject or real change plan/Patch.
+- **Authority:** profile ratification and application-subject validity do not approve a configuration change. A
+  real configuration-change `ExecutionPlan`/Patch must use the existing plan-scoped Approval boundary before its
+  existing mutation owner may act.
+- **Safety:** application cannot expand protected egress scope. Exact idempotent repetition may verify as a no-op;
+  all mismatched, malformed, expired, unsupported, or unreadable state fails closed.
+- **Provenance:** assurance is `SELF_CONSISTENT_UNSIGNED`; digest consistency is checked, but benchmark provenance
+  authenticity is not cryptographically proven.
+- **Implementation:** not started. Profile application, Workspace/Patch apply, Core/Approval changes, Runtime or
+  ProviderRegistry mutation, and live activation remain outside this architecture-only slice.
+
 ## Stage 2C — Slice 2 Static Suitability Profile Ratification
 
 - **Boundary:** app-private offline tooling validates one Slice 1 candidate and one explicit approval binding; it
@@ -46,10 +64,9 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   binding. `APPROVED` means that candidate identity and the supplied binding passed deterministic checks; operator
   authority, ApprovalManager decision, uniqueness, expiry, revocation, Runtime activation, and production
   authorization are not proven.
-- **Runtime gate:** `STAGE_2C_RUNTIME_PROFILE_APPLICATION = NOT_YET_ELIGIBLE` because authenticated approval
-  authority is not closed. Approval identity/authority authentication, its relationship to Core approval contracts,
-  replay/uniqueness, expiry, revocation, and rejected/withdrawn semantics require Architecture Review before a
-  future Runtime profile-application slice.
+- **Application architecture:** ADR-0067 closes the v1 architecture question without treating the profile as
+  execution authority: M1 application must create a real configuration-change plan/Patch that uses the existing
+  plan-scoped Approval boundary. Implementation remains unapproved and not started.
 - **Evidence authenticity:** candidate self-consistency is verified, but unkeyed candidate/evidence digests do not
   cryptographically prove benchmark provenance. Authoritative Runtime/audit use requires separate consideration of
   persisted evidence artifacts or authenticated/signature-backed provenance; this is not a Slice 2 blocker.
