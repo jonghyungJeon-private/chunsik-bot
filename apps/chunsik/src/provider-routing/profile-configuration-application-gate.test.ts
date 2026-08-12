@@ -273,6 +273,18 @@ describe('Stage 2C Slice 3B profile configuration application gate', () => {
       ...value,
       expiresAt: new Date(Date.parse(ISSUED_AT) + PROFILE_APPLICATION_MAX_LIFETIME_MS + 1).toISOString(),
     }), 'APPLICATION_EXPIRY_INVALID');
+    expectCode(() => deriveProfileConfigurationApplicationCandidate({
+      ...value,
+      issuedAt: '2026-08-12T02:00:00.000Z',
+      expiresAt: '2026-08-12T03:00:00.000Z',
+      now: '2026-08-12T01:59:59.999Z',
+    }), 'APPLICATION_EXPIRY_INVALID');
+    expectCode(() => deriveProfileConfigurationApplicationCandidate({
+      ...value,
+      issuedAt: '9999-12-30T00:00:00.000Z',
+      expiresAt: '9999-12-31T00:00:00.000Z',
+      now: '2026-08-12T00:00:00.000Z',
+    }), 'APPLICATION_EXPIRY_INVALID');
     expectCode(() => deriveProfileConfigurationApplicationCandidate({ ...value, now: 'not-a-time' }),
       'APPLICATION_EXPIRY_INVALID');
   });

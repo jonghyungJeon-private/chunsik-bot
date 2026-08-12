@@ -180,7 +180,11 @@ function validateTime(input: ProfileConfigurationApplicationGateInput): void {
   const issuedAt = parseExact(input.issuedAt);
   const expiresAt = parseExact(input.expiresAt);
   const now = parseExact(input.now);
-  if (expiresAt <= issuedAt || expiresAt - issuedAt > PROFILE_APPLICATION_MAX_LIFETIME_MS) {
+  if (
+    issuedAt > now ||
+    expiresAt <= issuedAt ||
+    expiresAt - issuedAt > PROFILE_APPLICATION_MAX_LIFETIME_MS
+  ) {
     throw new ProfileConfigurationApplicationError('APPLICATION_EXPIRY_INVALID');
   }
   if (now > expiresAt) throw new ProfileConfigurationApplicationError('APPLICATION_EXPIRED');
