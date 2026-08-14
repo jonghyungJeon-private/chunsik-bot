@@ -92,6 +92,7 @@ export class DeterministicPlanner implements ExecutionPlanner {
       overallRisk,
       expectedArtifacts: expectedArtifactsFor(requiredCapabilities),
       status: ExecutionStatus.PENDING,
+      ...(request.integrity ? { integrity: request.integrity } : {}),
       ...(request.projectId ? { projectId: request.projectId } : {}),
       createdAt: now(),
     };

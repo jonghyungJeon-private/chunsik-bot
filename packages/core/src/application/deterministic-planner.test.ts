@@ -95,4 +95,14 @@ describe('DeterministicPlanner (CAP-003, ADR-0024)', () => {
     expect(plan.status).toBe(ExecutionStatus.PENDING);
     expect(plan.id.length).toBeGreaterThan(0);
   });
+
+  it('propagates optional typed integrity from PlanningRequest to ExecutionPlan', async () => {
+    const integrity = {
+      kind: 'profile-configuration-application',
+      contractVersion: 'v1',
+      digest: 'sha256:exact-plan',
+    };
+    expect((await planner.plan({ goal: 'apply profile', integrity })).integrity).toEqual(integrity);
+    expect((await planner.plan({ goal: 'legacy plan' })).integrity).toBeUndefined();
+  });
 });

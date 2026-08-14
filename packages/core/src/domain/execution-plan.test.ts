@@ -23,6 +23,19 @@ describe('execution-plan domain (CAP-003, ADR-0024)', () => {
     expect(executionPlanRef(plan)).toEqual({ id: 'p1', goal: 'ship it' });
   });
 
+  it('executionPlanRef propagates the opaque typed integrity identity', () => {
+    const integrity = {
+      kind: 'profile-configuration-application',
+      contractVersion: 'v1',
+      digest: 'sha256:exact-plan',
+    };
+    expect(executionPlanRef({ ...plan, integrity })).toEqual({
+      id: 'p1',
+      goal: 'ship it',
+      integrity,
+    });
+  });
+
   it('ExecutionStatus reserves the full lifecycle', () => {
     expect(Object.values(ExecutionStatus)).toEqual([
       'PENDING',

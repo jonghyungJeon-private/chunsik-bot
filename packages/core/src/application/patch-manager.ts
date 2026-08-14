@@ -4,12 +4,24 @@ import { ApprovalStatus, PatchStatus } from '../domain';
 import type {
   DiffChangeKind,
   Id,
+  ExecutionPlanRef,
   PatchGenerationInput,
   PatchOperation,
   PatchOperationKind,
   PatchSet,
 } from '../domain';
 import type { StorageProvider } from '../ports';
+
+/** ADR-0068 plan identity: legacy refs match only when both omit integrity. */
+function sameExecutionPlanRef(left: ExecutionPlanRef, right: ExecutionPlanRef): boolean {
+  if (left.id !== right.id) return false;
+  if (!left.integrity || !right.integrity) return left.integrity === right.integrity;
+  return (
+    left.integrity.kind === right.integrity.kind &&
+    left.integrity.contractVersion === right.integrity.contractVersion &&
+    left.integrity.digest === right.integrity.digest
+  );
+}
 
 /** Map a CAP-001 diff change-kind to a Patch operation kind ('modify' → 'update'). */
 function toOperationKind(changeKind: DiffChangeKind): PatchOperationKind {
@@ -37,7 +49,7 @@ export class PatchManager {
     // Referential integrity (CAP-005 review): the approval must be scoped to the
     // SAME ExecutionPlan we are patching — an APPROVED approval from a different
     // plan must not authorize this patch.
-    if (input.approvalRef.executionPlanRef.id !== input.executionPlanRef.id) {
+    if (!sameExecutionPlanRef(input.approvalRef.executionPlanRef, input.executionPlanRef)) {
       throw new Error(
         `approval ${input.approvalRef.id} is scoped to a different ExecutionPlan ` +
           `(${input.approvalRef.executionPlanRef.id}, expected ${input.executionPlanRef.id})`,

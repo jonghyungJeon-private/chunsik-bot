@@ -31,6 +31,17 @@ export interface ExecutionStep {
 }
 
 /**
+ * Opaque, typed integrity identity for the exact contents represented by an
+ * ExecutionPlan (ADR-0068). Core transports this value without interpreting
+ * provider- or capability-specific semantics.
+ */
+export interface ExecutionPlanIntegrityRef {
+  kind: string;
+  contractVersion: string;
+  digest: string;
+}
+
+/**
  * The deterministic execution plan. The contract every future execution flow
  * consumes. No behavior lives here — it is pure data.
  */
@@ -47,6 +58,7 @@ export interface ExecutionPlan {
   overallRisk: RiskLevel;
   expectedArtifacts: ArtifactKind[];
   status: ExecutionStatus;
+  integrity?: ExecutionPlanIntegrityRef;
   projectId?: Id;
   createdAt: IsoTimestamp;
 }
@@ -59,11 +71,16 @@ export interface ExecutionPlan {
 export interface ExecutionPlanRef {
   id: Id;
   goal: string;
+  integrity?: ExecutionPlanIntegrityRef;
 }
 
 /** Pure derivation of an ExecutionPlanRef from a plan. */
 export function executionPlanRef(plan: ExecutionPlan): ExecutionPlanRef {
-  return { id: plan.id, goal: plan.goal };
+  return {
+    id: plan.id,
+    goal: plan.goal,
+    ...(plan.integrity ? { integrity: plan.integrity } : {}),
+  };
 }
 
 /**
@@ -73,6 +90,7 @@ export function executionPlanRef(plan: ExecutionPlan): ExecutionPlanRef {
  */
 export interface PlanningRequest {
   goal: string;
+  integrity?: ExecutionPlanIntegrityRef;
   projectId?: Id;
   requiredCapabilities?: Capability[];
   requiredResources?: string[];

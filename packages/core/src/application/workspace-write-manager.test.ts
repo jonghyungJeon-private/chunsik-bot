@@ -13,6 +13,7 @@ import type {
 import type { StorageProvider, WorkspaceWriter } from '../ports';
 
 const planRef = { id: 'plan-1', goal: 'do x' };
+const integrity = { kind: 'profile-application', contractVersion: 'v1', digest: 'sha256:plan-1' };
 const approved: ApprovalRef = { id: 'appr-1', status: ApprovalStatus.APPROVED, executionPlanRef: planRef };
 const workspaceRef: WorkspaceRef = { id: 'w1', rootPath: '/tmp/ws', kind: 'local-clone' };
 
@@ -94,6 +95,67 @@ describe('WorkspaceWriteManager (CAP-006, ADR-0027)', () => {
     await expect(
       new WorkspaceWriteManager(storage, writer).apply(
         input({ approvalRef: { id: 'a', status: ApprovalStatus.APPROVED, executionPlanRef: { id: 'OTHER', goal: 'z' } } }),
+      ),
+    ).rejects.toThrow(/different ExecutionPlan/);
+  });
+
+  it('accepts matching full integrity and preserves legacy-compatible omission', async () => {
+    const integrityPlanRef = { ...planRef, integrity };
+    const integrityPatch = { ...patchSet(), executionPlanRef: integrityPlanRef };
+    const { storage, writer } = harness();
+    await expect(
+      new WorkspaceWriteManager(storage, writer).apply(
+        input({
+          patchSet: integrityPatch,
+          approvalRef: {
+            id: 'appr-integrity',
+            status: ApprovalStatus.APPROVED,
+            executionPlanRef: integrityPlanRef,
+          },
+        }),
+      ),
+    ).resolves.toBeDefined();
+    const legacy = harness();
+    await expect(
+      new WorkspaceWriteManager(legacy.storage, legacy.writer).apply(input()),
+    ).resolves.toBeDefined();
+  });
+
+  it.each([
+    ['kind', { ...integrity, kind: 'other-kind' }],
+    ['contract version', { ...integrity, contractVersion: 'v2' }],
+    ['digest', { ...integrity, digest: 'sha256:other' }],
+  ])('rejects an integrity %s mismatch for the same plan id', async (_field, approvalIntegrity) => {
+    const { storage, writer } = harness();
+    await expect(
+      new WorkspaceWriteManager(storage, writer).apply(
+        input({
+          patchSet: { ...patchSet(), executionPlanRef: { ...planRef, integrity } },
+          approvalRef: {
+            id: 'appr-mismatch',
+            status: ApprovalStatus.APPROVED,
+            executionPlanRef: { ...planRef, integrity: approvalIntegrity },
+          },
+        }),
+      ),
+    ).rejects.toThrow(/different ExecutionPlan/);
+  });
+
+  it.each([
+    ['approval only', planRef, { ...planRef, integrity }],
+    ['patch only', { ...planRef, integrity }, planRef],
+  ])('rejects integrity presence mismatch: %s', async (_case, patchPlanRef, approvalPlanRef) => {
+    const { storage, writer } = harness();
+    await expect(
+      new WorkspaceWriteManager(storage, writer).apply(
+        input({
+          patchSet: { ...patchSet(), executionPlanRef: patchPlanRef },
+          approvalRef: {
+            id: 'appr-presence',
+            status: ApprovalStatus.APPROVED,
+            executionPlanRef: approvalPlanRef,
+          },
+        }),
       ),
     ).rejects.toThrow(/different ExecutionPlan/);
   });

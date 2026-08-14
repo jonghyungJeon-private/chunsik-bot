@@ -35,6 +35,7 @@ function fakeStorage(): StorageProvider {
 }
 
 const planRef: ExecutionPlanRef = { id: 'plan-1', goal: 'do x' };
+const integrity = { kind: 'profile-application', contractVersion: 'v1', digest: 'sha256:plan-1' };
 // ApprovalRef is plan-scoped: it carries the ExecutionPlanRef it approved.
 const approved: ApprovalRef = { id: 'appr-1', status: ApprovalStatus.APPROVED, executionPlanRef: planRef };
 
@@ -93,6 +94,59 @@ describe('PatchManager (CAP-005, ADR-0026) — generation only', () => {
     };
     await expect(
       new PatchManager(fakeStorage()).generate(input({ approvalRef: otherPlanApproval })),
+    ).rejects.toThrow(/different ExecutionPlan/);
+  });
+
+  it('accepts matching full integrity and preserves legacy-compatible omission', async () => {
+    const integrityPlanRef = { ...planRef, integrity };
+    const set = await new PatchManager(fakeStorage()).generate(
+      input({
+        executionPlanRef: integrityPlanRef,
+        approvalRef: {
+          id: 'appr-integrity',
+          status: ApprovalStatus.APPROVED,
+          executionPlanRef: integrityPlanRef,
+        },
+      }),
+    );
+    expect(set.executionPlanRef.integrity).toEqual(integrity);
+    await expect(new PatchManager(fakeStorage()).generate(input())).resolves.toBeDefined();
+  });
+
+  it.each([
+    ['kind', { ...integrity, kind: 'other-kind' }],
+    ['contract version', { ...integrity, contractVersion: 'v2' }],
+    ['digest', { ...integrity, digest: 'sha256:other' }],
+  ])('rejects an integrity %s mismatch for the same plan id', async (_field, approvalIntegrity) => {
+    await expect(
+      new PatchManager(fakeStorage()).generate(
+        input({
+          executionPlanRef: { ...planRef, integrity },
+          approvalRef: {
+            id: 'appr-mismatch',
+            status: ApprovalStatus.APPROVED,
+            executionPlanRef: { ...planRef, integrity: approvalIntegrity },
+          },
+        }),
+      ),
+    ).rejects.toThrow(/different ExecutionPlan/);
+  });
+
+  it.each([
+    ['approval only', planRef, { ...planRef, integrity }],
+    ['plan only', { ...planRef, integrity }, planRef],
+  ])('rejects integrity presence mismatch: %s', async (_case, executionPlanRef, approvalPlanRef) => {
+    await expect(
+      new PatchManager(fakeStorage()).generate(
+        input({
+          executionPlanRef,
+          approvalRef: {
+            id: 'appr-presence',
+            status: ApprovalStatus.APPROVED,
+            executionPlanRef: approvalPlanRef,
+          },
+        }),
+      ),
     ).rejects.toThrow(/different ExecutionPlan/);
   });
 

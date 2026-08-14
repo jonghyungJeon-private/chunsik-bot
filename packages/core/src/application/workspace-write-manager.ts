@@ -4,11 +4,23 @@ import { contentHash } from '../util/hash';
 import { ApprovalStatus, WorkspaceChangeStatus, patchRef } from '../domain';
 import type {
   ApplyInput,
+  ExecutionPlanRef,
   FileChangeResult,
   Id,
   WorkspaceChange,
 } from '../domain';
 import type { StorageProvider, WorkspaceWriter } from '../ports';
+
+/** ADR-0068 plan identity: legacy refs match only when both omit integrity. */
+function sameExecutionPlanRef(left: ExecutionPlanRef, right: ExecutionPlanRef): boolean {
+  if (left.id !== right.id) return false;
+  if (!left.integrity || !right.integrity) return left.integrity === right.integrity;
+  return (
+    left.integrity.kind === right.integrity.kind &&
+    left.integrity.contractVersion === right.integrity.contractVersion &&
+    left.integrity.digest === right.integrity.digest
+  );
+}
 
 /** Derive the aggregate status from best-effort per-file results. */
 function deriveStatus(results: FileChangeResult[]): WorkspaceChangeStatus {
@@ -45,7 +57,7 @@ export class WorkspaceWriteManager {
     if (approvalRef.status !== ApprovalStatus.APPROVED) {
       throw new Error(`workspace write requires an APPROVED approval (got ${approvalRef.status})`);
     }
-    if (approvalRef.executionPlanRef.id !== patchSet.executionPlanRef.id) {
+    if (!sameExecutionPlanRef(approvalRef.executionPlanRef, patchSet.executionPlanRef)) {
       throw new Error(
         `approval ${approvalRef.id} is scoped to a different ExecutionPlan ` +
           `(${approvalRef.executionPlanRef.id}, expected ${patchSet.executionPlanRef.id})`,
