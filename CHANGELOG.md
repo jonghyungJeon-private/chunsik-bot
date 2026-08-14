@@ -7,6 +7,20 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Stage 2C · Slice 3C ExecutionPlan Integrity Binding Architecture
+
+- Ratified ADR-0068 and `EXECUTION_PLAN_REF_TYPED_INTEGRITY_EXTENSION`: a generic optional
+  `ExecutionPlanIntegrityRef` propagates exact plan integrity through Planning, ExecutionPlan, ApprovalRef, Patch,
+  and Workspace boundaries without changing plan-scoped Approval semantics or adding persistence.
+- Rejected content-addressing `ExecutionPlan.id`; identical plans from distinct approval attempts must retain
+  distinct correlation identities. Full typed integrity equality is required whenever integrity is present, while
+  refs that both omit it preserve legacy behavior.
+- Bound Stage 2C application plans to SHA-256 of the exact application subject and proposed change, required the
+  proposed change before plan creation, and classified `target === expected` as `VERIFIED_NOOP` with no plan,
+  approval, patch, or workspace write.
+- Recorded architecture status only: Slice 3C implementation remains `NOT_STARTED`; no Core, Patch, Workspace,
+  Runtime, Provider, persistence, or application behavior changed.
+
 ### Added — Stage 2C · Slice 3B Profile Configuration Application Gate
 
 - Added an app-private, offline deterministic gate that revalidates ratified suitability profiles, recomputes exact

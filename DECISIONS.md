@@ -5419,3 +5419,119 @@ configuration read or derivation failure.
 
 This ADR does not authorize profile application implementation, Workspace/Patch apply, Core or ApprovalManager
 changes, DB migration, Runtime/ProviderRegistry mutation, Provider execution, or live activation.
+
+## ADR-0068 — Stage 2C ExecutionPlan Typed Integrity Binding
+
+- **Status:** ✅ Accepted (v1 architecture; Stage 2C Slice 3C implementation not started)
+- **Date:** 2026-08-14
+- **Authority:** Chief Architect ratified
+- **Extends:** ADR-0024 (Planning), ADR-0025 (Approval), ADR-0026 (Patch), ADR-0027 (Workspace Write), and ADR-0067
+  (Stage 2C Profile Configuration Application Model)
+
+### Context
+
+ADR-0067 requires a real configuration-change `ExecutionPlan`/Patch under the existing plan-scoped Approval
+boundary. `applicationSubjectDigest` alone does not bind the exact source/config edit. Existing `ExecutionPlan`
+retention is in-memory, while `ApprovalRequest`/`ApprovalRef` may survive process or session loss carrying only an
+`ExecutionPlanRef`; exact application-subject and proposed-change integrity would therefore be lost after approval.
+
+Making `ExecutionPlan.id` content-addressed is rejected. The id is a per-plan-instance approval-correlation identity;
+identical plans created for distinct approval attempts must not share it or weaken `ApprovalManager` semantics.
+
+### Decision
+
+```text
+STAGE_2C_PLAN_BINDING_ARCHITECTURE = EXECUTION_PLAN_REF_TYPED_INTEGRITY_EXTENSION
+STAGE_2C_SLICE_3C_ARCHITECTURE = RATIFIED
+STAGE_2C_SLICE_3C_IMPLEMENTATION = NOT_STARTED
+```
+
+Add conceptually a generic opaque integrity value:
+
+```text
+ExecutionPlanIntegrityRef {
+  kind
+  contractVersion
+  digest
+}
+```
+
+It may propagate additively and optionally as `PlanningRequest.integrity? → ExecutionPlan.integrity? →
+ExecutionPlanRef.integrity?`. It identifies the integrity of this exact `ExecutionPlan`. It is not an
+`ApprovalSubject`, Stage 2C domain object, suitability profile, or Runtime authorization. Approval remains strictly
+`ExecutionPlan`-scoped; Approval API meaning is unchanged. This decision introduces no persistence, DB migration,
+capability, or aggregate.
+
+### Referential Integrity
+
+Patch and Workspace boundaries compare the full plan integrity identity:
+
+```text
+executionPlanRef.id
++ integrity.kind
++ integrity.contractVersion
++ integrity.digest
+```
+
+- Same id with different integrity rejects.
+- Same digest with different kind or contract version rejects.
+- Integrity present on only one side rejects.
+- Integrity omitted on both sides preserves existing legacy behavior.
+
+`PatchManager` remains generic and only strengthens reference-equality checks. `WorkspaceWriteManager` remains the
+sole filesystem mutation owner and likewise only strengthens reference-equality checks. Neither manager derives or
+interprets Stage 2C application semantics.
+
+### Stage 2C Application-Plan Binding
+
+The exact proposed source/config change must exist before the real plan is created. `applicationSubjectDigest` alone
+is insufficient. The Stage 2C app layer derives a cryptographic `proposedChangeDigest`, then:
+
+```text
+planIntegrityDigest = SHA256(canonical {
+  kind,
+  contractVersion,
+  applicationSubjectDigest,
+  proposedChangeDigest
+})
+```
+
+This security boundary uses SHA-256 and must not use the existing FNV/non-cryptographic `contentHash` helpers. The
+required ordering is:
+
+```text
+ProfileConfigurationApplicationCandidate
+→ exact ProposedChange / WorkspaceDiff
+→ proposedChangeDigest
+→ planIntegrityDigest
+→ real ExecutionPlan
+→ existing ApprovalManager.requestFor(plan)
+→ APPROVED ApprovalRef
+→ fresh Stage 2C revalidation
+→ PatchManager.generate()
+→ WorkspaceWriteManager.apply()
+```
+
+The Stage 2C app layer owns application-subject derivation/revalidation, `proposedChangeDigest`,
+`planIntegrityDigest`, and fresh post-approval revalidation. `ApprovalManager` remains generic and plan-scoped.
+
+### No-op, M1, and Egress Boundaries
+
+Before application-plan wiring, `target === expected` must classify as `VERIFIED_NOOP`, not `APPLY_REQUIRED`.
+`VERIFIED_NOOP` creates no `ExecutionPlan`, `ApprovalRequest`, `PatchSet`, or `WorkspaceWrite`.
+
+`APPLICATION_MODEL = M1_BUILD_CONFIG_TIME`; M2 live Runtime mutation remains deferred. Profile application must not
+expand protected egress scope. A proposed plan/patch must not change the egress allowlist, routing policy, Runtime
+wiring, or unrelated providers. An out-of-scope Provider/model is not plan-eligible.
+
+### Consequences and Implementation Boundary
+
+- **+** Exact plan content survives approval hand-off as typed opaque integrity without changing plan identity.
+- **+** Existing aggregate ownership and plan-scoped Approval semantics remain intact.
+- **+** Legacy flows remain compatible only when both compared refs omit integrity.
+- **−** Every integrity-aware boundary must reject partial propagation or any kind/version/digest mismatch.
+- **−** Stage 2C must construct the exact proposed change before requesting approval.
+
+This ADR synchronizes an already-ratified architecture decision only. It does not implement
+`ExecutionPlanIntegrityRef`, alter Core/Patch/Workspace code, create persistence or a migration, authorize application
+or Runtime mutation, execute a Provider, or approve Push/PR/Merge/Live UAT.

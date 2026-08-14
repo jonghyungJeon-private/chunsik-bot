@@ -5,9 +5,10 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** **Stage 2C Slice 3B — Profile Configuration Application Gate Implemented**. The app-private offline
-  gate validates a ratified profile and exact current/target production routing declarations, derives the bounded
-  before-to-after subject and digest, and performs no plan creation, approval, mutation, or Provider execution.
+- **Phase:** **Stage 2C Slice 3C — ExecutionPlan Integrity Binding Architecture Ratified; Implementation Not
+  Started**. ADR-0068 selects an additive optional typed integrity reference propagated through the existing
+  plan-scoped Approval boundary. No Core, Patch, Workspace, application, persistence, or Runtime implementation has
+  started.
 - **Offline checkpoint:** `STAGE_2B_OFFLINE_COMPLETION = COMPLETE_AND_ACCEPTED` and
   `STAGE_2B_OFFLINE_BLOCKERS = NONE`.
 - **Blocked carryover:** XR-AX is optional for Stage 2B offline completion and is `BLOCKED_CARRYOVER`; XR
@@ -29,6 +30,29 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   activation.
 - **Execution facts:** actual Provider execution = `0`; Runtime/Discord/DB execution = `0`.
 
+## Stage 2C — Slice 3C ExecutionPlan Integrity Binding Architecture
+
+- **Status:** `STAGE_2C_PLAN_BINDING_ARCHITECTURE = EXECUTION_PLAN_REF_TYPED_INTEGRITY_EXTENSION` is `RATIFIED`;
+  implementation is `NOT_STARTED`. Slices 1, 2, and 3B are `COMPLETE_AND_ACCEPTED`; Slice 3A architecture is
+  `RATIFIED`.
+- **Core contract:** ADR-0068 defines a generic opaque `ExecutionPlanIntegrityRef { kind, contractVersion, digest }`
+  for optional propagation through `PlanningRequest → ExecutionPlan → ExecutionPlanRef`. It identifies the exact
+  plan's integrity; it is not an Approval subject, Stage 2C domain object, suitability profile, or Runtime authority.
+- **Approval and persistence:** Approval remains strictly plan-scoped and its semantics are unchanged. The design
+  adds no persistence, migration, capability, or aggregate. Content-addressing `ExecutionPlan.id` is rejected, and
+  in-memory plan retention alone is insufficient across process/session loss.
+- **Referential integrity:** Patch and Workspace boundaries must compare plan id plus integrity kind, contract
+  version, and digest. Presence mismatch and any typed-integrity mismatch reject; two legacy refs that both omit
+  integrity retain existing behavior.
+- **Stage 2C binding:** the exact proposed source/config change must exist before plan creation. SHA-256 binds
+  `applicationSubjectDigest` and `proposedChangeDigest` into `planIntegrityDigest`; existing non-cryptographic
+  `contentHash` helpers are not eligible for this security boundary.
+- **No-op and ownership:** `target === expected` is `VERIFIED_NOOP` and creates no plan, approval, patch, or write.
+  The app layer derives and freshly revalidates binding facts; ApprovalManager stays generic, PatchManager only
+  strengthens ref equality, and WorkspaceWriteManager remains the sole filesystem mutation owner.
+- **Safety:** the M1 build/configuration-time model remains authoritative, M2 live Runtime mutation remains deferred,
+  and the proposed change cannot expand egress scope or alter routing policy, Runtime wiring, or unrelated providers.
+
 ## Stage 2C — Slice 3B Profile Configuration Application Gate
 
 - **Boundary:** pure app-private admission and deterministic projection only. It creates an application candidate,
@@ -49,7 +73,7 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 - **Decision:** ADR-0067 selects M1 build/configuration-time application. M2 live Runtime Registry mutation is
   deferred; no new Core authorization aggregate, approval database, ApprovalRef, or ApprovalManager behavior is
   introduced.
-- **Application gate:** a future app-private `ProfileConfigurationApplicationGate` validates the ratified profile,
+- **Application gate:** the Slice 3B app-private `ProfileConfigurationApplicationGate` validates the ratified profile,
   exact current configuration identity, expected-result digest, application-contract version, bounded expiry, and
   Stage 2B egress compatibility before producing a deterministic application subject or real change plan/Patch.
 - **Authority:** profile ratification and application-subject validity do not approve a configuration change. A
@@ -82,7 +106,8 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   authorization are not proven.
 - **Application architecture:** ADR-0067 closes the v1 architecture question without treating the profile as
   execution authority: M1 application must create a real configuration-change plan/Patch that uses the existing
-  plan-scoped Approval boundary. Implementation remains unapproved and not started.
+  plan-scoped Approval boundary. Slice 3B implements only the pre-plan application gate; ADR-0068 ratifies the Slice
+  3C plan-integrity architecture, whose implementation remains not started.
 - **Evidence authenticity:** candidate self-consistency is verified, but unkeyed candidate/evidence digests do not
   cryptographically prove benchmark provenance. Authoritative Runtime/audit use requires separate consideration of
   persisted evidence artifacts or authenticated/signature-backed provenance; this is not a Slice 2 blocker.
