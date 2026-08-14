@@ -5,11 +5,10 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** **Stage 2C Slice 3C — ExecutionPlan Integrity Binding Architecture Ratified; Implementation Not
-  Started but Eligible for Autonomous Scheduling**. ADR-0068 selects an additive optional typed integrity reference
-  propagated through the existing plan-scoped Approval boundary. ADR-0069 delegates the bounded LOW/MEDIUM-risk
-  implementation to Architect AI; no Core, Patch, Workspace, application, persistence, or Runtime implementation has
-  started.
+- **Phase:** **QUIRKYBOT_DEV_V1 offline milestone reached; bounded development Live UAT entry authorized for
+  prevalidation**. Stage 2C Slice 3C was implemented in commit `683297f`, independently reviewed `PASS`, and closes
+  the final delegated offline implementation gap. Product Owner authorization permits Live UAT entry only for exact
+  HEAD `683297f4d0fdcd3785f8d709f307b00718f02da0`; execution has not started.
 - **Development governance:** `AUTONOMOUS_DEV_MODE = ENABLED`, `ACTIVE_MILESTONE = QUIRKYBOT_DEV_V1`. Product Owner
   retains product/UAT/debug/high-risk authority; Architect AI owns task-level delegated local approval, Codex builds,
   and Claude independently reviews. Strict external/destructive/Runtime/application-Provider gates remain Human-only.
@@ -26,19 +25,24 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 - **Composition:** `QUOKY_PROVIDER_ROUTING_MODE` is parsed exactly and defaults to `legacy`. The composition root
   injects the optional result of an app-private activation factory; legacy mode constructs no new routing Provider.
   Enabled mode remains startup-blocked before Provider construction because no 5C-EG enforcement exists.
-- **Approval boundary:** no Runtime, Discord, DB, or Provider activation is approved. Independently verifiable
-  external-egress enforcement is an explicit activation dependency, not a hidden environmental assumption.
-- **Live status:** Provider activation and Runtime/Discord/DB UAT remain `BLOCKED`. Offline completion is not
-  external-egress proof, filesystem-provenance proof, live-activation readiness, or production readiness.
-  Concrete 5C-EG or equivalently strong enforcement plus the required Strict approval remains mandatory for live
-  activation.
+- **UAT authorization:** `QUIRKYBOT_DEV_V1_UAT_ENTRY = AUTHORIZED_AND_READY_FOR_PREVALIDATION` for development UAT at
+  exact HEAD `683297f4d0fdcd3785f8d709f307b00718f02da0`. Runtime Start, bounded application Provider/network execution,
+  designated development Discord connection/actions, required secret read, and bounded Live UAT have independent
+  Product Owner approvals for this window. No authorization carries to another revision or Production.
+- **Remaining Human-only boundaries:** DB/SQLite mutation or migration apply, Push, PR, Merge, Production/Release,
+  destructive/unrelated cleanup, Runtime Restart, and Runtime Stop remain unapproved. Runtime Stop after UAT must
+  return to the Product Owner.
+- **Live status:** UAT is authorized but `NOT_EXECUTED`; technical readiness is not inferred from approval. Exact
+  runtime/config, Provider identity/config, Discord development target, zero-DB-mutation plan, non-Production target,
+  and the existing 5C-EG/live-activation constraint must be reconciled read-only during prevalidation. Any material
+  mismatch is `HUMAN_REQUIRED` before Runtime Start.
 - **Execution facts:** actual Provider execution = `0`; Runtime/Discord/DB execution = `0`.
 
 ## Stage 2C — Slice 3C ExecutionPlan Integrity Binding Architecture
 
 - **Status:** `STAGE_2C_PLAN_BINDING_ARCHITECTURE = EXECUTION_PLAN_REF_TYPED_INTEGRITY_EXTENSION` is `RATIFIED`;
-  implementation is `NOT_STARTED` and `ELIGIBLE_FOR_AUTONOMOUS_IMPLEMENTATION`; implementation authority is
-  `DELEGATED_TO_ARCHITECT_AI`. Slices 1, 2, and 3B are `COMPLETE_AND_ACCEPTED`; Slice 3A architecture is `RATIFIED`.
+  implementation is `COMPLETE_AND_REVIEWED` at commit `683297f`; Claude independent review is `PASS`. Slices 1, 2,
+  and 3B are `COMPLETE_AND_ACCEPTED`; Slice 3A architecture is `RATIFIED`.
 - **Core contract:** ADR-0068 defines a generic opaque `ExecutionPlanIntegrityRef { kind, contractVersion, digest }`
   for optional propagation through `PlanningRequest → ExecutionPlan → ExecutionPlanRef`. It identifies the exact
   plan's integrity; it is not an Approval subject, Stage 2C domain object, suitability profile, or Runtime authority.
