@@ -6,9 +6,13 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
 - **Phase:** **Stage 2C Slice 3C — ExecutionPlan Integrity Binding Architecture Ratified; Implementation Not
-  Started**. ADR-0068 selects an additive optional typed integrity reference propagated through the existing
-  plan-scoped Approval boundary. No Core, Patch, Workspace, application, persistence, or Runtime implementation has
+  Started but Eligible for Autonomous Scheduling**. ADR-0068 selects an additive optional typed integrity reference
+  propagated through the existing plan-scoped Approval boundary. ADR-0069 delegates the bounded LOW/MEDIUM-risk
+  implementation to Architect AI; no Core, Patch, Workspace, application, persistence, or Runtime implementation has
   started.
+- **Development governance:** `AUTONOMOUS_DEV_MODE = ENABLED`, `ACTIVE_MILESTONE = QUIRKYBOT_DEV_V1`. Product Owner
+  retains product/UAT/debug/high-risk authority; Architect AI owns task-level delegated local approval, Codex builds,
+  and Claude independently reviews. Strict external/destructive/Runtime/application-Provider gates remain Human-only.
 - **Offline checkpoint:** `STAGE_2B_OFFLINE_COMPLETION = COMPLETE_AND_ACCEPTED` and
   `STAGE_2B_OFFLINE_BLOCKERS = NONE`.
 - **Blocked carryover:** XR-AX is optional for Stage 2B offline completion and is `BLOCKED_CARRYOVER`; XR
@@ -33,8 +37,8 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 ## Stage 2C — Slice 3C ExecutionPlan Integrity Binding Architecture
 
 - **Status:** `STAGE_2C_PLAN_BINDING_ARCHITECTURE = EXECUTION_PLAN_REF_TYPED_INTEGRITY_EXTENSION` is `RATIFIED`;
-  implementation is `NOT_STARTED`. Slices 1, 2, and 3B are `COMPLETE_AND_ACCEPTED`; Slice 3A architecture is
-  `RATIFIED`.
+  implementation is `NOT_STARTED` and `ELIGIBLE_FOR_AUTONOMOUS_IMPLEMENTATION`; implementation authority is
+  `DELEGATED_TO_ARCHITECT_AI`. Slices 1, 2, and 3B are `COMPLETE_AND_ACCEPTED`; Slice 3A architecture is `RATIFIED`.
 - **Core contract:** ADR-0068 defines a generic opaque `ExecutionPlanIntegrityRef { kind, contractVersion, digest }`
   for optional propagation through `PlanningRequest → ExecutionPlan → ExecutionPlanRef`. It identifies the exact
   plan's integrity; it is not an Approval subject, Stage 2C domain object, suitability profile, or Runtime authority.

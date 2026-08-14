@@ -5535,3 +5535,62 @@ wiring, or unrelated providers. An out-of-scope Provider/model is not plan-eligi
 This ADR synchronizes an already-ratified architecture decision only. It does not implement
 `ExecutionPlanIntegrityRef`, alter Core/Patch/Workspace code, create persistence or a migration, authorize application
 or Runtime mutation, execute a Provider, or approve Push/PR/Merge/Live UAT.
+
+## ADR-0069 — Autonomous Local Development Standing Delegation
+
+- **Status:** ✅ Accepted (governance)
+- **Date:** 2026-08-14
+- **Authority:** Product Owner
+- **Canonical execution policy:** `docs/governance/DEVELOPMENT-MODE.md`
+
+### Decision
+
+```text
+AUTONOMOUS_DEV_MODE = ENABLED
+ACTIVE_MILESTONE = QUIRKYBOT_DEV_V1
+ARCHITECT_ROLE = DELEGATED_CHIEF_ARCHITECT
+BUILDER_ROLE = CODEX
+INDEPENDENT_REVIEWER_ROLE = CLAUDE
+```
+
+Product Owner grants the Architect AI standing authority to inspect canonical state, identify milestone gaps, create
+bounded LOW/MEDIUM-risk local tasks, approve their implementation, send them to Codex, consume independent Claude
+review, route blocking `FIX` findings through at most two remediation rounds, accept `PASS`, and continue until the
+active milestone is reached. An Architect-generated task inside this delegation is an approved local implementation
+scope; no pre-existing human-authored Sprint or additional one-off approval is required.
+
+FAST DELIVERY remains authoritative. A coherent delegated task may bundle implementation, scope-local refactoring,
+unit/focused/regression tests, lint/format, typecheck, build, required documentation, local commit, and up to two
+Builder/Reviewer remediation rounds. Ordinary local development creates no approval packet or evidence-only document.
+
+Ratified architecture may be implemented under this delegation when the task stays within the ratified boundary, is
+needed for `QUIRKYBOT_DEV_V1`, is bounded and verifiable, and crosses no High/Critical boundary. Architecture
+ratification is not permission for unbounded or unrelated implementation.
+
+### Human-only Boundary
+
+Standing delegation excludes Push, PR, Merge, Runtime start/stop/restart, Chunsik application Provider or network
+execution, Discord connection/action, secret reads, DB/SQLite mutation or migration apply, Runtime data mutation,
+actual product Patch/Workspace Apply, Live UAT, production/release gates, destructive operations, and unrelated
+cleanup. Each requires explicit Human approval. Product ambiguity, competing valid product directions, architecture
+invariant changes, unratified architecture, material milestone expansion, data-loss/security risk, or unverifiable
+success also requires `HUMAN_REQUIRED`.
+
+Trusted Kiro/Codex/Claude development control-plane turns are authorized only to execute the delegated local workflow;
+they do not authorize Chunsik application Runtime/Provider/network execution. This governance decision does not add
+an agent runtime to the Chunsik product and does not change `ARCHITECTURE.md` product-runtime invariants.
+
+### Milestone and Current Eligibility
+
+Every proposed task must be necessary for `QUIRKYBOT_DEV_V1`; otherwise it is deferred. Once DEV_V1 acceptance
+criteria are met, Architect returns `MILESTONE_REACHED` and yields to Product Owner UAT/debugging rather than
+continuing feature or hardening work.
+
+```text
+STAGE_2C_SLICE_3C_ARCHITECTURE = RATIFIED
+STAGE_2C_SLICE_3C_IMPLEMENTATION = ELIGIBLE_FOR_AUTONOMOUS_IMPLEMENTATION
+STAGE_2C_SLICE_3C_IMPLEMENTATION_AUTHORITY = DELEGATED_TO_ARCHITECT_AI
+```
+
+This ADR changes development governance only. It does not implement Slice 3C, modify product code, or authorize any
+Human-only operation.

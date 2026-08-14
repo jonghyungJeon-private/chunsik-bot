@@ -7,6 +7,18 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Changed — Autonomous Development Governance
+
+- Enabled `AUTONOMOUS_DEV_MODE` for the `QUIRKYBOT_DEV_V1` milestone and delegated bounded LOW/MEDIUM-risk local
+  task creation and implementation approval to the Architect AI, with Codex as Builder and Claude as independent
+  Reviewer.
+- Retained FAST DELIVERY batching through tests, build, documentation, local commit, and at most two scope-local
+  remediation rounds without one-off human approval for each Architect-generated task.
+- Preserved Human-only gates for Push/PR/Merge, Runtime, application Provider/network execution, Discord, secrets,
+  DB/migrations, actual Workspace/Patch Apply, destructive operations, Live UAT, production, and release gates.
+- Marked ratified Stage 2C Slice 3C implementation as eligible for Architect scheduling; no application code was
+  implemented by this governance change.
+
 ### Added — Stage 2C · Slice 3C ExecutionPlan Integrity Binding Architecture
 
 - Ratified ADR-0068 and `EXECUTION_PLAN_REF_TYPED_INTEGRITY_EXTENSION`: a generic optional

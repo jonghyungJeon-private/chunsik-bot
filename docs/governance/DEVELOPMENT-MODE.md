@@ -6,12 +6,14 @@
 일반 제품 개발의 절차 비용을 줄이면서 Architecture invariant, mutation safety,
 검증 사실성, 외부·비가역 작업의 독립 승인 경계를 유지한다.
 
-기본 모드는 `FAST DELIVERY MODE`다. `STRICT GOVERNANCE MODE`는 이 문서에 명시된
-고위험 실행 경계에만 사용한다.
+기본 모드는 `FAST DELIVERY MODE`이며, Product Owner의 standing milestone delegation 아래
+`AUTONOMOUS_DEV_MODE = ENABLED`, `ACTIVE_MILESTONE = QUIRKYBOT_DEV_V1`이다.
+`STRICT GOVERNANCE MODE`는 이 문서에 명시된 고위험 실행 경계에만 사용한다.
 
 ## 1. FAST DELIVERY MODE — Default
 
-하나의 명시적인 Sprint 또는 Task 실행 승인은 승인된 범위 안에서 다음을 함께 허용한다.
+하나의 명시적인 Sprint 또는 Task 실행 승인은 승인된 범위 안에서 다음을 함께 허용한다. 이 승인은
+Product Owner가 직접 부여하거나, 아래 standing delegation 안에서 Architect AI가 task를 생성하며 부여할 수 있다.
 
 - 계획 구체화
 - 구현과 작업 범위 내 리팩터링
@@ -41,6 +43,47 @@
 
 검증 결과는 chat의 종료 보고에 기록한다. 지속 보존이 제품 요구사항인 문서만 저장소에 작성한다.
 
+## 1A. Autonomous Development Standing Delegation
+
+Product Owner는 `QUIRKYBOT_DEV_V1`에 필요한 LOW/MEDIUM-risk local development에 한해 Architect AI를
+delegated Chief Architect로 지정한다. 역할은 다음과 같다.
+
+- Human: Manager / Product Owner / UAT / Debugger / High-Risk Approver
+- Kiro Architect: milestone gap을 선택하고 bounded task와 local implementation approval을 발행
+- Codex Builder: 승인된 task 구현·검증·문서화·local commit
+- Claude Reviewer: 독립 review, `PASS | FIX | ARCH | HUMAN` 판정
+
+Architect-generated task가 active milestone에 필요하고, ratified architecture와 repository invariant 안에 있으며,
+LOW/MEDIUM risk로 검증 가능하면 그 task 자체가 승인된 local implementation scope다. 기존 human-authored
+Sprint/Task나 추가 one-off Product Owner 승인을 선행 조건으로 요구하지 않는다.
+
+Standing delegation은 다음을 함께 허용한다.
+
+- 계획, 구현, 범위 내 리팩터링
+- unit/focused/regression test, lint/format, typecheck, build
+- 필요한 canonical documentation sync와 local commit
+- 같은 범위의 Builder/Reviewer remediation 최대 2회
+- 위 workflow를 수행하는 trusted development control-plane의 Kiro/Codex/Claude turn
+
+이 delegation은 Chunsik 제품 안에 agent runtime을 추가하지 않으며 `ARCHITECTURE.md`의 제품 runtime 규칙을
+변경하지 않는다. Development control-plane agent transport는 delegated workflow 수행에만 사용할 수 있다.
+Chunsik application Runtime, application AI Provider, network/Discord/DB 실행은 여전히 Strict Human gate다.
+
+Architecture-sensitive implementation은 architecture decision이 ratified되었고, 구현이 그 경계 안에 있으며,
+active milestone에 필요하고 High/Critical 경계를 넘지 않을 때 Architect AI가 `IMPLEMENT`로 승인할 수 있다.
+Ratification은 무제한 구현 지시가 아니며, Architect는 필요성·범위·검증 가능성을 매 task마다 확인한다.
+
+Architect는 다음 이유만으로 `HUMAN_REQUIRED`를 반환하지 않는다.
+
+- 구현이 아직 시작되지 않음
+- human-authored Sprint entry가 없음
+- ratified architecture 안의 Medium-risk 구현에 one-off approval이 없음
+- task 완료에 test/build/documentation/local commit이 필요함
+
+각 task는 “`QUIRKYBOT_DEV_V1` 달성에 필요한가?”에 답해야 한다. 아니면 backlog/defer한다. DEV_V1 acceptance
+criteria를 만족하면 `MILESTONE_REACHED`를 반환하고 feature/hardening을 멈춘 뒤 Product Owner의 UAT/debugging으로
+제어를 돌려준다.
+
 ## 2. Architecture Review Required
 
 다음 변경은 구현과 검증 후, merge 전에 독립 Chief Architect Review가 필요하다.
@@ -66,9 +109,11 @@ Reviewer와 implementer는 동일할 수 없다.
 - Merge
 - Runtime Start, Stop, Restart
 - Discord Connection 또는 Action
-- AI Provider의 실제 외부 실행
+- Chunsik application AI Provider의 실제 외부 실행
+- task-under-test 또는 Chunsik application의 Network 실행
 - Runtime Data Mutation
 - Workspace Apply
+- DB / SQLite mutation 또는 migration apply
 - Live UAT
 - Production 또는 Release Gate
 - destructive filesystem/database operation
@@ -78,13 +123,25 @@ Strict 작업은 필요할 때만 짧은 execution plan과 pre/post validation�
 Packet과 evidence 파일은 위험을 통제하는 데 구체적으로 필요할 때만 만든다.
 한 Strict 작업의 승인은 다른 Strict 작업으로 자동 승계되지 않는다.
 
+다음 판단도 standing delegation 밖이며 `HUMAN_REQUIRED`다.
+
+- product requirement가 모호하거나 둘 이상의 유효한 제품 방향 중 owner 선택이 필요함
+- architecture invariant 변경 또는 ratify되지 않은 architecture decision이 필요함
+- active milestone scope를 실질적으로 확대해야 함
+- data-loss/security risk가 있거나 성공을 검증할 수 없음
+- unrelated cleanup 또는 destructive operation이 필요함
+
+일반 Builder code-edit workflow 안의 repository 파일 수정은 delegated local implementation이다. 반면 제품의
+`PatchManager`/`WorkspaceWriteManager` Apply, 승인 scope 밖 filesystem mutation, Runtime data mutation은 Strict gate다.
+
 ## 4. 승인 묶음
 
 일상 개발의 Plan, Implementation, Build, Test, Commit은 하나의 Sprint Execution
 승인으로 묶는다. 승인 범위 밖 기능, Architecture 결정, 외부 시스템 작업은 포함되지 않는다.
 
 사용자가 진단·설명·review만 요청하면 read-only로 수행하며 변경 승인을 추론하지 않는다.
-사용자가 Sprint/Task 실행을 명시적으로 승인하면 승인된 scope의 검증과 local commit까지 수행할 수 있다.
+사용자가 Sprint/Task 실행을 명시적으로 승인하거나 Architect AI가 standing delegation 안에서 task와 approval을
+발행하면 승인된 scope의 검증과 local commit까지 수행할 수 있다.
 Push/PR/Merge/Runtime 등 Strict 작업은 항상 별도 승인을 받는다.
 
 ## 5. Retry Policy

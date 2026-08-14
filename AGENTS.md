@@ -44,15 +44,24 @@ Architecture 또는 settled decision과 충돌할 가능성이 있으면 반드�
 
 ## Development Governance
 
-- 기본은 `FAST DELIVERY MODE`다. 하나의 명시적 Sprint/Task 실행 승인은 승인 범위 안의
+- `AUTONOMOUS_DEV_MODE = ENABLED`, `ACTIVE_MILESTONE = QUIRKYBOT_DEV_V1`이다. Product Owner는
+  active milestone에 필요한 LOW/MEDIUM-risk local development task 생성과 implementation approval을
+  Architect AI에 standing delegation한다. Architect-generated bounded task는 별도 one-off human 승인 없이
+  승인된 local scope가 된다.
+- 기본은 `FAST DELIVERY MODE`다. Product Owner 또는 delegated Architect AI의 Sprint/Task 실행 승인은 범위 안의
   구현, 리팩터링, 테스트 작성·수정, focused test, typecheck, build, 자체 수정·재검증,
   문서 갱신, local commit을 함께 허용한다.
 - 같은 범위의 검증 실패는 최대 2회 수정 루프까지 별도 packet/승인 없이 해결한다.
 - 일반 개발에 execution packet, packet SHA, evidence 전용 Markdown, 단계별 재승인을 만들지 않는다.
 - Architecture 경계 변경은 구현·검증 후 merge 전에 독립 Chief Architect Review를 받는다.
-- Push, PR, Merge, Runtime start/stop/restart, Discord action, 실제 AI Provider 실행,
+- Ratified architecture 안에서 active milestone에 필요한 LOW/MEDIUM-risk 구현은 Architect AI가 승인할 수 있다.
+  구현 미착수, human-authored Sprint 부재, 추가 one-off approval 부재만으로 `HUMAN_REQUIRED`를 반환하지 않는다.
+- Push, PR, Merge, Runtime start/stop/restart, Discord action, Chunsik application AI Provider/network 실행,
   runtime data mutation, Workspace Apply, Live UAT, release/production gate,
-  destructive filesystem/database 작업, secret 접근은 `STRICT GOVERNANCE MODE`로 별도 승인한다.
+  DB/SQLite mutation·migration apply, destructive filesystem 작업, secret 접근은 `STRICT GOVERNANCE MODE`로
+  Human의 별도 승인을 받는다.
+- DEV_V1 acceptance criteria가 충족되면 Architect는 `MILESTONE_REACHED`로 멈추고 Product Owner에게
+  UAT/debugging 제어를 반환한다.
 - 구체적 blocker가 없으면 승인된 Sprint 범위를 끝까지 수행한다.
 - 분류, 승인 묶음, retry, blocker, verification, 보고 형식의 상세 규칙은
   `docs/governance/DEVELOPMENT-MODE.md`를 따른다.
