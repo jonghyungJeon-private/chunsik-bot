@@ -5632,3 +5632,37 @@ ratified architecture and independent Architecture Review. Once ratified, local/
 execution require no additional Human approval. This decision changes development governance and trusted UAT
 prevalidation only; it does not authorize Runtime Start, Provider/network execution, Discord action, Live UAT,
 Production work, or destructive non-disposable DB operations.
+
+## ADR-0071 — DEV_V1 Config-Restricted Live UAT Risk Acceptance
+
+- **Status:** ✅ Accepted (bounded Product Owner risk decision)
+- **Date:** 2026-08-16
+- **Authority:** Product Owner
+- **Decision basis revision:** `9596283187be9e2513da28f9705e0f85b6c38abd`
+
+### Decision
+
+```text
+CONFIG_RESTRICTED_RISK_ACCEPTED = APPROVED_FOR_DEV_V1_UAT_ONLY
+PRODUCTION_GRADE_5C_EG = BLOCKED_CARRYOVER
+DEV_V1_UAT_EXCEPTION = CONFIG_RESTRICTED_RISK_ACCEPTED
+```
+
+The Product Owner accepts configuration-restricted operation for bounded `QUIRKYBOT_DEV_V1` Live UAT because
+concrete per-process OS-level 5C-EG enforcement is unavailable on the current local Darwin development host. The
+exception is effective only when every condition below is proven together:
+
+- development/non-production and `QUOKY_RUNTIME_ENV=dev`;
+- current local Darwin host;
+- valid exact-current-revision UAT authorization;
+- primary Provider binding `ollama-cli` / `llama3.1`;
+- exact approved development Discord bot, guild, and channel;
+- existing routing, egress, and configuration restrictions remain enabled;
+- bounded DEV_V1 UAT scenarios only.
+
+Any revision, environment, host, Provider, Discord-target, restriction, or UAT-authorization drift fails closed with
+`HUMAN_REQUIRED`. The decision does not solve 5C-EG, make configuration restriction Production-safe, remove
+`NO_FEASIBLE_ARCHITECTURE_YET / BLOCKED_CARRYOVER`, authorize Production/Release, carry to another SHA/host/environment,
+or authorize arbitrary network/Provider execution. The governance commit recording this decision creates a new HEAD;
+therefore the previous UAT authorization remains invalid and the final exact SHA requires explicit authorization
+before prevalidation or Live UAT can proceed.

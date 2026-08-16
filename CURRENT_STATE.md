@@ -5,7 +5,8 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** **QUIRKYBOT_DEV_V1 offline milestone reached; Live UAT prevalidation blocked on architecture**. Stage 2C
+- **Phase:** **QUIRKYBOT_DEV_V1 offline milestone reached; bounded config-restricted Live UAT risk accepted, exact-SHA
+  reauthorization pending**. Stage 2C
   Slice 3C was implemented in commit `683297f`, independently reviewed `PASS`, and closes
   the prior delegated offline implementation gap. The latest read-only UAT prevalidation passed development target,
   Provider identity (`ollama-cli` / `llama3.1`), Discord development target, required Secret Read authorization, and
@@ -26,6 +27,11 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 - **Accepted closeout surface:** ADR-0065 and ADR-0066 are ratified; F0-XR-FCI is
   `COMPLETE_AND_ACCEPTED`; F0-XR-FP is `COMPLETE_AND_ACCEPTED_WITH_CARRYOVER`; 5C-EG-F′ is `ACCEPTED`,
   its feasibility loop is `CLOSED`, and its result remains `NO_FEASIBLE_ARCHITECTURE_YET`.
+- **DEV_V1 UAT risk decision:** `CONFIG_RESTRICTED_RISK_ACCEPTED = APPROVED_FOR_DEV_V1_UAT_ONLY` for the current local
+  Darwin development host. The exception applies only with exact current-revision UAT authorization,
+  `QUOKY_RUNTIME_ENV=dev`, primary `ollama-cli` / `llama3.1`, the approved development Discord bot/guild/channel,
+  existing routing/egress/config restrictions, and bounded UAT scenarios. It is not Production-safe 5C-EG and does
+  not authorize arbitrary Provider/network execution.
 - **5B-2B-E close-out:** `CLOSED_WITH_GENERATION_BLOCKED`. Bounded preflight/inventory is `PASS_ACCEPTED`;
   actual generation is `NOT_EXECUTED`, Provider execution count is `0`, and model pull count is `0`.
 - **Composition:** `QUOKY_PROVIDER_ROUTING_MODE` is parsed exactly and defaults to `legacy`. The composition root
@@ -44,12 +50,11 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   `developmentNonProduction`, `providerIdentityIdentified`, `discordDevelopmentTargetIdentified`,
   `secretReadAuthorizedIfRequired`, and exact revision/branch/clean state; blockers are
   `UAT_LIVE_ACTIVATION_ARCHITECTURE_REQUIRED` and the formerly reported `DB_MUTATION_NOT_AUTHORIZED`. ADR-0070 resolves
-  the DB blocker only when the exact delegated development DB conditions are proven. The 5C-EG architecture blocker
-  is the
-  next milestone gap, not Live UAT execution. Architect must reevaluate the accepted `NO_FEASIBLE_ARCHITECTURE_YET` /
-  `BLOCKED_CARRYOVER` state and select the smallest architecture work that can make DEV_V1 Ollama live activation
-  safely reachable. If still infeasible, report the exact unresolved host/platform constraint. Production/shared DB
-  mutation remains a separate unapproved Strict boundary.
+  the DB blocker only when the exact delegated development DB conditions are proven. ADR-0071 resolves the DEV_V1
+  UAT live-activation architecture blocker with a bounded configuration-restricted risk exception; production-grade
+  5C-EG remains `NO_FEASIBLE_ARCHITECTURE_YET / BLOCKED_CARRYOVER`. Because the previous authorization is bound to
+  `e8ae634`, the current operational blocker is exact-SHA UAT reauthorization, not additional architecture work.
+  Production/shared DB mutation remains a separate unapproved Strict boundary.
 - **Execution facts:** actual Provider execution = `0`; Runtime/Discord/DB execution = `0`.
 
 ## Stage 2C — Slice 3C ExecutionPlan Integrity Binding Architecture
