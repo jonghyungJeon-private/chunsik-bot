@@ -5,15 +5,19 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** **QUIRKYBOT_DEV_V1 offline milestone reached; Live UAT prevalidation blocked on architecture and DB
-  authorization**. Stage 2C Slice 3C was implemented in commit `683297f`, independently reviewed `PASS`, and closes
+- **Phase:** **QUIRKYBOT_DEV_V1 offline milestone reached; Live UAT prevalidation blocked on architecture**. Stage 2C
+  Slice 3C was implemented in commit `683297f`, independently reviewed `PASS`, and closes
   the prior delegated offline implementation gap. The latest read-only UAT prevalidation passed development target,
   Provider identity (`ollama-cli` / `llama3.1`), Discord development target, required Secret Read authorization, and
   exact revision/branch/tracked-state checks. It returned `HUMAN_REQUIRED` with
-  `UAT_LIVE_ACTIVATION_ARCHITECTURE_REQUIRED` and `DB_MUTATION_NOT_AUTHORIZED`.
+  `UAT_LIVE_ACTIVATION_ARCHITECTURE_REQUIRED` and, under the former governance, `DB_MUTATION_NOT_AUTHORIZED`.
 - **Development governance:** `AUTONOMOUS_DEV_MODE = ENABLED`, `ACTIVE_MILESTONE = QUIRKYBOT_DEV_V1`. Product Owner
   retains product/UAT/debug/high-risk authority; Architect AI owns task-level delegated local approval, Codex builds,
   and Claude independently reviews. Strict external/destructive/Runtime/application-Provider gates remain Human-only.
+- **Development DB governance:** `AUTONOMOUS_DEV_DB = APPROVED`. When `QUOKY_RUNTIME_ENV=dev`, the configured target
+  resolves exactly to repository `data/chunsik.db`, and no Production/shared DB is selected, create/open, WAL,
+  migrations v1-v6, `PRAGMA user_version`, and bounded normal UAT persistence are delegated. The former
+  `DB_MUTATION_NOT_AUTHORIZED` blocker is resolved for that exact development target only.
 - **Offline checkpoint:** `STAGE_2B_OFFLINE_COMPLETION = COMPLETE_AND_ACCEPTED` and
   `STAGE_2B_OFFLINE_BLOCKERS = NONE`.
 - **Blocked carryover:** XR-AX is optional for Stage 2B offline completion and is `BLOCKED_CARRYOVER`; XR
@@ -33,17 +37,19 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   Product Owner approvals for that revision only. This governance sync creates a new HEAD, so that authorization is
   invalid after this commit and must not carry forward. Product Owner will authorize the final implementation/review
   SHA again. No authorization carries to another revision or Production.
-- **Remaining Human-only boundaries:** DB/SQLite mutation or migration apply, Push, PR, Merge, Production/Release,
-  destructive/unrelated cleanup, Runtime Restart, and Runtime Stop remain unapproved. Runtime Stop after UAT must
-  return to the Product Owner.
+- **Remaining Human-only boundaries:** Production/shared DB mutation or migration apply, non-disposable destructive
+  DB work, Push, PR, Merge, Production/Release, destructive/unrelated cleanup, Runtime Restart, and Runtime Stop
+  remain unapproved. Runtime Stop after UAT must return to the Product Owner.
 - **Live status:** UAT is `NOT_EXECUTED`. Latest prevalidation state is `HUMAN_REQUIRED`: passed checks are
   `developmentNonProduction`, `providerIdentityIdentified`, `discordDevelopmentTargetIdentified`,
   `secretReadAuthorizedIfRequired`, and exact revision/branch/clean state; blockers are
-  `UAT_LIVE_ACTIVATION_ARCHITECTURE_REQUIRED` and `DB_MUTATION_NOT_AUTHORIZED`. The 5C-EG architecture blocker is the
+  `UAT_LIVE_ACTIVATION_ARCHITECTURE_REQUIRED` and the formerly reported `DB_MUTATION_NOT_AUTHORIZED`. ADR-0070 resolves
+  the DB blocker only when the exact delegated development DB conditions are proven. The 5C-EG architecture blocker
+  is the
   next milestone gap, not Live UAT execution. Architect must reevaluate the accepted `NO_FEASIBLE_ARCHITECTURE_YET` /
   `BLOCKED_CARRYOVER` state and select the smallest architecture work that can make DEV_V1 Ollama live activation
-  safely reachable. If still infeasible, report the exact unresolved host/platform constraint. DB mutation remains a
-  separate unapproved Strict boundary.
+  safely reachable. If still infeasible, report the exact unresolved host/platform constraint. Production/shared DB
+  mutation remains a separate unapproved Strict boundary.
 - **Execution facts:** actual Provider execution = `0`; Runtime/Discord/DB execution = `0`.
 
 ## Stage 2C — Slice 3C ExecutionPlan Integrity Binding Architecture

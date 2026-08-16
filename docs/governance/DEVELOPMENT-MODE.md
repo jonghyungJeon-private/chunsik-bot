@@ -62,12 +62,15 @@ Standing delegation은 다음을 함께 허용한다.
 - 계획, 구현, 범위 내 리팩터링
 - unit/focused/regression test, lint/format, typecheck, build
 - 필요한 canonical documentation sync와 local commit
+- active milestone에 필요한 local/dev DB schema·migration 작업, migration apply, seed/fixture, bounded persistence,
+  DB test, disposable/test DB reset/recreate, bounded local data migration
 - 같은 범위의 Builder/Reviewer remediation 최대 2회
 - 위 workflow를 수행하는 trusted development control-plane의 Kiro/Codex/Claude turn
 
 이 delegation은 Chunsik 제품 안에 agent runtime을 추가하지 않으며 `ARCHITECTURE.md`의 제품 runtime 규칙을
 변경하지 않는다. Development control-plane agent transport는 delegated workflow 수행에만 사용할 수 있다.
-Chunsik application Runtime, application AI Provider, network/Discord/DB 실행은 여전히 Strict Human gate다.
+Chunsik application Runtime, application AI Provider, network/Discord 실행은 여전히 Strict Human gate다.
+DB 작업은 아래 `AUTONOMOUS_DEV_DB` 조건을 만족하는 local/development target만 standing delegation에 포함된다.
 
 Architecture-sensitive implementation은 architecture decision이 ratified되었고, 구현이 그 경계 안에 있으며,
 active milestone에 필요하고 High/Critical 경계를 넘지 않을 때 Architect AI가 `IMPLEMENT`로 승인할 수 있다.
@@ -102,6 +105,26 @@ Reviewer와 implementer는 동일할 수 없다.
 
 ## 3. STRICT GOVERNANCE MODE
 
+### 3A. Autonomous Development DB
+
+`AUTONOMOUS_DEV_DB = APPROVED`다. Active development milestone에 필요할 때 Architect/Codex는 다음을 별도
+Human 승인 없이 수행할 수 있다.
+
+- local/dev SQLite create/open과 WAL/journal 초기화
+- schema design, migration implementation, local/dev migration apply와 schema/`user_version` 갱신
+- development seed/fixture, 정상 application persistence, DB-related test
+- disposable/test DB reset/recreate와 bounded local development data migration
+
+현재 Quoky의 `data/chunsik.db`는 `QUOKY_RUNTIME_ENV=dev`이고 configured local development DB path가 정확히
+해당 target이며 Production/shared DB가 선택되지 않았음이 입증될 때 development/UAT DB로 승인된다. 조건이
+불명확하거나 불일치하면 fail-closed한다. Schema contract, persistence ownership, migration strategy, aggregate
+boundary 변경은 계속 ratified architecture와 독립 Architecture Review가 필요하지만, ratification 이후 local/dev
+구현과 migration 실행에는 추가 Human 승인이 필요하지 않다.
+
+Production/shared/live DB mutation, Production migration apply, non-disposable data의 drop/truncate/bulk destructive
+mutation, irreversible data loss, shared/live backup·restore, DB credential/secret mutation은 이 delegation 밖이며
+별도 Human 승인이 필요하다.
+
 다음 작업은 FAST DELIVERY 승인에 포함되지 않으며 각각 명시적인 별도 승인이 필요하다.
 
 - Push
@@ -111,12 +134,12 @@ Reviewer와 implementer는 동일할 수 없다.
 - Discord Connection 또는 Action
 - Chunsik application AI Provider의 실제 외부 실행
 - task-under-test 또는 Chunsik application의 Network 실행
-- Runtime Data Mutation
+- delegated development DB 밖의 Runtime Data Mutation
 - Workspace Apply
-- DB / SQLite mutation 또는 migration apply
+- Production/shared/live DB mutation 또는 migration apply
 - Live UAT
 - Production 또는 Release Gate
-- destructive filesystem/database operation
+- delegated disposable/test DB reset·recreate 밖의 destructive filesystem/database operation
 - secret 접근 또는 노출 위험이 있는 작업
 
 Strict 작업은 필요할 때만 짧은 execution plan과 pre/post validation을 사용한다.
@@ -136,8 +159,9 @@ Product Owner의 명시적인 exact-scope 승인이 선행되어야 하며, 그 
   Strict 작업을 실행한다.
 
 따라서 Architect는 이미 정확히 승인된 Runtime/Provider/Network/Discord/Live-UAT 작업을 나중에 Quoky가
-실행한다는 이유만으로 `HUMAN_REQUIRED`를 반환하지 않는다. 미승인 DB/SQLite mutation처럼 별도 capability가
-필요하거나, architecture blocker가 남아 있거나, exact authorization이 없거나 무효이면 계속 fail-closed한다.
+실행한다는 이유만으로 `HUMAN_REQUIRED`를 반환하지 않는다. Delegated local/dev 조건 밖의 DB/SQLite mutation처럼
+별도 capability가 필요하거나, architecture blocker가 남아 있거나, exact authorization이 없거나 무효이면 계속
+fail-closed한다.
 
 다음 판단도 standing delegation 밖이며 `HUMAN_REQUIRED`다.
 

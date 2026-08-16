@@ -5594,3 +5594,41 @@ STAGE_2C_SLICE_3C_IMPLEMENTATION_AUTHORITY = DELEGATED_TO_ARCHITECT_AI
 
 This ADR changes development governance only. It does not implement Slice 3C, modify product code, or authorize any
 Human-only operation.
+
+## ADR-0070 — Autonomous Local Development Database Delegation
+
+- **Status:** ✅ Accepted (governance)
+- **Date:** 2026-08-16
+- **Authority:** Product Owner
+- **Canonical execution policy:** `docs/governance/DEVELOPMENT-MODE.md`
+
+### Decision
+
+```text
+AUTONOMOUS_DEV_DB = APPROVED
+PRODUCTION_DB = HUMAN_APPROVAL_REQUIRED
+```
+
+Active-milestone local/development SQLite create/open, WAL/journal initialization, schema design, migration
+implementation and apply, schema/`user_version` updates, development seed/fixture operations, normal bounded
+development/UAT persistence, DB tests, disposable/test reset/recreate, and bounded local data migration join the
+autonomous development standing delegation.
+
+This ADR supersedes only ADR-0069's blanket exclusion of DB/SQLite mutation, migration apply, and DB Runtime data
+mutation. Every non-DB Human-only boundary in ADR-0069 remains unchanged.
+
+For current Quoky DEV_V1, repository `data/chunsik.db` is delegated only when `QUOKY_RUNTIME_ENV=dev`, the configured
+database resolves exactly to that path, and no Production/shared target is selected. Under those proven conditions,
+create/open, WAL initialization, migrations v1-v6, `PRAGMA user_version`, and bounded normal UAT persistence must not
+produce `DB_MUTATION_NOT_AUTHORIZED`.
+
+Production/shared/live mutation, Production migration apply, irreversible or non-disposable destructive data loss,
+drop/truncate/bulk destructive mutation on non-disposable data, shared/live backup or restore, and database
+credential/secret mutation remain exact-scope Human approval boundaries. Unknown or mismatched environment/target
+classification fails closed.
+
+Schema contract, persistence ownership, migration strategy, and aggregate-boundary changes continue to require
+ratified architecture and independent Architecture Review. Once ratified, local/dev implementation and migration
+execution require no additional Human approval. This decision changes development governance and trusted UAT
+prevalidation only; it does not authorize Runtime Start, Provider/network execution, Discord action, Live UAT,
+Production work, or destructive non-disposable DB operations.

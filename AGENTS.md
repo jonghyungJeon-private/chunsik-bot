@@ -57,9 +57,15 @@ Architecture 또는 settled decision과 충돌할 가능성이 있으면 반드�
 - Ratified architecture 안에서 active milestone에 필요한 LOW/MEDIUM-risk 구현은 Architect AI가 승인할 수 있다.
   구현 미착수, human-authored Sprint 부재, 추가 one-off approval 부재만으로 `HUMAN_REQUIRED`를 반환하지 않는다.
 - Push, PR, Merge, Runtime start/stop/restart, Discord action, Chunsik application AI Provider/network 실행,
-  runtime data mutation, Workspace Apply, Live UAT, release/production gate,
-  DB/SQLite mutation·migration apply, destructive filesystem 작업, secret 접근은 `STRICT GOVERNANCE MODE`로
+  non-DB runtime data mutation, Workspace Apply, Live UAT, release/production gate,
+  Production/shared DB mutation·migration apply, destructive filesystem 작업, secret 접근은 `STRICT GOVERNANCE MODE`로
   Human의 별도 승인을 받는다.
+- `AUTONOMOUS_DEV_DB = APPROVED`다. Active milestone에 필요한 local/dev SQLite create/open, WAL/journal 초기화,
+  schema·migration 구현과 local/dev apply, `user_version`, seed/fixture, bounded UAT persistence, DB test,
+  disposable/test DB reset/recreate, bounded local data migration은 standing delegation에 포함된다. 현재
+  `data/chunsik.db`는 `QUOKY_RUNTIME_ENV=dev`, configured target 일치, Production/shared target 부재가 입증될 때만
+  delegated development/UAT DB다. Production/shared DB, non-disposable destructive data loss, shared/live
+  backup/restore, Production migration apply, DB credential/secret mutation은 계속 별도 Human 승인이 필요하다.
 - `HUMAN_APPROVAL_REQUIRED`는 `HUMAN_MUST_PERSONALLY_EXECUTE`를 의미하지 않는다. Strict 작업은 Product Owner의
   exact-scope 승인이 필수이고 다른 capability/revision/milestone으로 승계되지 않지만, 승인 후 trusted Quoky
   control-plane/UAT operator가 승인된 정확한 작업을 실행할 수 있다. 승인되지 않았거나 범위 밖인 작업은 금지한다.
