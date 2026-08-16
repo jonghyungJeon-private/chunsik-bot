@@ -123,6 +123,22 @@ Strict 작업은 필요할 때만 짧은 execution plan과 pre/post validation�
 Packet과 evidence 파일은 위험을 통제하는 데 구체적으로 필요할 때만 만든다.
 한 Strict 작업의 승인은 다른 Strict 작업으로 자동 승계되지 않는다.
 
+`HUMAN_APPROVAL_REQUIRED`와 `HUMAN_MUST_PERSONALLY_EXECUTE`는 서로 다른 조건이다. 모든 Strict 작업에는
+Product Owner의 명시적인 exact-scope 승인이 선행되어야 하며, 그 승인은 다른 capability, revision, milestone로
+전이되지 않는다. 승인이 존재하면 trusted Quoky control-plane/UAT operator가 승인된 정확한 작업을 실행할 수
+있다. 승인 없이 또는 승인 범위 밖에서 실행하는 것은 금지한다. 이 위임은 어떤 gate도 약화하지 않는다.
+
+역할 경계는 다음과 같다.
+
+- Kiro Architect: architecture, milestone gap 분석, bounded task와 local implementation approval 발행. Strict
+  작업은 직접 실행하지 않는다.
+- Trusted Quoky UAT operator: capability/revision/milestone에 대한 exact Product Owner 승인이 존재할 때만 해당
+  Strict 작업을 실행한다.
+
+따라서 Architect는 이미 정확히 승인된 Runtime/Provider/Network/Discord/Live-UAT 작업을 나중에 Quoky가
+실행한다는 이유만으로 `HUMAN_REQUIRED`를 반환하지 않는다. 미승인 DB/SQLite mutation처럼 별도 capability가
+필요하거나, architecture blocker가 남아 있거나, exact authorization이 없거나 무효이면 계속 fail-closed한다.
+
 다음 판단도 standing delegation 밖이며 `HUMAN_REQUIRED`다.
 
 - product requirement가 모호하거나 둘 이상의 유효한 제품 방향 중 owner 선택이 필요함

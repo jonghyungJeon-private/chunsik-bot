@@ -60,6 +60,12 @@ Architecture 또는 settled decision과 충돌할 가능성이 있으면 반드�
   runtime data mutation, Workspace Apply, Live UAT, release/production gate,
   DB/SQLite mutation·migration apply, destructive filesystem 작업, secret 접근은 `STRICT GOVERNANCE MODE`로
   Human의 별도 승인을 받는다.
+- `HUMAN_APPROVAL_REQUIRED`는 `HUMAN_MUST_PERSONALLY_EXECUTE`를 의미하지 않는다. Strict 작업은 Product Owner의
+  exact-scope 승인이 필수이고 다른 capability/revision/milestone으로 승계되지 않지만, 승인 후 trusted Quoky
+  control-plane/UAT operator가 승인된 정확한 작업을 실행할 수 있다. 승인되지 않았거나 범위 밖인 작업은 금지한다.
+- Kiro Architect는 architecture, milestone gap 분석, bounded task 발행을 담당하며 Strict 작업을 직접 실행하지
+  않는다. 이미 exact-scope 승인된 향후 Quoky UAT operator 실행에 Human keyboard action이 필요하다는 이유만으로
+  `HUMAN_REQUIRED`를 반환하지 않는다.
 - DEV_V1 acceptance criteria가 충족되면 Architect는 `MILESTONE_REACHED`로 멈추고 Product Owner에게
   UAT/debugging 제어를 반환한다.
 - 구체적 blocker가 없으면 승인된 Sprint 범위를 끝까지 수행한다.

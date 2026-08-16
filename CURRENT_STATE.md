@@ -5,10 +5,12 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** **QUIRKYBOT_DEV_V1 offline milestone reached; bounded development Live UAT entry authorized for
-  prevalidation**. Stage 2C Slice 3C was implemented in commit `683297f`, independently reviewed `PASS`, and closes
-  the final delegated offline implementation gap. Product Owner authorization permits Live UAT entry only for exact
-  HEAD `683297f4d0fdcd3785f8d709f307b00718f02da0`; execution has not started.
+- **Phase:** **QUIRKYBOT_DEV_V1 offline milestone reached; Live UAT prevalidation blocked on architecture and DB
+  authorization**. Stage 2C Slice 3C was implemented in commit `683297f`, independently reviewed `PASS`, and closes
+  the prior delegated offline implementation gap. The latest read-only UAT prevalidation passed development target,
+  Provider identity (`ollama-cli` / `llama3.1`), Discord development target, required Secret Read authorization, and
+  exact revision/branch/tracked-state checks. It returned `HUMAN_REQUIRED` with
+  `UAT_LIVE_ACTIVATION_ARCHITECTURE_REQUIRED` and `DB_MUTATION_NOT_AUTHORIZED`.
 - **Development governance:** `AUTONOMOUS_DEV_MODE = ENABLED`, `ACTIVE_MILESTONE = QUIRKYBOT_DEV_V1`. Product Owner
   retains product/UAT/debug/high-risk authority; Architect AI owns task-level delegated local approval, Codex builds,
   and Claude independently reviews. Strict external/destructive/Runtime/application-Provider gates remain Human-only.
@@ -25,17 +27,23 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 - **Composition:** `QUOKY_PROVIDER_ROUTING_MODE` is parsed exactly and defaults to `legacy`. The composition root
   injects the optional result of an app-private activation factory; legacy mode constructs no new routing Provider.
   Enabled mode remains startup-blocked before Provider construction because no 5C-EG enforcement exists.
-- **UAT authorization:** `QUIRKYBOT_DEV_V1_UAT_ENTRY = AUTHORIZED_AND_READY_FOR_PREVALIDATION` for development UAT at
-  exact HEAD `683297f4d0fdcd3785f8d709f307b00718f02da0`. Runtime Start, bounded application Provider/network execution,
+- **UAT authorization:** `QUIRKYBOT_DEV_V1_UAT_ENTRY = AUTHORIZED_AND_PREVALIDATED_WITH_BLOCKERS` for development UAT
+  at exact HEAD `e8ae634cbfc9776d3c256f88a4809cc460306b79`. Runtime Start, bounded application Provider/network execution,
   designated development Discord connection/actions, required secret read, and bounded Live UAT have independent
-  Product Owner approvals for this window. No authorization carries to another revision or Production.
+  Product Owner approvals for that revision only. This governance sync creates a new HEAD, so that authorization is
+  invalid after this commit and must not carry forward. Product Owner will authorize the final implementation/review
+  SHA again. No authorization carries to another revision or Production.
 - **Remaining Human-only boundaries:** DB/SQLite mutation or migration apply, Push, PR, Merge, Production/Release,
   destructive/unrelated cleanup, Runtime Restart, and Runtime Stop remain unapproved. Runtime Stop after UAT must
   return to the Product Owner.
-- **Live status:** UAT is authorized but `NOT_EXECUTED`; technical readiness is not inferred from approval. Exact
-  runtime/config, Provider identity/config, Discord development target, zero-DB-mutation plan, non-Production target,
-  and the existing 5C-EG/live-activation constraint must be reconciled read-only during prevalidation. Any material
-  mismatch is `HUMAN_REQUIRED` before Runtime Start.
+- **Live status:** UAT is `NOT_EXECUTED`. Latest prevalidation state is `HUMAN_REQUIRED`: passed checks are
+  `developmentNonProduction`, `providerIdentityIdentified`, `discordDevelopmentTargetIdentified`,
+  `secretReadAuthorizedIfRequired`, and exact revision/branch/clean state; blockers are
+  `UAT_LIVE_ACTIVATION_ARCHITECTURE_REQUIRED` and `DB_MUTATION_NOT_AUTHORIZED`. The 5C-EG architecture blocker is the
+  next milestone gap, not Live UAT execution. Architect must reevaluate the accepted `NO_FEASIBLE_ARCHITECTURE_YET` /
+  `BLOCKED_CARRYOVER` state and select the smallest architecture work that can make DEV_V1 Ollama live activation
+  safely reachable. If still infeasible, report the exact unresolved host/platform constraint. DB mutation remains a
+  separate unapproved Strict boundary.
 - **Execution facts:** actual Provider execution = `0`; Runtime/Discord/DB execution = `0`.
 
 ## Stage 2C — Slice 3C ExecutionPlan Integrity Binding Architecture
