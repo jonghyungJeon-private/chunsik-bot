@@ -101,22 +101,76 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
     expect(spec.task).not.toContain('"provenance":"CORE_RUNTIME"');
   });
 
-  it('instructs GENERAL_CHAT to preserve Korean for a Korean current User task', () => {
+  it('preserves full history while directing a Korean greeting to stay Korean and omit unrelated topics', () => {
+    const priorUser = 'Please explain the old deployment incident.';
+    const priorAssistant = 'The old deployment incident involved a stale worker.';
+    const projectBackground = 'Historical deployment notes for an unrelated project.';
     const spec = composer.compose(
       mkTask(Capability.GENERAL_CHAT, { requestText: '춘식아 안녕?' }),
-      emptyBundle(),
+      {
+        taskId: 't1',
+        backgroundResources: [
+          {
+            content: projectBackground,
+            provenance: 'PROJECT_MEMORY',
+            epistemicStatus: 'NON_AUTHORITATIVE_BACKGROUND',
+          },
+        ],
+        conversationTranscript: [
+          {
+            content: priorUser,
+            provenance: 'USER',
+            epistemicStatus: 'USER_CLAIM_OR_INTENT',
+          },
+          {
+            content: priorAssistant,
+            provenance: 'ASSISTANT',
+            epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
+          },
+        ],
+      },
     );
 
     expect(spec.task).toContain('춘식아 안녕?');
     expect(spec.developer).toContain(
-      'Reply in the language of the current User task, preserving its natural language and register',
+      'Respond in the same language as the current User message unless the User explicitly requests a different language',
     );
     expect(spec.developer).toContain(
-      'Do not introduce unrelated prior topics into a self-contained greeting or request',
+      'do not switch languages because transcript or background content uses another language',
+    );
+    expect(spec.developer).toContain(
+      'Treat a self-contained greeting or small-talk message as self-contained: prioritize a natural, direct response',
+    );
+    expect(spec.developer).toContain(
+      'do not mention, continue, summarize, or inject unrelated topics from prior conversations or background resources',
     );
     expect(spec.developer).toContain(
       'the final USER entry before the current Task is the immediately previous User message',
     );
+    expect(entriesFromSection(spec.context, '2. Background resources')).toEqual([
+      {
+        provenance: 'PROJECT_MEMORY',
+        epistemicStatus: 'NON_AUTHORITATIVE_BACKGROUND',
+        content: projectBackground,
+      },
+    ]);
+    expect(
+      entriesFromSection(
+        spec.context,
+        '3. Conversation transcript (continuity allowed; not authoritative external-state evidence)',
+      ),
+    ).toEqual([
+      {
+        provenance: 'USER',
+        epistemicStatus: 'USER_CLAIM_OR_INTENT',
+        content: priorUser,
+      },
+      {
+        provenance: 'ASSISTANT',
+        epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
+        content: priorAssistant,
+      },
+    ]);
   });
 
   it('renders one Task-derived canonical facts body twice for GENERAL_CHAT', () => {

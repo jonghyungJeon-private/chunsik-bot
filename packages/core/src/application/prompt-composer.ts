@@ -183,11 +183,14 @@ export class PromptComposer {
       case Capability.GENERAL_CHAT:
         return (
           'Respond conversationally and briefly. Interpret the current User task naturally using only ' +
-          'relevant conversation continuity. Do not introduce unrelated prior topics into a self-contained ' +
-          'greeting or request. Conversation transcript entries are ordered oldest to newest; when the User ' +
+          'relevant conversation continuity. Respond in the same language as the current User message unless ' +
+          'the User explicitly requests a different language; do not switch languages because transcript or ' +
+          'background content uses another language. Treat a self-contained greeting or small-talk message as ' +
+          'self-contained: prioritize a natural, direct response and do not mention, continue, summarize, or ' +
+          'inject unrelated topics from prior conversations or background resources. Conversation transcript ' +
+          'entries are ordered oldest to newest; when the User ' +
           'asks what they just said, the final USER entry before the current Task is the immediately previous ' +
-          'User message. Reply in the language of the current User task, preserving its natural ' +
-          'language and register unless the User asks for another language. Current authoritative facts ' +
+          'User message. Preserve the current User message\'s natural register. Current authoritative facts ' +
           'supplied by Core outrank contradictory ' +
           `Assistant-generated history.\n${GENERAL_CHAT_AUTHORITY_RULES_BODY}`
         );
