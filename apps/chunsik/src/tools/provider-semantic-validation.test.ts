@@ -344,8 +344,8 @@ describe('Stage 2A provider semantic validation fixtures', () => {
         renderedD.indexOf('platform \\"semantic-validation\\"') >= 0,
       staleDiscordTranscript: renderedD.indexOf('The current platform is discord.') >= 0,
       factsBeforeTranscript:
-        renderedD.indexOf('Current-turn facts supplied by Core') <
-        renderedD.indexOf('Conversation transcript'),
+        renderedD.indexOf('## 1. Current-turn facts supplied by Core') <
+        renderedD.indexOf('## 3. Conversation transcript'),
     }).toEqual({
       authoritativeSemanticValidation: true,
       staleDiscordTranscript: true,
