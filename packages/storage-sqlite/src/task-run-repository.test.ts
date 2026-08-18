@@ -2,8 +2,19 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Capability, TaskRunStatus } from '@chunsik/core';
-import type { TaskRun } from '@chunsik/core';
+import {
+  Capability,
+  ContextBuilder,
+  IntentType,
+  MemoryManager,
+  MemoryType,
+  PromptComposer,
+  PromptRenderer,
+  RiskLevel,
+  TaskRunStatus,
+  TaskStatus,
+} from '@chunsik/core';
+import type { MemoryRecord, Task, TaskRun, VectorProvider } from '@chunsik/core';
 import { SqliteStorageProvider } from './index';
 
 const dirs: string[] = [];
@@ -56,6 +67,69 @@ describe('SqliteTaskRunRepository optional metadata compatibility', () => {
 
     const legacy = await store.taskRuns.get('legacy-run');
     expect(legacy).not.toHaveProperty('metadata');
+    await store.close();
+  });
+
+  it('feeds deterministic SQLite history and GENERAL_CHAT instructions into the rendered provider request', async () => {
+    const store = await freshStore();
+    const sessionId = 'runtime-session';
+    const timestamp = '2026-08-18T00:00:00.000Z';
+    const records: MemoryRecord[] = Array.from({ length: 12 }, (_, index) => ({
+      id: `memory-${index}`,
+      type: MemoryType.SHORT_TERM,
+      scope: { sessionId, channelId: 'discord-channel', userId: 'discord-user' },
+      content: index === 10 ? '파란 하늘이라고 말했어' : `old-topic-${index}`,
+      metadata: { role: index % 2 === 0 ? 'user' : 'assistant' },
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }));
+    for (const record of records) await store.memories.save(record);
+
+    const vector = {} as VectorProvider;
+    const memory = new MemoryManager(store, vector);
+    const task: Task = {
+      id: 'runtime-task',
+      title: '내가 방금 뭐라고 했지?',
+      description: '내가 방금 뭐라고 했지?',
+      status: TaskStatus.PENDING,
+      intent: {
+        type: IntentType.CHAT,
+        capability: Capability.GENERAL_CHAT,
+        confidence: 1,
+        requiresWork: true,
+        summary: '내가 방금 뭐라고 했지?',
+      },
+      riskLevel: RiskLevel.LOW,
+      context: {
+        platform: 'discord',
+        channelId: 'discord-channel',
+        userId: 'discord-user',
+      },
+      sessionId,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+
+    const bundle = await new ContextBuilder(memory).build(task);
+    expect(bundle.conversationTranscript.map((entry) => entry.content)).toEqual([
+      ...Array.from({ length: 8 }, (_, index) => `old-topic-${index + 2}`),
+      '파란 하늘이라고 말했어',
+      'old-topic-11',
+    ]);
+    expect(
+      bundle.conversationTranscript.filter((entry) => entry.provenance === 'USER').at(-1)?.content,
+    ).toBe('파란 하늘이라고 말했어');
+
+    const request = new PromptRenderer().render(new PromptComposer().compose(task, bundle), {
+      capability: Capability.GENERAL_CHAT,
+    });
+    expect(request.prompt).toContain('Reply in the language of the current User task');
+    expect(request.prompt).toContain(
+      'the final USER entry before the current Task is the immediately previous User message',
+    );
+    expect(request.prompt).toContain('Do not introduce unrelated prior topics');
+    expect(request.prompt).toContain('파란 하늘이라고 말했어');
+    expect(request.prompt).toContain('내가 방금 뭐라고 했지?');
     await store.close();
   });
 });

@@ -401,7 +401,16 @@ class SqliteMemoryRepository extends JsonRepository<MemoryRecord> implements Mem
       params.push(type);
     }
     const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
-    const rows = this.db.prepare(`SELECT data FROM memories ${where}`).all(...params) as Row[];
+    // MemoryManager/ContextBuilder consume SHORT_TERM records in persistence order when
+    // legacy rows share the same createdAt value. SQLite does not guarantee row order
+    // without ORDER BY, so make the domain timestamp primary and insertion order the
+    // deterministic tie-breaker. The JSON document remains the domain mapping source.
+    const rows = this.db
+      .prepare(
+        `SELECT data FROM memories ${where}
+         ORDER BY json_extract(data, '$.createdAt') ASC, rowid ASC`,
+      )
+      .all(...params) as Row[];
     return rows.map((r) => JSON.parse(r.data) as MemoryRecord);
   }
 }

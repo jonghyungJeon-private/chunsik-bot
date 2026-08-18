@@ -144,9 +144,8 @@ export class MemoryManager {
     const records = await this.storage.memories.findByScope(scope, MemoryType.SHORT_TERM);
     return records
       .slice()
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .slice(0, limit)
-      .reverse();
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      .slice(-limit);
   }
 
   /**

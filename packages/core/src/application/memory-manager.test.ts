@@ -83,6 +83,28 @@ describe('MemoryManager short-term memory (ADR-0017)', () => {
     ]);
   });
 
+  it('uses repository persistence order as the stable tie-break for legacy equal timestamps', async () => {
+    const { storage, mem } = fakeStorage();
+    const mm = new MemoryManager(storage, {} as VectorProvider);
+    for (let i = 0; i < 12; i += 1) {
+      mem.push({
+        id: `legacy-${i}`,
+        type: MemoryType.SHORT_TERM,
+        scope: { sessionId: 'S1' },
+        content: `legacy-turn-${i}`,
+        metadata: { role: i % 2 === 0 ? 'user' : 'assistant' },
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      });
+    }
+
+    expect((await mm.recentShortTerm({ sessionId: 'S1' }, 3)).map((r) => r.content)).toEqual([
+      'legacy-turn-9',
+      'legacy-turn-10',
+      'legacy-turn-11',
+    ]);
+  });
+
   it('assigns strictly increasing creation times to immediately persisted turns', async () => {
     const { storage, mem } = fakeStorage();
     const mm = new MemoryManager(storage, {} as VectorProvider);

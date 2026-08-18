@@ -111,6 +111,12 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
     expect(spec.developer).toContain(
       'Reply in the language of the current User task, preserving its natural language and register',
     );
+    expect(spec.developer).toContain(
+      'Do not introduce unrelated prior topics into a self-contained greeting or request',
+    );
+    expect(spec.developer).toContain(
+      'the final USER entry before the current Task is the immediately previous User message',
+    );
   });
 
   it('renders one Task-derived canonical facts body twice for GENERAL_CHAT', () => {
