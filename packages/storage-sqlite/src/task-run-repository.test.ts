@@ -123,11 +123,15 @@ describe('SqliteTaskRunRepository optional metadata compatibility', () => {
     const request = new PromptRenderer().render(new PromptComposer().compose(task, bundle), {
       capability: Capability.GENERAL_CHAT,
     });
-    expect(request.prompt).toContain('Reply in the language of the current User task');
+    expect(request.prompt).toContain(
+      'Respond in the same language as the current User message unless the User explicitly requests a different language',
+    );
     expect(request.prompt).toContain(
       'the final USER entry before the current Task is the immediately previous User message',
     );
-    expect(request.prompt).toContain('Do not introduce unrelated prior topics');
+    expect(request.prompt).toContain(
+      'do not mention, continue, summarize, or inject unrelated topics from prior conversations or background resources',
+    );
     expect(request.prompt).toContain('파란 하늘이라고 말했어');
     expect(request.prompt).toContain('내가 방금 뭐라고 했지?');
     await store.close();
