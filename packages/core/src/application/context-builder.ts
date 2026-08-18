@@ -34,7 +34,10 @@ export class ContextBuilder {
         };
 
     const fetched = await this.memory.recentShortTerm(scope, RECENT_LIMIT + excludeMemoryIds.length);
-    const recent = fetched.filter((r) => !excludeMemoryIds.includes(r.id)).slice(-RECENT_LIMIT);
+    const recent = fetched
+      .filter((r) => !excludeMemoryIds.includes(r.id))
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      .slice(-RECENT_LIMIT);
 
     const bundle: ContextBundle = {
       taskId: task.id,

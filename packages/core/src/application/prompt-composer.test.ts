@@ -101,6 +101,18 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
     expect(spec.task).not.toContain('"provenance":"CORE_RUNTIME"');
   });
 
+  it('instructs GENERAL_CHAT to preserve Korean for a Korean current User task', () => {
+    const spec = composer.compose(
+      mkTask(Capability.GENERAL_CHAT, { requestText: '춘식아 안녕?' }),
+      emptyBundle(),
+    );
+
+    expect(spec.task).toContain('춘식아 안녕?');
+    expect(spec.developer).toContain(
+      'Reply in the language of the current User task, preserving its natural language and register',
+    );
+  });
+
   it('renders one Task-derived canonical facts body twice for GENERAL_CHAT', () => {
     const task = mkTask(Capability.GENERAL_CHAT, {
       platform: 'matrix',

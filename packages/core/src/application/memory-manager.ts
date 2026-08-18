@@ -52,7 +52,17 @@ export class MemoryManager {
     context: ConversationContext,
     sessionId?: Id,
   ): Promise<MemoryRecord> {
-    const ts = now();
+    const persistenceScope: MemoryScope = sessionId
+      ? { sessionId }
+      : {
+          channelId: context.channelId,
+          ...(context.threadId ? { threadId: context.threadId } : {}),
+        };
+    const existing = await this.storage.memories.findByScope(
+      persistenceScope,
+      MemoryType.SHORT_TERM,
+    );
+    const ts = MemoryManager.nextPersistenceTimestamp(existing);
     const record: MemoryRecord = {
       id: newId(),
       type: MemoryType.SHORT_TERM,
@@ -134,8 +144,23 @@ export class MemoryManager {
     const records = await this.storage.memories.findByScope(scope, MemoryType.SHORT_TERM);
     return records
       .slice()
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-      .slice(-limit);
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, limit)
+      .reverse();
+  }
+
+  /**
+   * Preserve persistence order even when multiple turns arrive within the same
+   * clock millisecond. Context retrieval can then select the newest records by
+   * creation time without depending on repository row order.
+   */
+  private static nextPersistenceTimestamp(existing: MemoryRecord[]): string {
+    const wallClock = Date.parse(now());
+    const latestPersisted = existing.reduce((latest, record) => {
+      const parsed = Date.parse(record.createdAt);
+      return Number.isNaN(parsed) ? latest : Math.max(latest, parsed);
+    }, Number.NEGATIVE_INFINITY);
+    return new Date(Math.max(wallClock, latestPersisted + 1)).toISOString();
   }
 
   /**

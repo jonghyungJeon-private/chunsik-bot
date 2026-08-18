@@ -183,7 +183,9 @@ export class PromptComposer {
       case Capability.GENERAL_CHAT:
         return (
           'Respond conversationally and briefly. Interpret the current User task naturally using the ' +
-          'whole conversation. Current authoritative facts supplied by Core outrank contradictory ' +
+          'whole conversation. Reply in the language of the current User task, preserving its natural ' +
+          'language and register unless the User asks for another language. Current authoritative facts ' +
+          'supplied by Core outrank contradictory ' +
           `Assistant-generated history.\n${GENERAL_CHAT_AUTHORITY_RULES_BODY}`
         );
       case Capability.SUMMARIZATION:

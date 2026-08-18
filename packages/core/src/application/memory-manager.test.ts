@@ -60,6 +60,39 @@ describe('MemoryManager short-term memory (ADR-0017)', () => {
     expect((await mm.recentShortTerm({ sessionId: 'S2' }, 10)).map((r) => r.content)).toEqual(['other']);
   });
 
+  it('selects the newest records by creation time before restoring oldest→newest context order', async () => {
+    const { storage, mem } = fakeStorage();
+    const mm = new MemoryManager(storage, {} as VectorProvider);
+    for (let i = 0; i < 12; i += 1) {
+      mem.push({
+        id: `m-${i}`,
+        type: MemoryType.SHORT_TERM,
+        scope: { sessionId: 'S1' },
+        content: `turn-${i}`,
+        metadata: { role: 'user' },
+        createdAt: `2026-01-01T00:00:${String(i).padStart(2, '0')}.000Z`,
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      });
+    }
+    mem.reverse();
+
+    expect((await mm.recentShortTerm({ sessionId: 'S1' }, 3)).map((r) => r.content)).toEqual([
+      'turn-9',
+      'turn-10',
+      'turn-11',
+    ]);
+  });
+
+  it('assigns strictly increasing creation times to immediately persisted turns', async () => {
+    const { storage, mem } = fakeStorage();
+    const mm = new MemoryManager(storage, {} as VectorProvider);
+    await mm.recordShortTerm(msg('a', 'immediately previous'), 'S1');
+    await mm.recordShortTerm(msg('b', 'current'), 'S1');
+
+    expect(mem[1]!.createdAt > mem[0]!.createdAt).toBe(true);
+    expect((await mm.recentShortTerm({ sessionId: 'S1' }, 1))[0]?.content).toBe('current');
+  });
+
   it(`prunes a session to the newest ${MAX_SESSION_SHORT_TERM} SHORT_TERM memories`, async () => {
     const { storage, mem } = fakeStorage();
     const mm = new MemoryManager(storage, {} as VectorProvider);

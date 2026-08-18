@@ -6824,6 +6824,71 @@ function routedResultOf(status: ProviderGatewayTerminalStatus): RuntimeProviderR
 }
 
 describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => {
+  it('persists the current inbound before context build and exposes it as the latest User turn on the next request', async () => {
+    const { storage } = makeTaskStorage();
+    const { deps: base } = makeDeps({
+      intent: intentOf(Capability.GENERAL_CHAT, IntentType.CHAT, true),
+    });
+    const persisted: Array<{ id: string; role: 'user' | 'assistant'; content: string }> = [];
+    const builtTranscripts: string[][] = [];
+    let nextMemoryId = 0;
+    const deps: ConversationRuntimeDeps = {
+      ...base,
+      tasks: new TaskManager(storage),
+      memory: {
+        async recordShortTerm(message) {
+          const record = { id: `user-${nextMemoryId++}`, role: 'user' as const, content: message.text };
+          persisted.push(record);
+          return record;
+        },
+        async recordAssistant(text) {
+          persisted.push({ id: `assistant-${nextMemoryId++}`, role: 'assistant', content: text });
+          return undefined;
+        },
+        async recordToolMemory() { return undefined; },
+      },
+      contextBuilder: {
+        async build(task, excludedIds) {
+          const transcript = persisted.filter((record) => !excludedIds.includes(record.id));
+          builtTranscripts.push(transcript.map((record) => `${record.role}:${record.content}`));
+          return {
+            taskId: task.id,
+            conversationTranscript: transcript.map((record) => ({
+              content: record.content,
+              provenance: record.role === 'user' ? 'USER' : 'ASSISTANT',
+              epistemicStatus:
+                record.role === 'user'
+                  ? 'USER_CLAIM_OR_INTENT'
+                  : 'ASSISTANT_NON_AUTHORITATIVE',
+            })),
+            backgroundResources: [],
+          };
+        },
+      },
+      router: {
+        async select() {
+          return {
+            id: 'history-test-provider',
+            capabilities: [{ capability: Capability.GENERAL_CHAT, priority: 1 }],
+            async isAvailable() { return true; },
+            async execute() { return { text: '확인했어요.', artifacts: [] }; },
+          };
+        },
+      },
+    };
+    const runtime = new ConversationRuntime(deps);
+
+    await runtime.handle(messageOf('내가 방금 남긴 문장은 파란 하늘이야'));
+    await runtime.handle(messageOf('내가 방금 뭐라고 했지?'));
+
+    expect(builtTranscripts[0]).toEqual([]);
+    expect(builtTranscripts[1]).toContain('user:내가 방금 남긴 문장은 파란 하늘이야');
+    expect(builtTranscripts[1]).not.toContain('user:내가 방금 뭐라고 했지?');
+    expect(
+      builtTranscripts[1]?.filter((entry) => entry.startsWith('user:')).at(-1),
+    ).toBe('user:내가 방금 남긴 문장은 파란 하늘이야');
+  });
+
   it('preserves the generic conversation platform from inbound context through task creation into prompt composition', async () => {
     const { storage } = makeTaskStorage();
     const intent = {

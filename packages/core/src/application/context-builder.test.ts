@@ -202,6 +202,34 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
     ).toBe(true);
   });
 
+  it('orders an unordered retrieval by creation time before applying the N=10 cap', async () => {
+    const records = Array.from({ length: 12 }, (_, index) =>
+      rec(String(index), 'user', `turn-${index}`),
+    );
+    const memory = {
+      recentShortTerm: async () => [
+        records[11]!,
+        records[1]!,
+        records[8]!,
+        records[0]!,
+        records[10]!,
+        records[3]!,
+        records[7]!,
+        records[2]!,
+        records[9]!,
+        records[4]!,
+        records[6]!,
+        records[5]!,
+      ],
+    } as unknown as MemoryManager;
+
+    const bundle = await new ContextBuilder(memory).build(taskWith({ sessionId: 'S1' }));
+
+    expect(bundle.conversationTranscript.map((entry) => entry.content)).toEqual(
+      Array.from({ length: 10 }, (_, index) => `turn-${index + 2}`),
+    );
+  });
+
   it('requests enough records to preserve N=10 after current-inbound exclusion', async () => {
     let requestedLimit: number | undefined;
     const memory = {
