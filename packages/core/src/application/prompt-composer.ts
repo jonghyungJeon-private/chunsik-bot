@@ -182,10 +182,12 @@ export class PromptComposer {
     switch (capability) {
       case Capability.GENERAL_CHAT:
         return (
-          'Respond conversationally and briefly. Interpret the current User task naturally using only ' +
-          'relevant conversation continuity. Respond in the same language as the current User message unless ' +
-          'the User explicitly requests a different language; do not switch languages because transcript or ' +
-          'background content uses another language. Treat a self-contained greeting or small-talk message as ' +
+          'MANDATORY LANGUAGE RULE: Respond in the same language the user used in their current message. ' +
+          'Your entire response must use that language unless the user explicitly requests a different language ' +
+          'in their current message. Never choose the response language from transcript or background content. ' +
+          'For a Korean current message, respond naturally in Korean. Respond conversationally and briefly. ' +
+          'Interpret the current User task naturally using only relevant conversation continuity. ' +
+          'Treat a self-contained greeting or small-talk message as ' +
           'self-contained: prioritize a natural, direct response and do not mention, continue, summarize, or ' +
           'inject unrelated topics from prior conversations or background resources. Conversation transcript ' +
           'entries are ordered oldest to newest; when the User ' +

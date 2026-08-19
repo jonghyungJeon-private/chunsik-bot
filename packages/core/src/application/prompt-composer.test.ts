@@ -132,11 +132,17 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
     );
 
     expect(spec.task).toContain('춘식아 안녕?');
-    expect(spec.developer).toContain(
-      'Respond in the same language as the current User message unless the User explicitly requests a different language',
+    expect(spec.developer).toMatch(
+      /^MANDATORY LANGUAGE RULE: Respond in the same language the user used in their current message\./,
     );
     expect(spec.developer).toContain(
-      'do not switch languages because transcript or background content uses another language',
+      'Your entire response must use that language unless the user explicitly requests a different language in their current message.',
+    );
+    expect(spec.developer).toContain(
+      'Never choose the response language from transcript or background content.',
+    );
+    expect(spec.developer).toContain(
+      'For a Korean current message, respond naturally in Korean.',
     );
     expect(spec.developer).toContain(
       'Treat a self-contained greeting or small-talk message as self-contained: prioritize a natural, direct response',
@@ -146,6 +152,9 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
     );
     expect(spec.developer).toContain(
       'the final USER entry before the current Task is the immediately previous User message',
+    );
+    expect(spec.developer.indexOf('MANDATORY LANGUAGE RULE')).toBeLessThan(
+      spec.developer.indexOf('Conversation transcript entries are ordered'),
     );
     expect(entriesFromSection(spec.context, '2. Background resources')).toEqual([
       {

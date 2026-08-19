@@ -124,7 +124,10 @@ describe('SqliteTaskRunRepository optional metadata compatibility', () => {
       capability: Capability.GENERAL_CHAT,
     });
     expect(request.prompt).toContain(
-      'Respond in the same language as the current User message unless the User explicitly requests a different language',
+      '# Developer\nMANDATORY LANGUAGE RULE: Respond in the same language the user used in their current message.',
+    );
+    expect(request.prompt).toContain(
+      'Your entire response must use that language unless the user explicitly requests a different language in their current message.',
     );
     expect(request.prompt).toContain(
       'the final USER entry before the current Task is the immediately previous User message',
