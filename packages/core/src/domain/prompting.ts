@@ -18,6 +18,10 @@ export type EpistemicStatus =
 
 /** A persisted conversation turn, kept structured until prompt composition. */
 export interface ConversationTranscriptEntry {
+  /** One-based conversational turn number; a User message and its Assistant reply share it. */
+  turnNumber?: number;
+  /** Explicit conversational role, retained separately from provenance for provider rendering. */
+  role?: 'user' | 'assistant' | 'unknown';
   content: string;
   provenance: 'USER' | 'ASSISTANT' | 'LEGACY_UNKNOWN';
   epistemicStatus:

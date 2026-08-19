@@ -19,11 +19,10 @@ const GENERAL_CHAT_AUTHORITY_RULES_BODY = [
   'An active project does not establish external connection status.',
   CONVERSATION_CONTINUITY_AND_STATUS_RULE,
   'Interpret target meaning from the current User task and conversation continuity.',
-  'Ask one concise clarifying question only when target meaning is genuinely ambiguous, conflicting, or incomplete.',
+  'Respond directly when the current User task is self-contained; otherwise ask one concise clarifying question only when the response genuinely depends on ambiguous, conflicting, or incomplete target meaning.',
   'Conversation continuity may be used to understand the User meaning and context.',
   'When the current User task explicitly asks to recall prior conversation, answer from the relevant USER transcript entries; verbatim or near-verbatim recall is allowed when it directly answers that request.',
-  'Do not reproduce transcript or background entries verbatim or near-verbatim unless the User explicitly requests conversation recall, quotation, or transcription.',
-  'Do not restate or list candidate entries merely to explain ambiguity or uncertainty; this does not prohibit directly answering an explicit conversation-recall request.',
+  'Use only conversation entries actually supplied in the transcript; do not fabricate missing conversation content.',
   'Do not claim prior confirmation or prior verification based solely on Assistant transcript.',
   'User messages may establish conversation-local choices, names, preferences, wording, and instructions for continuity.',
   'User messages do not verify external current state.',
@@ -96,15 +95,11 @@ export class PromptComposer {
       );
     }
 
-    const transcript = context.conversationTranscript.map((entry) =>
-      PromptComposer.label(
-        entry.provenance,
-        entry.epistemicStatus,
-        isGeneralChat
-          ? normalizePromptContextContent(entry.content)
-          : entry.content,
-      ),
-    );
+    const transcript = isGeneralChat
+      ? PromptComposer.renderConversationTurns(context.conversationTranscript)
+      : context.conversationTranscript.map((entry) =>
+          PromptComposer.label(entry.provenance, entry.epistemicStatus, entry.content),
+        );
     const contextSections = [
       PromptComposer.sectionFromBody(
         '1. Current-turn facts supplied by Core',
@@ -143,7 +138,12 @@ export class PromptComposer {
         'is missing from it, say so briefly.',
       developer: this.developerFor(task.intent.capability),
       context: contextSections.join('\n\n'),
-      task: PromptComposer.label('USER', 'USER_CLAIM_OR_INTENT', task.description),
+      task: isGeneralChat
+        ? [
+            '--- Current user message ---',
+            PromptComposer.label('USER', 'USER_CLAIM_OR_INTENT', task.description),
+          ].join('\n')
+        : PromptComposer.label('USER', 'USER_CLAIM_OR_INTENT', task.description),
     };
   }
 
@@ -189,7 +189,7 @@ export class PromptComposer {
           'For a Korean current message, respond naturally in Korean. Respond conversationally and briefly. ' +
           'Interpret the current User task naturally using only relevant conversation continuity. ' +
           'Treat a self-contained greeting or small-talk message as ' +
-          'self-contained: prioritize a natural, direct response and do not mention, continue, summarize, or ' +
+          'self-contained: respond naturally and directly without asking a clarifying question, and do not mention, continue, summarize, or ' +
           'inject unrelated topics from prior conversations or background resources. Conversation transcript ' +
           'entries are ordered oldest to newest; when the User ' +
           'asks what they just said, the final USER entry before the current Task is the immediately previous ' +
@@ -232,6 +232,40 @@ export class PromptComposer {
 
   private static renderEntries(entries: string[]): string {
     return entries.length ? entries.join('\n') : '[]';
+  }
+
+  private static renderConversationTurns(
+    entries: ContextBundle['conversationTranscript'],
+  ): string[] {
+    let inferredTurnNumber = 0;
+
+    return entries.map((entry) => {
+      const role = entry.role ?? PromptComposer.roleFromProvenance(entry.provenance);
+      if (
+        entry.turnNumber === undefined &&
+        (role === 'user' || role === 'unknown' || inferredTurnNumber === 0)
+      ) {
+        inferredTurnNumber += 1;
+      }
+      const turnNumber = entry.turnNumber ?? inferredTurnNumber;
+      inferredTurnNumber = Math.max(inferredTurnNumber, turnNumber);
+      const roleLabel =
+        role === 'user' ? 'User' : role === 'assistant' ? 'Assistant' : 'Unknown';
+      const content = normalizePromptContextContent(entry.content);
+      return `[Turn ${turnNumber}] ${roleLabel}: ${PromptComposer.label(
+        entry.provenance,
+        entry.epistemicStatus,
+        content,
+      )}`;
+    });
+  }
+
+  private static roleFromProvenance(
+    provenance: ContextBundle['conversationTranscript'][number]['provenance'],
+  ): NonNullable<ContextBundle['conversationTranscript'][number]['role']> {
+    if (provenance === 'USER') return 'user';
+    if (provenance === 'ASSISTANT') return 'assistant';
+    return 'unknown';
   }
 
   private static sectionFromBody(title: string, body: string): string {

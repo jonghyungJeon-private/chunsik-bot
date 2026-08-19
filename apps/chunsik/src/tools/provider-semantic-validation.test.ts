@@ -3147,11 +3147,9 @@ describe('compiled dist path', () => {
     // Prompt contract is compiled through the same core PromptComposer.
     expect(distPrompt).toBe(renderScenario(fixture).prompt);
     expect(distPrompt).toContain(
-      'Do not reproduce transcript or background entries verbatim or near-verbatim',
+      'Use only conversation entries actually supplied in the transcript; do not fabricate missing conversation content.',
     );
-    expect(distPrompt).toContain(
-      'Do not restate or list candidate entries merely to explain ambiguity or uncertainty; this does not prohibit directly answering an explicit conversation-recall request.',
-    );
+    expect(distPrompt).not.toContain('Do not reproduce transcript or background entries');
     expect(distPrompt).toContain(
       'Conversation continuity may be used to understand the User meaning and context.',
     );

@@ -6906,9 +6906,13 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
         content: '내가 방금 남긴 문장은 파란 하늘이야',
       }),
     );
+    expect(transcriptBody).toContain('[Turn 1] User:');
     expect(transcriptBody).not.toContain('내가 방금 뭐라고 했지?');
     expect(recallPrompt).toContain(
       'When the current User task explicitly asks to recall prior conversation, answer from the relevant USER transcript entries',
+    );
+    expect(recallPrompt.slice(recallPrompt.indexOf('# Task'))).toContain(
+      '--- Current user message ---',
     );
     expect(recallPrompt.slice(recallPrompt.indexOf('# Task'))).toContain(
       '내가 방금 뭐라고 했지?',
@@ -7120,11 +7124,12 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
       ),
       taskEnvelopeMatches:
         composed?.task ===
-        JSON.stringify({
-          provenance: 'USER',
-          epistemicStatus: 'USER_CLAIM_OR_INTENT',
-          content: currentRequest,
-        }),
+        '--- Current user message ---\n' +
+          JSON.stringify({
+            provenance: 'USER',
+            epistemicStatus: 'USER_CLAIM_OR_INTENT',
+            content: currentRequest,
+          }),
       taskNotPromotedToCore: !composed?.task.includes('"provenance":"CORE_RUNTIME"'),
     };
     expect(safeComposedContract).toEqual({
@@ -7150,6 +7155,8 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
     expect(authorityBoundaryIndex).toBeGreaterThan(transcriptIndex);
     expect(currentTaskIndex).toBeGreaterThan(authorityBoundaryIndex);
     expect(transcriptBody.includes(currentRequest)).toBe(false);
+    expect(transcriptBody).toContain('[Turn 1] User:');
+    expect(transcriptBody).toContain('[Turn 1] Assistant:');
     let priorTranscriptIndex = transcriptIndex;
     for (const entry of stageCTranscript) {
       const renderedEntry = JSON.stringify({
@@ -7209,6 +7216,7 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
     });
     const expectedTask =
       '# Task\n' +
+      '--- Current user message ---\n' +
       JSON.stringify({
         provenance: 'USER',
         epistemicStatus: 'USER_CLAIM_OR_INTENT',
@@ -7217,11 +7225,14 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
     const firstRequestIndex = providerPrompt.indexOf(currentRequest);
     expect({
       taskEnvelopeMatches: providerPrompt.slice(currentTaskIndex) === expectedTask,
+      currentMessageMarkerAfterHistory:
+        providerPrompt.indexOf('--- Current user message ---') > authorityBoundaryIndex,
       currentRequestPresent: firstRequestIndex >= 0,
       currentRequestOccursOnce:
         firstRequestIndex >= 0 && firstRequestIndex === providerPrompt.lastIndexOf(currentRequest),
     }).toEqual({
       taskEnvelopeMatches: true,
+      currentMessageMarkerAfterHistory: true,
       currentRequestPresent: true,
       currentRequestOccursOnce: true,
     });
@@ -7298,11 +7309,12 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
     expect(createdTask?.description === requestText).toBe(true);
     expect(
       composed?.task ===
-        JSON.stringify({
-          provenance: 'USER',
-          epistemicStatus: 'USER_CLAIM_OR_INTENT',
-          content: requestText,
-        }),
+        '--- Current user message ---\n' +
+          JSON.stringify({
+            provenance: 'USER',
+            epistemicStatus: 'USER_CLAIM_OR_INTENT',
+            content: requestText,
+          }),
     ).toBe(true);
     expect(deliveredRequest?.prompt.includes('PHASE_B_TAIL')).toBe(true);
     expect(excludedMemoryIds).toEqual(['mem-1']);

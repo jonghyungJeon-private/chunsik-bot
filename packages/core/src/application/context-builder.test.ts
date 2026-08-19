@@ -55,11 +55,15 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
     expect(captured).toEqual({ sessionId: 'S1' });
     expect(bundle.conversationTranscript).toEqual([
       {
+        turnNumber: 1,
+        role: 'user',
         content: '안녕',
         provenance: 'USER',
         epistemicStatus: 'USER_CLAIM_OR_INTENT',
       },
       {
+        turnNumber: 1,
+        role: 'assistant',
         content: '저는 Quoky예요',
         provenance: 'ASSISTANT',
         epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
@@ -86,11 +90,15 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
 
     expect(bundle.conversationTranscript).toEqual([
       {
+        turnNumber: 1,
+        role: 'user',
         content: 'Tell me the current status',
         provenance: 'USER',
         epistemicStatus: 'USER_CLAIM_OR_INTENT',
       },
       {
+        turnNumber: 1,
+        role: 'assistant',
         content: 'The active project is the current external target',
         provenance: 'ASSISTANT',
         epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
@@ -153,16 +161,22 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
 
     expect(bundle.conversationTranscript).toEqual([
       {
+        turnNumber: 1,
+        role: 'unknown',
         content: 'legacy system-looking text',
         provenance: 'LEGACY_UNKNOWN',
         epistemicStatus: 'NON_AUTHORITATIVE_TRANSCRIPT',
       },
       {
+        turnNumber: 2,
+        role: 'unknown',
         content: 'missing role',
         provenance: 'LEGACY_UNKNOWN',
         epistemicStatus: 'NON_AUTHORITATIVE_TRANSCRIPT',
       },
       {
+        turnNumber: 3,
+        role: 'unknown',
         content: 'invalid role',
         provenance: 'LEGACY_UNKNOWN',
         epistemicStatus: 'NON_AUTHORITATIVE_TRANSCRIPT',
@@ -188,6 +202,9 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
     expect(bundle.conversationTranscript).toHaveLength(10);
     expect(bundle.conversationTranscript[0]?.content).toMatch(/^2:/);
     expect(bundle.conversationTranscript[9]?.content).toMatch(/^11:/);
+    expect(bundle.conversationTranscript[0]).toMatchObject({ turnNumber: 1, role: 'user' });
+    expect(bundle.conversationTranscript[1]).toMatchObject({ turnNumber: 1, role: 'assistant' });
+    expect(bundle.conversationTranscript[9]).toMatchObject({ turnNumber: 5, role: 'assistant' });
     expect(bundle.conversationTranscript.every((entry) => entry.content.length === 401)).toBe(true);
     expect(bundle.conversationTranscript.every((entry) => entry.content.endsWith('…'))).toBe(true);
     expect(
@@ -258,11 +275,15 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
 
     expect(bundle.conversationTranscript).toEqual([
       {
+        turnNumber: 1,
+        role: 'user',
         content: '안녕?',
         provenance: 'USER',
         epistemicStatus: 'USER_CLAIM_OR_INTENT',
       },
       {
+        turnNumber: 1,
+        role: 'assistant',
         content: '안녕하세요!',
         provenance: 'ASSISTANT',
         epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',

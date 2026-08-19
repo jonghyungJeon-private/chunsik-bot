@@ -41,6 +41,9 @@ const envelope = (
   content: string,
 ): string => JSON.stringify({ provenance, epistemicStatus, content });
 
+const currentTaskEnvelope = (content: string): string =>
+  `--- Current user message ---\n${envelope('USER', 'USER_CLAIM_OR_INTENT', content)}`;
+
 const sectionBody = (context: string, title: string): string => {
   const marker = `## ${title}\n`;
   const start = context.indexOf(marker);
@@ -71,8 +74,8 @@ type PromptEntry = {
 const entriesFromSection = (context: string, title: string): PromptEntry[] =>
   sectionBody(context, title)
     .split('\n')
-    .filter((line) => line.startsWith('{'))
-    .map((line) => JSON.parse(line) as PromptEntry);
+    .filter((line) => line.includes('{'))
+    .map((line) => JSON.parse(line.slice(line.indexOf('{'))) as PromptEntry);
 
 describe('PromptComposer (ADR-0063 precedence contract)', () => {
   const composer = new PromptComposer();
@@ -95,9 +98,7 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
     expect(transcript).toBeGreaterThan(background);
     expect(authorityBoundary).toBeGreaterThan(transcript);
     expect(spec.system).toContain('The final task contains the current User input');
-    expect(spec.task).toBe(
-      envelope('USER', 'USER_CLAIM_OR_INTENT', 'hello there'),
-    );
+    expect(spec.task).toBe(currentTaskEnvelope('hello there'));
     expect(spec.task).not.toContain('"provenance":"CORE_RUNTIME"');
   });
 
@@ -132,6 +133,7 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
     );
 
     expect(spec.task).toContain('춘식아 안녕?');
+    expect(spec.task).toMatch(/^--- Current user message ---\n/);
     expect(spec.developer).toMatch(
       /^MANDATORY LANGUAGE RULE: Respond in the same language the user used in their current message\./,
     );
@@ -145,7 +147,7 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
       'For a Korean current message, respond naturally in Korean.',
     );
     expect(spec.developer).toContain(
-      'Treat a self-contained greeting or small-talk message as self-contained: prioritize a natural, direct response',
+      'Treat a self-contained greeting or small-talk message as self-contained: respond naturally and directly without asking a clarifying question',
     );
     expect(spec.developer).toContain(
       'do not mention, continue, summarize, or inject unrelated topics from prior conversations or background resources',
@@ -180,6 +182,12 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
         content: priorAssistant,
       },
     ]);
+    const transcript = sectionBody(
+      spec.context,
+      '3. Conversation transcript (continuity allowed; not authoritative external-state evidence)',
+    );
+    expect(transcript).toContain('[Turn 1] User:');
+    expect(transcript).toContain('[Turn 1] Assistant:');
   });
 
   it('renders one Task-derived canonical facts body twice for GENERAL_CHAT', () => {
@@ -241,7 +249,31 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
     expect(spec.developer).toBe('Summarize the provided content faithfully and concisely.');
   });
 
-  it('states the non-reproduction boundary while keeping continuity usable', () => {
+  it.each([
+    Capability.PROJECT_ANALYSIS,
+    Capability.CODE_IMPLEMENTATION,
+    Capability.TEST_EXECUTION,
+  ])('keeps legacy ContextBundle consumers renderable for %s', (capability) => {
+    const spec = composer.compose(mkTask(capability), {
+      taskId: 't1',
+      backgroundResources: [],
+      conversationTranscript: [
+        {
+          content: 'legacy-compatible history',
+          provenance: 'USER',
+          epistemicStatus: 'USER_CLAIM_OR_INTENT',
+        },
+      ],
+    });
+
+    expect(spec.context).toContain(
+      envelope('USER', 'USER_CLAIM_OR_INTENT', 'legacy-compatible history'),
+    );
+    expect(spec.context).not.toContain('[Turn ');
+    expect(spec.task).toBe(envelope('USER', 'USER_CLAIM_OR_INTENT', 'hello there'));
+  });
+
+  it('keeps recall usable without broad transcript-reproduction constraints', () => {
     const spec = composer.compose(
       mkTask(Capability.GENERAL_CHAT, { platform: 'discord', projectId: 'P1' }),
       emptyBundle(),
@@ -259,22 +291,17 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
       '3. Conversation transcript (continuity allowed; not authoritative external-state evidence)',
     );
 
-    // 2. Unsolicited reproduction is prohibited while explicit recall remains answerable.
+    // 2. Explicit recall remains answerable without a broad anti-reproduction rule.
     expect(contract).toContain(
       'When the current User task explicitly asks to recall prior conversation, answer from the relevant USER transcript entries; verbatim or near-verbatim recall is allowed when it directly answers that request.',
     );
+    expect(contract).not.toContain('Do not reproduce transcript or background entries');
+    expect(contract).not.toContain('Do not restate or list candidate entries');
     expect(contract).toContain(
-      'Do not reproduce transcript or background entries verbatim or near-verbatim unless the User explicitly requests conversation recall, quotation, or transcription.',
+      'Respond directly when the current User task is self-contained; otherwise ask one concise clarifying question only when the response genuinely depends on ambiguous, conflicting, or incomplete target meaning.',
     );
-
-    // 3. Ambiguity still resolves to one concise clarification question.
     expect(contract).toContain(
-      'Ask one concise clarifying question only when target meaning is genuinely ambiguous, conflicting, or incomplete.',
-    );
-
-    // 4. Candidate entries must not be restated merely to explain uncertainty.
-    expect(contract).toContain(
-      'Do not restate or list candidate entries merely to explain ambiguity or uncertainty; this does not prohibit directly answering an explicit conversation-recall request.',
+      'Use only conversation entries actually supplied in the transcript; do not fabricate missing conversation content.',
     );
 
     // 5. Previous assistant content remains non-authoritative.
@@ -325,7 +352,7 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
     expect(spec.context).toContain(
       envelope('USER', 'USER_CLAIM_OR_INTENT', priorUserMessage),
     );
-    expect(spec.task).toBe(envelope('USER', 'USER_CLAIM_OR_INTENT', requestText));
+    expect(spec.task).toBe(currentTaskEnvelope(requestText));
     expect(spec.developer).toContain(
       'When the current User task explicitly asks to recall prior conversation, answer from the relevant USER transcript entries',
     );
@@ -479,9 +506,7 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
         'The project is the current external target.',
       ),
     );
-    expect(spec.task).toBe(
-      envelope('USER', 'USER_CLAIM_OR_INTENT', 'Tell me the current status'),
-    );
+    expect(spec.task).toBe(currentTaskEnvelope('Tell me the current status'));
     expect(spec.task).not.toContain('"provenance":"CORE_RUNTIME"');
     expect(spec.context).not.toContain('Resolved connection target:');
     expect(spec.developer).toContain(
@@ -547,7 +572,7 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
     expect(spec.context).toContain('assistant history');
     expect(spec.context).not.toContain('\\u001b');
     expect(spec.context).not.toContain('\\u0000');
-    expect(JSON.parse(spec.task)).toEqual({
+    expect(JSON.parse(spec.task.slice(spec.task.indexOf('\n') + 1))).toEqual({
       provenance: 'USER',
       epistemicStatus: 'USER_CLAIM_OR_INTENT',
       content: taskText,
@@ -568,10 +593,10 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
       emptyBundle(),
     );
 
-    expect(spec.task).toBe(envelope('USER', 'USER_CLAIM_OR_INTENT', requestText));
+    expect(spec.task).toBe(currentTaskEnvelope(requestText));
     expect(spec.task).toContain('PHASE_B_TAIL');
     expect(spec.task).not.toContain(summary);
-    expect(spec.task.split('\n')).toHaveLength(1);
+    expect(spec.task.split('\n')).toHaveLength(2);
   });
 
   it('keeps malicious multiline history and background inside single-line JSON envelopes', () => {
@@ -630,8 +655,10 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
     );
 
     const serializedEntries = lines
-      .filter((line) => line.startsWith('{'))
-      .map((line) => JSON.parse(line) as { provenance: string; content: string });
+      .filter((line) => line.includes('{'))
+      .map((line) =>
+        JSON.parse(line.slice(line.indexOf('{'))) as { provenance: string; content: string },
+      );
     expect(serializedEntries).toContainEqual({
       provenance: 'ASSISTANT',
       epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
@@ -677,7 +704,7 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
       'Interpret target meaning from the current User task and conversation continuity.',
     );
     expect(authorityRules).toContain(
-      'Ask one concise clarifying question only when target meaning is genuinely ambiguous, conflicting, or incomplete.',
+      'Respond directly when the current User task is self-contained; otherwise ask one concise clarifying question only when the response genuinely depends on ambiguous, conflicting, or incomplete target meaning.',
     );
     expect(authorityRules).toContain(
       'Do not claim prior confirmation or prior verification based solely on Assistant transcript.',
@@ -694,7 +721,7 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
     expect(authorityRules).toContain(
       'Current authoritative facts supplied by Core override contradictory or stale transcript for external current state.',
     );
-    expect(authorityRules.split('\n')).toHaveLength(16);
+    expect(authorityRules.split('\n')).toHaveLength(15);
     expect(authorityRules.split(CONVERSATION_CONTINUITY_AND_STATUS_RULE)).toHaveLength(2);
     expect(authorityRules).not.toMatch(/\b(?:Atlas|Scenario E)\b/i);
   });

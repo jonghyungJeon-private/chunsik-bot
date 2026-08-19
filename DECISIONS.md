@@ -581,7 +581,8 @@ no summarization.
   with `role` (`user`/`assistant`) in `metadata`. **No provider id is stored in memory.**
 - **ContextBuilder** includes the most recent **N = 10** SHORT_TERM turns for the
   **same session**, each **simply truncated** (`MAX_MEMORY_CHARS = 400`, no summarization).
-  `PromptComposer` renders them into the conversation/context layer (`role: text`).
+  Under ADR-0063, `ContextBuilder` retains explicit turn number, role, provenance, and
+  epistemic status until `PromptComposer` renders the numbered conversation/context layer.
 - **Retrieval is session-scoped** (falls back to channel/thread only if a task has
   no session).
 - **Out of scope:** vector search, long-term memory auto-save, summarization memory.

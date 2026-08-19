@@ -139,6 +139,7 @@ describe('PromptRenderer (CAP-008, ADR-0029)', () => {
     expect(taskSection).toBeGreaterThan(authorityBoundary);
     const expectedTask =
       '# Task\n' +
+      '--- Current user message ---\n' +
       JSON.stringify({
         provenance: 'USER',
         epistemicStatus: 'USER_CLAIM_OR_INTENT',

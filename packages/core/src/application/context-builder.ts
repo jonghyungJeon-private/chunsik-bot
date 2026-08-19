@@ -41,7 +41,7 @@ export class ContextBuilder {
 
     const bundle: ContextBundle = {
       taskId: task.id,
-      conversationTranscript: recent.map((record) => ContextBuilder.toTranscriptEntry(record)),
+      conversationTranscript: ContextBuilder.toTranscriptEntries(recent),
       backgroundResources: [],
     };
 
@@ -59,23 +59,53 @@ export class ContextBuilder {
     return bundle;
   }
 
-  private static toTranscriptEntry(record: MemoryRecord): ConversationTranscriptEntry {
+  private static toTranscriptEntries(records: MemoryRecord[]): ConversationTranscriptEntry[] {
+    let currentTurnNumber = 0;
+
+    return records.map((record) => {
+      const role = ContextBuilder.roleOf(record);
+      if (role === 'user' || role === 'unknown' || currentTurnNumber === 0) {
+        currentTurnNumber += 1;
+      }
+      return ContextBuilder.toTranscriptEntry(record, currentTurnNumber, role);
+    });
+  }
+
+  private static roleOf(
+    record: MemoryRecord,
+  ): NonNullable<ConversationTranscriptEntry['role']> {
+    if (record.metadata?.role === 'user') return 'user';
+    if (record.metadata?.role === 'assistant') return 'assistant';
+    return 'unknown';
+  }
+
+  private static toTranscriptEntry(
+    record: MemoryRecord,
+    turnNumber: number,
+    role: NonNullable<ConversationTranscriptEntry['role']>,
+  ): ConversationTranscriptEntry {
     const content = ContextBuilder.truncate(record.content, MAX_MEMORY_CHARS);
-    if (record.metadata?.role === 'user') {
+    if (role === 'user') {
       return {
+        turnNumber,
+        role,
         content,
         provenance: 'USER',
         epistemicStatus: 'USER_CLAIM_OR_INTENT',
       };
     }
-    if (record.metadata?.role === 'assistant') {
+    if (role === 'assistant') {
       return {
+        turnNumber,
+        role,
         content,
         provenance: 'ASSISTANT',
         epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
       };
     }
     return {
+      turnNumber,
+      role,
       content,
       provenance: 'LEGACY_UNKNOWN',
       epistemicStatus: 'NON_AUTHORITATIVE_TRANSCRIPT',
