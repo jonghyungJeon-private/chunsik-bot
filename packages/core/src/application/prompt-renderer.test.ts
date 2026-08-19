@@ -177,4 +177,58 @@ describe('PromptRenderer (CAP-008, ADR-0029)', () => {
     expect(second.prompt.length).toBe(first.prompt.length);
     expect((first as unknown as { promptSpec?: unknown }).promptSpec).toBeUndefined();
   });
+
+  it('keeps a previous user turn role-attributed in the final GENERAL_CHAT prompt string', () => {
+    const task: Task = {
+      id: 'task-recall-boundary',
+      title: 'Recall the previous turn',
+      description: '내가 방금 뭐라고 했어?',
+      status: TaskStatus.PENDING,
+      intent: {
+        type: IntentType.CHAT,
+        capability: Capability.GENERAL_CHAT,
+        confidence: 1,
+        requiresWork: true,
+        summary: '내가 방금 뭐라고 했어?',
+      },
+      riskLevel: RiskLevel.LOW,
+      context: { platform: 'test', channelId: 'channel-1', userId: 'user-1' },
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    };
+    const request = renderer.render(
+      new PromptComposer().compose(task, {
+        taskId: task.id,
+        backgroundResources: [],
+        conversationTranscript: [
+          {
+            turnNumber: 1,
+            role: 'user',
+            content: '안녕?',
+            provenance: 'USER',
+            epistemicStatus: 'USER_CLAIM_OR_INTENT',
+          },
+          {
+            turnNumber: 1,
+            role: 'assistant',
+            content: '안녕하세요!',
+            provenance: 'ASSISTANT',
+            epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
+          },
+        ],
+      }),
+      { capability: Capability.GENERAL_CHAT },
+    );
+
+    expect(request.prompt).toContain(
+      `[Turn 1] User: ${JSON.stringify({
+        provenance: 'USER',
+        epistemicStatus: 'USER_CLAIM_OR_INTENT',
+        content: '안녕?',
+      })}`,
+    );
+    expect(request.prompt.indexOf('[Turn 1] User:')).toBeLessThan(
+      request.prompt.indexOf('--- Current user message ---'),
+    );
+  });
 });

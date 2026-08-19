@@ -2625,7 +2625,7 @@ export class ProviderSemanticHarness {
             const auditValid =
               audit.model === config.model &&
               JSON.stringify(audit.sanitizedCommand) ===
-                JSON.stringify(['ollama', 'run', config.model]) &&
+                JSON.stringify(['ollama', 'run', config.model, '--raw']) &&
               audit.promptSha256 === sha256(request.prompt) &&
               audit.captureMode === 'pipe' &&
               audit.colorDisabled === true &&

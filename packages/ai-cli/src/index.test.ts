@@ -147,6 +147,52 @@ describe('OllamaCliProvider (CAP-009, ADR-0030) — suggest-only local code gene
     });
   });
 
+  it('serializes structured GENERAL_CHAT turns as native llama3.1 roles at stdin', async () => {
+    const previousUser = '안녕?';
+    const previousAssistant = '안녕하세요!';
+    const currentUser = '내가 방금 뭐라고 했어?';
+    const renderedPrompt = [
+      '# System\nSYSTEM',
+      '# Developer\nDEVELOPER',
+      '# Context\n' +
+        '## 1. Current-turn facts supplied by Core\n[]\n\n' +
+        '## 2. Background resources\n[]\n\n' +
+        '## 3. Conversation transcript (continuity allowed; not authoritative external-state evidence)\n' +
+        `[Turn 1] User: ${JSON.stringify({ content: previousUser })}\n` +
+        `[Turn 1] Assistant: ${JSON.stringify({ content: previousAssistant })}\n\n` +
+        '## 4. Current-turn authority decision boundary\nBOUNDARY',
+      '# Task\n--- Current user message ---\n' + JSON.stringify({ content: currentUser }),
+    ].join('\n\n');
+    const calls: Array<{ args: string[]; input: string }> = [];
+    const runner: CliRunner = async (_bin, args, opts) => {
+      calls.push({ args, input: opts.input });
+      return { code: 0, stdout: '기억하고 있어요.', stderr: '', timedOut: false };
+    };
+
+    const result = await new OllamaCliProvider({ runner }).execute({
+      capability: Capability.GENERAL_CHAT,
+      prompt: renderedPrompt,
+    });
+
+    const providerInput = calls[0]?.input ?? '';
+    expect(calls[0]?.args).toEqual(['run', 'llama3.1', '--raw']);
+    expect(providerInput).toContain(
+      `<|start_header_id|>user<|end_header_id|>\n\n${previousUser}<|eot_id|>`,
+    );
+    expect(providerInput).toContain(
+      `<|start_header_id|>assistant<|end_header_id|>\n\n${previousAssistant}<|eot_id|>`,
+    );
+    expect(providerInput).toContain(
+      `<|start_header_id|>user<|end_header_id|>\n\n${currentUser}<|eot_id|>`,
+    );
+    expect(providerInput.indexOf(previousUser)).toBeLessThan(providerInput.indexOf(currentUser));
+    expect(providerInput).not.toContain(`[Turn 1] User:`);
+    expect(result.audit?.sanitizedCommand).toEqual(['ollama', 'run', 'llama3.1', '--raw']);
+    expect(result.audit?.promptSha256).toBe(
+      createHash('sha256').update(Buffer.from(renderedPrompt, 'utf8')).digest('hex'),
+    );
+  });
+
   it('sanitizes stdout before using it for result text and the Artifact without merging stderr', async () => {
     const res = await ollamaExec({
       code: 0,

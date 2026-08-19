@@ -22,6 +22,101 @@ const OLLAMA_COLOR_ENV = {
   CLICOLOR_FORCE: '0',
 } as const;
 
+const LLAMA_3_1_MODEL = /^llama3\.1(?::|$)/;
+const LLAMA_BEGIN = '<|begin_of_text|>';
+const LLAMA_EOT = '<|eot_id|>';
+
+type LlamaConversationRole = 'user' | 'assistant';
+
+interface LlamaConversationMessage {
+  role: LlamaConversationRole;
+  content: string;
+}
+
+interface RenderedPromptSections {
+  systemContext: string;
+  transcript: LlamaConversationMessage[];
+  currentUserMessage: string;
+}
+
+function llamaMessage(role: 'system' | LlamaConversationRole, content: string): string {
+  const escapedContent = content
+    .replaceAll('<|', '<\u200b|')
+    .replaceAll('|>', '|\u200b>');
+  return `<|start_header_id|>${role}<|end_header_id|>\n\n${escapedContent}${LLAMA_EOT}`;
+}
+
+function parseEnvelopeContent(value: string): string | null {
+  try {
+    const parsed = JSON.parse(value) as { content?: unknown };
+    return typeof parsed.content === 'string' ? parsed.content : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Recover the provider-neutral GENERAL_CHAT sections emitted by PromptRenderer.
+ * The Ollama CLI accepts one stdin string, so llama3.1 otherwise receives the
+ * whole rendered request as one current-user message and loses chat-role
+ * boundaries. This adapter-local parser turns only the deterministic Core
+ * representation into native llama3.1 chat-template messages.
+ */
+function parseRenderedGeneralChatPrompt(prompt: string): RenderedPromptSections | null {
+  const taskMarker = '\n\n# Task\n';
+  const taskIndex = prompt.lastIndexOf(taskMarker);
+  if (taskIndex < 0 || !prompt.startsWith('# System\n')) return null;
+
+  const contextMarker = '\n\n# Context\n';
+  const contextIndex = prompt.indexOf(contextMarker);
+  if (contextIndex < 0 || contextIndex > taskIndex) return null;
+
+  const contextStart = contextIndex + contextMarker.length;
+  const context = prompt.slice(contextStart, taskIndex);
+  const transcriptHeading = '## 3. Conversation transcript';
+  const transcriptIndex = context.indexOf(transcriptHeading);
+  if (transcriptIndex < 0) return null;
+  const transcriptBodyStart = context.indexOf('\n', transcriptIndex);
+  if (transcriptBodyStart < 0) return null;
+  const transcriptBodyEnd = context.indexOf('\n\n## 4.', transcriptBodyStart + 1);
+  if (transcriptBodyEnd < 0) return null;
+
+  const transcriptBody = context.slice(transcriptBodyStart + 1, transcriptBodyEnd);
+  const transcript: LlamaConversationMessage[] = [];
+  if (transcriptBody !== '[]') {
+    for (const line of transcriptBody.split('\n')) {
+      const match = /^\[Turn \d+\] (User|Assistant): (\{.*\})$/.exec(line);
+      if (!match) return null;
+      const content = parseEnvelopeContent(match[2] ?? '');
+      if (content === null) return null;
+      transcript.push({ role: match[1] === 'User' ? 'user' : 'assistant', content });
+    }
+  }
+
+  const taskBody = prompt.slice(taskIndex + taskMarker.length);
+  const currentMessageMarker = '--- Current user message ---\n';
+  if (!taskBody.startsWith(currentMessageMarker)) return null;
+  const currentUserMessage = parseEnvelopeContent(taskBody.slice(currentMessageMarker.length));
+  if (currentUserMessage === null) return null;
+
+  const contextWithoutFlattenedTranscript =
+    context.slice(0, transcriptBodyStart + 1) + '[]' + context.slice(transcriptBodyEnd);
+  const systemContext =
+    prompt.slice(0, contextStart) + contextWithoutFlattenedTranscript;
+  return { systemContext, transcript, currentUserMessage };
+}
+
+function serializeLlama31GeneralChat(prompt: string): string | null {
+  const sections = parseRenderedGeneralChatPrompt(prompt);
+  if (!sections) return null;
+  return [
+    LLAMA_BEGIN + llamaMessage('system', sections.systemContext),
+    ...sections.transcript.map((message) => llamaMessage(message.role, message.content)),
+    llamaMessage('user', sections.currentUserMessage),
+    '<|start_header_id|>assistant<|end_header_id|>\n\n',
+  ].join('');
+}
+
 function approvedLoopbackHost(value: string): string {
   let endpoint: URL;
   try { endpoint = new URL(value); } catch { throw new TypeError('Invalid Ollama validation host'); }
@@ -248,14 +343,24 @@ export class OllamaCliProvider extends BaseCliAiProvider {
   }
 
   override async execute(request: AiRequest): Promise<AiExecutionResult> {
-    const input = request.prompt; // already rendered by the core PromptRenderer (ADR-0029)
+    const serializedConversation =
+      request.capability === Capability.GENERAL_CHAT && LLAMA_3_1_MODEL.test(this.model)
+        ? serializeLlama31GeneralChat(request.prompt)
+        : null;
+    const input = serializedConversation ?? request.prompt;
+    const args = serializedConversation === null
+      ? this.buildArgs()
+      : [...this.buildArgs(), '--raw'];
     // Suggest-only: a local model never needs the repo. Always a neutral cwd so it cannot
     // ingest workspace files (defense in depth on top of CAP-008's no-workspace AiRequest).
     const cwd = tmpdir();
     const timeoutMs = request.timeoutMs ?? this.defaultTimeoutMs;
-    const promptSha256 = createHash('sha256').update(Buffer.from(input, 'utf8')).digest('hex');
+    // Preserve the existing audit contract: this hashes the canonical PromptRenderer
+    // output. The contained-runner regression separately proves the exact serialized
+    // provider input without persisting either prompt representation.
+    const promptSha256 = createHash('sha256').update(Buffer.from(request.prompt, 'utf8')).digest('hex');
 
-    const result = await this.runner(this.bin, this.buildArgs(), {
+    const result = await this.runner(this.bin, args, {
       cwd,
       input,
       timeoutMs,
@@ -307,7 +412,7 @@ export class OllamaCliProvider extends BaseCliAiProvider {
       raw: { exitCode: result.code, stderr: maskSecrets(result.stderr).slice(0, 1000) },
       audit: {
         model,
-        sanitizedCommand: ['ollama', 'run', model],
+        sanitizedCommand: ['ollama', 'run', model, ...(serializedConversation === null ? [] : ['--raw'])],
         promptSha256,
         captureMode: 'pipe',
         colorDisabled: true,
