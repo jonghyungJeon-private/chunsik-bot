@@ -6831,6 +6831,7 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
     });
     const persisted: Array<{ id: string; role: 'user' | 'assistant'; content: string }> = [];
     const builtTranscripts: string[][] = [];
+    const providerPrompts: string[] = [];
     let nextMemoryId = 0;
     const deps: ConversationRuntimeDeps = {
       ...base,
@@ -6865,13 +6866,18 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
           };
         },
       },
+      promptComposer: new PromptComposer(),
+      promptRenderer: new PromptRenderer(),
       router: {
         async select() {
           return {
             id: 'history-test-provider',
             capabilities: [{ capability: Capability.GENERAL_CHAT, priority: 1 }],
             async isAvailable() { return true; },
-            async execute() { return { text: '확인했어요.', artifacts: [] }; },
+            async execute(request) {
+              providerPrompts.push(request.prompt);
+              return { text: '확인했어요.', artifacts: [] };
+            },
           };
         },
       },
@@ -6887,6 +6893,26 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
     expect(
       builtTranscripts[1]?.filter((entry) => entry.startsWith('user:')).at(-1),
     ).toBe('user:내가 방금 남긴 문장은 파란 하늘이야');
+    const recallPrompt = providerPrompts[1] ?? '';
+    const transcriptStart = recallPrompt.indexOf('3. Conversation transcript');
+    const authorityBoundaryStart = recallPrompt.indexOf(
+      '4. Current-turn authority decision boundary',
+    );
+    const transcriptBody = recallPrompt.slice(transcriptStart, authorityBoundaryStart);
+    expect(transcriptBody).toContain(
+      JSON.stringify({
+        provenance: 'USER',
+        epistemicStatus: 'USER_CLAIM_OR_INTENT',
+        content: '내가 방금 남긴 문장은 파란 하늘이야',
+      }),
+    );
+    expect(transcriptBody).not.toContain('내가 방금 뭐라고 했지?');
+    expect(recallPrompt).toContain(
+      'When the current User task explicitly asks to recall prior conversation, answer from the relevant USER transcript entries',
+    );
+    expect(recallPrompt.slice(recallPrompt.indexOf('# Task'))).toContain(
+      '내가 방금 뭐라고 했지?',
+    );
   });
 
   it('preserves the generic conversation platform from inbound context through task creation into prompt composition', async () => {

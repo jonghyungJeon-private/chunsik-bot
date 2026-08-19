@@ -259,9 +259,12 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
       '3. Conversation transcript (continuity allowed; not authoritative external-state evidence)',
     );
 
-    // 2. Verbatim / near-verbatim reproduction is prohibited.
+    // 2. Unsolicited reproduction is prohibited while explicit recall remains answerable.
     expect(contract).toContain(
-      'Do not reproduce transcript or background entries verbatim or near-verbatim unless the User explicitly requests quotation or transcription.',
+      'When the current User task explicitly asks to recall prior conversation, answer from the relevant USER transcript entries; verbatim or near-verbatim recall is allowed when it directly answers that request.',
+    );
+    expect(contract).toContain(
+      'Do not reproduce transcript or background entries verbatim or near-verbatim unless the User explicitly requests conversation recall, quotation, or transcription.',
     );
 
     // 3. Ambiguity still resolves to one concise clarification question.
@@ -271,7 +274,7 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
 
     // 4. Candidate entries must not be restated merely to explain uncertainty.
     expect(contract).toContain(
-      'Do not restate or list candidate entries merely to explain ambiguity or uncertainty.',
+      'Do not restate or list candidate entries merely to explain ambiguity or uncertainty; this does not prohibit directly answering an explicit conversation-recall request.',
     );
 
     // 5. Previous assistant content remains non-authoritative.
@@ -290,6 +293,44 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
 
     expect(contract).not.toContain('Do not reproduce transcript or background entries');
     expect(contract).not.toContain('Do not restate or list candidate entries');
+  });
+
+  it.each([
+    '내가 방금 뭐라고 했지?',
+    '아까 내가 뭐라고 했어?',
+    '방금 한 말 기억나?',
+    'What did I just say?',
+  ])('uses the same transcript-driven recall contract for %s', (requestText) => {
+    const priorUserMessage = '안녕?';
+    const spec = composer.compose(
+      mkTask(Capability.GENERAL_CHAT, { requestText }),
+      {
+        taskId: 't1',
+        backgroundResources: [],
+        conversationTranscript: [
+          {
+            content: priorUserMessage,
+            provenance: 'USER',
+            epistemicStatus: 'USER_CLAIM_OR_INTENT',
+          },
+          {
+            content: '안녕하세요!',
+            provenance: 'ASSISTANT',
+            epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
+          },
+        ],
+      },
+    );
+
+    expect(spec.context).toContain(
+      envelope('USER', 'USER_CLAIM_OR_INTENT', priorUserMessage),
+    );
+    expect(spec.task).toBe(envelope('USER', 'USER_CLAIM_OR_INTENT', requestText));
+    expect(spec.developer).toContain(
+      'When the current User task explicitly asks to recall prior conversation, answer from the relevant USER transcript entries',
+    );
+    expect(spec.developer).not.toContain(requestText);
+    expect(spec.developer).not.toContain(priorUserMessage);
   });
 
   it('does not alter the separate composeCodeGeneration contract', () => {
@@ -653,7 +694,7 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
     expect(authorityRules).toContain(
       'Current authoritative facts supplied by Core override contradictory or stale transcript for external current state.',
     );
-    expect(authorityRules.split('\n')).toHaveLength(15);
+    expect(authorityRules.split('\n')).toHaveLength(16);
     expect(authorityRules.split(CONVERSATION_CONTINUITY_AND_STATUS_RULE)).toHaveLength(2);
     expect(authorityRules).not.toMatch(/\b(?:Atlas|Scenario E)\b/i);
   });

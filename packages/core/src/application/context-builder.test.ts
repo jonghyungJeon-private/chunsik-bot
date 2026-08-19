@@ -245,6 +245,35 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
     expect(bundle.conversationTranscript.map((entry) => entry.content)).toEqual(['previous']);
   });
 
+  it('keeps the immediately previous User turn when excluding an explicit recall request', async () => {
+    const memory = {
+      recentShortTerm: async () => [
+        rec('1', 'user', '안녕?'),
+        rec('2', 'assistant', '안녕하세요!'),
+        rec('3', 'user', '내가 방금 뭐라고 했지?'),
+      ],
+    } as unknown as MemoryManager;
+
+    const bundle = await new ContextBuilder(memory).build(taskWith({ sessionId: 'S1' }), ['3']);
+
+    expect(bundle.conversationTranscript).toEqual([
+      {
+        content: '안녕?',
+        provenance: 'USER',
+        epistemicStatus: 'USER_CLAIM_OR_INTENT',
+      },
+      {
+        content: '안녕하세요!',
+        provenance: 'ASSISTANT',
+        epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
+      },
+    ]);
+    expect(bundle.conversationTranscript.at(-2)?.content).toBe('안녕?');
+    expect(
+      bundle.conversationTranscript.some((entry) => entry.content === '내가 방금 뭐라고 했지?'),
+    ).toBe(false);
+  });
+
   it('falls back to channel scope when the task has no session', async () => {
     let captured: MemoryScope | undefined;
     const memory = {
