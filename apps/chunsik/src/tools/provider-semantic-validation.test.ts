@@ -3150,7 +3150,7 @@ describe('compiled dist path', () => {
       'Do not reproduce transcript or background entries verbatim or near-verbatim',
     );
     expect(distPrompt).toContain(
-      'Do not restate or list candidate entries merely to explain ambiguity or uncertainty.',
+      'Do not restate or list candidate entries merely to explain ambiguity or uncertainty; this does not prohibit directly answering an explicit conversation-recall request.',
     );
     expect(distPrompt).toContain(
       'Conversation continuity may be used to understand the User meaning and context.',
