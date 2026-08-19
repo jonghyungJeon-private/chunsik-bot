@@ -147,7 +147,7 @@ describe('OllamaCliProvider (CAP-009, ADR-0030) — suggest-only local code gene
     });
   });
 
-  it('serializes structured GENERAL_CHAT turns as native llama3.1 roles at stdin', async () => {
+  it('serializes structured GENERAL_CHAT turns as role-attributed text using valid ollama run argv', async () => {
     const previousUser = '안녕?';
     const previousAssistant = '안녕하세요!';
     const currentUser = '내가 방금 뭐라고 했어?';
@@ -175,19 +175,18 @@ describe('OllamaCliProvider (CAP-009, ADR-0030) — suggest-only local code gene
     });
 
     const providerInput = calls[0]?.input ?? '';
-    expect(calls[0]?.args).toEqual(['run', 'llama3.1', '--raw']);
+    // `ollama run` accepts the model as its only positional argument here. In
+    // particular, raw HTTP request fields must never be passed as CLI flags.
+    expect(calls[0]?.args).toEqual(['run', 'llama3.1']);
+    expect(providerInput).toContain(JSON.stringify({ role: 'user', content: previousUser }));
     expect(providerInput).toContain(
-      `<|start_header_id|>user<|end_header_id|>\n\n${previousUser}<|eot_id|>`,
+      JSON.stringify({ role: 'assistant', content: previousAssistant }),
     );
-    expect(providerInput).toContain(
-      `<|start_header_id|>assistant<|end_header_id|>\n\n${previousAssistant}<|eot_id|>`,
-    );
-    expect(providerInput).toContain(
-      `<|start_header_id|>user<|end_header_id|>\n\n${currentUser}<|eot_id|>`,
-    );
+    expect(providerInput).toContain(JSON.stringify({ role: 'user', content: currentUser }));
     expect(providerInput.indexOf(previousUser)).toBeLessThan(providerInput.indexOf(currentUser));
     expect(providerInput).not.toContain(`[Turn 1] User:`);
-    expect(result.audit?.sanitizedCommand).toEqual(['ollama', 'run', 'llama3.1', '--raw']);
+    expect(providerInput).not.toContain('<|start_header_id|>');
+    expect(result.audit?.sanitizedCommand).toEqual(['ollama', 'run', 'llama3.1']);
     expect(result.audit?.promptSha256).toBe(
       createHash('sha256').update(Buffer.from(renderedPrompt, 'utf8')).digest('hex'),
     );

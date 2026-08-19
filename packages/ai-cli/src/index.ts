@@ -23,27 +23,18 @@ const OLLAMA_COLOR_ENV = {
 } as const;
 
 const LLAMA_3_1_MODEL = /^llama3\.1(?::|$)/;
-const LLAMA_BEGIN = '<|begin_of_text|>';
-const LLAMA_EOT = '<|eot_id|>';
 
-type LlamaConversationRole = 'user' | 'assistant';
+type ProviderConversationRole = 'user' | 'assistant' | 'unknown';
 
-interface LlamaConversationMessage {
-  role: LlamaConversationRole;
+interface ProviderConversationMessage {
+  role: ProviderConversationRole;
   content: string;
 }
 
 interface RenderedPromptSections {
   systemContext: string;
-  transcript: LlamaConversationMessage[];
+  transcript: ProviderConversationMessage[];
   currentUserMessage: string;
-}
-
-function llamaMessage(role: 'system' | LlamaConversationRole, content: string): string {
-  const escapedContent = content
-    .replaceAll('<|', '<\u200b|')
-    .replaceAll('|>', '|\u200b>');
-  return `<|start_header_id|>${role}<|end_header_id|>\n\n${escapedContent}${LLAMA_EOT}`;
 }
 
 function parseEnvelopeContent(value: string): string | null {
@@ -59,8 +50,8 @@ function parseEnvelopeContent(value: string): string | null {
  * Recover the provider-neutral GENERAL_CHAT sections emitted by PromptRenderer.
  * The Ollama CLI accepts one stdin string, so llama3.1 otherwise receives the
  * whole rendered request as one current-user message and loses chat-role
- * boundaries. This adapter-local parser turns only the deterministic Core
- * representation into native llama3.1 chat-template messages.
+ * boundaries. This adapter-local parser recovers the deterministic Core
+ * representation so the provider input can retain explicit role attribution.
  */
 function parseRenderedGeneralChatPrompt(prompt: string): RenderedPromptSections | null {
   const taskMarker = '\n\n# Task\n';
@@ -82,14 +73,16 @@ function parseRenderedGeneralChatPrompt(prompt: string): RenderedPromptSections 
   if (transcriptBodyEnd < 0) return null;
 
   const transcriptBody = context.slice(transcriptBodyStart + 1, transcriptBodyEnd);
-  const transcript: LlamaConversationMessage[] = [];
+  const transcript: ProviderConversationMessage[] = [];
   if (transcriptBody !== '[]') {
     for (const line of transcriptBody.split('\n')) {
-      const match = /^\[Turn \d+\] (User|Assistant): (\{.*\})$/.exec(line);
+      const match = /^\[Turn \d+\] (User|Assistant|Unknown): (\{.*\})$/.exec(line);
       if (!match) return null;
       const content = parseEnvelopeContent(match[2] ?? '');
       if (content === null) return null;
-      transcript.push({ role: match[1] === 'User' ? 'user' : 'assistant', content });
+      const role = match[1]?.toLowerCase();
+      if (role !== 'user' && role !== 'assistant' && role !== 'unknown') return null;
+      transcript.push({ role, content });
     }
   }
 
@@ -109,12 +102,15 @@ function parseRenderedGeneralChatPrompt(prompt: string): RenderedPromptSections 
 function serializeLlama31GeneralChat(prompt: string): string | null {
   const sections = parseRenderedGeneralChatPrompt(prompt);
   if (!sections) return null;
+  const messages = [
+    { role: 'system', content: sections.systemContext },
+    ...sections.transcript,
+    { role: 'user', content: sections.currentUserMessage },
+  ];
   return [
-    LLAMA_BEGIN + llamaMessage('system', sections.systemContext),
-    ...sections.transcript.map((message) => llamaMessage(message.role, message.content)),
-    llamaMessage('user', sections.currentUserMessage),
-    '<|start_header_id|>assistant<|end_header_id|>\n\n',
-  ].join('');
+    '# Role-attributed conversation',
+    ...messages.map((message) => JSON.stringify(message)),
+  ].join('\n');
 }
 
 function approvedLoopbackHost(value: string): string {
@@ -348,9 +344,6 @@ export class OllamaCliProvider extends BaseCliAiProvider {
         ? serializeLlama31GeneralChat(request.prompt)
         : null;
     const input = serializedConversation ?? request.prompt;
-    const args = serializedConversation === null
-      ? this.buildArgs()
-      : [...this.buildArgs(), '--raw'];
     // Suggest-only: a local model never needs the repo. Always a neutral cwd so it cannot
     // ingest workspace files (defense in depth on top of CAP-008's no-workspace AiRequest).
     const cwd = tmpdir();
@@ -360,7 +353,7 @@ export class OllamaCliProvider extends BaseCliAiProvider {
     // provider input without persisting either prompt representation.
     const promptSha256 = createHash('sha256').update(Buffer.from(request.prompt, 'utf8')).digest('hex');
 
-    const result = await this.runner(this.bin, args, {
+    const result = await this.runner(this.bin, this.buildArgs(), {
       cwd,
       input,
       timeoutMs,
@@ -412,7 +405,7 @@ export class OllamaCliProvider extends BaseCliAiProvider {
       raw: { exitCode: result.code, stderr: maskSecrets(result.stderr).slice(0, 1000) },
       audit: {
         model,
-        sanitizedCommand: ['ollama', 'run', model, ...(serializedConversation === null ? [] : ['--raw'])],
+        sanitizedCommand: ['ollama', 'run', model],
         promptSha256,
         captureMode: 'pipe',
         colorDisabled: true,
