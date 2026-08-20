@@ -322,6 +322,30 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
     ).toBe(false);
   });
 
+  it('keeps multiple prior User turns chronological while excluding the current inbound turn', async () => {
+    const memory = {
+      recentShortTerm: async () => [
+        rec('1', 'user', '오래된 사용자 말'),
+        rec('2', 'assistant', '오래된 답변'),
+        rec('3', 'user', '바로 이전 사용자 말'),
+        rec('4', 'assistant', '바로 이전 답변'),
+        rec('5', 'user', '현재 사용자 요청'),
+      ],
+    } as unknown as MemoryManager;
+
+    const bundle = await new ContextBuilder(memory).build(taskWith({ sessionId: 'S1' }), ['5']);
+    const userTurns = bundle.conversationTranscript.filter((entry) => entry.role === 'user');
+
+    expect(userTurns.map((entry) => entry.content)).toEqual([
+      '오래된 사용자 말',
+      '바로 이전 사용자 말',
+    ]);
+    expect(userTurns.at(-1)?.content).toBe('바로 이전 사용자 말');
+    expect(
+      bundle.conversationTranscript.some((entry) => entry.content === '현재 사용자 요청'),
+    ).toBe(false);
+  });
+
   it('falls back to channel scope when the task has no session', async () => {
     let captured: MemoryScope | undefined;
     const memory = {

@@ -236,41 +236,45 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
     expect(changedPrimary).toContain('project-changed');
   });
 
-  it('supplies the final USER transcript entry as immediatelyPreviousUserTurn', () => {
-    const spec = composer.compose(mkTask(Capability.GENERAL_CHAT), {
-      taskId: 't1',
-      backgroundResources: [],
-      conversationTranscript: [
-        {
-          role: 'user',
-          turnNumber: 1,
-          content: '오래된 사용자 말',
-          provenance: 'USER',
-          epistemicStatus: 'USER_CLAIM_OR_INTENT',
-        },
-        {
-          role: 'assistant',
-          turnNumber: 1,
-          content: '오래된 답변',
-          provenance: 'ASSISTANT',
-          epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
-        },
-        {
-          role: 'user',
-          turnNumber: 2,
-          content: '바로 전에 한 말',
-          provenance: 'USER',
-          epistemicStatus: 'USER_CLAIM_OR_INTENT',
-        },
-        {
-          role: 'assistant',
-          turnNumber: 2,
-          content: '직전 답변',
-          provenance: 'ASSISTANT',
-          epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
-        },
-      ],
-    });
+  it('supplies the final USER transcript entry as immediatelyPreviousUserTurn without relocating it', () => {
+    const currentUserMessage = '내가 방금 뭐라고 했어?';
+    const spec = composer.compose(
+      mkTask(Capability.GENERAL_CHAT, { requestText: currentUserMessage }),
+      {
+        taskId: 't1',
+        backgroundResources: [],
+        conversationTranscript: [
+          {
+            role: 'user',
+            turnNumber: 1,
+            content: '오래된 사용자 말',
+            provenance: 'USER',
+            epistemicStatus: 'USER_CLAIM_OR_INTENT',
+          },
+          {
+            role: 'assistant',
+            turnNumber: 1,
+            content: '오래된 답변',
+            provenance: 'ASSISTANT',
+            epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
+          },
+          {
+            role: 'user',
+            turnNumber: 2,
+            content: '바로 전에 한 말',
+            provenance: 'USER',
+            epistemicStatus: 'USER_CLAIM_OR_INTENT',
+          },
+          {
+            role: 'assistant',
+            turnNumber: 2,
+            content: '직전 답변',
+            provenance: 'ASSISTANT',
+            epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
+          },
+        ],
+      },
+    );
     const fact = envelope(
       'CORE_RUNTIME',
       'AUTHORITATIVE_CURRENT_FACT',
@@ -278,14 +282,65 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
     );
 
     expect(sectionBody(spec.context, '1. Current-turn facts supplied by Core')).toContain(fact);
+    expect(sectionBody(spec.context, '1. Current-turn facts supplied by Core')).not.toContain(
+      'immediatelyPreviousUserTurn: "오래된 사용자 말"',
+    );
     expect(
       subsectionBody(
         sectionBody(spec.context, '4. Current-turn authority decision boundary'),
         'Authoritative current facts',
       ),
     ).toContain(fact);
+    const transcript = sectionBody(
+      spec.context,
+      '3. Conversation transcript (continuity allowed; not authoritative external-state evidence)',
+    );
+    expect(transcript).toContain('오래된 사용자 말');
+    expect(transcript).toContain('바로 전에 한 말');
+    expect(transcript.indexOf('오래된 사용자 말')).toBeLessThan(
+      transcript.indexOf('바로 전에 한 말'),
+    );
+    expect(sectionBody(spec.context, '1. Current-turn facts supplied by Core')).not.toContain(
+      currentUserMessage,
+    );
     expect(spec.developer).not.toContain('바로 전에 한 말');
-    expect(spec.task).not.toContain('바로 전에 한 말');
+    expect(spec.task).toBe(currentTaskEnvelope(currentUserMessage));
+  });
+
+  it('identifies the only prior USER turn and omits the fact when no prior USER turn exists', () => {
+    const singlePriorTurn = composer.compose(mkTask(Capability.GENERAL_CHAT), {
+      taskId: 't1',
+      backgroundResources: [],
+      conversationTranscript: [
+        {
+          role: 'user',
+          turnNumber: 1,
+          content: '유일한 이전 사용자 말',
+          provenance: 'USER',
+          epistemicStatus: 'USER_CLAIM_OR_INTENT',
+        },
+      ],
+    });
+    const noPriorUserTurn = composer.compose(mkTask(Capability.GENERAL_CHAT), {
+      taskId: 't1',
+      backgroundResources: [],
+      conversationTranscript: [
+        {
+          role: 'assistant',
+          turnNumber: 1,
+          content: '사용자 발화가 없는 레거시 답변',
+          provenance: 'ASSISTANT',
+          epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
+        },
+      ],
+    });
+
+    expect(sectionBody(singlePriorTurn.context, '1. Current-turn facts supplied by Core')).toContain(
+      'immediatelyPreviousUserTurn: \\"유일한 이전 사용자 말\\"',
+    );
+    expect(
+      sectionBody(noPriorUserTurn.context, '1. Current-turn facts supplied by Core'),
+    ).not.toContain('immediatelyPreviousUserTurn');
   });
 
   it('keeps non-GENERAL_CHAT prompt behavior outside the authority boundary', () => {

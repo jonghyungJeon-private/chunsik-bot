@@ -130,11 +130,6 @@ function renderPreviousConversationMessage(message: ProviderConversationMessage)
 function renderContextEnvelopeWithoutInternalLabels(value: string): string {
   return value.split('\n').map((line) => {
     const envelope = parseEnvelope(line);
-    if (
-      envelope?.provenance === 'CORE_RUNTIME' &&
-      envelope.epistemicStatus === 'AUTHORITATIVE_CURRENT_FACT' &&
-      envelope.content.startsWith('immediatelyPreviousUserTurn: ')
-    ) return '';
     if (envelope === null) return line;
     if (
       envelope.provenance === 'CORE_RUNTIME' &&

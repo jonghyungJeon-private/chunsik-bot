@@ -209,8 +209,10 @@ describe('OllamaCliProvider (CAP-009, ADR-0030) — suggest-only local code gene
   });
 
   it('serializes GENERAL_CHAT as prior exchanges followed by one final active User turn', async () => {
-    const previousUser = '안녕?';
-    const previousAssistant = '안녕하세요!';
+    const olderUser = '오래전에 한 말';
+    const olderAssistant = '오래된 답변';
+    const previousUser = '바로 전에 한 말';
+    const previousAssistant = '직전 답변';
     const currentUser = '내가 방금 뭐라고 했어?';
     const task: Task = {
       id: 'recall-task',
@@ -239,11 +241,25 @@ describe('OllamaCliProvider (CAP-009, ADR-0030) — suggest-only local code gene
             turnNumber: 1,
             provenance: 'USER',
             epistemicStatus: 'USER_CLAIM_OR_INTENT',
-            content: previousUser,
+            content: olderUser,
           },
           {
             role: 'assistant',
             turnNumber: 1,
+            provenance: 'ASSISTANT',
+            epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
+            content: olderAssistant,
+          },
+          {
+            role: 'user',
+            turnNumber: 2,
+            provenance: 'USER',
+            epistemicStatus: 'USER_CLAIM_OR_INTENT',
+            content: previousUser,
+          },
+          {
+            role: 'assistant',
+            turnNumber: 2,
             provenance: 'ASSISTANT',
             epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
             content: previousAssistant,
@@ -267,6 +283,8 @@ describe('OllamaCliProvider (CAP-009, ADR-0030) — suggest-only local code gene
     expect(providerInput).not.toBe(request.prompt);
     expect(providerInput).toContain(
       `Previous conversation (continue it naturally; do not analyze or reproduce it):\n` +
+      `User (earlier turn; claim or intent): ${JSON.stringify(olderUser)}\n` +
+      `Assistant (earlier turn; continuity only, may be inaccurate): ${JSON.stringify(olderAssistant)}\n` +
       `User (earlier turn; claim or intent): ${JSON.stringify(previousUser)}\n` +
       `Assistant (earlier turn; continuity only, may be inaccurate): ${JSON.stringify(previousAssistant)}\n` +
       'End previous conversation.',
@@ -276,8 +294,30 @@ describe('OllamaCliProvider (CAP-009, ADR-0030) — suggest-only local code gene
     expect(providerInput).not.toContain('Provenance:');
     expect(providerInput).not.toContain('Epistemic status:');
     expect(providerInput).not.toContain('Content:');
-    expect(providerInput.split(previousUser)).toHaveLength(2);
-    expect(providerInput.indexOf(previousUser)).toBeLessThan(providerInput.indexOf(currentUser));
+    const authoritativeFact =
+      `Core Runtime states as an authoritative current fact: ${JSON.stringify(
+        `immediatelyPreviousUserTurn: ${JSON.stringify(previousUser)}`,
+      )}`;
+    expect(providerInput).toContain(authoritativeFact);
+    expect(providerInput).not.toContain(
+      `immediatelyPreviousUserTurn: ${JSON.stringify(olderUser)}`,
+    );
+    expect(providerInput).not.toContain(
+      `immediatelyPreviousUserTurn: ${JSON.stringify(currentUser)}`,
+    );
+    expect(providerInput.indexOf(authoritativeFact)).toBeLessThan(
+      providerInput.indexOf('Previous conversation'),
+    );
+    const olderTranscriptEntry =
+      `User (earlier turn; claim or intent): ${JSON.stringify(olderUser)}`;
+    const previousTranscriptEntry =
+      `User (earlier turn; claim or intent): ${JSON.stringify(previousUser)}`;
+    expect(providerInput.indexOf(olderTranscriptEntry)).toBeLessThan(
+      providerInput.indexOf(previousTranscriptEntry),
+    );
+    expect(providerInput.indexOf(previousTranscriptEntry)).toBeLessThan(
+      providerInput.indexOf(`User (current active turn): ${JSON.stringify(currentUser)}`),
+    );
     expect(providerInput).toMatch(
       /Continue the conversation by answering the final User message directly\.\n\nUser \(current active turn\): "내가 방금 뭐라고 했어\?"\n\nAssistant response:$/u,
     );
