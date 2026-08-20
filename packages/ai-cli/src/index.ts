@@ -24,23 +24,37 @@ const OLLAMA_COLOR_ENV = {
 
 const LLAMA_3_1_MODEL = /^llama3\.1(?::|$)/;
 
-type ProviderConversationRole = 'user' | 'assistant' | 'unknown';
+type ProviderConversationRole = 'system' | 'user' | 'assistant';
 
 interface ProviderConversationMessage {
   role: ProviderConversationRole;
+  provenance: string;
+  epistemicStatus: string;
   content: string;
 }
 
 interface RenderedPromptSections {
   systemContext: string;
   transcript: ProviderConversationMessage[];
-  currentUserMessage: string;
+  currentUserMessage: Omit<ProviderConversationMessage, 'role'>;
 }
 
-function parseEnvelopeContent(value: string): string | null {
+function parseEnvelope(value: string): Omit<ProviderConversationMessage, 'role'> | null {
   try {
-    const parsed = JSON.parse(value) as { content?: unknown };
-    return typeof parsed.content === 'string' ? parsed.content : null;
+    const parsed = JSON.parse(value) as {
+      provenance?: unknown;
+      epistemicStatus?: unknown;
+      content?: unknown;
+    };
+    return typeof parsed.provenance === 'string' &&
+      typeof parsed.epistemicStatus === 'string' &&
+      typeof parsed.content === 'string'
+      ? {
+          provenance: parsed.provenance,
+          epistemicStatus: parsed.epistemicStatus,
+          content: parsed.content,
+        }
+      : null;
   } catch {
     return null;
   }
@@ -78,24 +92,28 @@ function parseRenderedGeneralChatPrompt(prompt: string): RenderedPromptSections 
     for (const line of transcriptBody.split('\n')) {
       const match = /^\[Turn \d+\] (User|Assistant|Unknown): (\{.*\})$/.exec(line);
       if (!match) return null;
-      const content = parseEnvelopeContent(match[2] ?? '');
-      if (content === null) return null;
-      const role = match[1]?.toLowerCase();
-      if (role !== 'user' && role !== 'assistant' && role !== 'unknown') return null;
-      transcript.push({ role, content });
+      const envelope = parseEnvelope(match[2] ?? '');
+      if (envelope === null) return null;
+      const role = match[1] === 'User'
+        ? 'user'
+        : match[1] === 'Assistant'
+          ? 'assistant'
+          : 'system';
+      transcript.push({ role, ...envelope });
     }
   }
 
   const taskBody = prompt.slice(taskIndex + taskMarker.length);
   const currentMessageMarker = '--- Current user message ---\n';
   if (!taskBody.startsWith(currentMessageMarker)) return null;
-  const currentUserMessage = parseEnvelopeContent(taskBody.slice(currentMessageMarker.length));
+  const currentUserMessage = parseEnvelope(taskBody.slice(currentMessageMarker.length));
   if (currentUserMessage === null) return null;
 
-  const contextWithoutFlattenedTranscript =
-    context.slice(0, transcriptBodyStart + 1) + '[]' + context.slice(transcriptBodyEnd);
-  const systemContext =
-    prompt.slice(0, contextStart) + contextWithoutFlattenedTranscript;
+  // Keep the canonical transcript in the system context because its provenance
+  // labels and the authority rules referring to section 3 are one contract. The
+  // role-attributed copies below improve conversational recall without replacing
+  // or weakening that contract.
+  const systemContext = prompt.slice(0, taskIndex);
   return { systemContext, transcript, currentUserMessage };
 }
 
@@ -103,9 +121,14 @@ function serializeLlama31GeneralChat(prompt: string): string | null {
   const sections = parseRenderedGeneralChatPrompt(prompt);
   if (!sections) return null;
   const messages = [
-    { role: 'system', content: sections.systemContext },
+    {
+      role: 'system',
+      provenance: 'CORE_PROMPT',
+      epistemicStatus: 'INSTRUCTION_AND_LABELED_CONTEXT',
+      content: sections.systemContext,
+    },
     ...sections.transcript,
-    { role: 'user', content: sections.currentUserMessage },
+    { role: 'user', ...sections.currentUserMessage },
   ];
   return [
     '# Role-attributed conversation',

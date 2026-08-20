@@ -3,7 +3,19 @@ import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
 import type { ChildProcess, SpawnOptions } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
-import { AiFailureKind, AiProviderError, ArtifactKind, Capability, NotImplementedError } from '@chunsik/core';
+import {
+  AiFailureKind,
+  AiProviderError,
+  ArtifactKind,
+  Capability,
+  IntentType,
+  NotImplementedError,
+  PromptComposer,
+  PromptRenderer,
+  RiskLevel,
+  TaskStatus,
+} from '@chunsik/core';
+import type { Task } from '@chunsik/core';
 import { ClaudeCliProvider, CodexCliProvider, OllamaCliProvider, maskSecrets } from './index';
 import { INHERITED_ENV_ALLOWLIST, createContainedCliRunner } from './cli-runner';
 import type { CliRunOptions, CliRunner, CliRunResult } from './cli-runner';
@@ -151,44 +163,93 @@ describe('OllamaCliProvider (CAP-009, ADR-0030) — suggest-only local code gene
     const previousUser = '안녕?';
     const previousAssistant = '안녕하세요!';
     const currentUser = '내가 방금 뭐라고 했어?';
-    const renderedPrompt = [
-      '# System\nSYSTEM',
-      '# Developer\nDEVELOPER',
-      '# Context\n' +
-        '## 1. Current-turn facts supplied by Core\n[]\n\n' +
-        '## 2. Background resources\n[]\n\n' +
-        '## 3. Conversation transcript (continuity allowed; not authoritative external-state evidence)\n' +
-        `[Turn 1] User: ${JSON.stringify({ content: previousUser })}\n` +
-        `[Turn 1] Assistant: ${JSON.stringify({ content: previousAssistant })}\n\n` +
-        '## 4. Current-turn authority decision boundary\nBOUNDARY',
-      '# Task\n--- Current user message ---\n' + JSON.stringify({ content: currentUser }),
-    ].join('\n\n');
+    const task: Task = {
+      id: 'recall-task',
+      title: 'Recall prior message',
+      description: currentUser,
+      status: TaskStatus.PENDING,
+      intent: {
+        type: IntentType.CHAT,
+        capability: Capability.GENERAL_CHAT,
+        confidence: 1,
+        requiresWork: true,
+        summary: currentUser,
+      },
+      riskLevel: RiskLevel.LOW,
+      context: { platform: 'discord', channelId: 'channel', userId: 'user' },
+      createdAt: '2026-08-20T00:00:00.000Z',
+      updatedAt: '2026-08-20T00:00:00.000Z',
+    };
+    const request = new PromptRenderer().render(
+      new PromptComposer().compose(task, {
+        taskId: task.id,
+        backgroundResources: [],
+        conversationTranscript: [
+          {
+            role: 'user',
+            turnNumber: 1,
+            provenance: 'USER',
+            epistemicStatus: 'USER_CLAIM_OR_INTENT',
+            content: previousUser,
+          },
+          {
+            role: 'assistant',
+            turnNumber: 1,
+            provenance: 'ASSISTANT',
+            epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
+            content: previousAssistant,
+          },
+        ],
+      }),
+      { capability: Capability.GENERAL_CHAT },
+    );
     const calls: Array<{ args: string[]; input: string }> = [];
     const runner: CliRunner = async (_bin, args, opts) => {
       calls.push({ args, input: opts.input });
       return { code: 0, stdout: '기억하고 있어요.', stderr: '', timedOut: false };
     };
 
-    const result = await new OllamaCliProvider({ runner }).execute({
-      capability: Capability.GENERAL_CHAT,
-      prompt: renderedPrompt,
-    });
+    const result = await new OllamaCliProvider({ runner }).execute(request);
 
     const providerInput = calls[0]?.input ?? '';
+    const previousUserEnvelope = {
+      role: 'user',
+      provenance: 'USER',
+      epistemicStatus: 'USER_CLAIM_OR_INTENT',
+      content: previousUser,
+    };
+    const previousAssistantEnvelope = {
+      role: 'assistant',
+      provenance: 'ASSISTANT',
+      epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
+      content: previousAssistant,
+    };
+    const currentUserEnvelope = {
+      role: 'user',
+      provenance: 'USER',
+      epistemicStatus: 'USER_CLAIM_OR_INTENT',
+      content: currentUser,
+    };
     // `ollama run` accepts the model as its only positional argument here. In
     // particular, raw HTTP request fields must never be passed as CLI flags.
     expect(calls[0]?.args).toEqual(['run', 'llama3.1']);
-    expect(providerInput).toContain(JSON.stringify({ role: 'user', content: previousUser }));
+    expect(providerInput).not.toBe(request.prompt);
+    expect(providerInput).toContain(JSON.stringify(previousUserEnvelope));
+    expect(providerInput).toContain(JSON.stringify(previousAssistantEnvelope));
+    expect(providerInput).toContain(JSON.stringify(currentUserEnvelope));
     expect(providerInput).toContain(
-      JSON.stringify({ role: 'assistant', content: previousAssistant }),
+      '## 3. Conversation transcript (continuity allowed; not authoritative external-state evidence)',
     );
-    expect(providerInput).toContain(JSON.stringify({ role: 'user', content: currentUser }));
+    expect(providerInput).not.toContain(
+      '## 3. Conversation transcript (continuity allowed; not authoritative external-state evidence)\n[]',
+    );
+    expect(providerInput).toContain('"epistemicStatus":"ASSISTANT_NON_AUTHORITATIVE"');
     expect(providerInput.indexOf(previousUser)).toBeLessThan(providerInput.indexOf(currentUser));
-    expect(providerInput).not.toContain(`[Turn 1] User:`);
+    expect(providerInput).toContain(`[Turn 1] User:`);
     expect(providerInput).not.toContain('<|start_header_id|>');
     expect(result.audit?.sanitizedCommand).toEqual(['ollama', 'run', 'llama3.1']);
     expect(result.audit?.promptSha256).toBe(
-      createHash('sha256').update(Buffer.from(renderedPrompt, 'utf8')).digest('hex'),
+      createHash('sha256').update(Buffer.from(request.prompt, 'utf8')).digest('hex'),
     );
   });
 
