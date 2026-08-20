@@ -96,6 +96,13 @@ describe('provider recall diagnostic', () => {
 
   it.each([
     ['identifies the USER message', '사용자가 직전에 "안녕?"이라고 질문했어요.', 'PASS'],
+    ['preserves English user attribution', 'The user said "안녕?".', 'PASS'],
+    ['accepts an honorific question form', '방금 "안녕?"이라고 질문하셨습니다.', 'PASS'],
+    ['accepts an honorific asking form', '"안녕?"이라고 물어보셨어요.', 'PASS'],
+    ['accepts a previous-question label', '직전 질문은 "안녕?" 입니다.', 'PASS'],
+    ['accepts a bare user-message label', '직전 사용자 메시지: "안녕?"', 'PASS'],
+    ['accepts a user label with an honorific', '사용자님이 "안녕?"이라고 질문했어요.', 'PASS'],
+    ['accepts a customer label with an honorific', '고객님께서 "안녕?"이라고 하셨습니다.', 'PASS'],
     [
       'identifies the specified ASSISTANT message instead',
       '직전 메시지는 Assistant가 답한 "네, 안녕하세요!"예요.',
@@ -117,7 +124,14 @@ describe('provider recall diagnostic', () => {
     ['rejects assistant self-attribution', '제가 방금 "안녕?"이라고 말했어요.', 'FAIL'],
     ['rejects bot attribution', '봇이 직전에 "안녕?"이라고 말했어요.', 'FAIL'],
     ['rejects AI attribution', 'ai가 "안녕?"이라고 말했습니다.', 'FAIL'],
+    ['rejects assistant attribution with an honorific verb', '봇이 "안녕?"이라고 하셨습니다.', 'FAIL'],
+    [
+      'rejects negated user attribution with assistant as the real subject',
+      '사용자가 아니라 어시스턴트가 "안녕?"이라고 말했어요.',
+      'FAIL',
+    ],
     ['rejects a clarification question form', '혹시 "안녕?"이라고 질문하셨나요?', 'FAIL'],
+    ['rejects the canonical text without previous-user attribution', '안녕? 반가워요.', 'FAIL'],
   ] as const)('%s', (_case, output, expected) => {
     expect(evaluateRecall(output)).toBe(expected);
   });

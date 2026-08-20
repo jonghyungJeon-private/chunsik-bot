@@ -145,13 +145,35 @@ export function evaluateRecall(output: string): RecallDiagnosticStatus {
   const canonicalClauses = normalized
     .split(/[,，;；]|\.(?:\s|$)|(?:였|이었|했)고\s+/)
     .filter((clause) => /안녕\s*\?/.test(clause));
-  const userAttribution =
-    /(?:사용자(?:가|는|께서)|질문자(?:가|는)|당신(?:이|은)|너가|네가|(?:the\s+)?user\s+(?:said|asked|wrote|sent)|you\s+(?:said|asked|wrote|sent))/;
-  const attributesMessageToUser = canonicalClauses.some((clause) =>
-    new RegExp(`${userAttribution.source}.{0,40}안녕\\s*\\?`).test(clause) ||
-    new RegExp(`안녕\\s*\\?.{0,40}${userAttribution.source}`).test(clause));
+  const userLabel =
+    /(?:사용자|질문자|고객)(?:님)?(?:께서|이|가|은|는)?(?:\s*(?:메시지|질문)(?:이|가|은|는)?)?/;
+  const directUserAttribution =
+    /(?:당신(?:이|은)|너가|네가|(?:the\s+)?user\s+(?:said|asked|wrote|sent)|you\s+(?:said|asked|wrote|sent))/;
+  const attributesCanonicalToAssistant = canonicalClauses.some((clause) =>
+    /(?:assistant|어시스턴트|봇|\bai\b)(?:가|는|이|은|께서)?.{0,40}안녕\s*\?/.test(clause) ||
+    /안녕\s*\?.{0,40}(?:assistant|어시스턴트|봇|\bai\b)(?:가|는|이|은|께서)?/.test(clause));
+  const negatedUserWithAssistantSubject = canonicalClauses.some((clause) =>
+    /(?:사용자|질문자|고객)(?:님)?(?:이|가|은|는)?\s*(?:이\s*)?아니라|(?:사용자|질문자|고객)(?:님)?(?:이|가|은|는)?\s*이\s*아니고/.test(clause) &&
+    /(?:assistant|어시스턴트|봇|\bai\b)(?:가|는|이|은|께서)?/.test(clause));
+  const attributesMessageToUser = canonicalClauses.some((clause) => {
+    const canonical = '안녕\\s*\\?';
+    const nearbyUserAttribution = new RegExp(
+      `(?:${userLabel.source}|${directUserAttribution.source}).{0,40}${canonical}|` +
+      `${canonical}.{0,40}(?:${userLabel.source}|${directUserAttribution.source})`,
+    ).test(clause);
+    const previousUserTurnLabel = new RegExp(
+      `(?:직전|방금)(?:\\s+(?:사용자(?:님)?\\s*)?(?:메시지|질문))(?:\\s*(?:이|가|은|는|:))?` +
+      `.{0,20}${canonical}`,
+    ).test(clause);
+    const honorificUserSpeech = new RegExp(
+      `${canonical}.{0,30}(?:질문하|물어보|말씀하|하)(?:셨습니다|셨어요|셨다|셨죠)`,
+    ).test(clause);
 
-  return attributesMessageToUser && !deniesRecall && !isMetaClarification
+    return nearbyUserAttribution || previousUserTurnLabel || honorificUserSpeech;
+  });
+
+  return attributesMessageToUser && !attributesCanonicalToAssistant &&
+    !negatedUserWithAssistantSubject && !deniesRecall && !isMetaClarification
     ? 'PASS'
     : 'FAIL';
 }
