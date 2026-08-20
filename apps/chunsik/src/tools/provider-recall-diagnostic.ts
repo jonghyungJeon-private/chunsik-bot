@@ -73,6 +73,50 @@ export interface ProviderRecallDiagnosticOptions {
   readonly now?: () => number;
 }
 
+export interface RecallStochasticRunResult {
+  readonly run: number;
+  readonly recallResult: RecallDiagnosticStatus;
+  readonly responseText: string;
+  readonly error: string | null;
+}
+
+export interface RecallStochasticReport {
+  readonly providerId: 'ollama-cli:llama3.1:8b';
+  readonly modelIdentity: 'llama3.1:8b';
+  readonly iterationCount: number;
+  readonly passCount: number;
+  readonly failCount: number;
+  readonly reliabilityRatio: number;
+  readonly runs: readonly RecallStochasticRunResult[];
+}
+
+export interface RecallStochasticOptions {
+  readonly runner?: CliRunner;
+  readonly ollamaBin?: string;
+  readonly timeoutMs?: number;
+  /** Defaults to five and is deliberately capped for an explicitly authorized run. */
+  readonly iterations?: number;
+}
+
+export type RecallInputDifferenceCategory =
+  | 'PROMPT_LAYER'
+  | 'SYSTEM_INSTRUCTIONS'
+  | 'CONTEXT_ENTRY'
+  | 'METADATA';
+
+export interface RecallInputDifference {
+  readonly category: RecallInputDifferenceCategory;
+  readonly path: string;
+  readonly canonical: string;
+  readonly live: string;
+}
+
+export interface RecallInputComparisonReport {
+  readonly candidate: 'MODEL_STOCHASTICITY' | 'LIVE_RUNTIME_CONTEXT_DIFFERENCE';
+  readonly identical: boolean;
+  readonly differences: readonly RecallInputDifference[];
+}
+
 interface ComparisonTarget {
   readonly providerId: string;
   readonly modelIdentity: string;
@@ -84,6 +128,9 @@ interface ComparisonTarget {
 
 const CANONICAL_TIMESTAMP = '2026-08-20T00:00:00.000Z';
 const CANONICAL_TASK_ID = 'provider-recall-diagnostic-task';
+const DEFAULT_STOCHASTIC_ITERATIONS = 5;
+const MAX_STOCHASTIC_ITERATIONS = 20;
+const MAX_DIFF_EXCERPT_CHARACTERS = 80;
 
 /** Build the one finalized GENERAL_CHAT request shared by every comparison target. */
 export function createCanonicalRecallRequest(): AiRequest {
@@ -131,6 +178,183 @@ export function createCanonicalRecallRequest(): AiRequest {
 
   const spec = new PromptComposer().compose(task, context);
   return new PromptRenderer().render(spec, { capability: Capability.GENERAL_CHAT });
+}
+
+function sortJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortJsonValue);
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, entry]) => [key, sortJsonValue(entry)]),
+    );
+  }
+  return value;
+}
+
+/** Serialize the exact canonical AiRequest with recursively stable object-key ordering. */
+export function exportCanonicalRecallRequestSnapshot(): string {
+  return `${JSON.stringify(sortJsonValue(createCanonicalRecallRequest()), null, 2)}\n`;
+}
+
+interface PromptLayer {
+  readonly name: string;
+  readonly content: string;
+}
+
+function promptLayers(prompt: string): readonly PromptLayer[] {
+  const matches = [...prompt.matchAll(/^# ([^\n]+)\n/gm)];
+  if (matches.length === 0) return Object.freeze([{ name: 'Unlayered', content: prompt }]);
+  return Object.freeze(matches.map((match, index) => {
+    const contentStart = (match.index ?? 0) + match[0].length;
+    const contentEnd = matches[index + 1]?.index ?? prompt.length;
+    return Object.freeze({
+      name: match[1] ?? 'Unknown',
+      content: prompt.slice(contentStart, contentEnd).trimEnd(),
+    });
+  }));
+}
+
+function boundedSafeExcerpt(value: string): string {
+  const redacted = value
+    .replace(/\b(?:bearer\s+)?[a-z0-9_-]*(?:token|secret|password|api[_-]?key)[a-z0-9_-]*\s*[:=]\s*[^\s,;]+/gi, '[REDACTED]')
+    .replace(/\b(?:sk|ghp|github_pat)_[a-z0-9_-]+\b/gi, '[REDACTED]')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return redacted.length <= MAX_DIFF_EXCERPT_CHARACTERS
+    ? redacted
+    : `${redacted.slice(0, MAX_DIFF_EXCERPT_CHARACTERS - 1)}…`;
+}
+
+function contentSummary(value: string | undefined): string {
+  if (value === undefined) return '<missing>';
+  return `length=${value.length}; excerpt=${JSON.stringify(boundedSafeExcerpt(value))}`;
+}
+
+function metadataSummary(value: unknown): string {
+  if (value === undefined) return '<missing>';
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return `array(length=${value.length})`;
+  return typeof value;
+}
+
+function stableValue(value: unknown): string {
+  return JSON.stringify(sortJsonValue(value));
+}
+
+/**
+ * Compare provider-boundary request structure without returning unbounded or raw values.
+ * Metadata values are represented only by their types; prompt/context text is redacted and capped.
+ */
+export function compareRecallInputs(
+  canonical: AiRequest,
+  live: AiRequest,
+): RecallInputComparisonReport {
+  const differences: RecallInputDifference[] = [];
+  const canonicalLayers = promptLayers(canonical.prompt);
+  const liveLayers = promptLayers(live.prompt);
+  const layerNames = [...new Set([
+    ...canonicalLayers.map(({ name }) => name),
+    ...liveLayers.map(({ name }) => name),
+  ])].sort();
+
+  for (const name of layerNames) {
+    const canonicalLayer = canonicalLayers.find((layer) => layer.name === name);
+    const liveLayer = liveLayers.find((layer) => layer.name === name);
+    if (canonicalLayer?.content === liveLayer?.content) continue;
+    differences.push(Object.freeze({
+      category: name === 'System' ? 'SYSTEM_INSTRUCTIONS' : 'PROMPT_LAYER',
+      path: `prompt.${name}`,
+      canonical: contentSummary(canonicalLayer?.content),
+      live: contentSummary(liveLayer?.content),
+    }));
+  }
+
+  const canonicalContext = new Map((canonical.contextFiles ?? []).map((entry) => [entry.path, entry.content]));
+  const liveContext = new Map((live.contextFiles ?? []).map((entry) => [entry.path, entry.content]));
+  const contextPaths = [...new Set([...canonicalContext.keys(), ...liveContext.keys()])].sort();
+  for (const path of contextPaths) {
+    const canonicalContent = canonicalContext.get(path);
+    const liveContent = liveContext.get(path);
+    if (canonicalContent === liveContent) continue;
+    differences.push(Object.freeze({
+      category: 'CONTEXT_ENTRY',
+      path: `contextFiles.${boundedSafeExcerpt(path)}`,
+      canonical: contentSummary(canonicalContent),
+      live: contentSummary(liveContent),
+    }));
+  }
+
+  const canonicalMetadata = canonical.metadata ?? {};
+  const liveMetadata = live.metadata ?? {};
+  const metadataKeys = [...new Set([
+    ...Object.keys(canonicalMetadata),
+    ...Object.keys(liveMetadata),
+  ])].sort();
+  for (const key of metadataKeys) {
+    const canonicalValue = canonicalMetadata[key];
+    const liveValue = liveMetadata[key];
+    if (stableValue(canonicalValue) === stableValue(liveValue)) continue;
+    differences.push(Object.freeze({
+      category: 'METADATA',
+      path: `metadata.${boundedSafeExcerpt(key)}`,
+      canonical: metadataSummary(canonicalValue),
+      live: metadataSummary(liveValue),
+    }));
+  }
+
+  return Object.freeze({
+    candidate: differences.length === 0
+      ? 'MODEL_STOCHASTICITY' as const
+      : 'LIVE_RUNTIME_CONTEXT_DIFFERENCE' as const,
+    identical: differences.length === 0,
+    differences: Object.freeze(differences),
+  });
+}
+
+/** Run only llama3.1's existing production serialization for a bounded sample. */
+export async function runStochasticRecallDiagnostic(
+  options: RecallStochasticOptions = {},
+): Promise<RecallStochasticReport> {
+  const iterations = options.iterations ?? DEFAULT_STOCHASTIC_ITERATIONS;
+  if (!Number.isInteger(iterations) || iterations < 1 || iterations > MAX_STOCHASTIC_ITERATIONS) {
+    throw new RangeError(`iterations must be an integer between 1 and ${MAX_STOCHASTIC_ITERATIONS}`);
+  }
+
+  const provider = new OllamaCliProvider({
+    bin: options.ollamaBin ?? 'ollama',
+    model: 'llama3.1:8b',
+    providerId: 'ollama-cli:llama3.1:8b',
+    runner: options.runner ?? defaultCliRunner,
+    timeoutMs: options.timeoutMs ?? 120_000,
+  });
+  const request = createCanonicalRecallRequest();
+  const runs: RecallStochasticRunResult[] = [];
+  for (let index = 0; index < iterations; index += 1) {
+    let responseText = '';
+    let error: string | null = null;
+    try {
+      responseText = (await provider.execute(request)).text;
+    } catch (caught) {
+      error = caught instanceof Error ? caught.message : String(caught);
+    }
+    runs.push(Object.freeze({
+      run: index + 1,
+      recallResult: error === null ? evaluateRecall(responseText) : 'FAIL',
+      responseText,
+      error,
+    }));
+  }
+  const passCount = runs.filter(({ recallResult }) => recallResult === 'PASS').length;
+  return Object.freeze({
+    providerId: 'ollama-cli:llama3.1:8b',
+    modelIdentity: 'llama3.1:8b',
+    iterationCount: iterations,
+    passCount,
+    failCount: iterations - passCount,
+    reliabilityRatio: passCount / iterations,
+    runs: Object.freeze(runs),
+  });
 }
 
 export function evaluateRecall(output: string): RecallDiagnosticStatus {

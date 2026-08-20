@@ -3,9 +3,12 @@ import type { CliRunner } from '@chunsik/ai-cli';
 import { Capability } from '@chunsik/core';
 import {
   CANONICAL_RECALL_SCENARIO,
+  compareRecallInputs,
   createCanonicalRecallRequest,
   evaluateRecall,
+  exportCanonicalRecallRequestSnapshot,
   runComparison,
+  runStochasticRecallDiagnostic,
 } from './provider-recall-diagnostic';
 
 describe('provider recall diagnostic', () => {
@@ -92,6 +95,116 @@ describe('provider recall diagnostic', () => {
       'ollama-cli:llama3.1:8b',
       'ollama-cli:granite3.3:8b',
     ]);
+  });
+
+  it('runs the default bounded stochastic sample and aggregates passing runs', async () => {
+    let calls = 0;
+    const runner: CliRunner = async () => {
+      calls += 1;
+      return {
+        code: 0,
+        stdout: '사용자가 직전에 "안녕?"이라고 질문했어요.',
+        stderr: '',
+        timedOut: false,
+      };
+    };
+
+    const report = await runStochasticRecallDiagnostic({ runner });
+
+    expect(calls).toBe(5);
+    expect(report.iterationCount).toBe(5);
+    expect(report.runs.map(({ run, recallResult }) => ({ run, recallResult }))).toEqual([
+      { run: 1, recallResult: 'PASS' },
+      { run: 2, recallResult: 'PASS' },
+      { run: 3, recallResult: 'PASS' },
+      { run: 4, recallResult: 'PASS' },
+      { run: 5, recallResult: 'PASS' },
+    ]);
+    expect(report).toMatchObject({ passCount: 5, failCount: 0, reliabilityRatio: 1 });
+  });
+
+  it('reports the correct stochastic reliability ratio for mixed results', async () => {
+    const outputs = [
+      '사용자가 직전에 "안녕?"이라고 질문했어요.',
+      '기억하지 못해요.',
+      '직전 질문은 "안녕?" 입니다.',
+      '무엇을 질문하셨나요?',
+    ];
+    const runner: CliRunner = async () => ({
+      code: 0,
+      stdout: outputs.shift() ?? '',
+      stderr: '',
+      timedOut: false,
+    });
+
+    const report = await runStochasticRecallDiagnostic({ runner, iterations: 4 });
+
+    expect(report.runs.map(({ recallResult }) => recallResult)).toEqual([
+      'PASS', 'FAIL', 'PASS', 'FAIL',
+    ]);
+    expect(report).toMatchObject({ passCount: 2, failCount: 2, reliabilityRatio: 0.5 });
+  });
+
+  it('detects prompt-layer and system-instruction differences with bounded excerpts', () => {
+    const canonical = createCanonicalRecallRequest();
+    const live = {
+      ...canonical,
+      prompt: canonical.prompt
+        .replace('You are Quoky', 'You are Live Quoky')
+        .replace('# Task', '# Additional\nLive-only layer\n\n# Task'),
+    };
+
+    const report = compareRecallInputs(canonical, live);
+
+    expect(report.candidate).toBe('LIVE_RUNTIME_CONTEXT_DIFFERENCE');
+    expect(report.differences).toEqual(expect.arrayContaining([
+      expect.objectContaining({ category: 'SYSTEM_INSTRUCTIONS', path: 'prompt.System' }),
+      expect.objectContaining({ category: 'PROMPT_LAYER', path: 'prompt.Additional' }),
+    ]));
+    expect(report.differences.every(({ canonical: value }) => value.length < 120)).toBe(true);
+  });
+
+  it('detects context-entry differences without exposing metadata values', () => {
+    const canonical = {
+      ...createCanonicalRecallRequest(),
+      contextFiles: [{ path: '.chunsik/context.md', content: 'canonical context' }],
+      metadata: { token: 'canonical-secret' },
+    };
+    const live = {
+      ...canonical,
+      contextFiles: [{ path: '.chunsik/context.md', content: 'live context' }],
+      metadata: { token: 'live-secret', attempt: 1 },
+    };
+
+    const report = compareRecallInputs(canonical, live);
+
+    expect(report.differences).toEqual(expect.arrayContaining([
+      expect.objectContaining({ category: 'CONTEXT_ENTRY', path: 'contextFiles..chunsik/context.md' }),
+      expect.objectContaining({ category: 'METADATA', path: 'metadata.token' }),
+      expect.objectContaining({ category: 'METADATA', path: 'metadata.attempt' }),
+    ]));
+    expect(JSON.stringify(report)).not.toContain('canonical-secret');
+    expect(JSON.stringify(report)).not.toContain('live-secret');
+  });
+
+  it('reports structurally identical inputs as a MODEL_STOCHASTICITY candidate', () => {
+    const canonical = createCanonicalRecallRequest();
+
+    expect(compareRecallInputs(canonical, structuredClone(canonical))).toEqual({
+      candidate: 'MODEL_STOCHASTICITY',
+      identical: true,
+      differences: [],
+    });
+  });
+
+  it('exports a stable deterministic canonical AiRequest snapshot', () => {
+    const first = exportCanonicalRecallRequestSnapshot();
+    const second = exportCanonicalRecallRequestSnapshot();
+
+    expect(first).toBe(second);
+    expect(first.endsWith('\n')).toBe(true);
+    expect(JSON.parse(first)).toEqual(createCanonicalRecallRequest());
+    expect(first.indexOf('"capability"')).toBeLessThan(first.indexOf('"prompt"'));
   });
 
   it.each([
