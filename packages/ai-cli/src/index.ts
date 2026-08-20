@@ -243,7 +243,11 @@ export class ClaudeCliProvider extends BaseCliAiProvider {
       );
     }
 
-    const text = stripInternalMetadataEnvelope(sanitizeTerminalOutput(result.stdout)).trim();
+    const sanitizedOutput = sanitizeTerminalOutput(result.stdout);
+    const text = (request.capability === Capability.GENERAL_CHAT
+      ? stripInternalMetadataEnvelope(sanitizedOutput)
+      : sanitizedOutput
+    ).trim();
     if (!text) {
       throw new AiProviderError(AiFailureKind.EMPTY_OUTPUT, 'claude CLI returned empty output');
     }
@@ -421,7 +425,11 @@ export class OllamaCliProvider extends BaseCliAiProvider {
       );
     }
 
-    const text = stripInternalMetadataEnvelope(sanitizeTerminalOutput(result.stdout)).trim();
+    const sanitizedOutput = sanitizeTerminalOutput(result.stdout);
+    const text = (request.capability === Capability.GENERAL_CHAT
+      ? stripInternalMetadataEnvelope(sanitizedOutput)
+      : sanitizedOutput
+    ).trim();
     if (!text) {
       throw new AiProviderError(AiFailureKind.EMPTY_OUTPUT, 'ollama CLI returned empty output');
     }

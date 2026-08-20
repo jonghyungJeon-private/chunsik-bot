@@ -96,6 +96,22 @@ describe('ClaudeCliProvider', () => {
     expect(res.artifacts?.[0]?.content).toBe('메타데이터 없는 Claude 응답');
   });
 
+  it('preserves metadata-like lines in CODE_IMPLEMENTATION output', async () => {
+    const proposal = [
+      '```md docs/x.md',
+      '## USER message',
+      'Provenance: USER',
+      'Content: "example"',
+      '```',
+    ].join('\n');
+    const res = await new ClaudeCliProvider('claude', {
+      runner: runnerOf({ code: 0, stdout: proposal, stderr: '', timedOut: false }),
+    }).execute({ capability: Capability.CODE_IMPLEMENTATION, prompt: PROMPT });
+
+    expect(res.text).toBe(proposal);
+    expect(res.artifacts?.[0]?.content).toBe(proposal);
+  });
+
   it('failures are AiProviderError instances', async () => {
     await expect(exec({ code: 1, stdout: '', stderr: 'x', timedOut: false })).rejects.toBeInstanceOf(
       AiProviderError,
@@ -174,6 +190,22 @@ describe('OllamaCliProvider (CAP-009, ADR-0030) — suggest-only local code gene
       colorDisabled: true,
       outputSanitized: true,
     });
+  });
+
+  it('preserves metadata-like lines in CODE_IMPLEMENTATION output', async () => {
+    const proposal = [
+      '```md docs/x.md',
+      '## USER message',
+      'Provenance: USER',
+      'Content: "example"',
+      '```',
+    ].join('\n');
+    const res = await new OllamaCliProvider({
+      runner: runnerOf({ code: 0, stdout: proposal, stderr: '', timedOut: false }),
+    }).execute({ capability: Capability.CODE_IMPLEMENTATION, prompt: PROMPT });
+
+    expect(res.text).toBe(proposal);
+    expect(res.artifacts?.[0]?.content).toBe(proposal);
   });
 
   it('serializes structured GENERAL_CHAT turns as role-attributed text using valid ollama run argv', async () => {
@@ -327,7 +359,7 @@ describe('OllamaCliProvider (CAP-009, ADR-0030) — suggest-only local code gene
   });
 
   it('removes internal Assistant metadata before returning response text', async () => {
-    const res = await ollamaExec({
+    const result = {
       code: 0,
       stdout: [
         '## ASSISTANT message',
@@ -337,6 +369,10 @@ describe('OllamaCliProvider (CAP-009, ADR-0030) — suggest-only local code gene
       ].join('\n'),
       stderr: '',
       timedOut: false,
+    } satisfies CliRunResult;
+    const res = await new OllamaCliProvider({ runner: runnerOf(result) }).execute({
+      capability: Capability.GENERAL_CHAT,
+      prompt: PROMPT,
     });
 
     expect(res.text).toBe('메타데이터 없는 Ollama 응답');
