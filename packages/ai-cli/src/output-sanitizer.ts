@@ -83,7 +83,7 @@ export function sanitizeTerminalOutput(input: string): string {
     i += 1;
   }
 
-  return stripInternalMetadataEnvelope(output);
+  return output;
 }
 
 const INTERNAL_PROVENANCE = 'ASSISTANT';
@@ -109,35 +109,43 @@ function contentFromJsonEnvelope(input: string): string | null {
  * Natural-language content is otherwise preserved verbatim; this does not
  * interpret the response or choose user-facing wording.
  */
-function stripInternalMetadataEnvelope(input: string): string {
+export function stripInternalMetadataEnvelope(input: string): string {
   const trimmed = input.trim();
   const jsonContent = contentFromJsonEnvelope(trimmed);
   if (jsonContent !== null) return jsonContent;
 
   const lines = input.split(/\r?\n/u);
-  let index = 0;
-  if (/^## ASSISTANT message\s*$/iu.test(lines[index] ?? '')) index += 1;
-  if ((lines[index] ?? '').trim() !== `Provenance: ${INTERNAL_PROVENANCE}`) return input;
-  index += 1;
-  if (
-    (lines[index] ?? '').trim() !==
-    `Epistemic status: ${INTERNAL_EPISTEMIC_STATUS}`
-  ) {
-    return input;
-  }
-  index += 1;
+  const output: string[] = [];
 
-  const contentLine = lines[index] ?? '';
-  if (contentLine.startsWith('Content: ')) {
-    const encodedContent = contentLine.slice('Content: '.length);
+  const decodeContentLine = (line: string): string | null => {
+    const normalized = line.trim();
+    if (!normalized.startsWith('Content: ')) return null;
     try {
-      const content = JSON.parse(encodedContent) as unknown;
-      if (typeof content === 'string' && index === lines.length - 1) return content;
+      const content = JSON.parse(normalized.slice('Content: '.length)) as unknown;
+      return typeof content === 'string' ? content : null;
     } catch {
-      // Fall through and preserve a non-canonical Content line as response text.
+      return null;
     }
+  };
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const normalized = (lines[index] ?? '').trim();
+
+    if (normalized === '# Role-attributed conversation') continue;
+    if (/^## (?:SYSTEM|USER|ASSISTANT|UNKNOWN) message$/u.test(normalized)) continue;
+    if (/^Provenance: [A-Z][A-Z_]*$/u.test(normalized)) continue;
+    if (/^Epistemic status: [A-Z][A-Z_]*$/u.test(normalized)) continue;
+
+    const content = decodeContentLine(lines[index] ?? '');
+    if (content !== null) {
+      output.push(content);
+      continue;
+    }
+
+    output.push(lines[index] ?? '');
   }
 
-  while ((lines[index] ?? '').trim() === '') index += 1;
-  return lines.slice(index).join('\n');
+  while (output[0]?.trim() === '') output.shift();
+  while (output.at(-1)?.trim() === '') output.pop();
+  return output.join('\n');
 }

@@ -10,7 +10,7 @@ import type {
 import { BaseCliAiProvider, Capability } from './base-cli-provider';
 import { defaultCliRunner, maskSecrets } from './cli-runner';
 import type { CliRunner } from './cli-runner';
-import { sanitizeTerminalOutput } from './output-sanitizer';
+import { sanitizeTerminalOutput, stripInternalMetadataEnvelope } from './output-sanitizer';
 
 export { BaseCliAiProvider };
 export { defaultCliRunner, maskSecrets } from './cli-runner';
@@ -243,7 +243,7 @@ export class ClaudeCliProvider extends BaseCliAiProvider {
       );
     }
 
-    const text = sanitizeTerminalOutput(result.stdout).trim();
+    const text = stripInternalMetadataEnvelope(sanitizeTerminalOutput(result.stdout)).trim();
     if (!text) {
       throw new AiProviderError(AiFailureKind.EMPTY_OUTPUT, 'claude CLI returned empty output');
     }
@@ -421,7 +421,7 @@ export class OllamaCliProvider extends BaseCliAiProvider {
       );
     }
 
-    const text = sanitizeTerminalOutput(result.stdout).trim();
+    const text = stripInternalMetadataEnvelope(sanitizeTerminalOutput(result.stdout)).trim();
     if (!text) {
       throw new AiProviderError(AiFailureKind.EMPTY_OUTPUT, 'ollama CLI returned empty output');
     }

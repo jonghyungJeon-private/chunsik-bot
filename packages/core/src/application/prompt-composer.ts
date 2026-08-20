@@ -275,6 +275,8 @@ export class PromptComposer {
   private static immediatelyPreviousUserTurn(
     entries: ContextBundle['conversationTranscript'],
   ): string | undefined {
+    // Precondition: ContextBuilder callers exclude the current inbound memory,
+    // so the final User entry here is the immediately previous User turn.
     for (let index = entries.length - 1; index >= 0; index -= 1) {
       const entry = entries[index];
       if (entry === undefined) continue;
