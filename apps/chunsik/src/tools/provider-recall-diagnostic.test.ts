@@ -31,7 +31,7 @@ describe('provider recall diagnostic', () => {
       generationInputs.push({ args, input: options.input });
       const output = args[0] === 'run' && args[1] === 'granite3.3:8b'
         ? '직전 질문을 기억하지 못해요.'
-        : '직전에 안녕?이라고 질문했어요.';
+        : '사용자가 직전에 안녕?이라고 질문했어요.';
       return { code: 0, stdout: output, stderr: '', timedOut: false };
     };
     let clock = 0;
@@ -96,6 +96,11 @@ describe('provider recall diagnostic', () => {
 
   it.each([
     ['identifies the USER message', '사용자가 직전에 "안녕?"이라고 질문했어요.', 'PASS'],
+    [
+      'identifies the specified ASSISTANT message instead',
+      '직전 메시지는 Assistant가 답한 "네, 안녕하세요!"예요.',
+      'FAIL',
+    ],
     ['identifies the ASSISTANT message instead', 'Assistant가 직전에 "안녕?"이라고 말했어요.', 'FAIL'],
     ['says it cannot remember', '직전 질문은 기억하지 못해요.', 'FAIL'],
     ['gives a meta clarification response', '"안녕?"이라고 물어보신 게 맞나요?', 'FAIL'],
@@ -110,6 +115,8 @@ describe('provider recall diagnostic', () => {
       'PASS',
     ],
     ['rejects assistant self-attribution', '제가 방금 "안녕?"이라고 말했어요.', 'FAIL'],
+    ['rejects bot attribution', '봇이 직전에 "안녕?"이라고 말했어요.', 'FAIL'],
+    ['rejects AI attribution', 'ai가 "안녕?"이라고 말했습니다.', 'FAIL'],
     ['rejects a clarification question form', '혹시 "안녕?"이라고 질문하셨나요?', 'FAIL'],
   ] as const)('%s', (_case, output, expected) => {
     expect(evaluateRecall(output)).toBe(expected);

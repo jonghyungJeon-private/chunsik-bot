@@ -140,19 +140,18 @@ export function evaluateRecall(output: string): RecallDiagnosticStatus {
   const isMetaClarification =
     /(?:말씀하시는|질문하신|물어보신)\s*(?:게|건|것은|내용이)\s*(?:맞나요|맞습니까|건가요|인가요)|(?:질문하셨|물어보셨|말씀하셨)나요|(?:무엇|어떤)\s*질문|(?:구체적으로|다시)\s*말씀/.test(normalized);
 
-  // Attribute the canonical text within its own clause. A response may accurately
-  // restate both turns, so an assistant label elsewhere in the response is not a veto.
+  // Attribute the canonical text within its own clause. Passing requires positive
+  // evidence that the user is the speaker; bare speech verbs must not imply that.
   const canonicalClauses = normalized
     .split(/[,，;；]|\.(?:\s|$)|(?:였|이었|했)고\s+/)
     .filter((clause) => /안녕\s*\?/.test(clause));
+  const userAttribution =
+    /(?:사용자(?:가|는|께서)|질문자(?:가|는)|당신(?:이|은)|너가|네가|(?:the\s+)?user\s+(?:said|asked|wrote|sent)|you\s+(?:said|asked|wrote|sent))/;
   const attributesMessageToUser = canonicalClauses.some((clause) =>
-    /(?:사용자|user|당신|너가|네가).{0,40}안녕\s*\?/.test(clause) ||
-    /안녕\s*\?.{0,40}(?:질문|물었|물어|말했|보냈)/.test(clause));
-  const attributesMessageToAssistant = canonicalClauses.some((clause) =>
-    /(?:assistant|어시스턴트|도우미|제가|저는|내가).{0,40}안녕\s*\?/.test(clause) ||
-    /안녕\s*\?.{0,40}(?:assistant|어시스턴트|도우미).{0,20}(?:답|말|메시지)/.test(clause));
+    new RegExp(`${userAttribution.source}.{0,40}안녕\\s*\\?`).test(clause) ||
+    new RegExp(`안녕\\s*\\?.{0,40}${userAttribution.source}`).test(clause));
 
-  return attributesMessageToUser && !attributesMessageToAssistant && !deniesRecall && !isMetaClarification
+  return attributesMessageToUser && !deniesRecall && !isMetaClarification
     ? 'PASS'
     : 'FAIL';
 }
