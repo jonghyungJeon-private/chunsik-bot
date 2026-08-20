@@ -22,8 +22,6 @@ const OLLAMA_COLOR_ENV = {
   CLICOLOR_FORCE: '0',
 } as const;
 
-const LLAMA_3_1_MODEL = /^llama3\.1(?::|$)/;
-
 type ProviderConversationRole = 'system' | 'user' | 'assistant' | 'unknown';
 
 interface ProviderConversationMessage {
@@ -109,43 +107,75 @@ function parseRenderedGeneralChatPrompt(prompt: string): RenderedPromptSections 
   const currentUserMessage = parseEnvelope(taskBody.slice(currentMessageMarker.length));
   if (currentUserMessage === null) return null;
 
-  // The role-attributed transcript below preserves ADR-0063 provenance. Replace
-  // the duplicate JSON transcript body in the system context so llama3.1 is not
-  // shown an internal envelope format that it can imitate in its response.
+  // History is rendered later as prior exchanges. Remove the document-style
+  // transcript section here so the same content is not also presented as an
+  // analysis target inside the instruction/context block.
   const systemContext = [
-    prompt.slice(0, contextStart + transcriptBodyStart + 1),
-    '(The role-attributed transcript is supplied below.)',
+    prompt.slice(0, contextStart + transcriptIndex),
     context.slice(transcriptBodyEnd),
   ].join('');
   return { systemContext, transcript, currentUserMessage };
 }
 
-function renderProviderConversationMessage(message: ProviderConversationMessage): string {
-  return [
-    `## ${message.role.toUpperCase()} message`,
-    `Provenance: ${message.provenance}`,
-    `Epistemic status: ${message.epistemicStatus}`,
-    `Content: ${JSON.stringify(message.content)}`,
-  ].join('\n');
+function renderPreviousConversationMessage(message: ProviderConversationMessage): string {
+  if (message.role === 'assistant') {
+    return `Assistant (earlier turn; continuity only, may be inaccurate): ${JSON.stringify(message.content)}`;
+  }
+  if (message.role === 'user') {
+    return `User (earlier turn; claim or intent): ${JSON.stringify(message.content)}`;
+  }
+  return `Unattributed earlier context (non-authoritative): ${JSON.stringify(message.content)}`;
 }
 
-function serializeLlama31GeneralChat(prompt: string): string | null {
+function renderContextEnvelopeWithoutInternalLabels(value: string): string {
+  return value.split('\n').map((line) => {
+    const envelope = parseEnvelope(line);
+    if (
+      envelope?.provenance === 'CORE_RUNTIME' &&
+      envelope.epistemicStatus === 'AUTHORITATIVE_CURRENT_FACT' &&
+      envelope.content.startsWith('immediatelyPreviousUserTurn: ')
+    ) return '';
+    if (envelope === null) return line;
+    if (
+      envelope.provenance === 'CORE_RUNTIME' &&
+      envelope.epistemicStatus === 'AUTHORITATIVE_CURRENT_FACT'
+    ) {
+      return `Core Runtime states as an authoritative current fact: ${JSON.stringify(envelope.content)}`;
+    }
+    if (
+      envelope.provenance === 'PROJECT_MEMORY' &&
+      envelope.epistemicStatus === 'NON_AUTHORITATIVE_BACKGROUND'
+    ) {
+      return `Project Memory supplies as non-authoritative background: ${JSON.stringify(envelope.content)}`;
+    }
+    return `${envelope.provenance} supplies ${envelope.epistemicStatus} context: ${JSON.stringify(envelope.content)}`;
+  }).join('\n');
+}
+
+function serializeGeneralChat(prompt: string): string | null {
   const sections = parseRenderedGeneralChatPrompt(prompt);
   if (!sections) return null;
-  const messages: ProviderConversationMessage[] = [
-    {
-      role: 'system',
-      provenance: 'CORE_PROMPT',
-      epistemicStatus: 'INSTRUCTION_AND_LABELED_CONTEXT',
-      content: sections.systemContext,
-    },
-    ...sections.transcript,
-    { role: 'user', ...sections.currentUserMessage },
-  ];
+
+  // Ollama's CLI exposes one stdin prompt rather than a messages API. Render
+  // the recovered turns as a chat-completion continuation: prior exchanges
+  // come first, then the current User turn, and the final Assistant cue makes
+  // the requested response boundary unambiguous. Provenance and epistemic
+  // policy remain authoritative in systemContext, but their internal labels
+  // are intentionally not repeated beside conversational content: those
+  // document-like labels caused llama3.1 to analyze or reproduce the envelope.
   return [
-    '# Role-attributed conversation',
-    ...messages.map(renderProviderConversationMessage),
-  ].join('\n\n');
+    renderContextEnvelopeWithoutInternalLabels(sections.systemContext),
+    sections.transcript.length === 0
+      ? ''
+      : [
+          'Previous conversation (continue it naturally; do not analyze or reproduce it):',
+          ...sections.transcript.map(renderPreviousConversationMessage),
+          'End previous conversation.',
+        ].join('\n'),
+    'Continue the conversation by answering the final User message directly.',
+    `User (current active turn): ${JSON.stringify(sections.currentUserMessage.content)}`,
+    'Assistant response:',
+  ].filter(Boolean).join('\n\n');
 }
 
 function approvedLoopbackHost(value: string): string {
@@ -378,10 +408,9 @@ export class OllamaCliProvider extends BaseCliAiProvider {
   }
 
   override async execute(request: AiRequest): Promise<AiExecutionResult> {
-    const serializedConversation =
-      request.capability === Capability.GENERAL_CHAT && LLAMA_3_1_MODEL.test(this.model)
-        ? serializeLlama31GeneralChat(request.prompt)
-        : null;
+    const serializedConversation = request.capability === Capability.GENERAL_CHAT
+      ? serializeGeneralChat(request.prompt)
+      : null;
     const input = serializedConversation ?? request.prompt;
     // Suggest-only: a local model never needs the repo. Always a neutral cwd so it cannot
     // ingest workspace files (defense in depth on top of CAP-008's no-workspace AiRequest).
