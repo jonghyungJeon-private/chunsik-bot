@@ -682,6 +682,26 @@ describe('Provider regression through the contained runner', () => {
     expect(res.text).toBe('## 결과'); // sanitized by the adapter, exactly as before
   });
 
+  it('Ollama never returns an echoed historical USER envelope as the generated response', async () => {
+    const staleUser = '내가 방금 뭐라했어 ?';
+    const rawStdout = [
+      '# Role-attributed conversation',
+      '## USER message',
+      'Provenance: USER',
+      'Epistemic status: USER_CLAIM_OR_INTENT',
+      `Content: ${JSON.stringify(staleUser)}`,
+    ].join('\n');
+    const probe = containedProbe(rawStdout);
+
+    await expect(
+      new OllamaCliProvider({ runner: probe.runner }).execute({
+        capability: Capability.GENERAL_CHAT,
+        prompt: PROMPT,
+      }),
+    ).rejects.toMatchObject({ kind: AiFailureKind.EMPTY_OUTPUT });
+    expect(probe.spawns).toHaveLength(1);
+  });
+
   it('opts into the exact loopback validation environment without changing legacy defaults', async () => {
     const probe = containedProbe('QUIRKYBOT_STAGE_2B_PROVIDER_OK');
     await new OllamaCliProvider({

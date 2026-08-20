@@ -149,6 +149,9 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
     expect(spec.developer).toContain(
       'Treat a self-contained greeting or small-talk message as self-contained: respond naturally and directly without asking a clarifying question',
     );
+    expect(spec.context).toContain(priorUser);
+    expect(spec.context).not.toContain('춘식아 안녕?');
+    expect(spec.task).not.toContain(priorUser);
     expect(spec.developer).toContain(
       'do not mention, continue, summarize, or inject unrelated topics from prior conversations or background resources',
     );

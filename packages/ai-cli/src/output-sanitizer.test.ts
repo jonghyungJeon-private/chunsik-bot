@@ -99,7 +99,7 @@ describe('stripInternalMetadataEnvelope', () => {
     expect(stripInternalMetadataEnvelope(output)).toBe('첫 문장\n\n둘째 문장\n추가문장');
   });
 
-  it('strips stray canonical role, provenance, epistemic, and content lines', () => {
+  it('rejects an echoed serialized USER transcript block instead of replaying its content', () => {
     const output = [
       '## USER message',
       'Provenance: USER',
@@ -107,7 +107,24 @@ describe('stripInternalMetadataEnvelope', () => {
       'Content: "사용자 응답 내용"',
     ].join('\n');
 
-    expect(stripInternalMetadataEnvelope(output)).toBe('사용자 응답 내용');
+    expect(stripInternalMetadataEnvelope(output)).toBe('');
+  });
+
+  it('selects only Assistant content when stdout echoes USER history before an answer', () => {
+    const output = [
+      '# Role-attributed conversation',
+      '## USER message',
+      'Provenance: USER',
+      'Epistemic status: USER_CLAIM_OR_INTENT',
+      'Content: "내가 방금 뭐라했어 ?"',
+      '',
+      '## ASSISTANT message',
+      'Provenance: ASSISTANT',
+      'Epistemic status: ASSISTANT_NON_AUTHORITATIVE',
+      'Content: "새 질문에 대한 응답"',
+    ].join('\n');
+
+    expect(stripInternalMetadataEnvelope(output)).toBe('새 질문에 대한 응답');
   });
 
   it('preserves similar natural-language or incomplete metadata text', () => {

@@ -115,18 +115,41 @@ export function stripInternalMetadataEnvelope(input: string): string {
   if (jsonContent !== null) return jsonContent;
 
   const lines = input.split(/\r?\n/u);
-  const output: string[] = [];
+  const roleHeading = /^## (SYSTEM|USER|ASSISTANT|UNKNOWN) message$/u;
 
-  const decodeContentLine = (line: string): string | null => {
-    const normalized = line.trim();
-    if (!normalized.startsWith('Content: ')) return null;
-    try {
-      const content = JSON.parse(normalized.slice('Content: '.length)) as unknown;
-      return typeof content === 'string' ? content : null;
-    } catch {
-      return null;
+  // A model can echo the role-attributed stdin transcript. Once a canonical
+  // role heading is present, accept content only from an Assistant block. In
+  // particular, never turn an echoed USER Content field into the response.
+  if (lines.some((line) => roleHeading.test(line.trim()))) {
+    const assistantOutput: string[] = [];
+    let role: string | null = null;
+
+    for (const line of lines) {
+      const normalized = line.trim();
+      const heading = roleHeading.exec(normalized);
+      if (heading) {
+        role = heading[1] ?? null;
+        continue;
+      }
+      if (normalized === '# Role-attributed conversation') continue;
+      if (role !== 'ASSISTANT') continue;
+      if (normalized === 'Provenance: ASSISTANT') continue;
+      if (normalized === 'Epistemic status: ASSISTANT_NON_AUTHORITATIVE') continue;
+
+      const content = decodeContentLine(line);
+      assistantOutput.push(content ?? line);
     }
-  };
+
+    while (assistantOutput[0]?.trim() === '') assistantOutput.shift();
+    while (assistantOutput.at(-1)?.trim() === '') assistantOutput.pop();
+    return assistantOutput.join('\n');
+  }
+
+  // The older headerless Assistant envelope is still accepted. A headerless
+  // USER provenance marker is an echoed input, so fail closed instead of
+  // replaying its Content field as an Assistant response.
+  if (lines.some((line) => line.trim() === 'Provenance: USER')) return '';
+  const output: string[] = [];
 
   for (let index = 0; index < lines.length; index += 1) {
     const normalized = (lines[index] ?? '').trim();
@@ -148,4 +171,15 @@ export function stripInternalMetadataEnvelope(input: string): string {
   while (output[0]?.trim() === '') output.shift();
   while (output.at(-1)?.trim() === '') output.pop();
   return output.join('\n');
+}
+
+function decodeContentLine(line: string): string | null {
+  const normalized = line.trim();
+  if (!normalized.startsWith('Content: ')) return null;
+  try {
+    const content = JSON.parse(normalized.slice('Content: '.length)) as unknown;
+    return typeof content === 'string' ? content : null;
+  } catch {
+    return null;
+  }
 }

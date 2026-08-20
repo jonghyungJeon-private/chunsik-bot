@@ -6824,7 +6824,7 @@ function routedResultOf(status: ProviderGatewayTerminalStatus): RuntimeProviderR
 }
 
 describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => {
-  it('persists the current inbound before context build and exposes it as the latest User turn on the next request', async () => {
+  it('keeps persisted history separate from the current provider request after runtime reconstruction', async () => {
     const { storage } = makeTaskStorage();
     const { deps: base } = makeDeps({
       intent: intentOf(Capability.GENERAL_CHAT, IntentType.CHAT, true),
@@ -6882,41 +6882,39 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
         },
       },
     };
-    const runtime = new ConversationRuntime(deps);
+    const firstRuntime = new ConversationRuntime(deps);
+    await firstRuntime.handle(messageOf('내가 방금 뭐라했어 ?'));
 
-    await runtime.handle(messageOf('내가 방금 남긴 문장은 파란 하늘이야'));
-    await runtime.handle(messageOf('내가 방금 뭐라고 했지?'));
+    // Simulate an application restart: runtime-local state is discarded while
+    // the session/memory collaborators retain persisted conversation history.
+    const resumedRuntime = new ConversationRuntime(deps);
+    await resumedRuntime.handle(messageOf('안녕 ? 뭐하고 살아 ?'));
 
     expect(builtTranscripts[0]).toEqual([]);
-    expect(builtTranscripts[1]).toContain('user:내가 방금 남긴 문장은 파란 하늘이야');
-    expect(builtTranscripts[1]).not.toContain('user:내가 방금 뭐라고 했지?');
+    expect(builtTranscripts[1]).toContain('user:내가 방금 뭐라했어 ?');
+    expect(builtTranscripts[1]).not.toContain('user:안녕 ? 뭐하고 살아 ?');
     expect(
       builtTranscripts[1]?.filter((entry) => entry.startsWith('user:')).at(-1),
-    ).toBe('user:내가 방금 남긴 문장은 파란 하늘이야');
-    const recallPrompt = providerPrompts[1] ?? '';
-    const transcriptStart = recallPrompt.indexOf('3. Conversation transcript');
-    const authorityBoundaryStart = recallPrompt.indexOf(
+    ).toBe('user:내가 방금 뭐라했어 ?');
+    const resumedPrompt = providerPrompts[1] ?? '';
+    const transcriptStart = resumedPrompt.indexOf('3. Conversation transcript');
+    const authorityBoundaryStart = resumedPrompt.indexOf(
       '4. Current-turn authority decision boundary',
     );
-    const transcriptBody = recallPrompt.slice(transcriptStart, authorityBoundaryStart);
+    const transcriptBody = resumedPrompt.slice(transcriptStart, authorityBoundaryStart);
     expect(transcriptBody).toContain(
       JSON.stringify({
         provenance: 'USER',
         epistemicStatus: 'USER_CLAIM_OR_INTENT',
-        content: '내가 방금 남긴 문장은 파란 하늘이야',
+        content: '내가 방금 뭐라했어 ?',
       }),
     );
     expect(transcriptBody).toContain('[Turn 1] User:');
-    expect(transcriptBody).not.toContain('내가 방금 뭐라고 했지?');
-    expect(recallPrompt).toContain(
-      'When the current User task explicitly asks to recall prior conversation, answer from the relevant USER transcript entries',
-    );
-    expect(recallPrompt.slice(recallPrompt.indexOf('# Task'))).toContain(
-      '--- Current user message ---',
-    );
-    expect(recallPrompt.slice(recallPrompt.indexOf('# Task'))).toContain(
-      '내가 방금 뭐라고 했지?',
-    );
+    expect(transcriptBody).not.toContain('안녕 ? 뭐하고 살아 ?');
+    const currentTask = resumedPrompt.slice(resumedPrompt.indexOf('# Task'));
+    expect(currentTask).toContain('--- Current user message ---');
+    expect(currentTask).toContain('안녕 ? 뭐하고 살아 ?');
+    expect(currentTask).not.toContain('내가 방금 뭐라했어 ?');
   });
 
   it('preserves the generic conversation platform from inbound context through task creation into prompt composition', async () => {

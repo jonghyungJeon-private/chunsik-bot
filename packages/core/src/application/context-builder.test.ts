@@ -96,6 +96,7 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
       provenance: 'USER',
       epistemicStatus: 'USER_CLAIM_OR_INTENT',
     });
+    expect(bundle.conversationTranscript.some((entry) => entry.content === '현재 요청')).toBe(false);
   });
 
   it('keeps a contaminated transcript, excludes current inbound, and separates project background', async () => {
