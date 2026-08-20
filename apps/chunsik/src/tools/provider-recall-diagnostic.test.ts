@@ -36,10 +36,11 @@ describe('provider recall diagnostic', () => {
     };
     let clock = 0;
 
-    const results = await runComparison({ runner, now: () => (clock += 5) });
+    const report = await runComparison({ runner, now: () => (clock += 5) });
+    const results = report.productionPath;
 
     expect(results).toHaveLength(3);
-    expect(generationInputs).toHaveLength(3);
+    expect(generationInputs).toHaveLength(5);
     expect(results.map((result) => result.providerId)).toEqual([
       'ollama-cli:llama3.1:8b',
       'ollama-cli:granite3.3:8b',
@@ -59,6 +60,22 @@ describe('provider recall diagnostic', () => {
     expect(generationInputs[1]?.input).toBe(createCanonicalRecallRequest().prompt);
     expect(generationInputs[2]?.input).toBe(createCanonicalRecallRequest().prompt);
     expect(results.map((result) => result.recallResult)).toEqual(['PASS', 'FAIL', 'PASS']);
+
+    expect(results.every(({ category }) => category === 'PRODUCTION_PATH')).toBe(true);
+    expect(report.normalizedInputControl.map(({ modelIdentity }) => modelIdentity)).toEqual([
+      'llama3.1:8b',
+      'granite3.3:8b',
+    ]);
+    expect(report.normalizedInputControl.every(
+      ({ category }) => category === 'NORMALIZED_INPUT_CONTROL',
+    )).toBe(true);
+    expect(generationInputs[3]?.input).toBe(createCanonicalRecallRequest().prompt);
+    expect(generationInputs[4]?.input).toBe(createCanonicalRecallRequest().prompt);
+    expect(report.conclusions).toEqual([
+      expect.objectContaining({ conclusion: 'MODEL_EFFECT', status: 'SUPPORTED' }),
+      expect.objectContaining({ conclusion: 'OLLAMA_SERIALIZATION_EFFECT', status: 'INCONCLUSIVE' }),
+      expect.objectContaining({ conclusion: 'QUIRKYBOT_CONTEXT_EFFECT', status: 'INCONCLUSIVE' }),
+    ]);
   });
 
   it('includes Claude only when ClaudeCliProvider reports availability', async () => {
@@ -69,7 +86,7 @@ describe('provider recall diagnostic', () => {
       return { code: 0, stdout: '안녕이 직전 질문이었어요.', stderr: '', timedOut: false };
     };
 
-    const results = await runComparison({ runner });
+    const results = (await runComparison({ runner })).productionPath;
 
     expect(results.map((result) => result.providerId)).toEqual([
       'ollama-cli:llama3.1:8b',
@@ -77,9 +94,12 @@ describe('provider recall diagnostic', () => {
     ]);
   });
 
-  it('checks recall semantically by the presence of the 안녕 substring', () => {
-    expect(evaluateRecall('직전에 안녕?이라고 물었어요.')).toBe('PASS');
-    expect(evaluateRecall('직전 문장은 기억하지 못해요.')).toBe('FAIL');
-    expect(evaluateRecall('네, 안녕하세요는 Assistant 답변이었어요.')).toBe('PASS');
+  it.each([
+    ['identifies the USER message', '사용자가 직전에 "안녕?"이라고 질문했어요.', 'PASS'],
+    ['identifies the ASSISTANT message instead', '직전 메시지는 Assistant가 답한 "네, 안녕하세요!"예요.', 'FAIL'],
+    ['says it cannot remember', '직전 질문은 기억하지 못해요.', 'FAIL'],
+    ['gives a meta clarification response', '"안녕?"이라고 물어보신 게 맞나요?', 'FAIL'],
+  ] as const)('%s', (_case, output, expected) => {
+    expect(evaluateRecall(output)).toBe(expected);
   });
 });

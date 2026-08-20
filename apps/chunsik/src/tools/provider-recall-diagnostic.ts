@@ -33,8 +33,14 @@ export const RECALL_COMPARISON_TARGETS = Object.freeze([
 ] as const);
 
 export type RecallDiagnosticStatus = 'PASS' | 'FAIL';
+export type RecallComparisonCategory = 'PRODUCTION_PATH' | 'NORMALIZED_INPUT_CONTROL';
+export type RecallDiagnosticConclusion =
+  | 'MODEL_EFFECT'
+  | 'OLLAMA_SERIALIZATION_EFFECT'
+  | 'QUIRKYBOT_CONTEXT_EFFECT';
 
 export interface ProviderRecallComparisonResult {
+  readonly category: RecallComparisonCategory;
   readonly providerId: string;
   readonly modelIdentity: string;
   readonly previousTurnPresentAtProviderBoundary: boolean;
@@ -44,6 +50,18 @@ export interface ProviderRecallComparisonResult {
   readonly recallResult: RecallDiagnosticStatus;
   readonly responseText: string;
   readonly error: string | null;
+}
+
+export interface RecallConclusionAssessment {
+  readonly conclusion: RecallDiagnosticConclusion;
+  readonly status: 'SUPPORTED' | 'INCONCLUSIVE';
+  readonly rationale: string;
+}
+
+export interface ProviderRecallDiagnosticReport {
+  readonly productionPath: readonly ProviderRecallComparisonResult[];
+  readonly normalizedInputControl: readonly ProviderRecallComparisonResult[];
+  readonly conclusions: readonly RecallConclusionAssessment[];
 }
 
 export interface ProviderRecallDiagnosticOptions {
@@ -115,7 +133,23 @@ export function createCanonicalRecallRequest(): AiRequest {
 }
 
 export function evaluateRecall(output: string): RecallDiagnosticStatus {
-  return output.includes('안녕') ? 'PASS' : 'FAIL';
+  const normalized = output.normalize('NFKC').replace(/\s+/g, ' ').trim().toLowerCase();
+  const identifiesCanonicalMessage = /안녕\s*\?/.test(normalized);
+  const attributesMessageToUser =
+    /(?:사용자|user|당신|너가|네가).{0,40}안녕\s*\?/.test(normalized) ||
+    /안녕\s*\?.{0,40}(?:질문|물었|물어|말했|보냈)/.test(normalized);
+  const attributesMessageToAssistant =
+    /(?:assistant|어시스턴트|도우미).{0,40}안녕\s*\?/.test(normalized) ||
+    /안녕\s*\?.{0,40}(?:assistant|어시스턴트|도우미).{0,20}(?:답|말|메시지)/.test(normalized);
+  const deniesRecall =
+    /(?:기억하지\s*못|기억할\s*수\s*없|알\s*수\s*없|모르겠|확인할\s*수\s*없)/.test(normalized);
+  const isMetaClarification =
+    /(?:말씀하시는|질문하신|물어보신)\s*(?:게|건|것은|내용이)\s*(?:맞나요|맞습니까|건가요|인가요)|(?:무엇|어떤)\s*질문|(?:구체적으로|다시)\s*말씀/.test(normalized);
+
+  return identifiesCanonicalMessage && attributesMessageToUser &&
+    !attributesMessageToAssistant && !deniesRecall && !isMetaClarification
+    ? 'PASS'
+    : 'FAIL';
 }
 
 function targetWithCapturedInput(
@@ -165,18 +199,77 @@ function providerBoundaryContainsPreviousTurn(serializedInput: string): boolean 
     serializedInput.includes(CANONICAL_RECALL_SCENARIO.previousAssistantMessage);
 }
 
+function resultFor(
+  category: RecallComparisonCategory,
+  target: ComparisonTarget,
+  serializedInput: string,
+  generationLatencyMs: number,
+  responseText: string,
+  error: string | null,
+): ProviderRecallComparisonResult {
+  return Object.freeze({
+    category,
+    providerId: target.providerId,
+    modelIdentity: target.modelIdentity,
+    previousTurnPresentAtProviderBoundary: providerBoundaryContainsPreviousTurn(serializedInput),
+    serializedInputCharacterCount: serializedInput.length,
+    contextTruncationOccurred: CANONICAL_RECALL_SCENARIO.contextTruncationOccurred,
+    generationLatencyMs,
+    recallResult: error === null ? evaluateRecall(responseText) : 'FAIL',
+    responseText,
+    error,
+  });
+}
+
+function assessConclusions(
+  productionPath: readonly ProviderRecallComparisonResult[],
+  normalizedInputControl: readonly ProviderRecallComparisonResult[],
+): readonly RecallConclusionAssessment[] {
+  const normalizedLlama = normalizedInputControl.find(({ modelIdentity }) => modelIdentity === 'llama3.1:8b');
+  const normalizedGranite = normalizedInputControl.find(({ modelIdentity }) => modelIdentity === 'granite3.3:8b');
+  const productionLlama = productionPath.find(({ modelIdentity }) => modelIdentity === 'llama3.1:8b');
+  const modelEffect = normalizedLlama?.error === null && normalizedGranite?.error === null &&
+    normalizedLlama.recallResult !== normalizedGranite.recallResult;
+  const serializationEffect = productionLlama?.error === null && normalizedLlama?.error === null &&
+    productionLlama.recallResult !== normalizedLlama.recallResult;
+
+  return Object.freeze([
+    Object.freeze({
+      conclusion: 'MODEL_EFFECT' as const,
+      status: modelEffect ? 'SUPPORTED' as const : 'INCONCLUSIVE' as const,
+      rationale: modelEffect
+        ? 'llama3.1 and granite3.3 differ when given the same finalized plain prompt serialization.'
+        : 'The normalized controls did not produce a successful difference in recall outcome.',
+    }),
+    Object.freeze({
+      conclusion: 'OLLAMA_SERIALIZATION_EFFECT' as const,
+      status: serializationEffect ? 'SUPPORTED' as const : 'INCONCLUSIVE' as const,
+      rationale: serializationEffect
+        ? 'llama3.1 differs between its production serialization and the normalized plain prompt.'
+        : 'llama3.1 did not produce a successful recall-outcome difference between serializations.',
+    }),
+    Object.freeze({
+      conclusion: 'QUIRKYBOT_CONTEXT_EFFECT' as const,
+      status: 'INCONCLUSIVE' as const,
+      rationale: 'Both categories contain the same QuirkyBot-built context; no context-free control is run.',
+    }),
+  ]);
+}
+
 /**
  * Execute the controlled comparison when an authorized caller explicitly invokes it.
  * Importing this module never probes or executes a provider.
  */
 export async function runComparison(
   options: ProviderRecallDiagnosticOptions = {},
-): Promise<readonly ProviderRecallComparisonResult[]> {
+): Promise<ProviderRecallDiagnosticReport> {
   const request = createCanonicalRecallRequest();
   const now = options.now ?? (() => performance.now());
-  const results: ProviderRecallComparisonResult[] = [];
+  const targets = comparisonTargets(options);
+  const productionPath: ProviderRecallComparisonResult[] = [];
+  const normalizedInputControl: ProviderRecallComparisonResult[] = [];
 
-  for (const target of comparisonTargets(options)) {
+  for (const target of targets) {
     if (target.includeWhenAvailable && !(await target.provider.isAvailable())) continue;
 
     const startedAt = now();
@@ -190,19 +283,35 @@ export async function runComparison(
     const generationLatencyMs = Math.max(0, Math.round(now() - startedAt));
     const serializedInput = target.getSerializedInput();
 
-    results.push(Object.freeze({
-      providerId: target.providerId,
-      modelIdentity: target.modelIdentity,
-      previousTurnPresentAtProviderBoundary:
-        providerBoundaryContainsPreviousTurn(serializedInput),
-      serializedInputCharacterCount: serializedInput.length,
-      contextTruncationOccurred: CANONICAL_RECALL_SCENARIO.contextTruncationOccurred,
-      generationLatencyMs,
-      recallResult: error === null ? evaluateRecall(responseText) : 'FAIL',
-      responseText,
-      error,
-    }));
+    productionPath.push(resultFor(
+      'PRODUCTION_PATH', target, serializedInput, generationLatencyMs, responseText, error,
+    ));
   }
 
-  return Object.freeze(results);
+  for (const target of targets.filter(({ providerId }) => providerId.startsWith('ollama-cli:'))) {
+    const startedAt = now();
+    let responseText = '';
+    let error: string | null = null;
+    try {
+      responseText = (await target.provider.execute({
+        ...request,
+        // Non-chat capability bypasses only llama3.1's adapter-local role serialization.
+        // Both Ollama models therefore receive request.prompt byte-for-byte.
+        capability: Capability.SUMMARIZATION,
+      })).text;
+    } catch (caught) {
+      error = caught instanceof Error ? caught.message : String(caught);
+    }
+    const generationLatencyMs = Math.max(0, Math.round(now() - startedAt));
+    const serializedInput = target.getSerializedInput();
+    normalizedInputControl.push(resultFor(
+      'NORMALIZED_INPUT_CONTROL', target, serializedInput, generationLatencyMs, responseText, error,
+    ));
+  }
+
+  return Object.freeze({
+    productionPath: Object.freeze(productionPath),
+    normalizedInputControl: Object.freeze(normalizedInputControl),
+    conclusions: assessConclusions(productionPath, normalizedInputControl),
+  });
 }
