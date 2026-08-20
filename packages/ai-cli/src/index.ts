@@ -243,7 +243,7 @@ export class ClaudeCliProvider extends BaseCliAiProvider {
       );
     }
 
-    const text = result.stdout.trim();
+    const text = sanitizeTerminalOutput(result.stdout).trim();
     if (!text) {
       throw new AiProviderError(AiFailureKind.EMPTY_OUTPUT, 'claude CLI returned empty output');
     }

@@ -46,6 +46,9 @@ export interface CodeGenerationPromptInput {
 export class PromptComposer {
   compose(task: Task, context: ContextBundle, readout?: ProjectReadout): PromptSpec {
     const isGeneralChat = task.intent.capability === Capability.GENERAL_CHAT;
+    const immediatelyPreviousUserTurn = isGeneralChat
+      ? PromptComposer.immediatelyPreviousUserTurn(context.conversationTranscript)
+      : undefined;
     const currentFacts = [
       PromptComposer.label(
         'CORE_RUNTIME',
@@ -62,6 +65,15 @@ export class PromptComposer {
         'AUTHORITATIVE_CURRENT_FACT',
         'Outbound response delivery success is not yet known while this response is being generated.',
       ),
+      ...(immediatelyPreviousUserTurn === undefined
+        ? []
+        : [
+            PromptComposer.label(
+              'CORE_RUNTIME',
+              'AUTHORITATIVE_CURRENT_FACT',
+              `immediatelyPreviousUserTurn: ${JSON.stringify(immediatelyPreviousUserTurn)}`,
+            ),
+          ]),
       ...(task.projectId
         ? [
             PromptComposer.label(
@@ -258,6 +270,18 @@ export class PromptComposer {
         content,
       )}`;
     });
+  }
+
+  private static immediatelyPreviousUserTurn(
+    entries: ContextBundle['conversationTranscript'],
+  ): string | undefined {
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const entry = entries[index];
+      if (entry === undefined) continue;
+      const role = entry.role ?? PromptComposer.roleFromProvenance(entry.provenance);
+      if (role === 'user') return normalizePromptContextContent(entry.content);
+    }
+    return undefined;
   }
 
   private static roleFromProvenance(

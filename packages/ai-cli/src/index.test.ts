@@ -79,6 +79,23 @@ describe('ClaudeCliProvider', () => {
     });
   });
 
+  it('removes internal Assistant metadata before returning response text', async () => {
+    const res = await exec({
+      code: 0,
+      stdout: [
+        'Provenance: ASSISTANT',
+        'Epistemic status: ASSISTANT_NON_AUTHORITATIVE',
+        '',
+        '메타데이터 없는 Claude 응답',
+      ].join('\n'),
+      stderr: '',
+      timedOut: false,
+    });
+
+    expect(res.text).toBe('메타데이터 없는 Claude 응답');
+    expect(res.artifacts?.[0]?.content).toBe('메타데이터 없는 Claude 응답');
+  });
+
   it('failures are AiProviderError instances', async () => {
     await expect(exec({ code: 1, stdout: '', stderr: 'x', timedOut: false })).rejects.toBeInstanceOf(
       AiProviderError,
@@ -307,6 +324,23 @@ describe('OllamaCliProvider (CAP-009, ADR-0030) — suggest-only local code gene
     expect(res.text).toBe(expected);
     expect(res.artifacts?.[0]?.content).toBe(expected);
     expect(res.text).not.toContain('machine progress');
+  });
+
+  it('removes internal Assistant metadata before returning response text', async () => {
+    const res = await ollamaExec({
+      code: 0,
+      stdout: [
+        '## ASSISTANT message',
+        'Provenance: ASSISTANT',
+        'Epistemic status: ASSISTANT_NON_AUTHORITATIVE',
+        'Content: "메타데이터 없는 Ollama 응답"',
+      ].join('\n'),
+      stderr: '',
+      timedOut: false,
+    });
+
+    expect(res.text).toBe('메타데이터 없는 Ollama 응답');
+    expect(res.artifacts?.[0]?.content).toBe('메타데이터 없는 Ollama 응답');
   });
 
   it('treats ANSI/control-only stdout as EMPTY_OUTPUT after sanitation', async () => {

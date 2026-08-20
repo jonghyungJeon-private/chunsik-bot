@@ -132,7 +132,7 @@ describe('provider recall diagnostic', () => {
     });
   });
 
-  it('reports the correct stochastic reliability ratio for mixed results', async () => {
+  it('reports mixed recall reliability after adapter metadata sanitization', async () => {
     const outputs = [
       '{"role":"assistant","provenance":"ASSISTANT","epistemicStatus":"ASSISTANT_NON_AUTHORITATIVE","content":"안녕?"}',
       '기억하지 못해요.',
@@ -152,13 +152,13 @@ describe('provider recall diagnostic', () => {
       'PASS', 'FAIL', 'PASS', 'FAIL',
     ]);
     expect(report.runs.map(({ outputFormatResult }) => outputFormatResult)).toEqual([
-      'CONTAMINATED', 'CLEAN', 'CLEAN', 'CLEAN',
+      'CLEAN', 'CLEAN', 'CLEAN', 'CLEAN',
     ]);
     expect(report).toMatchObject({ passCount: 2, failCount: 2, reliabilityRatio: 0.5 });
     expect(report).toMatchObject({
-      formatPassCount: 3,
-      formatFailCount: 1,
-      formatCorrectnessRatio: 0.75,
+      formatPassCount: 4,
+      formatFailCount: 0,
+      formatCorrectnessRatio: 1,
     });
   });
 

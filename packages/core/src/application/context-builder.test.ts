@@ -72,6 +72,32 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
     expect(bundle.backgroundResources).toEqual([]);
   });
 
+  it('keeps the immediately previous User turn last among older User turns', async () => {
+    const memory = {
+      recentShortTerm: async () => [
+        rec('1', 'user', '오래된 사용자 말'),
+        rec('2', 'assistant', '오래된 답변'),
+        rec('3', 'user', '바로 전에 한 말'),
+        rec('4', 'assistant', '직전 답변'),
+        rec('5', 'user', '현재 요청'),
+      ],
+    } as unknown as MemoryManager;
+
+    const bundle = await new ContextBuilder(memory).build(taskWith({ sessionId: 'S1' }), ['5']);
+    const userTurns = bundle.conversationTranscript.filter((entry) => entry.role === 'user');
+
+    expect(userTurns.map((entry) => entry.content)).toEqual([
+      '오래된 사용자 말',
+      '바로 전에 한 말',
+    ]);
+    expect(userTurns.at(-1)).toMatchObject({
+      turnNumber: 2,
+      content: '바로 전에 한 말',
+      provenance: 'USER',
+      epistemicStatus: 'USER_CLAIM_OR_INTENT',
+    });
+  });
+
   it('keeps a contaminated transcript, excludes current inbound, and separates project background', async () => {
     const memory = {
       recentShortTerm: async () => [
