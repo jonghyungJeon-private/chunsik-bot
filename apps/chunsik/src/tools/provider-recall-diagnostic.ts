@@ -78,6 +78,7 @@ interface ComparisonTarget {
   readonly modelIdentity: string;
   readonly provider: AiProvider;
   readonly getSerializedInput: () => string;
+  readonly resetSerializedInput: () => void;
   readonly includeWhenAvailable: boolean;
 }
 
@@ -134,26 +135,32 @@ export function createCanonicalRecallRequest(): AiRequest {
 
 export function evaluateRecall(output: string): RecallDiagnosticStatus {
   const normalized = output.normalize('NFKC').replace(/\s+/g, ' ').trim().toLowerCase();
-  const identifiesCanonicalMessage = /안녕\s*\?/.test(normalized);
-  const attributesMessageToUser =
-    /(?:사용자|user|당신|너가|네가).{0,40}안녕\s*\?/.test(normalized) ||
-    /안녕\s*\?.{0,40}(?:질문|물었|물어|말했|보냈)/.test(normalized);
-  const attributesMessageToAssistant =
-    /(?:assistant|어시스턴트|도우미).{0,40}안녕\s*\?/.test(normalized) ||
-    /안녕\s*\?.{0,40}(?:assistant|어시스턴트|도우미).{0,20}(?:답|말|메시지)/.test(normalized);
   const deniesRecall =
     /(?:기억하지\s*못|기억할\s*수\s*없|알\s*수\s*없|모르겠|확인할\s*수\s*없)/.test(normalized);
   const isMetaClarification =
-    /(?:말씀하시는|질문하신|물어보신)\s*(?:게|건|것은|내용이)\s*(?:맞나요|맞습니까|건가요|인가요)|(?:무엇|어떤)\s*질문|(?:구체적으로|다시)\s*말씀/.test(normalized);
+    /(?:말씀하시는|질문하신|물어보신)\s*(?:게|건|것은|내용이)\s*(?:맞나요|맞습니까|건가요|인가요)|(?:질문하셨|물어보셨|말씀하셨)나요|(?:무엇|어떤)\s*질문|(?:구체적으로|다시)\s*말씀/.test(normalized);
 
-  return identifiesCanonicalMessage && attributesMessageToUser &&
-    !attributesMessageToAssistant && !deniesRecall && !isMetaClarification
+  // Attribute the canonical text within its own clause. A response may accurately
+  // restate both turns, so an assistant label elsewhere in the response is not a veto.
+  const canonicalClauses = normalized
+    .split(/[,，;；]|\.(?:\s|$)|(?:였|이었|했)고\s+/)
+    .filter((clause) => /안녕\s*\?/.test(clause));
+  const attributesMessageToUser = canonicalClauses.some((clause) =>
+    /(?:사용자|user|당신|너가|네가).{0,40}안녕\s*\?/.test(clause) ||
+    /안녕\s*\?.{0,40}(?:질문|물었|물어|말했|보냈)/.test(clause));
+  const attributesMessageToAssistant = canonicalClauses.some((clause) =>
+    /(?:assistant|어시스턴트|도우미|제가|저는|내가).{0,40}안녕\s*\?/.test(clause) ||
+    /안녕\s*\?.{0,40}(?:assistant|어시스턴트|도우미).{0,20}(?:답|말|메시지)/.test(clause));
+
+  return attributesMessageToUser && !attributesMessageToAssistant && !deniesRecall && !isMetaClarification
     ? 'PASS'
     : 'FAIL';
 }
 
 function targetWithCapturedInput(
-  definition: (runner: CliRunner) => Omit<ComparisonTarget, 'getSerializedInput'>,
+  definition: (
+    runner: CliRunner,
+  ) => Omit<ComparisonTarget, 'getSerializedInput' | 'resetSerializedInput'>,
   delegatedRunner: CliRunner,
 ): ComparisonTarget {
   let serializedInput = '';
@@ -164,6 +171,9 @@ function targetWithCapturedInput(
   return {
     ...definition(capturingRunner),
     getSerializedInput: () => serializedInput,
+    resetSerializedInput: () => {
+      serializedInput = '';
+    },
   };
 }
 
@@ -275,6 +285,7 @@ export async function runComparison(
     const startedAt = now();
     let responseText = '';
     let error: string | null = null;
+    target.resetSerializedInput();
     try {
       responseText = (await target.provider.execute(request)).text;
     } catch (caught) {
@@ -292,6 +303,7 @@ export async function runComparison(
     const startedAt = now();
     let responseText = '';
     let error: string | null = null;
+    target.resetSerializedInput();
     try {
       responseText = (await target.provider.execute({
         ...request,

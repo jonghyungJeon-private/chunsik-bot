@@ -96,9 +96,21 @@ describe('provider recall diagnostic', () => {
 
   it.each([
     ['identifies the USER message', '사용자가 직전에 "안녕?"이라고 질문했어요.', 'PASS'],
-    ['identifies the ASSISTANT message instead', '직전 메시지는 Assistant가 답한 "네, 안녕하세요!"예요.', 'FAIL'],
+    ['identifies the ASSISTANT message instead', 'Assistant가 직전에 "안녕?"이라고 말했어요.', 'FAIL'],
     ['says it cannot remember', '직전 질문은 기억하지 못해요.', 'FAIL'],
     ['gives a meta clarification response', '"안녕?"이라고 물어보신 게 맞나요?', 'FAIL'],
+  ] as const)('%s', (_case, output, expected) => {
+    expect(evaluateRecall(output)).toBe(expected);
+  });
+
+  it.each([
+    [
+      'accepts a correct answer that separately restates both turns',
+      '직전 어시스턴트 답변은 "네, 안녕하세요!"였고, 사용자는 "안녕?"이라고 질문했어요.',
+      'PASS',
+    ],
+    ['rejects assistant self-attribution', '제가 방금 "안녕?"이라고 말했어요.', 'FAIL'],
+    ['rejects a clarification question form', '혹시 "안녕?"이라고 질문하셨나요?', 'FAIL'],
   ] as const)('%s', (_case, output, expected) => {
     expect(evaluateRecall(output)).toBe(expected);
   });
