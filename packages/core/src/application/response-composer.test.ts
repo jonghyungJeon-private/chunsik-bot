@@ -17,6 +17,15 @@ const detailOf = (o: Partial<TestResultDetail> = {}): TestResultDetail => ({
   ...o,
 });
 
+describe('ResponseComposer.compose', () => {
+  it('forwards contaminated provider text unchanged to the outbound platform path', () => {
+    const contaminated =
+      '{"role":"assistant","provenance":"ASSISTANT","content":"안녕?"}';
+
+    expect(composer.compose(CTX, { text: contaminated }).text).toBe(contaminated);
+  });
+});
+
 describe('ResponseComposer.composeProviderRoutingTerminal', () => {
   const terminalStatuses = [
     ProviderGatewayTerminalStatus.HUMAN_REVIEW_REQUIRED,

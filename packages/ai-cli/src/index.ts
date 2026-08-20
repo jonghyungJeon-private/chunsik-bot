@@ -109,18 +109,30 @@ function parseRenderedGeneralChatPrompt(prompt: string): RenderedPromptSections 
   const currentUserMessage = parseEnvelope(taskBody.slice(currentMessageMarker.length));
   if (currentUserMessage === null) return null;
 
-  // Keep the canonical transcript in the system context because its provenance
-  // labels and the authority rules referring to section 3 are one contract. The
-  // role-attributed copies below improve conversational recall without replacing
-  // or weakening that contract.
-  const systemContext = prompt.slice(0, taskIndex);
+  // The role-attributed transcript below preserves ADR-0063 provenance. Replace
+  // the duplicate JSON transcript body in the system context so llama3.1 is not
+  // shown an internal envelope format that it can imitate in its response.
+  const systemContext = [
+    prompt.slice(0, contextStart + transcriptBodyStart + 1),
+    '(The role-attributed transcript is supplied below.)',
+    context.slice(transcriptBodyEnd),
+  ].join('');
   return { systemContext, transcript, currentUserMessage };
+}
+
+function renderProviderConversationMessage(message: ProviderConversationMessage): string {
+  return [
+    `## ${message.role.toUpperCase()} message`,
+    `Provenance: ${message.provenance}`,
+    `Epistemic status: ${message.epistemicStatus}`,
+    `Content: ${JSON.stringify(message.content)}`,
+  ].join('\n');
 }
 
 function serializeLlama31GeneralChat(prompt: string): string | null {
   const sections = parseRenderedGeneralChatPrompt(prompt);
   if (!sections) return null;
-  const messages = [
+  const messages: ProviderConversationMessage[] = [
     {
       role: 'system',
       provenance: 'CORE_PROMPT',
@@ -132,8 +144,8 @@ function serializeLlama31GeneralChat(prompt: string): string | null {
   ];
   return [
     '# Role-attributed conversation',
-    ...messages.map((message) => JSON.stringify(message)),
-  ].join('\n');
+    ...messages.map(renderProviderConversationMessage),
+  ].join('\n\n');
 }
 
 function approvedLoopbackHost(value: string): string {

@@ -25,4 +25,9 @@ describe('sanitizeTerminalOutput', () => {
     const text = "(I'll respond as Quoky, a concise assistant)";
     expect(sanitizeTerminalOutput(text)).toBe(text);
   });
+
+  it('does not strip provider-generated role/provenance envelopes', () => {
+    const envelope = '{"role":"assistant","provenance":"ASSISTANT","content":"안녕?"}';
+    expect(sanitizeTerminalOutput(envelope)).toBe(envelope);
+  });
 });

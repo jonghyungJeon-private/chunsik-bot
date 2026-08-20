@@ -33,6 +33,7 @@ export const RECALL_COMPARISON_TARGETS = Object.freeze([
 ] as const);
 
 export type RecallDiagnosticStatus = 'PASS' | 'FAIL';
+export type RecallOutputFormatStatus = 'CLEAN' | 'CONTAMINATED' | 'NOT_EVALUATED';
 export type RecallComparisonCategory = 'PRODUCTION_PATH' | 'NORMALIZED_INPUT_CONTROL';
 export type RecallDiagnosticConclusion =
   | 'MODEL_EFFECT'
@@ -47,7 +48,8 @@ export interface ProviderRecallComparisonResult {
   readonly serializedInputCharacterCount: number;
   readonly contextTruncationOccurred: boolean;
   readonly generationLatencyMs: number;
-  readonly recallResult: RecallDiagnosticStatus;
+  readonly semanticRecallResult: RecallDiagnosticStatus;
+  readonly outputFormatResult: RecallOutputFormatStatus;
   readonly responseText: string;
   readonly error: string | null;
 }
@@ -75,7 +77,8 @@ export interface ProviderRecallDiagnosticOptions {
 
 export interface RecallStochasticRunResult {
   readonly run: number;
-  readonly recallResult: RecallDiagnosticStatus;
+  readonly semanticRecallResult: RecallDiagnosticStatus;
+  readonly outputFormatResult: RecallOutputFormatStatus;
   readonly responseText: string;
   readonly error: string | null;
 }
@@ -87,6 +90,9 @@ export interface RecallStochasticReport {
   readonly passCount: number;
   readonly failCount: number;
   readonly reliabilityRatio: number;
+  readonly formatPassCount: number;
+  readonly formatFailCount: number;
+  readonly formatCorrectnessRatio: number;
   readonly runs: readonly RecallStochasticRunResult[];
 }
 
@@ -340,12 +346,18 @@ export async function runStochasticRecallDiagnostic(
     }
     runs.push(Object.freeze({
       run: index + 1,
-      recallResult: error === null ? evaluateRecall(responseText) : 'FAIL',
+      semanticRecallResult: error === null ? evaluateRecall(responseText) : 'FAIL',
+      outputFormatResult: error === null ? evaluateOutputFormat(responseText) : 'NOT_EVALUATED',
       responseText,
       error,
     }));
   }
-  const passCount = runs.filter(({ recallResult }) => recallResult === 'PASS').length;
+  const passCount = runs.filter(
+    ({ semanticRecallResult }) => semanticRecallResult === 'PASS',
+  ).length;
+  const formatPassCount = runs.filter(
+    ({ outputFormatResult }) => outputFormatResult === 'CLEAN',
+  ).length;
   return Object.freeze({
     providerId: 'ollama-cli:llama3.1:8b',
     modelIdentity: 'llama3.1:8b',
@@ -353,11 +365,38 @@ export async function runStochasticRecallDiagnostic(
     passCount,
     failCount: iterations - passCount,
     reliabilityRatio: passCount / iterations,
+    formatPassCount,
+    formatFailCount: iterations - formatPassCount,
+    formatCorrectnessRatio: formatPassCount / iterations,
     runs: Object.freeze(runs),
   });
 }
 
-export function evaluateRecall(output: string): RecallDiagnosticStatus {
+/** Detect internal role/provenance JSON envelopes without interpreting prose. */
+export function evaluateOutputFormat(output: string): RecallOutputFormatStatus {
+  const unescaped = output.replace(/\\"/g, '"');
+  const objectLikeSegments = unescaped.match(/\{[^{}]{0,2000}\}/gs) ?? [];
+  return objectLikeSegments.some((segment) =>
+    /["']role["']\s*:\s*["'](?:assistant|user|system|unknown)["']/i.test(segment) &&
+    /["']provenance["']\s*:/i.test(segment)
+  ) ? 'CONTAMINATED' : 'CLEAN';
+}
+
+function envelopeContentCandidates(output: string): string[] {
+  const candidates = [output];
+  for (const segment of output.match(/\{[^{}]{0,2000}\}/gs) ?? []) {
+    try {
+      const parsed = JSON.parse(segment) as { content?: unknown };
+      if (typeof parsed.content === 'string') candidates.push(parsed.content);
+    } catch {
+      // Malformed envelopes remain a format failure; semantic grading uses any
+      // independently parseable content and otherwise falls back to raw output.
+    }
+  }
+  return candidates;
+}
+
+function evaluateRecallCandidate(output: string): RecallDiagnosticStatus {
   const normalized = output.normalize('NFKC').replace(/\s+/g, ' ').trim().toLowerCase();
   const deniesRecall =
     /(?:기억하지\s*못|기억할\s*수\s*없|알\s*수\s*없|모르겠|확인할\s*수\s*없)/.test(normalized);
@@ -395,11 +434,18 @@ export function evaluateRecall(output: string): RecallDiagnosticStatus {
 
     return nearbyUserAttribution || previousUserTurnLabel || honorificUserSpeech;
   });
+  const directCanonicalAnswer = /^["'“”‘’\s]*안녕\s*\?["'“”‘’\s.!。]*$/.test(normalized);
 
-  return attributesMessageToUser && !attributesCanonicalToAssistant &&
+  return (attributesMessageToUser || directCanonicalAnswer) && !attributesCanonicalToAssistant &&
     !negatedUserWithAssistantSubject && !deniesRecall && !isMetaClarification
     ? 'PASS'
     : 'FAIL';
+}
+
+export function evaluateRecall(output: string): RecallDiagnosticStatus {
+  return envelopeContentCandidates(output).some(
+    (candidate) => evaluateRecallCandidate(candidate) === 'PASS',
+  ) ? 'PASS' : 'FAIL';
 }
 
 function targetWithCapturedInput(
@@ -470,7 +516,8 @@ function resultFor(
     serializedInputCharacterCount: serializedInput.length,
     contextTruncationOccurred: CANONICAL_RECALL_SCENARIO.contextTruncationOccurred,
     generationLatencyMs,
-    recallResult: error === null ? evaluateRecall(responseText) : 'FAIL',
+    semanticRecallResult: error === null ? evaluateRecall(responseText) : 'FAIL',
+    outputFormatResult: error === null ? evaluateOutputFormat(responseText) : 'NOT_EVALUATED',
     responseText,
     error,
   });
@@ -484,9 +531,9 @@ function assessConclusions(
   const normalizedGranite = normalizedInputControl.find(({ modelIdentity }) => modelIdentity === 'granite3.3:8b');
   const productionLlama = productionPath.find(({ modelIdentity }) => modelIdentity === 'llama3.1:8b');
   const modelEffect = normalizedLlama?.error === null && normalizedGranite?.error === null &&
-    normalizedLlama.recallResult !== normalizedGranite.recallResult;
+    normalizedLlama.semanticRecallResult !== normalizedGranite.semanticRecallResult;
   const serializationEffect = productionLlama?.error === null && normalizedLlama?.error === null &&
-    productionLlama.recallResult !== normalizedLlama.recallResult;
+    productionLlama.semanticRecallResult !== normalizedLlama.semanticRecallResult;
 
   return Object.freeze([
     Object.freeze({

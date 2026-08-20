@@ -5,6 +5,7 @@ import {
   CANONICAL_RECALL_SCENARIO,
   compareRecallInputs,
   createCanonicalRecallRequest,
+  evaluateOutputFormat,
   evaluateRecall,
   exportCanonicalRecallRequestSnapshot,
   runComparison,
@@ -62,7 +63,8 @@ describe('provider recall diagnostic', () => {
     expect(generationInputs[0]?.input).toContain('# Role-attributed conversation');
     expect(generationInputs[1]?.input).toBe(createCanonicalRecallRequest().prompt);
     expect(generationInputs[2]?.input).toBe(createCanonicalRecallRequest().prompt);
-    expect(results.map((result) => result.recallResult)).toEqual(['PASS', 'FAIL', 'PASS']);
+    expect(results.map((result) => result.semanticRecallResult)).toEqual(['PASS', 'FAIL', 'PASS']);
+    expect(results.map((result) => result.outputFormatResult)).toEqual(['CLEAN', 'CLEAN', 'CLEAN']);
 
     expect(results.every(({ category }) => category === 'PRODUCTION_PATH')).toBe(true);
     expect(report.normalizedInputControl.map(({ modelIdentity }) => modelIdentity)).toEqual([
@@ -113,19 +115,26 @@ describe('provider recall diagnostic', () => {
 
     expect(calls).toBe(5);
     expect(report.iterationCount).toBe(5);
-    expect(report.runs.map(({ run, recallResult }) => ({ run, recallResult }))).toEqual([
-      { run: 1, recallResult: 'PASS' },
-      { run: 2, recallResult: 'PASS' },
-      { run: 3, recallResult: 'PASS' },
-      { run: 4, recallResult: 'PASS' },
-      { run: 5, recallResult: 'PASS' },
+    expect(report.runs.map(({ run, semanticRecallResult }) => ({ run, semanticRecallResult }))).toEqual([
+      { run: 1, semanticRecallResult: 'PASS' },
+      { run: 2, semanticRecallResult: 'PASS' },
+      { run: 3, semanticRecallResult: 'PASS' },
+      { run: 4, semanticRecallResult: 'PASS' },
+      { run: 5, semanticRecallResult: 'PASS' },
     ]);
-    expect(report).toMatchObject({ passCount: 5, failCount: 0, reliabilityRatio: 1 });
+    expect(report).toMatchObject({
+      passCount: 5,
+      failCount: 0,
+      reliabilityRatio: 1,
+      formatPassCount: 5,
+      formatFailCount: 0,
+      formatCorrectnessRatio: 1,
+    });
   });
 
   it('reports the correct stochastic reliability ratio for mixed results', async () => {
     const outputs = [
-      '사용자가 직전에 "안녕?"이라고 질문했어요.',
+      '{"role":"assistant","provenance":"ASSISTANT","epistemicStatus":"ASSISTANT_NON_AUTHORITATIVE","content":"안녕?"}',
       '기억하지 못해요.',
       '직전 질문은 "안녕?" 입니다.',
       '무엇을 질문하셨나요?',
@@ -139,10 +148,18 @@ describe('provider recall diagnostic', () => {
 
     const report = await runStochasticRecallDiagnostic({ runner, iterations: 4 });
 
-    expect(report.runs.map(({ recallResult }) => recallResult)).toEqual([
+    expect(report.runs.map(({ semanticRecallResult }) => semanticRecallResult)).toEqual([
       'PASS', 'FAIL', 'PASS', 'FAIL',
     ]);
+    expect(report.runs.map(({ outputFormatResult }) => outputFormatResult)).toEqual([
+      'CONTAMINATED', 'CLEAN', 'CLEAN', 'CLEAN',
+    ]);
     expect(report).toMatchObject({ passCount: 2, failCount: 2, reliabilityRatio: 0.5 });
+    expect(report).toMatchObject({
+      formatPassCount: 3,
+      formatFailCount: 1,
+      formatCorrectnessRatio: 0.75,
+    });
   });
 
   it('detects prompt-layer and system-instruction differences with bounded excerpts', () => {
@@ -247,5 +264,21 @@ describe('provider recall diagnostic', () => {
     ['rejects the canonical text without previous-user attribution', '안녕? 반가워요.', 'FAIL'],
   ] as const)('%s', (_case, output, expected) => {
     expect(evaluateRecall(output)).toBe(expected);
+  });
+
+  it('scores semantic recall independently from role-envelope contamination', () => {
+    const contaminated =
+      '{"role":"assistant","provenance":"ASSISTANT",' +
+      '"epistemicStatus":"ASSISTANT_NON_AUTHORITATIVE","content":"안녕?"}';
+
+    expect(evaluateRecall(contaminated)).toBe('PASS');
+    expect(evaluateOutputFormat(contaminated)).toBe('CONTAMINATED');
+    expect(evaluateOutputFormat('사용자가 직전에 "안녕?"이라고 질문했어요.')).toBe('CLEAN');
+  });
+
+  it('detects escaped and malformed role/provenance envelope output', () => {
+    expect(evaluateOutputFormat(
+      String.raw`{\"role\":\"assistant\",\"provenance\":\"ASSISTANT\",broken}`,
+    )).toBe('CONTAMINATED');
   });
 });

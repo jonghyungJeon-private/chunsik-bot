@@ -212,40 +212,30 @@ describe('OllamaCliProvider (CAP-009, ADR-0030) — suggest-only local code gene
     const result = await new OllamaCliProvider({ runner }).execute(request);
 
     const providerInput = calls[0]?.input ?? '';
-    const previousUserEnvelope = {
-      role: 'user',
-      provenance: 'USER',
-      epistemicStatus: 'USER_CLAIM_OR_INTENT',
-      content: previousUser,
-    };
-    const previousAssistantEnvelope = {
-      role: 'assistant',
-      provenance: 'ASSISTANT',
-      epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
-      content: previousAssistant,
-    };
-    const currentUserEnvelope = {
-      role: 'user',
-      provenance: 'USER',
-      epistemicStatus: 'USER_CLAIM_OR_INTENT',
-      content: currentUser,
-    };
     // `ollama run` accepts the model as its only positional argument here. In
     // particular, raw HTTP request fields must never be passed as CLI flags.
     expect(calls[0]?.args).toEqual(['run', 'llama3.1']);
     expect(providerInput).not.toBe(request.prompt);
-    expect(providerInput).toContain(JSON.stringify(previousUserEnvelope));
-    expect(providerInput).toContain(JSON.stringify(previousAssistantEnvelope));
-    expect(providerInput).toContain(JSON.stringify(currentUserEnvelope));
+    expect(providerInput).toContain(
+      '## USER message\nProvenance: USER\nEpistemic status: USER_CLAIM_OR_INTENT\n' +
+      `Content: ${JSON.stringify(previousUser)}`,
+    );
+    expect(providerInput).toContain(
+      '## ASSISTANT message\nProvenance: ASSISTANT\n' +
+      'Epistemic status: ASSISTANT_NON_AUTHORITATIVE\n' +
+      `Content: ${JSON.stringify(previousAssistant)}`,
+    );
+    expect(providerInput).toContain(`Content: ${JSON.stringify(currentUser)}`);
+    expect(providerInput).not.toMatch(/\{"role":"(?:user|assistant)"/);
     expect(providerInput).toContain(
       '## 3. Conversation transcript (continuity allowed; not authoritative external-state evidence)',
     );
     expect(providerInput).not.toContain(
       '## 3. Conversation transcript (continuity allowed; not authoritative external-state evidence)\n[]',
     );
-    expect(providerInput).toContain('"epistemicStatus":"ASSISTANT_NON_AUTHORITATIVE"');
+    expect(providerInput).toContain('Epistemic status: ASSISTANT_NON_AUTHORITATIVE');
     expect(providerInput.indexOf(previousUser)).toBeLessThan(providerInput.indexOf(currentUser));
-    expect(providerInput).toContain(`[Turn 1] User:`);
+    expect(providerInput).not.toContain(`[Turn 1] User:`);
     expect(providerInput).not.toContain('<|start_header_id|>');
     expect(result.audit?.sanitizedCommand).toEqual(['ollama', 'run', 'llama3.1']);
     expect(result.audit?.promptSha256).toBe(
@@ -298,16 +288,12 @@ describe('OllamaCliProvider (CAP-009, ADR-0030) — suggest-only local code gene
     await new OllamaCliProvider({ runner }).execute(request);
 
     const providerInput = calls[0] ?? '';
-    const legacyEnvelope = {
-      role: 'unknown',
-      provenance: 'LEGACY_UNKNOWN',
-      epistemicStatus: 'NON_AUTHORITATIVE_TRANSCRIPT',
-      content: legacyContent,
-    };
-    expect(providerInput).toContain(JSON.stringify(legacyEnvelope));
-    expect(providerInput).not.toContain(
-      JSON.stringify({ ...legacyEnvelope, role: 'system' }),
+    expect(providerInput).toContain(
+      '## UNKNOWN message\nProvenance: LEGACY_UNKNOWN\n' +
+      'Epistemic status: NON_AUTHORITATIVE_TRANSCRIPT\n' +
+      `Content: ${JSON.stringify(legacyContent)}`,
     );
+    expect(providerInput).not.toContain('## SYSTEM message\nProvenance: LEGACY_UNKNOWN');
   });
 
   it('sanitizes stdout before using it for result text and the Artifact without merging stderr', async () => {
