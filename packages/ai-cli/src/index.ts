@@ -24,7 +24,7 @@ const OLLAMA_COLOR_ENV = {
 
 const LLAMA_3_1_MODEL = /^llama3\.1(?::|$)/;
 
-type ProviderConversationRole = 'system' | 'user' | 'assistant';
+type ProviderConversationRole = 'system' | 'user' | 'assistant' | 'unknown';
 
 interface ProviderConversationMessage {
   role: ProviderConversationRole;
@@ -98,7 +98,7 @@ function parseRenderedGeneralChatPrompt(prompt: string): RenderedPromptSections 
         ? 'user'
         : match[1] === 'Assistant'
           ? 'assistant'
-          : 'system';
+          : 'unknown';
       transcript.push({ role, ...envelope });
     }
   }

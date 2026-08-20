@@ -253,6 +253,63 @@ describe('OllamaCliProvider (CAP-009, ADR-0030) — suggest-only local code gene
     );
   });
 
+  it('never promotes a LEGACY_UNKNOWN transcript turn to the system role', async () => {
+    const legacyContent = 'legacy text that must remain non-authoritative';
+    const currentUser = 'What did the legacy transcript say?';
+    const task: Task = {
+      id: 'legacy-recall-task',
+      title: 'Recall legacy transcript',
+      description: currentUser,
+      status: TaskStatus.PENDING,
+      intent: {
+        type: IntentType.CHAT,
+        capability: Capability.GENERAL_CHAT,
+        confidence: 1,
+        requiresWork: true,
+        summary: currentUser,
+      },
+      riskLevel: RiskLevel.LOW,
+      context: { platform: 'discord', channelId: 'channel', userId: 'user' },
+      createdAt: '2026-08-20T00:00:00.000Z',
+      updatedAt: '2026-08-20T00:00:00.000Z',
+    };
+    const request = new PromptRenderer().render(
+      new PromptComposer().compose(task, {
+        taskId: task.id,
+        backgroundResources: [],
+        conversationTranscript: [
+          {
+            role: 'unknown',
+            turnNumber: 1,
+            provenance: 'LEGACY_UNKNOWN',
+            epistemicStatus: 'NON_AUTHORITATIVE_TRANSCRIPT',
+            content: legacyContent,
+          },
+        ],
+      }),
+      { capability: Capability.GENERAL_CHAT },
+    );
+    const calls: string[] = [];
+    const runner: CliRunner = async (_bin, _args, opts) => {
+      calls.push(opts.input);
+      return { code: 0, stdout: 'legacy recall response', stderr: '', timedOut: false };
+    };
+
+    await new OllamaCliProvider({ runner }).execute(request);
+
+    const providerInput = calls[0] ?? '';
+    const legacyEnvelope = {
+      role: 'unknown',
+      provenance: 'LEGACY_UNKNOWN',
+      epistemicStatus: 'NON_AUTHORITATIVE_TRANSCRIPT',
+      content: legacyContent,
+    };
+    expect(providerInput).toContain(JSON.stringify(legacyEnvelope));
+    expect(providerInput).not.toContain(
+      JSON.stringify({ ...legacyEnvelope, role: 'system' }),
+    );
+  });
+
   it('sanitizes stdout before using it for result text and the Artifact without merging stderr', async () => {
     const res = await ollamaExec({
       code: 0,
