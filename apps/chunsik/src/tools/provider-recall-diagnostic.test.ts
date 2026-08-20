@@ -60,8 +60,19 @@ describe('provider recall diagnostic', () => {
       expect(result.contextTruncationOccurred).toBe(false);
       expect(result.generationLatencyMs).toBe(5);
     }
-    expect(generationInputs[0]?.input).toContain('# Role-attributed conversation');
-    expect(generationInputs[1]?.input).toBe(createCanonicalRecallRequest().prompt);
+    const authoritativePreviousTurnFact =
+      `Core Runtime states as an authoritative current fact: ${JSON.stringify(
+        `immediatelyPreviousUserTurn: ${JSON.stringify(
+          CANONICAL_RECALL_SCENARIO.previousUserMessage,
+        )}`,
+      )}`;
+    for (const serializedInput of generationInputs.slice(0, 2).map(({ input }) => input)) {
+      expect(serializedInput).not.toContain('# Role-attributed conversation');
+      expect(serializedInput).toContain(authoritativePreviousTurnFact);
+      expect(serializedInput.indexOf(authoritativePreviousTurnFact)).toBeLessThan(
+        serializedInput.indexOf('Previous conversation'),
+      );
+    }
     expect(generationInputs[2]?.input).toBe(createCanonicalRecallRequest().prompt);
     expect(results.map((result) => result.semanticRecallResult)).toEqual(['PASS', 'FAIL', 'PASS']);
     expect(results.map((result) => result.outputFormatResult)).toEqual(['CLEAN', 'CLEAN', 'CLEAN']);
