@@ -207,7 +207,7 @@ const infrastructure: Provider[] = [
       new OllamaCliProvider({ bin: config.ai.ollamaBin, model: config.ai.ollamaModel }),
     ],
   },
-  { provide: CONNECTOR_PROVIDERS, useValue: createConnectorProviders(config.connectors) },
+  { provide: CONNECTOR_PROVIDERS, useValue: createConnectorProviders(config.connectors, coreLogger) },
 ];
 
 /**
