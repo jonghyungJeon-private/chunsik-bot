@@ -497,16 +497,17 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 - **Repository checkpoint:** the Product Owner-confirmed canonical pre-semantic-slice HEAD is
   `9ef5e7c3f9ccd1450b220f02633bac200ce16f51`. At that checkpoint, local `main` is four commits ahead of
   `origin/main`; all four commits are `LOCAL / UNPUSHED`. No remote durability or origin synchronization is claimed.
-- **Overall M2: PARTIALLY_COMPLETE.** Existing provider-neutral seams and multi-provider routing are usable, while
-  memory relevance work and concrete read-only connectors remain incomplete.
-- **ContextBuilder: PARTIALLY_COMPLETE.** It now has optional deterministic relevance selection with configurable
+- **Overall M2: PARTIALLY_COMPLETE.** Existing provider-neutral seams, multi-provider routing, and ContextBuilder are
+  complete for current M2 intent, while concrete read-only connectors remain incomplete.
+- **ContextBuilder: COMPLETE for current M2 intent.** It has optional deterministic relevance selection with configurable
   character/token budgets, recency scoring, role weights, bounded keyword-overlap semantic relevance, configurable
   normalized recency/relevance blending, opt-in deterministic lowest-score-first tail compression with a configurable
   per-entry character floor, active-project-first background allocation, and preserved ADR-0063
   provenance/epistemic labels. Selected transcript entries are rendered in their original chronological order to
-  preserve PromptComposer's continuity contract. Runtime configuration/wiring remains missing; omitting compression
-  configuration preserves the existing token-budget selection behavior, omitting relevance configuration preserves
-  the existing recency-only scoring, and omitting ranking configuration preserves flat N=10 retrieval.
+  preserve PromptComposer's continuity contract. The composition root now supplies explicit GENERAL_CHAT ranking,
+  relevance, token-budget, and compression configuration to ConversationRuntime's ContextBuilder. Omitting all Core
+  configuration preserves flat N=10 retrieval. The next M2 priority is concrete read-only connectors per the approved
+  sequencing.
 - **PromptComposer: COMPLETE for current M2 intent.** Structured Task/context layering and ADR-0063 authority,
   provenance, and epistemic rendering are implemented; this slice requires no provider-specific prompt shaping.
 - **Provider routing: COMPLETE for current M2 intent.** Capability/policy/availability-driven routing and stable
@@ -555,7 +556,7 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   after approval is deferred (no current capability reaches the HIGH/CRITICAL path).
 - **Deferred:** repository-wide indexing, vector/semantic search, Workflow engine,
   agent runtime, connectors (Jira/Slack/Confluence), AI HTTP API, PolicyProvider,
-  `ContextBuilder` runtime ranking configuration, PROJECT/TOOL memory retention.
+  PROJECT/TOOL memory retention.
 
 ## Validation
 

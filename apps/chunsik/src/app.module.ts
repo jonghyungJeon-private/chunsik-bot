@@ -349,7 +349,7 @@ const application: Provider[] = [
   },
   {
     provide: ContextBuilder,
-    useFactory: (memory: MemoryManager) => new ContextBuilder(memory),
+    useFactory: (memory: MemoryManager) => new ContextBuilder(memory, config.contextBuilder),
     inject: [MemoryManager],
   },
   { provide: PromptComposer, useFactory: () => new PromptComposer() },

@@ -45,6 +45,18 @@ export interface ContextRankingConfig {
   compressionConfig?: ContextCompressionConfig;
 }
 
+/**
+ * Runtime-facing ContextBuilder configuration. The explicit feature switches let a
+ * composition root select the M2 pipeline without making an empty configuration
+ * change ADR-0017's flat, most-recent-ten behavior.
+ */
+export interface ContextBuilderConfig extends ContextRankingConfig {
+  /** Enables budgeted ranking and relevance selection. Defaults to inferred legacy opt-in. */
+  rankingEnabled?: boolean;
+  /** Enables deterministic tail compression. Defaults to inferred legacy opt-in. */
+  compressionEnabled?: boolean;
+}
+
 interface RankedTranscriptEntry {
   entry: ConversationTranscriptEntry;
   chronologicalIndex: number;
@@ -65,10 +77,14 @@ interface ContextBudget {
  * No vector search, no summarization, no long-term recall.
  */
 export class ContextBuilder {
+  private readonly ranking: ContextRankingConfig | undefined;
+
   constructor(
     private readonly memory: MemoryManager,
-    private readonly ranking?: ContextRankingConfig,
-  ) {}
+    config: ContextBuilderConfig = {},
+  ) {
+    this.ranking = ContextBuilder.validateConfig(config);
+  }
 
   async build(task: Task, excludeMemoryIds: Id[] = []): Promise<ContextBundle> {
     const scope: MemoryScope = task.sessionId
@@ -287,6 +303,55 @@ export class ContextBuilder {
       throw new RangeError('recencyWeight and relevanceWeight must sum to 1');
     }
     return { blended: true, recencyWeight, relevanceWeight };
+  }
+
+  private static validateConfig(config: ContextBuilderConfig): ContextRankingConfig | undefined {
+    if (config.rankingEnabled !== undefined && typeof config.rankingEnabled !== 'boolean') {
+      throw new TypeError('rankingEnabled must be a boolean');
+    }
+    if (config.compressionEnabled !== undefined && typeof config.compressionEnabled !== 'boolean') {
+      throw new TypeError('compressionEnabled must be a boolean');
+    }
+
+    const {
+      rankingEnabled,
+      compressionEnabled,
+      compressionConfig,
+      ...rankingOptions
+    } = config;
+    const hasRankingOptions = Object.values(rankingOptions).some((value) => value !== undefined);
+    const hasCompressionConfig = compressionConfig !== undefined;
+    const rankingActive = rankingEnabled ?? (hasRankingOptions || hasCompressionConfig);
+
+    if (!rankingActive) {
+      if (hasRankingOptions || hasCompressionConfig || compressionEnabled === true) {
+        throw new RangeError('ranking options require rankingEnabled');
+      }
+      return undefined;
+    }
+    if (compressionEnabled === false && hasCompressionConfig) {
+      throw new RangeError('compressionConfig requires compressionEnabled');
+    }
+
+    const ranking: ContextRankingConfig = {
+      ...rankingOptions,
+      ...((compressionEnabled ?? hasCompressionConfig)
+        ? { compressionConfig: compressionConfig ?? {} }
+        : {}),
+    };
+
+    // Validate once at construction so bad runtime configuration fails before a turn.
+    ContextBuilder.resolveBudget(ranking);
+    ContextBuilder.resolveScoringWeights(ranking);
+    ContextBuilder.resolveMinimumCompressionCharacters(ranking);
+    if (ranking.roleWeights) {
+      for (const [role, weight] of Object.entries(ranking.roleWeights)) {
+        if (!Number.isFinite(weight)) {
+          throw new RangeError(`roleWeights.${role} must be finite`);
+        }
+      }
+    }
+    return ranking;
   }
 
   private static resolveBudget(config: ContextRankingConfig): ContextBudget | undefined {

@@ -452,13 +452,14 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
       recentShortTerm: async () => [rec('1', 'user', 'history')],
     } as unknown as MemoryManager;
 
-    await expect(
-      new ContextBuilder(memory, {
-        maxCharacters: 10,
-        recencyWeight: 0.5,
-        relevanceWeight: 0.75,
-      }).build(taskWith({ sessionId: 'S1' })),
-    ).rejects.toThrow('recencyWeight and relevanceWeight must sum to 1');
+    expect(
+      () =>
+        new ContextBuilder(memory, {
+          maxCharacters: 10,
+          recencyWeight: 0.5,
+          relevanceWeight: 0.75,
+        }),
+    ).toThrow('recencyWeight and relevanceWeight must sum to 1');
   });
 
   it('truncates the highest-ranked entry to the exact remaining character budget', async () => {
@@ -534,12 +535,58 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
       ],
     } as unknown as MemoryManager;
 
-    const bundle = await new ContextBuilder(memory).build(taskWith({ sessionId: 'S1' }));
+    const bundle = await new ContextBuilder(memory, {}).build(taskWith({ sessionId: 'S1' }));
 
     expect(bundle.conversationTranscript.map((entry) => entry.content)).toEqual([
       'first',
       'second',
     ]);
+  });
+
+  it('activates ranking, semantic relevance, token budgeting, and compression together', async () => {
+    const memory = {
+      recentShortTerm: async () => [
+        rec('1', 'user', 'hello context ranking details'),
+        rec('2', 'user', 'newest unrelated weather item'),
+      ],
+    } as unknown as MemoryManager;
+
+    const bundle = await new ContextBuilder(memory, {
+      rankingEnabled: true,
+      compressionEnabled: true,
+      maxTokens: 8,
+      roleWeights: { user: 0 },
+      recencyWeight: 0.25,
+      relevanceWeight: 0.75,
+      compressionConfig: { minimumCharactersPerEntry: 4 },
+    }).build(taskWith({ sessionId: 'S1' }));
+
+    expect(bundle.conversationTranscript[0]?.content).toMatch(/^hello context ranking/);
+    expect(bundle.conversationTranscript[1]?.content.length).toBeLessThan(
+      'newest unrelated weather item'.length,
+    );
+  });
+
+  it('rejects invalid runtime feature switches and option combinations at construction', () => {
+    const memory = { recentShortTerm: async () => [] } as unknown as MemoryManager;
+
+    expect(() => new ContextBuilder(memory, { rankingEnabled: false, maxTokens: 10 })).toThrow(
+      'ranking options require rankingEnabled',
+    );
+    expect(
+      () =>
+        new ContextBuilder(memory, {
+          rankingEnabled: true,
+          compressionEnabled: true,
+          maxCharacters: 10,
+        }),
+    ).toThrow('compressionConfig requires maxTokens');
+    expect(
+      () =>
+        new ContextBuilder(memory, {
+          rankingEnabled: 'yes',
+        } as unknown as ConstructorParameters<typeof ContextBuilder>[1]),
+    ).toThrow('rankingEnabled must be a boolean');
   });
 
   it('uses estimated tokens while preserving recency and relevance ranking', async () => {
@@ -732,15 +779,16 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
       recentShortTerm: async () => [rec('1', 'user', 'history')],
     } as unknown as MemoryManager;
 
-    await expect(
-      new ContextBuilder(memory, { compressionConfig: {} }).build(taskWith({ sessionId: 'S1' })),
-    ).rejects.toThrow('compressionConfig requires maxTokens');
-    await expect(
-      new ContextBuilder(memory, {
-        maxTokens: 2,
-        compressionConfig: { minimumCharactersPerEntry: -1 },
-      }).build(taskWith({ sessionId: 'S1' })),
-    ).rejects.toThrow(
+    expect(() => new ContextBuilder(memory, { compressionConfig: {} })).toThrow(
+      'compressionConfig requires maxTokens',
+    );
+    expect(
+      () =>
+        new ContextBuilder(memory, {
+          maxTokens: 2,
+          compressionConfig: { minimumCharactersPerEntry: -1 },
+        }),
+    ).toThrow(
       'compressionConfig.minimumCharactersPerEntry must be a non-negative safe integer',
     );
   });

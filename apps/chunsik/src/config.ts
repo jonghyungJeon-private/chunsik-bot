@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import type { RepositoryIdentityConfig } from '@chunsik/core';
+import type { ContextBuilderConfig, RepositoryIdentityConfig } from '@chunsik/core';
 import { parseProviderRoutingMode } from './provider-routing/provider-routing-activation';
 import type { ProviderRoutingMode } from './provider-routing/provider-routing-activation';
 
@@ -43,6 +43,8 @@ export interface ChunsikConfig {
   runtimeEnv: 'dev' | 'prod';
   /** Dormant Stage 2B routing activation. Missing is exactly equivalent to `legacy`. */
   providerRoutingMode: ProviderRoutingMode;
+  /** GENERAL_CHAT context selection policy, consumed only by the composition root. */
+  contextBuilder: ContextBuilderConfig;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ChunsikConfig {
@@ -74,6 +76,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ChunsikConfig 
     githubAppInstallationId: parseInstallationId(env.QUOKY_GITHUB_APP_INSTALLATION_ID),
     runtimeEnv: resolveRuntimeEnv(env),
     providerRoutingMode: parseProviderRoutingMode(env.QUOKY_PROVIDER_ROUTING_MODE),
+    contextBuilder: {
+      rankingEnabled: true,
+      compressionEnabled: true,
+      maxTokens: 1024,
+      recencyWeight: 0.4,
+      relevanceWeight: 0.6,
+      compressionConfig: { minimumCharactersPerEntry: 80 },
+    },
   };
 }
 

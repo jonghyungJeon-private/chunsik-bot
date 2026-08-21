@@ -6,6 +6,19 @@ function env(overrides: Record<string, string>): NodeJS.ProcessEnv {
   return overrides as NodeJS.ProcessEnv;
 }
 
+describe('loadConfig — ContextBuilder GENERAL_CHAT defaults', () => {
+  it('activates ranking, relevance, token budgeting, and compression explicitly', () => {
+    expect(loadConfig(env({})).contextBuilder).toEqual({
+      rankingEnabled: true,
+      compressionEnabled: true,
+      maxTokens: 1024,
+      recencyWeight: 0.4,
+      relevanceWeight: 0.6,
+      compressionConfig: { minimumCharactersPerEntry: 80 },
+    });
+  });
+});
+
 describe('loadConfig — repositoryHosting (Sprint 3d-A, ADR-0051, CA change 8)', () => {
   it('reads CHUNSIK_GITHUB_OWNER / CHUNSIK_GITHUB_REPO into repositoryHosting; provider fixed github (test 42)', () => {
     const cfg = loadConfig(env({ CHUNSIK_GITHUB_OWNER: 'acme', CHUNSIK_GITHUB_REPO: 'widgets' }));
