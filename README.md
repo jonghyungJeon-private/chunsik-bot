@@ -39,7 +39,10 @@ chunsik-bot-2/
 │  ├─ vector-local/             # @chunsik/vector-local     → VectorProvider
 │  ├─ workspace-local/          # @chunsik/workspace-local  → WorkspaceProvider
 │  ├─ ai-cli/                   # @chunsik/ai-cli           → AiProvider ×3 (Claude/Codex/Ollama)
-│  └─ connectors/               # @chunsik/connectors       → ConnectorProvider (EMPTY in v1)
+│  ├─ connectors/               # @chunsik/connectors       → ConnectorProvider registry
+│  ├─ connector-jira/           # @chunsik/connector-jira   → wired read-only Jira adapter
+│  ├─ connector-slack/          # @chunsik/connector-slack  → wired read-only Slack adapter
+│  └─ connector-confluence/     # @chunsik/connector-confluence → wired read-only Confluence adapter
 │
 └─ apps/
    └─ chunsik/                  # @chunsik/app — NestJS composition root (wiring + bootstrap)
@@ -149,8 +152,9 @@ By design, this is a boundaries-first scaffold:
 - ❌ **No business logic** in intent classification, planning, or CLI execution.
 - ❌ **No concrete provider internals** — Discord (no `discord.js`), SQLite (no
   `better-sqlite3`), local queue/vector, and workspace fs/git are all skeletons.
-- ❌ **No Jira / Slack / Confluence** — `ConnectorProvider` is the only seam;
-  `@chunsik/connectors` ships an empty list. Connectors will be **read-only first**.
+- ✅ **Jira / Slack / Confluence are read-only** — concrete adapters implement the `ConnectorProvider` seam and are
+  registered by the composition root when their required environment configuration is complete. Write operations
+  are not implemented.
 - ❌ **No Telegram** — but `PlatformAdapter` already allows it.
 - ❌ **No git worktree** — `LocalCloneWorkspaceProvider` only; `kind: 'git-worktree'`
   is reserved for a future `GitWorktreeWorkspaceProvider` on the same port.

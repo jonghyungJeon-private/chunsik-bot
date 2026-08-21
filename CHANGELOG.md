@@ -7,17 +7,29 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — M2 Connector Composition-Root Wiring
+
+- Registered the Jira, Slack, and Confluence read-only connector adapters in the composition root at commit
+  `ce750f5`; each adapter is configuration-gated and is registered only when its required environment configuration
+  is complete.
+
+### Added — M2 Confluence Read-Only Connector Adapter
+
+- Added `ConfluenceConnectorProvider` implementing the ADR-0072 `ConnectorProvider` boundary for the Confluence
+  Cloud REST API in `@chunsik/connector-confluence` at commit `6bf3595`; the adapter is read-only, fake-fetch tested,
+  and registered by the composition root when its required configuration is present.
+
 ### Added — M2 Slack Read-Only Connector Adapter
 
 - Added `SlackConnectorProvider` implementing the ADR-0072 `ConnectorProvider` boundary for the Slack Web API in
-  `@chunsik/connector-slack` at commit `536a97e`; the adapter is read-only, fake-fetch tested, and remains adapter-only
-  and unwired from the composition root.
+  `@chunsik/connector-slack` at commit `536a97e`; the adapter is read-only, fake-fetch tested, and registered by the
+  composition root when its required configuration is present.
 
 ### Added — M2 Jira Read-Only Connector Adapter
 
 - Added `JiraConnectorProvider` implementing the ADR-0072 `ConnectorProvider` boundary for Jira Cloud REST in
-  `@chunsik/connector-jira` at commit `5365556`; the adapter is read-only, fake-fetch tested, and remains adapter-only
-  and unwired from the composition root.
+  `@chunsik/connector-jira` at commit `5365556`; the adapter is read-only, fake-fetch tested, and registered by the
+  composition root when its required configuration is present.
 
 ### Added — M2 ContextBuilder Bounded Compression
 
