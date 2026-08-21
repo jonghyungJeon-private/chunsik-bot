@@ -1286,20 +1286,15 @@ export class ConversationRuntime {
       /^\s*검증\s*(?:해\s*(?:줘|주세요|봐|보세요|줄래|주실래요?)|하(?:세요|자|라)|부탁해)\s*$/i,
       /^\s*(?:please\s+)?validate\s*$/i,
     ]);
-    // A deny-listed suffix intentionally prevents the shared detector's end-anchored action match. Still
-    // recognize an explicit validation request before that suffix so this gate can refuse it as unsupported.
-    const deniedValidationRequest =
-      VALIDATION_DENY_FRAGMENT.test(t) &&
-      unnegatedMatch(text, [
-        /\bpnpm\s+(?:test|typecheck)\b/i,
-        /(?:테스트|\btests?\b).*(?:돌려|실행\s*해|\brun\b)/i,
-        /(?:typecheck|타입\s*체크|type\s*check).*해\s*줘/i,
-      ]);
+    const hasValidationSignal =
+      wantsTest || wantsTypecheck || mentionsTest || mentionsTypecheck || wantsValidate;
+    // (CA Round 1 #2) Any validation signal combined with an out-of-allow-list fragment is refused before
+    // request-shape gating. A denied suffix may prevent an end-anchored request matcher from detecting a kind,
+    // but it must never let the message fall through to or trigger command execution.
+    if (VALIDATION_DENY_FRAGMENT.test(t) && hasValidationSignal) return 'unsupported';
     // Gate first: with no validation token this is NOT our branch — a pure "git status 해줘" falls through
     // untouched (CA Round 1 #7), never a validation "unsupported" reply.
-    if (!wantsTypecheck && !wantsTest && !wantsValidate && !deniedValidationRequest) return null;
-    // (CA Round 1 #2) validation phrase + an out-of-allow-list command fragment → unsupported, never a run.
-    if (deniedValidationRequest) return 'unsupported';
+    if (!wantsTypecheck && !wantsTest && !wantsValidate) return null;
     // (CA Round 1 #1) BOTH test and typecheck requested → clarify; NEVER silently pick one.
     if ((wantsTypecheck && mentionsTest) || (wantsTest && mentionsTypecheck)) return 'ambiguous';
     if (wantsTypecheck) return 'typecheck';

@@ -70,6 +70,9 @@ describe('IntentClassifier.classify (v1 deterministic)', () => {
       '전체 테스트 돌려봐 주세요',
       '테스트 실행해줄 수 있어?',
       '테스트 돌려주실 수 있나요?',
+      '테스트 부탁해요',
+      '테스트 해 주십시오',
+      'run tests',
     ]) {
       const intent = await classifier.classify(msg(text));
       expect(intent.type, text).toBe(IntentType.RUN_TESTS);
@@ -77,7 +80,7 @@ describe('IntentClassifier.classify (v1 deterministic)', () => {
       expect(intent.raw, text).toEqual({ kind: 'test' });
     }
 
-    for (const text of ['타입체크 좀 해줘', 'typecheck 좀 부탁해']) {
+    for (const text of ['타입체크 좀 해줘', 'typecheck 좀 부탁해', '타입체크 해주세요', 'run typecheck']) {
       const intent = await classifier.classify(msg(text));
       expect(intent.type, text).toBe(IntentType.RUN_TESTS);
       expect(intent.capability, text).toBe(Capability.TEST_EXECUTION);

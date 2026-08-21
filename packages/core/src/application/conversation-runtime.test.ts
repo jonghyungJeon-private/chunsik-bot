@@ -3048,6 +3048,11 @@ describe('Post-Apply Validation Command — runtime (Sprint 2v, ADR-0043)', () =
       ['테스트 돌려주실 수 있나요?', 'test'],
       ['타입체크 좀 해줘', 'typecheck'],
       ['typecheck 좀 부탁해', 'typecheck'],
+      ['타입체크 해주세요', 'typecheck'],
+      ['테스트 부탁해요', 'test'],
+      ['테스트 해 주십시오', 'test'],
+      ['run tests', 'test'],
+      ['run typecheck', 'typecheck'],
     ] as const) {
       expect(ConversationRuntime.interpretPostApplyValidationIntent(text), text).toBe(expected);
     }
@@ -3137,6 +3142,9 @@ describe('Post-Apply Validation Command — runtime (Sprint 2v, ADR-0043)', () =
       '테스트 돌려줘 && git status',
       'pnpm test; git commit',
       'typecheck 해줘 node -e "process.exit(1)"',
+      'typecheck 해주세요 ; rm -rf /',
+      'run tests && rm -rf /',
+      '테스트 하세요 | cat /etc/passwd',
     ]) {
       const { deps, calls } = makeDeps({ applyAnchor: validatedAnchor() });
       const result = await new ConversationRuntime(deps).handle(messageOf(text));
