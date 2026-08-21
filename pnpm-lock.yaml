@@ -93,6 +93,12 @@ importers:
         specifier: workspace:*
         version: link:../core
 
+  packages/connector-jira:
+    dependencies:
+      '@chunsik/core':
+        specifier: workspace:*
+        version: link:../core
+
   packages/connectors:
     dependencies:
       '@chunsik/core':
