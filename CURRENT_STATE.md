@@ -5,11 +5,11 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** `QUIRKYBOT_DEV_V1_ACCEPTANCE_CRITERIA = MET`; milestone state = `MILESTONE_REACHED`. Stage 2C Slice 3C
-  was implemented in commit `683297f`, independently reviewed `PASS`, and closed the prior delegated offline
-  implementation gap. Bounded Live UAT was `EXECUTED` and `PASS` at exact verified HEAD
-  `715c407a52eee36a7717d1b4b6695b1469bb0a76`.
-- **Development governance:** `AUTONOMOUS_DEV_MODE = ENABLED`, `ACTIVE_MILESTONE = QUIRKYBOT_DEV_V1`. Product Owner
+- **Phase:** `M2 = ACTIVE`; `QUIRKYBOT_DEV_V1 = MILESTONE_REACHED / CLOSED` with
+  `QUIRKYBOT_DEV_V1_ACCEPTANCE_CRITERIA = MET`. Stage 2C Slice 3C was implemented in commit `683297f`, independently
+  reviewed `PASS`, and closed the prior delegated offline implementation gap. Bounded Live UAT was `EXECUTED` and
+  `PASS` at exact verified HEAD `715c407a52eee36a7717d1b4b6695b1469bb0a76`.
+- **Development governance:** `AUTONOMOUS_DEV_MODE = ENABLED`, `ACTIVE_MILESTONE = M2`. Product Owner
   retains product/UAT/debug/high-risk authority; Architect AI owns task-level delegated local approval, Codex builds,
   and Claude independently reviews. Strict external/destructive/Runtime/application-Provider gates remain Human-only.
 - **Development DB governance:** `AUTONOMOUS_DEV_DB = APPROVED`. When `QUOKY_RUNTIME_ENV=dev`, the configured target
@@ -55,8 +55,8 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 - **Execution facts:** the accepted Live UAT exercised the approved bounded application Runtime, Provider/network,
   and designated development Discord scope at HEAD `715c407`. The earlier diagnostic scopes also executed
   `llama3.1` and `granite3.3` generation through `ollama-cli`; those diagnostics remain separate from Live UAT.
-- **Final state:** `QUIRKYBOT_DEV_V1_ACCEPTANCE_CRITERIA = MET`; `MILESTONE_STATE = MILESTONE_REACHED`. Stop milestone
-  implementation and return control to the Product Owner for any separately authorized UAT/debugging work.
+- **Milestone transition:** `QUIRKYBOT_DEV_V1 = MILESTONE_REACHED / CLOSED`; `M2 = ACTIVE`. DEV_V1 work remains closed,
+  and further delegated implementation is limited to accepted, bounded M2 tasks while all Strict gates remain intact.
 
 ## Stage 2C — Slice 3C ExecutionPlan Integrity Binding Architecture
 
@@ -491,6 +491,8 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 
 ## M2 gap assessment — first slice
 
+- **Acceptance:** the completed M2 gap assessment and ContextBuilder deterministic ranking slice at commit `8fb8e4b`
+  were independently reviewed `PASS` and are accepted as the first M2 implementation slice.
 - **Overall M2: PARTIALLY_COMPLETE.** Existing provider-neutral seams and multi-provider routing are usable, while
   memory relevance work and concrete read-only connectors remain incomplete.
 - **ContextBuilder: PARTIALLY_COMPLETE.** It now has optional deterministic relevance selection with configurable
