@@ -5667,3 +5667,41 @@ Any revision, environment, host, Provider, Discord-target, restriction, or UAT-a
 or authorize arbitrary network/Provider execution. The governance commit recording this decision creates a new HEAD;
 therefore the previous UAT authorization remains invalid and the final exact SHA requires explicit authorization
 before prevalidation or Live UAT can proceed.
+
+## ADR-0072 — Canonical V1 Read-Only Connector Seam
+
+- **Status:** ✅ Accepted (v1)
+- **Date:** 2026-08-21
+- **Authority:** Chief Architect
+
+### Context
+
+ADR-0005 decided that “Connectors are ResourceResolvers” and scoped V1 to a `ResourceRef` plus
+`ResourceResolver` port with no concrete resolvers. The implemented connector seam instead consists of
+`ConnectorProvider`, `ConnectorManager`, and `ConnectorItem`; `ResourceRef` and `ResourceResolver` have not been
+introduced. Read-only Jira, Slack, and Confluence connectors are the next M2 connector direction, so their V1 port
+must be settled before adding a concrete adapter.
+
+### Decision
+
+Ratify **`ConnectorProvider` as the canonical V1 read-only connector port**. Jira, Slack, and Confluence read
+adapters implement that port and expose `ConnectorItem` values through `ConnectorManager`. V1 does not introduce
+`ResourceRef` or `ResourceResolver`, and does not unify or replace `ConnectorProvider` with `ResourceResolver`.
+
+Introduction of `ResourceRef`/`ResourceResolver` and any `ConnectorProvider` → `ResourceResolver` unification are
+deferred to V2+. Such unification is a future architecture decision, not an implicit requirement of a V1 connector
+adapter.
+
+ADR-0005's V1 scope is superseded only for its connector-as-`ResourceResolver` direction. Its strict separation of
+read-side input Resources from output Artifacts, and its read-only-input principles, remain in force.
+
+### Consequences
+
+- **+** V1 connector adapters build on the existing Core seam without parallel read contracts.
+- **+** Jira, Slack, and Confluence share one provider-independent, read-only connector boundary.
+- **−** Uniform resource references and resolver-based connector composition remain unavailable until V2+.
+
+### Relations
+
+ADR-0005 (partially supersedes only the connector-as-`ResourceResolver` aspect; preserves Resource/Artifact
+separation and read-only-input principles).
