@@ -5,13 +5,10 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** **QUIRKYBOT_DEV_V1 offline milestone reached; bounded config-restricted Live UAT risk accepted, exact-SHA
-  reauthorization pending**. Stage 2C
-  Slice 3C was implemented in commit `683297f`, independently reviewed `PASS`, and closes
-  the prior delegated offline implementation gap. The latest read-only UAT prevalidation passed development target,
-  Provider identity (`ollama-cli` / `llama3.1`), Discord development target, required Secret Read authorization, and
-  exact revision/branch/tracked-state checks. It returned `HUMAN_REQUIRED` with
-  `UAT_LIVE_ACTIVATION_ARCHITECTURE_REQUIRED` and, under the former governance, `DB_MUTATION_NOT_AUTHORIZED`.
+- **Phase:** `QUIRKYBOT_DEV_V1_ACCEPTANCE_CRITERIA = MET`; milestone state = `MILESTONE_REACHED`. Stage 2C Slice 3C
+  was implemented in commit `683297f`, independently reviewed `PASS`, and closed the prior delegated offline
+  implementation gap. Bounded Live UAT was `EXECUTED` and `PASS` at exact verified HEAD
+  `715c407a52eee36a7717d1b4b6695b1469bb0a76`.
 - **Development governance:** `AUTONOMOUS_DEV_MODE = ENABLED`, `ACTIVE_MILESTONE = QUIRKYBOT_DEV_V1`. Product Owner
   retains product/UAT/debug/high-risk authority; Architect AI owns task-level delegated local approval, Codex builds,
   and Claude independently reviews. Strict external/destructive/Runtime/application-Provider gates remain Human-only.
@@ -33,36 +30,33 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   existing routing/egress/config restrictions, and bounded UAT scenarios. It is not Production-safe 5C-EG and does
   not authorize arbitrary Provider/network execution.
 - **5B-2B-E close-out:** `CLOSED_WITH_GENERATION_BLOCKED`. Bounded preflight/inventory is `PASS_ACCEPTED`;
-  actual generation is `NOT_EXECUTED`, Provider execution count is `0`, and model pull count is `0`.
+  generation remained unexecuted in that historical close-out, Provider execution count was `0`, and model pull
+  count was `0`.
 - **Composition:** `QUOKY_PROVIDER_ROUTING_MODE` is parsed exactly and defaults to `legacy`. The composition root
   injects the optional result of an app-private activation factory; legacy mode constructs no new routing Provider.
   Enabled mode remains startup-blocked before Provider construction because no 5C-EG enforcement exists.
-- **UAT authorization:** the previous `QUIRKYBOT_DEV_V1_UAT_ENTRY = AUTHORIZED_AND_PREVALIDATED_WITH_BLOCKERS` was
-  bound to exact HEAD `e8ae634cbfc9776d3c256f88a4809cc460306b79` and is now `STALE`. Its approvals for Runtime Start,
-  bounded application Provider/network execution, designated development Discord connection/actions, required
-  secret read, and bounded Live UAT must not carry forward to the current revision or Production.
+- **UAT acceptance:** `QUIRKYBOT_DEV_V1_UAT = PASS_EXECUTED` at exact verified HEAD
+  `715c407a52eee36a7717d1b4b6695b1469bb0a76`. The immediately-previous-user-turn recency grounding defect is
+  `RESOLVED_ACCEPTED`; current-turn response behavior is `PASS`; Korean response behavior is `PASS`. No
+  transcript/meta-analysis leakage and no internal provenance/epistemic metadata leakage were observed.
 - **Bounded Provider diagnostics:** under explicit Product Owner approval, the provider recall comparison diagnostic
   executed generation through `ollama-cli` for `llama3.1` and `granite3.3`, and the `llama3.1` stochastic reliability
   diagnostic also executed in its explicitly approved bounded diagnostic scope. These executions were diagnostics
   only; they were not application Runtime execution, Discord connection/action, or Discord Live UAT, and the
   completed diagnostic tasks are not reopened.
 - **Remaining Human-only boundaries:** Production/shared DB mutation or migration apply, non-disposable destructive
-  DB work, Push, PR, Merge, Production/Release, destructive/unrelated cleanup, Runtime Restart, and Runtime Stop
-  remain unapproved. Runtime Stop after UAT must return to the Product Owner.
-- **Live status:** application Runtime / Discord Live UAT for the final current implementation is `NOT_EXECUTED`.
-  Latest prevalidation state is `HUMAN_REQUIRED`: passed checks are
-  `developmentNonProduction`, `providerIdentityIdentified`, `discordDevelopmentTargetIdentified`,
-  `secretReadAuthorizedIfRequired`, and exact revision/branch/clean state; blockers are
-  `UAT_LIVE_ACTIVATION_ARCHITECTURE_REQUIRED` and the formerly reported `DB_MUTATION_NOT_AUTHORIZED`. ADR-0070 resolves
-  the DB blocker only when the exact delegated development DB conditions are proven. ADR-0071 resolves the DEV_V1
-  UAT live-activation architecture blocker with a bounded configuration-restricted risk exception; production-grade
-  5C-EG remains `NO_FEASIBLE_ARCHITECTURE_YET / BLOCKED_CARRYOVER`. Because the previous authorization is bound to
-  `e8ae634`, the current operational blocker is Product Owner exact-SHA Live UAT authorization for the current HEAD,
-  not additional architecture work. Production/shared DB mutation remains a separate unapproved Strict boundary.
-- **Execution facts:** actual Provider generation was `EXECUTED` only in the two explicitly approved bounded
-  diagnostic scopes above (`llama3.1` and `granite3.3` via `ollama-cli`); application Runtime / Discord Live UAT
-  execution = `0`, and Discord/DB execution = `0`.
-- **Final next step:** Product Owner exact-SHA Live UAT authorization for the current HEAD.
+  DB work, Push, PR, Merge, Production/Release, destructive/unrelated cleanup, and any further Runtime
+  start/stop/restart, Discord, or application Provider/network execution remain unapproved.
+- **Live status:** bounded application Runtime / Discord Live UAT is `PASS_EXECUTED` at exact verified HEAD
+  `715c407a52eee36a7717d1b4b6695b1469bb0a76`. ADR-0070 resolved the delegated development DB condition and ADR-0071
+  resolved the DEV_V1 UAT live-activation architecture blocker through the bounded configuration-restricted risk
+  exception. Production-grade 5C-EG remains `NO_FEASIBLE_ARCHITECTURE_YET / BLOCKED_CARRYOVER`, and
+  Production/shared DB mutation remains a separate unapproved Strict boundary.
+- **Execution facts:** the accepted Live UAT exercised the approved bounded application Runtime, Provider/network,
+  and designated development Discord scope at HEAD `715c407`. The earlier diagnostic scopes also executed
+  `llama3.1` and `granite3.3` generation through `ollama-cli`; those diagnostics remain separate from Live UAT.
+- **Final state:** `QUIRKYBOT_DEV_V1_ACCEPTANCE_CRITERIA = MET`; `MILESTONE_STATE = MILESTONE_REACHED`. Stop milestone
+  implementation and return control to the Product Owner for any separately authorized UAT/debugging work.
 
 ## Stage 2C — Slice 3C ExecutionPlan Integrity Binding Architecture
 

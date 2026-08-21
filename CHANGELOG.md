@@ -7,6 +7,12 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Changed — QUIRKYBOT_DEV_V1 Live UAT Acceptance
+
+- Recorded bounded Live UAT `PASS` at exact verified HEAD `715c407a52eee36a7717d1b4b6695b1469bb0a76`, accepted the
+  resolved immediately-previous-user-turn recency grounding defect, and marked the DEV_V1 acceptance criteria
+  `MET` with milestone state `MILESTONE_REACHED`.
+
 ### Changed — Autonomous Development Governance
 
 - Enabled `AUTONOMOUS_DEV_MODE` for the `QUIRKYBOT_DEV_V1` milestone and delegated bounded LOW/MEDIUM-risk local
