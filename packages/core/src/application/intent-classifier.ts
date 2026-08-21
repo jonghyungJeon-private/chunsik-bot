@@ -2,6 +2,7 @@ import { Capability, IntentType } from '../domain';
 import type { InboundMessage, Intent } from '../domain';
 import type { CapabilityRouter } from './capability-router';
 import { hasCoLocatedUnnegated } from './intent-negation';
+import { detectExplicitValidationKinds } from './validation-run-intent';
 
 /**
  * Classifies a natural-language message into an Intent. v1 is MINIMAL and
@@ -101,30 +102,11 @@ export class IntentClassifier {
     // "pnpm test 실행하지 마", "do not run tests") must NOT be read as a RUN_TESTS request — otherwise a
     // preview-only request that prohibits tests would run `pnpm test` (the Gate 4B observation). Positive
     // signals are required in one un-negated clause; negation never creates a test-run intent (ADR-0033).
-    // A test noun is only a topic until the same clause contains request-shaped action semantics. In
-    // particular, descriptive forms such as "돌리는 것도 중요하지?" and "실행하는 방법" are not commands.
-    // Bare Korean action forms are accepted only at a command-like end (`실행해`, `돌려.`), while a question
-    // needs an explicit request suffix (`실행해줄래?`). English `run` is similarly limited to imperative/request
-    // shapes instead of treating every infinitive or discussion containing "run tests" as executable intent.
-    const runRequest =
-      /(?:실행\s*(?:해(?=$|[.!])|해\s*(?:줘|주세요|봐|보세요|줄래|주실래요?)(?=$|[,.!?;\s])|하(?:세요|자|라)(?=$|[,.!?;\s])|시켜\s*(?:줘|주세요)(?=$|[,.!?;\s]))|돌려(?=$|[.!])|돌려\s*(?:줘|주세요|봐|보세요|줄래|주실래요?|라)(?=$|[,.!?;\s])|돌리(?:자|세요)(?=$|[,.!?;\s])|(?:^\s*|\bplease\s+|\b(?:can|could|would|will)\s+you\s+)run\b)/i;
-    const typecheckNoun = /(typecheck|타입\s*체크|type\s*check)/i;
-    const directTypecheckRequest =
-      /(?:typecheck|타입\s*체크|type\s*check)\s*(?:를|을|은|는)?\s*(?:해(?=$|[.!])|해\s*(?:줘|주세요|봐|보세요|줄래|주실래요?)(?=$|[,.!?;\s])|하(?:세요|자|라)(?=$|[,.!?;\s]))/i;
-
-    if (
-      hasCoLocatedUnnegated(text, typecheckNoun, runRequest) ||
-      hasCoLocatedUnnegated(text, typecheckNoun, directTypecheckRequest)
-    ) {
-      return 'typecheck';
-    }
-    // F6-A/B (Sprint 4c-Follow-up-6): a generic test-run needs a test NOUN and an action VERB CO-LOCATED in
-    // the SAME, un-negated clause. This replaces the prior first-occurrence noun + global-verb heuristic that
-    // combined a payload-content "test" (e.g. "…smoke test") with a verb from a different (negated) clause and
-    // misrouted a preview-only create-file request to RUN_TESTS (the Gate 4B FAIL). The action VERB is an
-    // EXPLICIT run verb (돌려/돌리/실행/run) — deliberately NOT the generic polite "해줘", so a create verb that
-    // merely ends in "해줘" ("파일 생성해줘" → "create a test file") is not mistaken for a test run (F6 QA).
-    if (hasCoLocatedUnnegated(text, /(테스트|\btest\b)/i, runRequest)) return 'test';
+    // A validation noun is only a topic until the same un-negated clause carries request-shaped action
+    // semantics. The shared detector also preserves exact allow-listed command strings such as `pnpm test`.
+    const kinds = detectExplicitValidationKinds(text);
+    if (kinds.typecheck) return 'typecheck';
+    if (kinds.test) return 'test';
     return undefined;
   }
 

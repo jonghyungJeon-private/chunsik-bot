@@ -55,7 +55,13 @@ describe('IntentClassifier.classify (v1 deterministic)', () => {
   });
 
   it('routes only explicit test action requests to RUN_TESTS', async () => {
-    for (const text of ['pnpm test 실행해줘', '이 프로젝트 테스트 돌려봐', '현재 변경사항에 대해 focused test 실행해']) {
+    for (const text of [
+      'pnpm test',
+      'pnpm test 해줘',
+      'pnpm test 실행해줘',
+      '이 프로젝트 테스트 돌려봐',
+      '현재 변경사항에 대해 focused test 실행해',
+    ]) {
       const intent = await classifier.classify(msg(text));
       expect(intent.type, text).toBe(IntentType.RUN_TESTS);
       expect(intent.capability, text).toBe(Capability.TEST_EXECUTION);

@@ -1,5 +1,6 @@
 import { describeAiFailure } from './ai-failure';
 import { hasCoLocatedUnnegated, unnegatedMatch } from './intent-negation';
+import { detectExplicitValidationKinds } from './validation-run-intent';
 import { type MutationSafety, safeRequestId, toSafeError } from './safe-error';
 import { RepositoryHostingBlockedError } from './repository-hosting-manager';
 import { RemoteBranchCleanupBlockedError, RemoteBranchCleanupUnverifiedError } from '../domain';
@@ -1275,20 +1276,33 @@ export class ConversationRuntime {
     text: string,
   ): 'test' | 'typecheck' | 'ambiguous' | 'unsupported' | null {
     const t = text.trim().toLowerCase();
-    // Negation-aware (ADR-0062 draft): a NEGATED test/typecheck/validate token ("테스트 실행하지 마") is not a run.
+    // Use the same explicit request boundary as IntentClassifier. Topic mentions alone must never enter the
+    // direct command.run path merely because a WORKSPACE_APPLIED anchor exists.
+    const { test: wantsTest, typecheck: wantsTypecheck } = detectExplicitValidationKinds(text);
+    const mentionsTest = unnegatedMatch(text, [/테스트|\btests?\b/i]);
     const mentionsTypecheck = unnegatedMatch(text, [/typecheck|타입\s*체크|type\s*check/i]);
-    const mentionsTest = unnegatedMatch(text, [/테스트|\btest\b/i]);
-    const actionVerb = /(돌려|실행|run|해줘|해\s*줘)/i.test(t);
-    const wantsTest = (mentionsTest && actionVerb) || unnegatedMatch(text, [/\bpnpm\s+test\b/i]);
-    const wantsValidate = unnegatedMatch(text, [/검증|validate/i]);
+    const wantsValidate = unnegatedMatch(text, [
+      /^\s*검증\s*$/i,
+      /^\s*검증\s*(?:해\s*(?:줘|주세요|봐|보세요|줄래|주실래요?)|하(?:세요|자|라)|부탁해)\s*$/i,
+      /^\s*(?:please\s+)?validate\s*$/i,
+    ]);
+    // A deny-listed suffix intentionally prevents the shared detector's end-anchored action match. Still
+    // recognize an explicit validation request before that suffix so this gate can refuse it as unsupported.
+    const deniedValidationRequest =
+      VALIDATION_DENY_FRAGMENT.test(t) &&
+      unnegatedMatch(text, [
+        /\bpnpm\s+(?:test|typecheck)\b/i,
+        /(?:테스트|\btests?\b).*(?:돌려|실행\s*해|\brun\b)/i,
+        /(?:typecheck|타입\s*체크|type\s*check).*해\s*줘/i,
+      ]);
     // Gate first: with no validation token this is NOT our branch — a pure "git status 해줘" falls through
     // untouched (CA Round 1 #7), never a validation "unsupported" reply.
-    if (!mentionsTypecheck && !wantsTest && !wantsValidate) return null;
+    if (!wantsTypecheck && !wantsTest && !wantsValidate && !deniedValidationRequest) return null;
     // (CA Round 1 #2) validation phrase + an out-of-allow-list command fragment → unsupported, never a run.
-    if (VALIDATION_DENY_FRAGMENT.test(t)) return 'unsupported';
+    if (deniedValidationRequest) return 'unsupported';
     // (CA Round 1 #1) BOTH test and typecheck requested → clarify; NEVER silently pick one.
-    if (mentionsTypecheck && wantsTest) return 'ambiguous';
-    if (mentionsTypecheck) return 'typecheck';
+    if ((wantsTypecheck && mentionsTest) || (wantsTest && mentionsTypecheck)) return 'ambiguous';
+    if (wantsTypecheck) return 'typecheck';
     if (wantsTest) return 'test';
     return 'ambiguous'; // "검증" alone
   }

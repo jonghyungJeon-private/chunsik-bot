@@ -3013,6 +3013,35 @@ describe('Post-Apply Validation Command — runtime (Sprint 2v, ADR-0043)', () =
     }
   });
 
+  it('WORKSPACE_APPLIED keeps conversational validation topics out of command execution', async () => {
+    for (const text of [
+      '개발할 때 테스트가 많아지면 필요한 테스트만 빠르게 돌리는 것도 중요하지?',
+      '개발할 때 테스트를 빠르게 돌리는 방법이 궁금해',
+      '테스트 실행이 왜 중요한지 설명해줘',
+      '요즘은 focused test를 먼저 실행하는 편이 효율적이지?',
+      '테스트를 돌려야 개발이 안전하다는 말도 있지?',
+      'pnpm test 실행 결과는 보통 어떻게 해석해?',
+      'typecheck가 개발 중에 왜 필요한지 알려줘',
+      'typecheck가 뭔지 설명해',
+    ]) {
+      expect(ConversationRuntime.interpretPostApplyValidationIntent(text), text).toBeNull();
+      const { deps, calls } = makeDeps({ applyAnchor: validatedAnchor() });
+      await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(calls.commandRun, text).toBe(0);
+    }
+  });
+
+  it('WORKSPACE_APPLIED preserves explicit and exact allow-listed validation requests', async () => {
+    for (const [text, expected] of [
+      ['pnpm test', 'test'],
+      ['pnpm test 해줘', 'test'],
+      ['테스트 돌려줘', 'test'],
+      ['타입체크 해줘', 'typecheck'],
+    ] as const) {
+      expect(ConversationRuntime.interpretPostApplyValidationIntent(text), text).toBe(expected);
+    }
+  });
+
   // ── Clarify / negative / not-automatic (CA 5–10) ─────────────────────────────────────────────
   it('"검증해줘" clarifies, no command.run, RESPONDED, no re-anchor (CA 5)', async () => {
     const { deps, calls } = makeDeps({ applyAnchor: validatedAnchor() });
