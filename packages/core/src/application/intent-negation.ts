@@ -64,11 +64,25 @@ function toClauses(text: string): string[] {
  * from one clause (e.g. the word "test" sitting in file-CONTENT) with an action verb from a different clause
  * (e.g. "실행" inside a negated "테스트 실행하지 말 것"). Requiring the noun and verb to be co-located in the
  * SAME, un-negated clause makes passive payload tokens and cross-clause verbs stop producing a false intent.
- * `noun`/`verb` must be non-global RegExps (stateless `.test`).
+ * `noun`/`verb` and the optional clause blocker must be non-global RegExps (stateless `.test`). The blocker lets
+ * request classifiers reject clause-local framing such as an information question without duplicating clause
+ * splitting or weakening the shared negation boundary.
  */
-export function hasCoLocatedUnnegated(text: string, noun: RegExp, verb: RegExp): boolean {
+export function hasCoLocatedUnnegated(
+  text: string,
+  noun: RegExp,
+  verb: RegExp,
+  clauseBlocker?: RegExp,
+): boolean {
   for (const clause of toClauses(text)) {
-    if (noun.test(clause) && verb.test(clause) && !NEGATION_MARKERS.test(clause)) return true;
+    if (
+      noun.test(clause) &&
+      verb.test(clause) &&
+      !NEGATION_MARKERS.test(clause) &&
+      !(clauseBlocker?.test(clause) ?? false)
+    ) {
+      return true;
+    }
   }
   return false;
 }

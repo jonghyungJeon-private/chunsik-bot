@@ -47,6 +47,12 @@ describe('IntentClassifier.classify (v1 deterministic)', () => {
       'pnpm test 실행 결과는 보통 어떻게 해석해?',
       'typecheck가 개발 중에 왜 필요한지 알려줘',
       'typecheck가 뭔지 설명해',
+      '테스트를 돌리는 방법을 알려줘',
+      '테스트 실행 결과를 설명해줘',
+      '테스트를 돌려야 안전하다고 생각해',
+      '테스트를 먼저 실행하는 편이 좋아',
+      '왜 테스트를 실행해?',
+      '왜 typecheck 해?',
     ]) {
       const intent = await classifier.classify(msg(text));
       expect(intent.type, text).toBe(IntentType.CHAT);
@@ -61,11 +67,21 @@ describe('IntentClassifier.classify (v1 deterministic)', () => {
       'pnpm test 실행해줘',
       '이 프로젝트 테스트 돌려봐',
       '현재 변경사항에 대해 focused test 실행해',
+      '전체 테스트 돌려봐 주세요',
+      '테스트 실행해줄 수 있어?',
+      '테스트 돌려주실 수 있나요?',
     ]) {
       const intent = await classifier.classify(msg(text));
       expect(intent.type, text).toBe(IntentType.RUN_TESTS);
       expect(intent.capability, text).toBe(Capability.TEST_EXECUTION);
       expect(intent.raw, text).toEqual({ kind: 'test' });
+    }
+
+    for (const text of ['타입체크 좀 해줘', 'typecheck 좀 부탁해']) {
+      const intent = await classifier.classify(msg(text));
+      expect(intent.type, text).toBe(IntentType.RUN_TESTS);
+      expect(intent.capability, text).toBe(Capability.TEST_EXECUTION);
+      expect(intent.raw, text).toEqual({ kind: 'typecheck' });
     }
   });
 

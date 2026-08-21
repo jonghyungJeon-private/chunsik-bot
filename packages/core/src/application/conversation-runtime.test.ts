@@ -3023,6 +3023,12 @@ describe('Post-Apply Validation Command — runtime (Sprint 2v, ADR-0043)', () =
       'pnpm test 실행 결과는 보통 어떻게 해석해?',
       'typecheck가 개발 중에 왜 필요한지 알려줘',
       'typecheck가 뭔지 설명해',
+      '테스트를 돌리는 방법을 알려줘',
+      '테스트 실행 결과를 설명해줘',
+      '테스트를 돌려야 안전하다고 생각해',
+      '테스트를 먼저 실행하는 편이 좋아',
+      '왜 테스트를 실행해?',
+      '왜 typecheck 해?',
     ]) {
       expect(ConversationRuntime.interpretPostApplyValidationIntent(text), text).toBeNull();
       const { deps, calls } = makeDeps({ applyAnchor: validatedAnchor() });
@@ -3037,6 +3043,11 @@ describe('Post-Apply Validation Command — runtime (Sprint 2v, ADR-0043)', () =
       ['pnpm test 해줘', 'test'],
       ['테스트 돌려줘', 'test'],
       ['타입체크 해줘', 'typecheck'],
+      ['전체 테스트 돌려봐 주세요', 'test'],
+      ['테스트 실행해줄 수 있어?', 'test'],
+      ['테스트 돌려주실 수 있나요?', 'test'],
+      ['타입체크 좀 해줘', 'typecheck'],
+      ['typecheck 좀 부탁해', 'typecheck'],
     ] as const) {
       expect(ConversationRuntime.interpretPostApplyValidationIntent(text), text).toBe(expected);
     }
