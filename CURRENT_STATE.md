@@ -492,15 +492,20 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 ## M2 gap assessment — first slice
 
 - **Acceptance:** the completed M2 gap assessment and ContextBuilder deterministic ranking slice at commit `8fb8e4b`
-  were independently reviewed `PASS` and are accepted as the first M2 implementation slice.
+  are `COMPLETE / REVIEW PASS` and accepted as the first M2 implementation slice. ContextBuilder token estimation at
+  commit `9ef5e7c` is also `COMPLETE / REVIEW PASS`.
+- **Repository checkpoint:** the Product Owner-confirmed canonical pre-semantic-slice HEAD is
+  `9ef5e7c3f9ccd1450b220f02633bac200ce16f51`. At that checkpoint, local `main` is four commits ahead of
+  `origin/main`; all four commits are `LOCAL / UNPUSHED`. No remote durability or origin synchronization is claimed.
 - **Overall M2: PARTIALLY_COMPLETE.** Existing provider-neutral seams and multi-provider routing are usable, while
   memory relevance work and concrete read-only connectors remain incomplete.
 - **ContextBuilder: PARTIALLY_COMPLETE.** It now has optional deterministic relevance selection with configurable
-  character budget, recency scoring, role weights, active-project-first background allocation, and preserved
+  character/token budgets, recency scoring, role weights, bounded keyword-overlap semantic relevance, configurable
+  normalized recency/relevance blending, active-project-first background allocation, and preserved
   ADR-0063 provenance/epistemic labels. Selected transcript entries are rendered in their original chronological
-  order to preserve PromptComposer's continuity contract. Token estimation, semantic relevance, compression, and
-  runtime configuration/wiring remain missing; omitting ranking configuration preserves the existing flat N=10
-  retrieval behavior.
+  order to preserve PromptComposer's continuity contract. Compression and runtime configuration/wiring remain
+  missing; omitting relevance configuration preserves the existing recency-only scoring, and omitting ranking
+  configuration preserves the existing flat N=10 retrieval behavior.
 - **PromptComposer: COMPLETE for current M2 intent.** Structured Task/context layering and ADR-0063 authority,
   provenance, and epistemic rendering are implemented; this slice requires no provider-specific prompt shaping.
 - **Provider routing: COMPLETE for current M2 intent.** Capability/policy/availability-driven routing and stable
@@ -549,7 +554,7 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   after approval is deferred (no current capability reaches the HIGH/CRITICAL path).
 - **Deferred:** repository-wide indexing, vector/semantic search, Workflow engine,
   agent runtime, connectors (Jira/Slack/Confluence), AI HTTP API, PolicyProvider,
-  `ContextBuilder` semantic ranking/compression and runtime ranking configuration, PROJECT/TOOL memory retention.
+  `ContextBuilder` compression and runtime ranking configuration, PROJECT/TOOL memory retention.
 
 ## Validation
 

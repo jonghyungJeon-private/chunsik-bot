@@ -362,6 +362,35 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
     expect(bundle.conversationTranscript.map((entry) => entry.content)).toEqual(['newest']);
   });
 
+  it('preserves the existing recency-only bundle when relevanceWeight is omitted', async () => {
+    const memory = {
+      recentShortTerm: async () => [
+        rec('1', 'user', 'hello but older'),
+        rec('2', 'assistant', 'newest unrelated'),
+      ],
+    } as unknown as MemoryManager;
+
+    const bundle = await new ContextBuilder(memory, {
+      maxCharacters: 16,
+      roleWeights: { user: 0, assistant: 0 },
+      recencyWeight: 2,
+    }).build(taskWith({ sessionId: 'S1' }));
+
+    expect(bundle).toEqual({
+      taskId: 't1',
+      conversationTranscript: [
+        {
+          turnNumber: 1,
+          role: 'assistant',
+          content: 'newest unrelated',
+          provenance: 'ASSISTANT',
+          epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
+        },
+      ],
+      backgroundResources: [],
+    });
+  });
+
   it('uses role relevance to prefer User history over Assistant history', async () => {
     const memory = {
       recentShortTerm: async () => [
@@ -377,6 +406,59 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
     }).build(taskWith({ sessionId: 'S1' }));
 
     expect(bundle.conversationTranscript.map((entry) => entry.content)).toEqual(['user-fact']);
+  });
+
+  it('uses semantic relevance with normalized recency when the blend is configured', async () => {
+    const memory = {
+      recentShortTerm: async () => [
+        rec('1', 'user', 'hello context ranking'),
+        rec('2', 'user', 'weather tomorrow forecast'),
+      ],
+    } as unknown as MemoryManager;
+
+    const bundle = await new ContextBuilder(memory, {
+      maxCharacters: 21,
+      roleWeights: { user: 0 },
+      recencyWeight: 0.25,
+      relevanceWeight: 0.75,
+    }).build(taskWith({ sessionId: 'S1' }));
+
+    expect(bundle.conversationTranscript.map((entry) => entry.content)).toEqual([
+      'hello context ranking',
+    ]);
+  });
+
+  it('defaults the recency side of the blend to one minus relevance weight', async () => {
+    const memory = {
+      recentShortTerm: async () => [
+        rec('1', 'user', 'hello historical context'),
+        rec('2', 'user', 'newest unrelated item'),
+      ],
+    } as unknown as MemoryManager;
+
+    const bundle = await new ContextBuilder(memory, {
+      maxCharacters: 24,
+      roleWeights: { user: 0 },
+      relevanceWeight: 0.75,
+    }).build(taskWith({ sessionId: 'S1' }));
+
+    expect(bundle.conversationTranscript.map((entry) => entry.content)).toEqual([
+      'hello historical context',
+    ]);
+  });
+
+  it('rejects semantic blend weights that do not sum to one', async () => {
+    const memory = {
+      recentShortTerm: async () => [rec('1', 'user', 'history')],
+    } as unknown as MemoryManager;
+
+    await expect(
+      new ContextBuilder(memory, {
+        maxCharacters: 10,
+        recencyWeight: 0.5,
+        relevanceWeight: 0.75,
+      }).build(taskWith({ sessionId: 'S1' })),
+    ).rejects.toThrow('recencyWeight and relevanceWeight must sum to 1');
   });
 
   it('truncates the highest-ranked entry to the exact remaining character budget', async () => {

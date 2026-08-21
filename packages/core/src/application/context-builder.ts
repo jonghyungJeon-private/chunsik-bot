@@ -8,6 +8,7 @@ import type {
 } from '../domain';
 import { ESTIMATED_CHARACTERS_PER_TOKEN, estimateTokenCount } from '../util/token-estimator';
 import type { MemoryManager } from './memory-manager';
+import { scoreSemanticRelevance } from './semantic-relevance';
 
 /** Default number of recent turns to include (ADR-0017). */
 const RECENT_LIMIT = 10;
@@ -28,6 +29,11 @@ export interface ContextRankingConfig {
   roleWeights?: Partial<Record<ConversationRole, number>>;
   /** Additive score per recency position (oldest = 0). Defaults to 1. */
   recencyWeight?: number;
+  /**
+   * Enables a normalized recency/relevance blend against Task.intent.summary.
+   * When supplied, it and recencyWeight must be in [0, 1] and sum to 1.
+   */
+  relevanceWeight?: number;
 }
 
 interface RankedTranscriptEntry {
@@ -98,6 +104,7 @@ export class ContextBuilder {
       remainingBudget,
       this.ranking,
       budget,
+      task.intent.summary,
     );
 
     return {
@@ -136,28 +143,31 @@ export class ContextBuilder {
     budget: number,
     config: ContextRankingConfig,
     contextBudget: ContextBudget,
+    currentSummary: string,
   ): ConversationTranscriptEntry[] {
     const roleWeights: Record<ConversationRole, number> = {
       user: config.roleWeights?.user ?? 2,
       assistant: config.roleWeights?.assistant ?? 1,
       unknown: config.roleWeights?.unknown ?? 0,
     };
-    const recencyWeight = config.recencyWeight ?? 1;
-    if (!Number.isFinite(recencyWeight) || recencyWeight < 0) {
-      throw new RangeError('recencyWeight must be a finite non-negative number');
-    }
+    const scoring = ContextBuilder.resolveScoringWeights(config);
     for (const [role, weight] of Object.entries(roleWeights)) {
       if (!Number.isFinite(weight)) {
         throw new RangeError(`roleWeights.${role} must be finite`);
       }
     }
 
+    const newestIndex = Math.max(transcript.length - 1, 0);
     const ranked: RankedTranscriptEntry[] = transcript
-      .map((entry, chronologicalIndex) => ({
-        entry,
-        chronologicalIndex,
-        score: roleWeights[entry.role ?? 'unknown'] + chronologicalIndex * recencyWeight,
-      }))
+      .map((entry, chronologicalIndex) => {
+        const roleScore = roleWeights[entry.role ?? 'unknown'];
+        const score = scoring.blended
+          ? roleScore +
+            (newestIndex === 0 ? 1 : chronologicalIndex / newestIndex) * scoring.recencyWeight +
+            scoreSemanticRelevance(currentSummary, entry.content) * scoring.relevanceWeight
+          : roleScore + chronologicalIndex * scoring.recencyWeight;
+        return { entry, chronologicalIndex, score };
+      })
       .sort((a, b) => b.score - a.score || b.chronologicalIndex - a.chronologicalIndex);
 
     let remaining = budget;
@@ -182,6 +192,35 @@ export class ContextBuilder {
     return selected
       .sort((a, b) => a.chronologicalIndex - b.chronologicalIndex)
       .map(({ entry }) => entry);
+  }
+
+  private static resolveScoringWeights(config: ContextRankingConfig):
+    | { blended: false; recencyWeight: number }
+    | { blended: true; recencyWeight: number; relevanceWeight: number } {
+    if (config.relevanceWeight === undefined) {
+      const recencyWeight = config.recencyWeight ?? 1;
+      if (!Number.isFinite(recencyWeight) || recencyWeight < 0) {
+        throw new RangeError('recencyWeight must be a finite non-negative number');
+      }
+      return { blended: false, recencyWeight };
+    }
+
+    const relevanceWeight = config.relevanceWeight;
+    const recencyWeight = config.recencyWeight ?? 1 - relevanceWeight;
+    if (
+      !Number.isFinite(recencyWeight) ||
+      !Number.isFinite(relevanceWeight) ||
+      recencyWeight < 0 ||
+      recencyWeight > 1 ||
+      relevanceWeight < 0 ||
+      relevanceWeight > 1
+    ) {
+      throw new RangeError('recencyWeight and relevanceWeight must be finite numbers in [0, 1]');
+    }
+    if (Math.abs(recencyWeight + relevanceWeight - 1) > Number.EPSILON * 4) {
+      throw new RangeError('recencyWeight and relevanceWeight must sum to 1');
+    }
+    return { blended: true, recencyWeight, relevanceWeight };
   }
 
   private static resolveBudget(config: ContextRankingConfig): ContextBudget | undefined {
