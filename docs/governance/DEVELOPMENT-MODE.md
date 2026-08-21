@@ -7,7 +7,7 @@
 검증 사실성, 외부·비가역 작업의 독립 승인 경계를 유지한다.
 
 기본 모드는 `FAST DELIVERY MODE`이며, Product Owner의 standing milestone delegation 아래
-`AUTONOMOUS_DEV_MODE = ENABLED`, `ACTIVE_MILESTONE = QUIRKYBOT_DEV_V1`이다.
+`AUTONOMOUS_DEV_MODE = ENABLED`, `ACTIVE_MILESTONE = M2`이다.
 `STRICT GOVERNANCE MODE`는 이 문서에 명시된 고위험 실행 경계에만 사용한다.
 
 ## 1. FAST DELIVERY MODE — Default

@@ -44,7 +44,7 @@ Architecture 또는 settled decision과 충돌할 가능성이 있으면 반드�
 
 ## Development Governance
 
-- `AUTONOMOUS_DEV_MODE = ENABLED`, `ACTIVE_MILESTONE = QUIRKYBOT_DEV_V1`이다. Product Owner는
+- `AUTONOMOUS_DEV_MODE = ENABLED`, `ACTIVE_MILESTONE = M2`이다. Product Owner는
   active milestone에 필요한 LOW/MEDIUM-risk local development task 생성과 implementation approval을
   Architect AI에 standing delegation한다. Architect-generated bounded task는 별도 one-off human 승인 없이
   승인된 local scope가 된다.
