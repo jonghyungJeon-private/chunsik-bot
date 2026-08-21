@@ -15,6 +15,7 @@
     { "path": "packages/connectors" },
     { "path": "packages/connector-jira" },
     { "path": "packages/connector-slack" },
+    { "path": "packages/connector-confluence" },
     { "path": "apps/chunsik" }
   ]
 }
