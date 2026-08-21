@@ -1,14 +1,13 @@
 import type { ConnectorProvider } from '@chunsik/core';
 
 /**
- * v1 SCOPE: ZERO connectors. This package exists only to mark the extension
- * seam. The composition root injects this (empty) list into ConnectorManager.
+ * ADR-0072 SCOPE: ConnectorProvider is the canonical v1 READ-ONLY connector
+ * seam. Concrete adapters live in separate packages; the composition root
+ * injects this empty list into ConnectorManager pending explicit wiring approval.
  *
- * When connectors are added they go HERE, implementing ConnectorProvider, and
- * are READ-ONLY first (`readOnly: true`). Examples to come:
- *   - JiraConnectorProvider       (source: 'jira')
- *   - SlackConnectorProvider      (source: 'slack')
- *   - ConfluenceConnectorProvider (source: 'confluence')
+ * JiraConnectorProvider (source: 'jira') now exists in @chunsik/connector-jira
+ * but is not included in V1_CONNECTORS. Slack and Confluence adapters remain
+ * unimplemented.
  *
  * Write actions for these are deliberately NOT modeled yet and, when added,
  * will be HIGH risk and gated behind approval — never auto-invoked.

@@ -7,6 +7,12 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — M2 Jira Read-Only Connector Adapter
+
+- Added `JiraConnectorProvider` implementing the ADR-0072 `ConnectorProvider` boundary for Jira Cloud REST in
+  `@chunsik/connector-jira` at commit `5365556`; the adapter is read-only, fake-fetch tested, and remains adapter-only
+  and unwired from the composition root.
+
 ### Added — M2 ContextBuilder Bounded Compression
 
 - Added opt-in deterministic tail compression for token-budgeted ContextBuilder entries. Lowest-scored entries are

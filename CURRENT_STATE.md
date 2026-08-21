@@ -498,7 +498,8 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   `9ef5e7c3f9ccd1450b220f02633bac200ce16f51`. At that checkpoint, local `main` is four commits ahead of
   `origin/main`; all four commits are `LOCAL / UNPUSHED`. No remote durability or origin synchronization is claimed.
 - **Overall M2: PARTIALLY_COMPLETE.** Existing provider-neutral seams, multi-provider routing, and ContextBuilder are
-  complete for current M2 intent, while concrete read-only connectors remain incomplete.
+  complete for current M2 intent. The Jira read-only connector adapter is complete but unwired; Slack and Confluence
+  connectors remain missing.
 - **ContextBuilder: COMPLETE for current M2 intent.** It has optional deterministic relevance selection with configurable
   character/token budgets, recency scoring, role weights, bounded keyword-overlap semantic relevance, configurable
   normalized recency/relevance blending, opt-in deterministic lowest-score-first tail compression with a configurable
@@ -514,9 +515,12 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   provider selection exist without Core branching on provider ids.
 - **Ollama adapter: COMPLETE; Codex adapter: MISSING.** Ollama implements suggest-only execution and availability;
   Codex remains an explicitly unavailable `NotImplementedError` stub.
+- **Jira connector adapter: COMPLETE (unwired); Slack and Confluence connector adapters: MISSING.**
+  `@chunsik/connector-jira` implements the ADR-0072 read-only `ConnectorProvider` boundary for Jira Cloud REST and is
+  fake-fetch tested, but it is not registered in the composition root.
 - **Read-only connector seam: PARTIALLY_COMPLETE.** `ConnectorProvider`, `ConnectorManager`, the connectors package,
-  and composition-root injection exist, but the registered connector list is empty and Jira/Slack/Confluence
-  implementations are MISSING.
+  composition-root injection, and the unwired `@chunsik/connector-jira` adapter exist. The registered connector list
+  remains empty, and Slack/Confluence implementations are MISSING.
 
 ## Deferred
 

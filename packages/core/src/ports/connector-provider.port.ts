@@ -21,10 +21,10 @@ export interface ConnectorResult {
 /**
  * PORT: external systems (Jira / Slack / Confluence).
  *
- * v1 SCOPE: this is an EXTENSION POINT ONLY. No concrete connector ships in v1.
- * When connectors arrive they are READ-ONLY first (`readOnly: true`); write
- * methods are intentionally absent from this interface and will be added under
- * the HIGH-risk approval gate, never auto-invoked.
+ * ADR-0072 ratifies ConnectorProvider as the canonical v1 READ-ONLY connector
+ * boundary. A concrete Jira adapter exists in a separate package but remains
+ * unwired; write methods are intentionally absent from this interface and will
+ * be added under the HIGH-risk approval gate, never auto-invoked.
  */
 export interface ConnectorProvider {
   /** e.g. "jira" | "slack" | "confluence". */
