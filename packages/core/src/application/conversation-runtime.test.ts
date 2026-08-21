@@ -1106,6 +1106,13 @@ describe('Live Test Execution — classifier + resolver', () => {
     expect(intent.raw?.kind).toBe('typecheck');
   });
 
+  it('a conversational testing question stays GENERAL_CHAT and cannot enter TEST_EXECUTION', async () => {
+    const intent = await classifier.classify(messageOf('개발할 때 테스트가 많아지면 필요한 테스트만 빠르게 돌리는 것도 중요하지?'));
+    expect(intent.type).toBe(IntentType.CHAT);
+    expect(intent.capability).toBe(Capability.GENERAL_CHAT);
+    expect(intent.raw).toBeUndefined();
+  });
+
   it('resolver maps kind "test" → command pnpm test', () => {
     const req = resolver.resolve(testIntent, { requestedBy: 'u', workspaceRef: WORKSPACE });
     expect(req?.command).toEqual({ command: 'pnpm', args: ['test'] });

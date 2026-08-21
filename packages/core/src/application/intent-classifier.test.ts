@@ -37,6 +37,32 @@ describe('IntentClassifier.classify (v1 deterministic)', () => {
     expect(intent.capability).toBe(Capability.GENERAL_CHAT);
   });
 
+  it('keeps conversational testing and development topics in GENERAL_CHAT', async () => {
+    for (const text of [
+      '개발할 때 테스트가 많아지면 필요한 테스트만 빠르게 돌리는 것도 중요하지?',
+      '개발할 때 테스트를 빠르게 돌리는 방법이 궁금해',
+      '테스트 실행이 왜 중요한지 설명해줘',
+      '요즘은 focused test를 먼저 실행하는 편이 효율적이지?',
+      '테스트를 돌려야 개발이 안전하다는 말도 있지?',
+      'pnpm test 실행 결과는 보통 어떻게 해석해?',
+      'typecheck가 개발 중에 왜 필요한지 알려줘',
+      'typecheck가 뭔지 설명해',
+    ]) {
+      const intent = await classifier.classify(msg(text));
+      expect(intent.type, text).toBe(IntentType.CHAT);
+      expect(intent.capability, text).toBe(Capability.GENERAL_CHAT);
+    }
+  });
+
+  it('routes only explicit test action requests to RUN_TESTS', async () => {
+    for (const text of ['pnpm test 실행해줘', '이 프로젝트 테스트 돌려봐', '현재 변경사항에 대해 focused test 실행해']) {
+      const intent = await classifier.classify(msg(text));
+      expect(intent.type, text).toBe(IntentType.RUN_TESTS);
+      expect(intent.capability, text).toBe(Capability.TEST_EXECUTION);
+      expect(intent.raw, text).toEqual({ kind: 'test' });
+    }
+  });
+
   // Live Code Change Planning (ADR-0035) — deterministic code-change intent recognition.
   it('routes a bug-fix request to IMPLEMENT_CODE with raw.kind "fix"', async () => {
     const intent = await classifier.classify(msg('이 버그 고쳐줘'));
