@@ -13,6 +13,11 @@ export interface ChunsikConfig {
   vector: { storePath: string };
   workspace: { workspaceRoot: string };
   ai: { claudeBin: string; codexBin: string; ollamaBin: string; ollamaModel: string };
+  connectors: {
+    jira?: { host: string; email: string; apiToken: string };
+    slack?: { token: string };
+    confluence?: { host: string; token: string };
+  };
   /**
    * Repository identity for hosting operations (Sprint 3d-A, ADR-0051). RAW/unvalidated here; validated by
    * `RepositoryIdentityResolver` at the composition root. `undefined` when unset (the safe missing path).
@@ -66,6 +71,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ChunsikConfig 
       ollamaBin: env.OLLAMA_CLI_BIN ?? 'ollama',
       ollamaModel: env.OLLAMA_MODEL ?? 'llama3.1',
     },
+    connectors: {
+      jira: resolveJiraConnector(env),
+      slack: resolveSlackConnector(env),
+      confluence: resolveConfluenceConnector(env),
+    },
     // Provider fixed to 'github'. Undefined when both owner and repo are absent; a single one present yields a raw
     // config the resolver classifies (invalid-owner / invalid-repo). No provider/token env var is read here.
     repositoryHosting: owner || repo ? { provider: 'github', owner: owner ?? '', repo: repo ?? '' } : undefined,
@@ -85,6 +95,31 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ChunsikConfig 
       compressionConfig: { minimumCharactersPerEntry: 80 },
     },
   };
+}
+
+function nonBlank(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : undefined;
+}
+
+function resolveJiraConnector(
+  env: NodeJS.ProcessEnv,
+): { host: string; email: string; apiToken: string } | undefined {
+  const host = nonBlank(env.CHUNSIK_JIRA_BASE_URL);
+  const email = nonBlank(env.CHUNSIK_JIRA_EMAIL);
+  const apiToken = nonBlank(env.CHUNSIK_JIRA_TOKEN);
+  return host && email && apiToken ? { host, email, apiToken } : undefined;
+}
+
+function resolveSlackConnector(env: NodeJS.ProcessEnv): { token: string } | undefined {
+  const token = nonBlank(env.CHUNSIK_SLACK_TOKEN);
+  return token ? { token } : undefined;
+}
+
+function resolveConfluenceConnector(env: NodeJS.ProcessEnv): { host: string; token: string } | undefined {
+  const host = nonBlank(env.CHUNSIK_CONFLUENCE_BASE_URL);
+  const token = nonBlank(env.CHUNSIK_CONFLUENCE_TOKEN);
+  return host && token ? { host, token } : undefined;
 }
 
 /**

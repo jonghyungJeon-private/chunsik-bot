@@ -29,9 +29,15 @@ importers:
       '@chunsik/command-local':
         specifier: workspace:*
         version: link:../../packages/command-local
-      '@chunsik/connectors':
+      '@chunsik/connector-confluence':
         specifier: workspace:*
-        version: link:../../packages/connectors
+        version: link:../../packages/connector-confluence
+      '@chunsik/connector-jira':
+        specifier: workspace:*
+        version: link:../../packages/connector-jira
+      '@chunsik/connector-slack':
+        specifier: workspace:*
+        version: link:../../packages/connector-slack
       '@chunsik/core':
         specifier: workspace:*
         version: link:../../packages/core

@@ -78,9 +78,9 @@ import { GitHubRepositoryHostingProvider } from '@chunsik/repository-hosting-git
 import { GitHubAppAuth } from '@quoky/github-app-auth';
 import { LocalCommandRunner } from '@chunsik/command-local';
 import { ClaudeCliProvider, CodexCliProvider, OllamaCliProvider } from '@chunsik/ai-cli';
-import { V1_CONNECTORS } from '@chunsik/connectors';
 
 import { loadConfig } from './config';
+import { createConnectorProviders } from './connector-providers';
 import { ConsoleLogger } from './console-logger';
 import { GitHubAppGitProvider } from './github-app-git-provider';
 import { createProductionRuntimeProviderRoutingActivation } from './provider-routing/provider-routing-activation';
@@ -207,7 +207,7 @@ const infrastructure: Provider[] = [
       new OllamaCliProvider({ bin: config.ai.ollamaBin, model: config.ai.ollamaModel }),
     ],
   },
-  { provide: CONNECTOR_PROVIDERS, useValue: V1_CONNECTORS },
+  { provide: CONNECTOR_PROVIDERS, useValue: createConnectorProviders(config.connectors) },
 ];
 
 /**

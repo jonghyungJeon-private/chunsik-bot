@@ -17,6 +17,8 @@
     { "path": "../../packages/github-app-auth" },
     { "path": "../../packages/command-local" },
     { "path": "../../packages/ai-cli" },
-    { "path": "../../packages/connectors" }
+    { "path": "../../packages/connector-confluence" },
+    { "path": "../../packages/connector-jira" },
+    { "path": "../../packages/connector-slack" }
   ]
 }

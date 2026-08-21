@@ -498,8 +498,8 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   `9ef5e7c3f9ccd1450b220f02633bac200ce16f51`. At that checkpoint, local `main` is four commits ahead of
   `origin/main`; all four commits are `LOCAL / UNPUSHED`. No remote durability or origin synchronization is claimed.
 - **Overall M2: PARTIALLY_COMPLETE.** Existing provider-neutral seams, multi-provider routing, and ContextBuilder are
-  complete for current M2 intent. The Jira and Slack read-only connector adapters are complete but unwired; Confluence
-  remains the only missing connector.
+  complete for current M2 intent. The Jira, Slack, and Confluence read-only connector adapters are implemented and
+  configuration-gated in the composition root.
 - **ContextBuilder: COMPLETE for current M2 intent.** It has optional deterministic relevance selection with configurable
   character/token budgets, recency scoring, role weights, bounded keyword-overlap semantic relevance, configurable
   normalized recency/relevance blending, opt-in deterministic lowest-score-first tail compression with a configurable
@@ -515,12 +515,13 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   provider selection exist without Core branching on provider ids.
 - **Ollama adapter: COMPLETE; Codex adapter: MISSING.** Ollama implements suggest-only execution and availability;
   Codex remains an explicitly unavailable `NotImplementedError` stub.
-- **Jira and Slack connector adapters: COMPLETE (unwired); Confluence connector adapter: MISSING.**
-  `@chunsik/connector-jira` and `@chunsik/connector-slack` implement the ADR-0072 read-only `ConnectorProvider` boundary
-  for Jira Cloud REST and the Slack Web API. Both are fake-fetch tested but are not registered in the composition root.
-- **Read-only connector seam: PARTIALLY_COMPLETE.** `ConnectorProvider`, `ConnectorManager`, the connectors package,
-  composition-root injection, and the unwired `@chunsik/connector-jira` and `@chunsik/connector-slack` adapters exist.
-  The registered connector list remains empty, and only the Confluence implementation is MISSING.
+- **Jira, Slack, and Confluence connector adapters: COMPLETE (wired).**
+  `@chunsik/connector-jira`, `@chunsik/connector-slack`, and `@chunsik/connector-confluence` implement the ADR-0072
+  read-only `ConnectorProvider` boundary and are registered by the composition root when their required environment
+  configuration is complete. Missing or partial configuration leaves the corresponding connector unregistered.
+- **Read-only connector seam: COMPLETE for current M2 intent.** `ConnectorProvider`, `ConnectorManager`, concrete adapter
+  packages, and configuration-gated composition-root injection are wired. The registered connector list contains the
+  configured Jira, Slack, and Confluence adapters.
 
 ## Deferred
 
@@ -528,9 +529,6 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 - **Workflow** — multi-step planning/execution beyond a single Task is not built.
 - **Agent Runtime** — no autonomous tool-using / coding agent.
 - **Vector Search** — `VectorProvider` is a local stub; no embeddings/retrieval/semantic search.
-- **Jira** — no connector.
-- **Slack** — no connector (Discord is the only platform).
-- **Confluence** — no connector.
 
 ## What exists (detail)
 
@@ -559,7 +557,7 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 - **Platform:** `DiscordPlatformAdapter.requestApproval` (no approval UI yet); resume
   after approval is deferred (no current capability reaches the HIGH/CRITICAL path).
 - **Deferred:** repository-wide indexing, vector/semantic search, Workflow engine,
-  agent runtime, connectors (Jira/Slack/Confluence), AI HTTP API, PolicyProvider,
+  agent runtime, AI HTTP API, PolicyProvider,
   PROJECT/TOOL memory retention.
 
 ## Validation
