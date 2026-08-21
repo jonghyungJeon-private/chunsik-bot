@@ -7,6 +7,12 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — M2 Slack Read-Only Connector Adapter
+
+- Added `SlackConnectorProvider` implementing the ADR-0072 `ConnectorProvider` boundary for the Slack Web API in
+  `@chunsik/connector-slack` at commit `536a97e`; the adapter is read-only, fake-fetch tested, and remains adapter-only
+  and unwired from the composition root.
+
 ### Added — M2 Jira Read-Only Connector Adapter
 
 - Added `JiraConnectorProvider` implementing the ADR-0072 `ConnectorProvider` boundary for Jira Cloud REST in
