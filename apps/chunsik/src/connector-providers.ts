@@ -9,9 +9,27 @@ import type { ChunsikConfig } from './config';
 export function createConnectorProviders(config: ChunsikConfig['connectors']): readonly ConnectorProvider[] {
   const connectors: ConnectorProvider[] = [];
 
-  if (config.jira) connectors.push(new JiraConnectorProvider(config.jira));
-  if (config.slack) connectors.push(new SlackConnectorProvider(config.slack));
-  if (config.confluence) connectors.push(new ConfluenceConnectorProvider(config.confluence));
+  if (config.jira) {
+    try {
+      connectors.push(new JiraConnectorProvider(config.jira));
+    } catch {
+      // Invalid optional connector config must not prevent unrelated application flows from starting.
+    }
+  }
+  if (config.slack) {
+    try {
+      connectors.push(new SlackConnectorProvider(config.slack));
+    } catch {
+      // Invalid optional connector config must not prevent unrelated application flows from starting.
+    }
+  }
+  if (config.confluence) {
+    try {
+      connectors.push(new ConfluenceConnectorProvider(config.confluence));
+    } catch {
+      // Invalid optional connector config must not prevent unrelated application flows from starting.
+    }
+  }
 
   return connectors;
 }

@@ -30,6 +30,25 @@ describe('composition-root connector registration', () => {
     expect(manager.list()).toEqual([]);
   });
 
+  it('omits malformed connector hosts without crashing unrelated connector registration', () => {
+    const manager = new ConnectorManager(
+      createConnectorProviders(
+        loadConfig(
+          env({
+            CHUNSIK_JIRA_BASE_URL: 'https://jira.example.atlassian.net/browse',
+            CHUNSIK_JIRA_EMAIL: 'builder@example.com',
+            CHUNSIK_JIRA_TOKEN: 'jira-token',
+            CHUNSIK_SLACK_TOKEN: 'slack-token',
+            CHUNSIK_CONFLUENCE_BASE_URL: 'https://confluence.example.atlassian.net/wiki',
+            CHUNSIK_CONFLUENCE_TOKEN: 'confluence-token',
+          }),
+        ).connectors,
+      ),
+    );
+
+    expect(manager.list().map((connector) => connector.source)).toEqual(['slack']);
+  });
+
   it('enumerates and queries all fully configured read-only adapters', async () => {
     const fetchStub = vi.fn(async (input: string | URL | Request): Promise<Response> => {
       const url = new URL(input instanceof Request ? input.url : input.toString());
