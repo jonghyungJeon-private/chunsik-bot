@@ -599,6 +599,152 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
     expect(bundle.backgroundResources).toEqual([]);
   });
 
+  it('compresses the lowest-scored entry first when ranked entries exceed the token budget', async () => {
+    const memory = {
+      recentShortTerm: async () => [
+        rec('1', 'user', 'abcdefghijkl'),
+        rec('2', 'user', 'mnopqrstuvwx'),
+      ],
+    } as unknown as MemoryManager;
+
+    const bundle = await new ContextBuilder(memory, {
+      maxTokens: 4,
+      roleWeights: { user: 0 },
+      compressionConfig: { minimumCharactersPerEntry: 4 },
+    }).build(taskWith({ sessionId: 'S1' }));
+
+    expect(bundle.conversationTranscript.map((entry) => entry.content)).toEqual([
+      'abc…',
+      'mnopqrstuvwx',
+    ]);
+  });
+
+  it('leaves compressed context unchanged when it is under budget', async () => {
+    const memory = {
+      recentShortTerm: async () => [rec('1', 'user', 'short'), rec('2', 'assistant', 'reply')],
+    } as unknown as MemoryManager;
+
+    const bundle = await new ContextBuilder(memory, {
+      maxTokens: 4,
+      compressionConfig: { minimumCharactersPerEntry: 2 },
+    }).build(taskWith({ sessionId: 'S1' }));
+
+    expect(bundle.conversationTranscript.map((entry) => entry.content)).toEqual([
+      'short',
+      'reply',
+    ]);
+  });
+
+  it('respects the configured compression floor when the budget cannot be reached', async () => {
+    const memory = {
+      recentShortTerm: async () => [
+        rec('1', 'user', 'abcdefghijkl'),
+        rec('2', 'assistant', 'mnopqrstuvwx'),
+      ],
+    } as unknown as MemoryManager;
+
+    const bundle = await new ContextBuilder(memory, {
+      maxTokens: 1,
+      compressionConfig: { minimumCharactersPerEntry: 6 },
+    }).build(taskWith({ sessionId: 'S1' }));
+
+    expect(bundle.conversationTranscript.map((entry) => entry.content)).toEqual([
+      'abcdefg…',
+      'mnopqrs…',
+    ]);
+    expect(bundle.conversationTranscript.every((entry) => entry.content.length >= 6)).toBe(true);
+  });
+
+  it('preserves chronological order, roles, and ADR-0063 labels through compression', async () => {
+    const memory = {
+      recentShortTerm: async () => [
+        rec('1', 'assistant', 'abcdefghijkl'),
+        rec('2', 'user', 'mnopqrstuvwx'),
+      ],
+    } as unknown as MemoryManager;
+
+    const bundle = await new ContextBuilder(memory, {
+      maxTokens: 4,
+      recencyWeight: 0,
+      roleWeights: { assistant: 0, user: 10 },
+      compressionConfig: { minimumCharactersPerEntry: 4 },
+    }).build(taskWith({ sessionId: 'S1' }));
+
+    expect(bundle.conversationTranscript).toEqual([
+      {
+        turnNumber: 1,
+        role: 'assistant',
+        content: 'abc…',
+        provenance: 'ASSISTANT',
+        epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
+      },
+      {
+        turnNumber: 2,
+        role: 'user',
+        content: 'mnopqrstuvwx',
+        provenance: 'USER',
+        epistemicStatus: 'USER_CLAIM_OR_INTENT',
+      },
+    ]);
+  });
+
+  it('handles empty and single-entry compression inputs', async () => {
+    const emptyMemory = {
+      recentShortTerm: async () => [],
+    } as unknown as MemoryManager;
+    const singleMemory = {
+      recentShortTerm: async () => [rec('1', 'user', 'abcdefghijkl')],
+    } as unknown as MemoryManager;
+    const config = {
+      maxTokens: 2,
+      compressionConfig: { minimumCharactersPerEntry: 4 },
+    } as const;
+
+    const emptyBundle = await new ContextBuilder(emptyMemory, config).build(
+      taskWith({ sessionId: 'S1' }),
+    );
+    const singleBundle = await new ContextBuilder(singleMemory, config).build(
+      taskWith({ sessionId: 'S1' }),
+    );
+
+    expect(emptyBundle.conversationTranscript).toEqual([]);
+    expect(singleBundle.conversationTranscript.map((entry) => entry.content)).toEqual(['abcdefg…']);
+  });
+
+  it('keeps token-budget selection unchanged when compressionConfig is omitted', async () => {
+    const memory = {
+      recentShortTerm: async () => [
+        rec('1', 'user', 'abcdefghijkl'),
+        rec('2', 'user', 'mnopqrstuvwx'),
+      ],
+    } as unknown as MemoryManager;
+
+    const bundle = await new ContextBuilder(memory, {
+      maxTokens: 2,
+      roleWeights: { user: 0 },
+    }).build(taskWith({ sessionId: 'S1' }));
+
+    expect(bundle.conversationTranscript.map((entry) => entry.content)).toEqual(['mnopqrs…']);
+  });
+
+  it('rejects compression without a token budget and invalid minimum floors', async () => {
+    const memory = {
+      recentShortTerm: async () => [rec('1', 'user', 'history')],
+    } as unknown as MemoryManager;
+
+    await expect(
+      new ContextBuilder(memory, { compressionConfig: {} }).build(taskWith({ sessionId: 'S1' })),
+    ).rejects.toThrow('compressionConfig requires maxTokens');
+    await expect(
+      new ContextBuilder(memory, {
+        maxTokens: 2,
+        compressionConfig: { minimumCharactersPerEntry: -1 },
+      }).build(taskWith({ sessionId: 'S1' })),
+    ).rejects.toThrow(
+      'compressionConfig.minimumCharactersPerEntry must be a non-negative safe integer',
+    );
+  });
+
   it('preserves flat N=10 retrieval when ranking has no configured budget', async () => {
     let requestedLimit: number | undefined;
     const records = Array.from({ length: 12 }, (_, index) =>

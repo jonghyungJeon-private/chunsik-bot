@@ -7,6 +7,14 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — M2 ContextBuilder Bounded Compression
+
+- Added opt-in deterministic tail compression for token-budgeted ContextBuilder entries. Lowest-scored entries are
+  truncated first to preserve higher-value content, with a configurable per-entry character floor and unchanged
+  chronological output, role, provenance, and epistemic labels.
+- Preserved the existing selection behavior when compression is omitted and added focused coverage for over/under
+  budget handling, floors, provenance/order, empty history, and single-entry history.
+
 ### Changed — QUIRKYBOT_DEV_V1 Live UAT Acceptance
 
 - Recorded bounded Live UAT `PASS` at exact verified HEAD `715c407a52eee36a7717d1b4b6695b1469bb0a76`, accepted the

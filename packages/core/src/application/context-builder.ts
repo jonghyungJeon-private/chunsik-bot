@@ -16,8 +16,15 @@ const RECENT_LIMIT = 10;
 const MAX_MEMORY_CHARS = 400;
 /** Project memory is longer-form; truncated a bit more generously. */
 const MAX_PROJECT_CHARS = 1200;
+/** Compression keeps enough text for an entry to remain useful and attributable. */
+const DEFAULT_MINIMUM_COMPRESSION_CHARACTERS = 80;
 
 type ConversationRole = NonNullable<ConversationTranscriptEntry['role']>;
+
+export interface ContextCompressionConfig {
+  /** Minimum content length retained per entry. Defaults to 80 characters. */
+  minimumCharactersPerEntry?: number;
+}
 
 /** Optional M2 ranking/selection policy. Omitting it preserves ADR-0017 flat retrieval. */
 export interface ContextRankingConfig {
@@ -34,6 +41,8 @@ export interface ContextRankingConfig {
    * When supplied, it and recencyWeight must be in [0, 1] and sum to 1.
    */
   relevanceWeight?: number;
+  /** Optional deterministic tail compression for a configured maxTokens budget. */
+  compressionConfig?: ContextCompressionConfig;
 }
 
 interface RankedTranscriptEntry {
@@ -79,6 +88,9 @@ export class ContextBuilder {
     const project = task.projectId ? await this.memory.projectMemory(task.projectId) : undefined;
 
     const budget = this.ranking ? ContextBuilder.resolveBudget(this.ranking) : undefined;
+    const minimumCompressionCharacters = this.ranking
+      ? ContextBuilder.resolveMinimumCompressionCharacters(this.ranking)
+      : undefined;
     if (!this.ranking || !budget) {
       return ContextBuilder.bundle(task.id, transcript, project);
     }
@@ -105,6 +117,7 @@ export class ContextBuilder {
       this.ranking,
       budget,
       task.intent.summary,
+      minimumCompressionCharacters,
     );
 
     return {
@@ -144,6 +157,7 @@ export class ContextBuilder {
     config: ContextRankingConfig,
     contextBudget: ContextBudget,
     currentSummary: string,
+    minimumCompressionCharacters: number | undefined,
   ): ConversationTranscriptEntry[] {
     const roleWeights: Record<ConversationRole, number> = {
       user: config.roleWeights?.user ?? 2,
@@ -170,6 +184,14 @@ export class ContextBuilder {
       })
       .sort((a, b) => b.score - a.score || b.chronologicalIndex - a.chronologicalIndex);
 
+    if (minimumCompressionCharacters !== undefined) {
+      return ContextBuilder.compressRankedTranscript(
+        ranked,
+        budget,
+        minimumCompressionCharacters,
+      );
+    }
+
     let remaining = budget;
     const selected: RankedTranscriptEntry[] = [];
     for (const candidate of ranked) {
@@ -189,6 +211,50 @@ export class ContextBuilder {
 
     // PromptComposer's transcript contract remains chronological. Ranking determines
     // relevance-aware selection only; original turn/provenance fields stay untouched.
+    return selected
+      .sort((a, b) => a.chronologicalIndex - b.chronologicalIndex)
+      .map(({ entry }) => entry);
+  }
+
+  private static compressRankedTranscript(
+    ranked: RankedTranscriptEntry[],
+    tokenBudget: number,
+    minimumCharactersPerEntry: number,
+  ): ConversationTranscriptEntry[] {
+    const selected = ranked.map((candidate) => ({
+      ...candidate,
+      entry: { ...candidate.entry },
+    }));
+    let excessTokens =
+      selected.reduce((total, candidate) => total + estimateTokenCount(candidate.entry.content), 0) -
+      tokenBudget;
+
+    // Ranking is highest-first, so walk backwards to preserve the highest-value content.
+    for (let index = selected.length - 1; index >= 0 && excessTokens > 0; index -= 1) {
+      const candidate = selected[index];
+      if (!candidate) continue;
+
+      const currentTokens = estimateTokenCount(candidate.entry.content);
+      const floorCharacters = Math.min(
+        candidate.entry.content.length,
+        minimumCharactersPerEntry,
+      );
+      const floorTokens = estimateTokenCount(candidate.entry.content.slice(0, floorCharacters));
+      const tokensToRemove = Math.min(excessTokens, currentTokens - floorTokens);
+      if (tokensToRemove <= 0) continue;
+
+      const targetCharacters = Math.max(
+        floorCharacters,
+        (currentTokens - tokensToRemove) * ESTIMATED_CHARACTERS_PER_TOKEN,
+      );
+      const content = ContextBuilder.truncateToBudget(
+        candidate.entry.content,
+        targetCharacters,
+      );
+      candidate.entry = { ...candidate.entry, content };
+      excessTokens -= currentTokens - estimateTokenCount(content);
+    }
+
     return selected
       .sort((a, b) => a.chronologicalIndex - b.chronologicalIndex)
       .map(({ entry }) => entry);
@@ -248,6 +314,20 @@ export class ContextBuilder {
       };
     }
     return undefined;
+  }
+
+  private static resolveMinimumCompressionCharacters(
+    config: ContextRankingConfig,
+  ): number | undefined {
+    if (!config.compressionConfig) return undefined;
+    if (config.maxTokens === undefined) {
+      throw new RangeError('compressionConfig requires maxTokens');
+    }
+    return ContextBuilder.nonNegativeInteger(
+      config.compressionConfig.minimumCharactersPerEntry ??
+        DEFAULT_MINIMUM_COMPRESSION_CHARACTERS,
+      'compressionConfig.minimumCharactersPerEntry',
+    );
   }
 
   private static nonNegativeInteger(value: number, name: string): number {
