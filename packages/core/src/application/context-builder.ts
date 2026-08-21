@@ -6,6 +6,7 @@ import type {
   MemoryScope,
   Task,
 } from '../domain';
+import { ESTIMATED_CHARACTERS_PER_TOKEN, estimateTokenCount } from '../util/token-estimator';
 import type { MemoryManager } from './memory-manager';
 
 /** Default number of recent turns to include (ADR-0017). */
@@ -20,7 +21,9 @@ type ConversationRole = NonNullable<ConversationTranscriptEntry['role']>;
 /** Optional M2 ranking/selection policy. Omitting it preserves ADR-0017 flat retrieval. */
 export interface ContextRankingConfig {
   /** Maximum combined content characters across transcript and project background. */
-  maxCharacters: number;
+  maxCharacters?: number;
+  /** Approximate token budget across transcript and project background. */
+  maxTokens?: number;
   /** Additive role relevance; higher values are selected first. */
   roleWeights?: Partial<Record<ConversationRole, number>>;
   /** Additive score per recency position (oldest = 0). Defaults to 1. */
@@ -31,6 +34,12 @@ interface RankedTranscriptEntry {
   entry: ConversationTranscriptEntry;
   chronologicalIndex: number;
   score: number;
+}
+
+interface ContextBudget {
+  limit: number;
+  measure: (content: string) => number;
+  truncate: (content: string, remaining: number) => string;
 }
 
 /**
@@ -63,34 +72,32 @@ export class ContextBuilder {
     const transcript = ContextBuilder.toTranscriptEntries(recent);
     const project = task.projectId ? await this.memory.projectMemory(task.projectId) : undefined;
 
-    if (!this.ranking) {
+    const budget = this.ranking ? ContextBuilder.resolveBudget(this.ranking) : undefined;
+    if (!this.ranking || !budget) {
       return ContextBuilder.bundle(task.id, transcript, project);
     }
 
-    const maxCharacters = ContextBuilder.nonNegativeInteger(
-      this.ranking.maxCharacters,
-      'maxCharacters',
-    );
-    let remainingCharacters = maxCharacters;
+    let remainingBudget = budget.limit;
     const backgroundResources: ContextBundle['backgroundResources'] = [];
 
     // projectMemory(projectId) is an exact active-project lookup. Reserve its matching
     // background first, before any future lower-relevance project candidates.
-    if (project && remainingCharacters > 0) {
-      const content = ContextBuilder.truncateToBudget(
+    if (project && remainingBudget > 0) {
+      const content = budget.truncate(
         ContextBuilder.truncate(project.content, MAX_PROJECT_CHARS),
-        remainingCharacters,
+        remainingBudget,
       );
       if (content.length > 0) {
         backgroundResources.push(ContextBuilder.toProjectBackground(content));
-        remainingCharacters -= content.length;
+        remainingBudget -= budget.measure(content);
       }
     }
 
     const conversationTranscript = ContextBuilder.selectRankedTranscript(
       transcript,
-      remainingCharacters,
+      remainingBudget,
       this.ranking,
+      budget,
     );
 
     return {
@@ -128,6 +135,7 @@ export class ContextBuilder {
     transcript: ConversationTranscriptEntry[],
     budget: number,
     config: ContextRankingConfig,
+    contextBudget: ContextBudget,
   ): ConversationTranscriptEntry[] {
     const roleWeights: Record<ConversationRole, number> = {
       user: config.roleWeights?.user ?? 2,
@@ -156,15 +164,16 @@ export class ContextBuilder {
     const selected: RankedTranscriptEntry[] = [];
     for (const candidate of ranked) {
       if (remaining <= 0) break;
-      if (candidate.entry.content.length <= remaining) {
+      const estimatedSize = contextBudget.measure(candidate.entry.content);
+      if (estimatedSize <= remaining) {
         selected.push(candidate);
-        remaining -= candidate.entry.content.length;
+        remaining -= estimatedSize;
         continue;
       }
-      const content = ContextBuilder.truncateToBudget(candidate.entry.content, remaining);
+      const content = contextBudget.truncate(candidate.entry.content, remaining);
       if (content.length > 0) {
         selected.push({ ...candidate, entry: { ...candidate.entry, content } });
-        remaining -= content.length;
+        remaining -= contextBudget.measure(content);
       }
     }
 
@@ -173,6 +182,33 @@ export class ContextBuilder {
     return selected
       .sort((a, b) => a.chronologicalIndex - b.chronologicalIndex)
       .map(({ entry }) => entry);
+  }
+
+  private static resolveBudget(config: ContextRankingConfig): ContextBudget | undefined {
+    if (config.maxCharacters !== undefined && config.maxTokens !== undefined) {
+      throw new RangeError('configure either maxCharacters or maxTokens, not both');
+    }
+    if (config.maxCharacters !== undefined) {
+      const limit = ContextBuilder.nonNegativeInteger(config.maxCharacters, 'maxCharacters');
+      return {
+        limit,
+        measure: (content) => content.length,
+        truncate: ContextBuilder.truncateToBudget,
+      };
+    }
+    if (config.maxTokens !== undefined) {
+      const limit = ContextBuilder.nonNegativeInteger(config.maxTokens, 'maxTokens');
+      return {
+        limit,
+        measure: estimateTokenCount,
+        truncate: (content, remaining) =>
+          ContextBuilder.truncateToBudget(
+            content,
+            remaining * ESTIMATED_CHARACTERS_PER_TOKEN,
+          ),
+      };
+    }
+    return undefined;
   }
 
   private static nonNegativeInteger(value: number, name: string): number {

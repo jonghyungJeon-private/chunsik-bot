@@ -460,6 +460,85 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
     ]);
   });
 
+  it('uses estimated tokens while preserving recency and relevance ranking', async () => {
+    const memory = {
+      recentShortTerm: async () => [
+        rec('1', 'user', 'older-user'),
+        rec('2', 'assistant', 'newer-assistant'),
+        rec('3', 'user', 'newest-user'),
+      ],
+    } as unknown as MemoryManager;
+
+    const bundle = await new ContextBuilder(memory, {
+      maxTokens: 3,
+      roleWeights: { user: 10, assistant: 0 },
+      recencyWeight: 1,
+    }).build(taskWith({ sessionId: 'S1' }));
+
+    expect(bundle.conversationTranscript.map((entry) => entry.content)).toEqual(['newest-user']);
+  });
+
+  it('truncates a single entry that exceeds the estimated token budget', async () => {
+    const memory = {
+      recentShortTerm: async () => [rec('1', 'user', 'abcdefghij')],
+    } as unknown as MemoryManager;
+
+    const bundle = await new ContextBuilder(memory, { maxTokens: 1 }).build(
+      taskWith({ sessionId: 'S1' }),
+    );
+
+    expect(bundle.conversationTranscript.map((entry) => entry.content)).toEqual(['abc…']);
+  });
+
+  it('returns no selected context for a zero token budget', async () => {
+    const memory = {
+      recentShortTerm: async () => [rec('1', 'user', 'history')],
+      projectMemory: async () => rec('2', 'project', 'project background'),
+    } as unknown as MemoryManager;
+
+    const bundle = await new ContextBuilder(memory, { maxTokens: 0 }).build(
+      taskWith({ sessionId: 'S1', projectId: 'P1' }),
+    );
+
+    expect(bundle.conversationTranscript).toEqual([]);
+    expect(bundle.backgroundResources).toEqual([]);
+  });
+
+  it('handles empty history with a token budget', async () => {
+    const memory = {
+      recentShortTerm: async () => [],
+    } as unknown as MemoryManager;
+
+    const bundle = await new ContextBuilder(memory, { maxTokens: 5 }).build(
+      taskWith({ sessionId: 'S1' }),
+    );
+
+    expect(bundle.conversationTranscript).toEqual([]);
+    expect(bundle.backgroundResources).toEqual([]);
+  });
+
+  it('preserves flat N=10 retrieval when ranking has no configured budget', async () => {
+    let requestedLimit: number | undefined;
+    const records = Array.from({ length: 12 }, (_, index) =>
+      rec(String(index), 'user', `turn-${index}`),
+    );
+    const memory = {
+      recentShortTerm: async (_scope: MemoryScope, limit: number) => {
+        requestedLimit = limit;
+        return records;
+      },
+    } as unknown as MemoryManager;
+
+    const bundle = await new ContextBuilder(memory, { roleWeights: { user: 100 } }).build(
+      taskWith({ sessionId: 'S1' }),
+    );
+
+    expect(requestedLimit).toBe(10);
+    expect(bundle.conversationTranscript.map((entry) => entry.content)).toEqual(
+      Array.from({ length: 10 }, (_, index) => `turn-${index + 2}`),
+    );
+  });
+
   it('falls back to channel scope when the task has no session', async () => {
     let captured: MemoryScope | undefined;
     const memory = {
