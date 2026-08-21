@@ -14,6 +14,7 @@
     { "path": "packages/ai-cli" },
     { "path": "packages/connectors" },
     { "path": "packages/connector-jira" },
+    { "path": "packages/connector-slack" },
     { "path": "apps/chunsik" }
   ]
 }
