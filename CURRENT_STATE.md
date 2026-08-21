@@ -489,6 +489,26 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   Risk MEDIUM, no approval halt. Reuse only — no new capability/aggregate/repository/migration, no
   Core/Orchestrator contract change (ADR-0033).
 
+## M2 gap assessment — first slice
+
+- **Overall M2: PARTIALLY_COMPLETE.** Existing provider-neutral seams and multi-provider routing are usable, while
+  memory relevance work and concrete read-only connectors remain incomplete.
+- **ContextBuilder: PARTIALLY_COMPLETE.** It now has optional deterministic relevance selection with configurable
+  character budget, recency scoring, role weights, active-project-first background allocation, and preserved
+  ADR-0063 provenance/epistemic labels. Selected transcript entries are rendered in their original chronological
+  order to preserve PromptComposer's continuity contract. Token estimation, semantic relevance, compression, and
+  runtime configuration/wiring remain missing; omitting ranking configuration preserves the existing flat N=10
+  retrieval behavior.
+- **PromptComposer: COMPLETE for current M2 intent.** Structured Task/context layering and ADR-0063 authority,
+  provenance, and epistemic rendering are implemented; this slice requires no provider-specific prompt shaping.
+- **Provider routing: COMPLETE for current M2 intent.** Capability/policy/availability-driven routing and stable
+  provider selection exist without Core branching on provider ids.
+- **Ollama adapter: COMPLETE; Codex adapter: MISSING.** Ollama implements suggest-only execution and availability;
+  Codex remains an explicitly unavailable `NotImplementedError` stub.
+- **Read-only connector seam: PARTIALLY_COMPLETE.** `ConnectorProvider`, `ConnectorManager`, the connectors package,
+  and composition-root injection exist, but the registered connector list is empty and Jira/Slack/Confluence
+  implementations are MISSING.
+
 ## Deferred
 
 - **Codex** — `CodexCliProvider` not implemented (stub; no deterministic suggest-only mode).
@@ -527,7 +547,7 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   after approval is deferred (no current capability reaches the HIGH/CRITICAL path).
 - **Deferred:** repository-wide indexing, vector/semantic search, Workflow engine,
   agent runtime, connectors (Jira/Slack/Confluence), AI HTTP API, PolicyProvider,
-  `ContextBuilder` ranking/compression, PROJECT/TOOL memory retention.
+  `ContextBuilder` semantic ranking/compression and runtime ranking configuration, PROJECT/TOOL memory retention.
 
 ## Validation
 

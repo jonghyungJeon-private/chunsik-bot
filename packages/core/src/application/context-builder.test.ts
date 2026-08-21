@@ -346,6 +346,120 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
     ).toBe(false);
   });
 
+  it('selects the most recent conversation entry first when the ranking budget is bounded', async () => {
+    const memory = {
+      recentShortTerm: async () => [
+        rec('1', 'user', 'older'),
+        rec('2', 'user', 'newest'),
+      ],
+    } as unknown as MemoryManager;
+
+    const bundle = await new ContextBuilder(memory, {
+      maxCharacters: 6,
+      roleWeights: { user: 0 },
+    }).build(taskWith({ sessionId: 'S1' }));
+
+    expect(bundle.conversationTranscript.map((entry) => entry.content)).toEqual(['newest']);
+  });
+
+  it('uses role relevance to prefer User history over Assistant history', async () => {
+    const memory = {
+      recentShortTerm: async () => [
+        rec('1', 'user', 'user-fact'),
+        rec('2', 'assistant', 'assistant-answer'),
+      ],
+    } as unknown as MemoryManager;
+
+    const bundle = await new ContextBuilder(memory, {
+      maxCharacters: 9,
+      recencyWeight: 0,
+      roleWeights: { user: 10, assistant: 0 },
+    }).build(taskWith({ sessionId: 'S1' }));
+
+    expect(bundle.conversationTranscript.map((entry) => entry.content)).toEqual(['user-fact']);
+  });
+
+  it('truncates the highest-ranked entry to the exact remaining character budget', async () => {
+    const memory = {
+      recentShortTerm: async () => [rec('1', 'user', 'abcdefgh')],
+    } as unknown as MemoryManager;
+
+    const bundle = await new ContextBuilder(memory, { maxCharacters: 5 }).build(
+      taskWith({ sessionId: 'S1' }),
+    );
+
+    expect(bundle.conversationTranscript[0]?.content).toBe('abcd…');
+    expect(
+      bundle.conversationTranscript.reduce((total, entry) => total + entry.content.length, 0),
+    ).toBe(5);
+  });
+
+  it('preserves ADR-0063 provenance and epistemic status through ranked selection', async () => {
+    const memory = {
+      recentShortTerm: async () => [
+        rec('1', 'assistant', 'generated'),
+        rec('2', 'user', 'claimed'),
+      ],
+    } as unknown as MemoryManager;
+
+    const bundle = await new ContextBuilder(memory, { maxCharacters: 16 }).build(
+      taskWith({ sessionId: 'S1' }),
+    );
+
+    expect(bundle.conversationTranscript).toEqual([
+      {
+        turnNumber: 1,
+        role: 'assistant',
+        content: 'generated',
+        provenance: 'ASSISTANT',
+        epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
+      },
+      {
+        turnNumber: 2,
+        role: 'user',
+        content: 'claimed',
+        provenance: 'USER',
+        epistemicStatus: 'USER_CLAIM_OR_INTENT',
+      },
+    ]);
+  });
+
+  it('prioritizes active-project memory within the shared ranking budget', async () => {
+    const memory = {
+      recentShortTerm: async () => [rec('1', 'user', 'conversation')],
+      projectMemory: async () => rec('2', 'project', 'active-project'),
+    } as unknown as MemoryManager;
+
+    const bundle = await new ContextBuilder(memory, { maxCharacters: 14 }).build(
+      taskWith({ sessionId: 'S1', projectId: 'P1' }),
+    );
+
+    expect(bundle.backgroundResources).toEqual([
+      {
+        content: 'active-project',
+        provenance: 'PROJECT_MEMORY',
+        epistemicStatus: 'NON_AUTHORITATIVE_BACKGROUND',
+      },
+    ]);
+    expect(bundle.conversationTranscript).toEqual([]);
+  });
+
+  it('keeps existing flat retrieval unchanged when ranking is not configured', async () => {
+    const memory = {
+      recentShortTerm: async () => [
+        rec('2', 'assistant', 'second'),
+        rec('1', 'user', 'first'),
+      ],
+    } as unknown as MemoryManager;
+
+    const bundle = await new ContextBuilder(memory).build(taskWith({ sessionId: 'S1' }));
+
+    expect(bundle.conversationTranscript.map((entry) => entry.content)).toEqual([
+      'first',
+      'second',
+    ]);
+  });
+
   it('falls back to channel scope when the task has no session', async () => {
     let captured: MemoryScope | undefined;
     const memory = {

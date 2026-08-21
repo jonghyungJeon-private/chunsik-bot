@@ -15,6 +15,24 @@ const MAX_MEMORY_CHARS = 400;
 /** Project memory is longer-form; truncated a bit more generously. */
 const MAX_PROJECT_CHARS = 1200;
 
+type ConversationRole = NonNullable<ConversationTranscriptEntry['role']>;
+
+/** Optional M2 ranking/selection policy. Omitting it preserves ADR-0017 flat retrieval. */
+export interface ContextRankingConfig {
+  /** Maximum combined content characters across transcript and project background. */
+  maxCharacters: number;
+  /** Additive role relevance; higher values are selected first. */
+  roleWeights?: Partial<Record<ConversationRole, number>>;
+  /** Additive score per recency position (oldest = 0). Defaults to 1. */
+  recencyWeight?: number;
+}
+
+interface RankedTranscriptEntry {
+  entry: ConversationTranscriptEntry;
+  chronologicalIndex: number;
+  score: number;
+}
+
 /**
  * Assembles the context for one execution (ADR-0002 / 0017 / 0018):
  *   - recent SHORT_TERM turns for the SAME session (excluding the current
@@ -23,7 +41,10 @@ const MAX_PROJECT_CHARS = 1200;
  * No vector search, no summarization, no long-term recall.
  */
 export class ContextBuilder {
-  constructor(private readonly memory: MemoryManager) {}
+  constructor(
+    private readonly memory: MemoryManager,
+    private readonly ranking?: ContextRankingConfig,
+  ) {}
 
   async build(task: Task, excludeMemoryIds: Id[] = []): Promise<ContextBundle> {
     const scope: MemoryScope = task.sessionId
@@ -39,24 +60,126 @@ export class ContextBuilder {
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
       .slice(-RECENT_LIMIT);
 
-    const bundle: ContextBundle = {
-      taskId: task.id,
-      conversationTranscript: ContextBuilder.toTranscriptEntries(recent),
-      backgroundResources: [],
-    };
+    const transcript = ContextBuilder.toTranscriptEntries(recent);
+    const project = task.projectId ? await this.memory.projectMemory(task.projectId) : undefined;
 
-    if (task.projectId) {
-      const project = await this.memory.projectMemory(task.projectId);
-      if (project) {
-        bundle.backgroundResources.push({
-          content: ContextBuilder.truncate(project.content, MAX_PROJECT_CHARS),
-          provenance: 'PROJECT_MEMORY',
-          epistemicStatus: 'NON_AUTHORITATIVE_BACKGROUND',
-        });
+    if (!this.ranking) {
+      return ContextBuilder.bundle(task.id, transcript, project);
+    }
+
+    const maxCharacters = ContextBuilder.nonNegativeInteger(
+      this.ranking.maxCharacters,
+      'maxCharacters',
+    );
+    let remainingCharacters = maxCharacters;
+    const backgroundResources: ContextBundle['backgroundResources'] = [];
+
+    // projectMemory(projectId) is an exact active-project lookup. Reserve its matching
+    // background first, before any future lower-relevance project candidates.
+    if (project && remainingCharacters > 0) {
+      const content = ContextBuilder.truncateToBudget(
+        ContextBuilder.truncate(project.content, MAX_PROJECT_CHARS),
+        remainingCharacters,
+      );
+      if (content.length > 0) {
+        backgroundResources.push(ContextBuilder.toProjectBackground(content));
+        remainingCharacters -= content.length;
       }
     }
 
-    return bundle;
+    const conversationTranscript = ContextBuilder.selectRankedTranscript(
+      transcript,
+      remainingCharacters,
+      this.ranking,
+    );
+
+    return {
+      taskId: task.id,
+      conversationTranscript,
+      backgroundResources,
+    };
+  }
+
+  private static bundle(
+    taskId: Id,
+    transcript: ConversationTranscriptEntry[],
+    project: MemoryRecord | undefined,
+  ): ContextBundle {
+    return {
+      taskId,
+      conversationTranscript: transcript,
+      backgroundResources: project
+        ? [ContextBuilder.toProjectBackground(ContextBuilder.truncate(project.content, MAX_PROJECT_CHARS))]
+        : [],
+    };
+  }
+
+  private static toProjectBackground(
+    content: string,
+  ): ContextBundle['backgroundResources'][number] {
+    return {
+      content,
+      provenance: 'PROJECT_MEMORY',
+      epistemicStatus: 'NON_AUTHORITATIVE_BACKGROUND',
+    };
+  }
+
+  private static selectRankedTranscript(
+    transcript: ConversationTranscriptEntry[],
+    budget: number,
+    config: ContextRankingConfig,
+  ): ConversationTranscriptEntry[] {
+    const roleWeights: Record<ConversationRole, number> = {
+      user: config.roleWeights?.user ?? 2,
+      assistant: config.roleWeights?.assistant ?? 1,
+      unknown: config.roleWeights?.unknown ?? 0,
+    };
+    const recencyWeight = config.recencyWeight ?? 1;
+    if (!Number.isFinite(recencyWeight) || recencyWeight < 0) {
+      throw new RangeError('recencyWeight must be a finite non-negative number');
+    }
+    for (const [role, weight] of Object.entries(roleWeights)) {
+      if (!Number.isFinite(weight)) {
+        throw new RangeError(`roleWeights.${role} must be finite`);
+      }
+    }
+
+    const ranked: RankedTranscriptEntry[] = transcript
+      .map((entry, chronologicalIndex) => ({
+        entry,
+        chronologicalIndex,
+        score: roleWeights[entry.role ?? 'unknown'] + chronologicalIndex * recencyWeight,
+      }))
+      .sort((a, b) => b.score - a.score || b.chronologicalIndex - a.chronologicalIndex);
+
+    let remaining = budget;
+    const selected: RankedTranscriptEntry[] = [];
+    for (const candidate of ranked) {
+      if (remaining <= 0) break;
+      if (candidate.entry.content.length <= remaining) {
+        selected.push(candidate);
+        remaining -= candidate.entry.content.length;
+        continue;
+      }
+      const content = ContextBuilder.truncateToBudget(candidate.entry.content, remaining);
+      if (content.length > 0) {
+        selected.push({ ...candidate, entry: { ...candidate.entry, content } });
+        remaining -= content.length;
+      }
+    }
+
+    // PromptComposer's transcript contract remains chronological. Ranking determines
+    // relevance-aware selection only; original turn/provenance fields stay untouched.
+    return selected
+      .sort((a, b) => a.chronologicalIndex - b.chronologicalIndex)
+      .map(({ entry }) => entry);
+  }
+
+  private static nonNegativeInteger(value: number, name: string): number {
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new RangeError(`${name} must be a non-negative safe integer`);
+    }
+    return value;
   }
 
   private static toTranscriptEntries(records: MemoryRecord[]): ConversationTranscriptEntry[] {
@@ -114,5 +237,12 @@ export class ContextBuilder {
 
   private static truncate(text: string, max: number): string {
     return text.length > max ? `${text.slice(0, max)}…` : text;
+  }
+
+  private static truncateToBudget(text: string, max: number): string {
+    if (text.length <= max) return text;
+    if (max <= 0) return '';
+    if (max === 1) return '…';
+    return `${text.slice(0, max - 1)}…`;
   }
 }
