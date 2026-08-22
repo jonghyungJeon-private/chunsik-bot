@@ -377,6 +377,7 @@ interface Calls {
   lastRunRequest?: ExecutionRequest;
   workspaceList: number;
   workspaceOpen: number;
+  lastWorkspaceOpenInput?: { id: string; rootPath: string };
   classify: number;
   scopeAnchor: number;
   scopeClear: number;
@@ -778,10 +779,11 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
     },
     workspace: {
       async prepare() { return undefined; },
-      async open() {
+      async open(project) {
         calls.workspaceOpen++;
+        calls.lastWorkspaceOpenInput = project;
         if (opts.workspaceOpenThrows) throw new Error('open failed');
-        return WORKSPACE;
+        return { ...WORKSPACE, projectId: project.id, rootPath: project.rootPath };
       },
       async list(_ref, glob) {
         calls.workspaceList++;
@@ -1139,19 +1141,32 @@ describe('Live Test Execution — runtime', () => {
     expect(result.reply.text).toBe(new ResponseComposer().composeNeedsProject(CTX).text);
   });
 
-  it('workspace open failure → no run + composeWorkspaceUnavailable', async () => {
-    const { deps, calls } = makeDeps({ intent: testIntent, workspaceOpenThrows: true });
+  it('activeProjectId whose registered root no longer exists → no run + composeWorkspaceUnavailable', async () => {
+    const missingProject = projectOf();
+    missingProject.rootPath = '/missing/registered-project';
+    const { deps, calls } = makeDeps({
+      intent: testIntent,
+      project: missingProject,
+      workspaceOpenThrows: true,
+    });
     const result = await new ConversationRuntime(deps).handle(messageOf('테스트 돌려줘'));
+    expect(calls.lastWorkspaceOpenInput).toEqual({ id: missingProject.id, rootPath: missingProject.rootPath });
     expect(calls.run).toBe(0);
     expect(result.status).toBe('FAILED');
     expect(result.reply.text).toBe(new ResponseComposer().composeWorkspaceUnavailable(CTX).text);
   });
 
-  it('active project → orchestrator.run invoked with resolved workspaceRef + fixed command', async () => {
-    const { deps, calls } = makeDeps({ intent: testIntent, runOutcome: outcomeOf(ExecutionOutcomeStatus.COMPLETED, 'cmd-1') });
-    await new ConversationRuntime(deps).handle(messageOf('테스트 돌려줘'));
+  it('valid active project → registered rootPath is resolved and forwarded as the execution cwd source', async () => {
+    const project = { ...projectOf(), rootPath: '/registered/quirkybot-repository' };
+    const { deps, calls } = makeDeps({
+      intent: testIntent,
+      project,
+      runOutcome: outcomeOf(ExecutionOutcomeStatus.COMPLETED, 'cmd-1'),
+    });
+    await new ConversationRuntime(deps).handle(messageOf('pnpm test 실행해줘'));
     expect(calls.run).toBe(1);
-    expect(calls.lastRunRequest?.workspaceRef).toEqual(WORKSPACE);
+    expect(calls.lastWorkspaceOpenInput).toEqual({ id: project.id, rootPath: project.rootPath });
+    expect(calls.lastRunRequest?.workspaceRef?.rootPath).toBe(project.rootPath);
     expect(calls.lastRunRequest?.command).toEqual({ command: 'pnpm', args: ['test'] });
   });
 

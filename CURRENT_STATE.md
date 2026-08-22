@@ -414,6 +414,12 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   pruned; current message excluded from recall; ADR-0017).
 - **Project Registration** — "이 프로젝트 등록해줘: /path" → read-only scan → `Project`
   + PROJECT memory + bound `session.activeProjectId`; idempotent re-registration (ADR-0018).
+- **UAT workspace binding** — command execution derives `cwd` from the `rootPath` of the Project referenced by the
+  current channel/thread Session's `activeProjectId`; runtime bootstrap does not replace that durable binding with
+  its process cwd. Before a UAT command scenario, send `이 프로젝트 등록해줘: <repository-root>` in the same
+  channel/thread and require the registration response to report the intended repository. This idempotent
+  re-registration clears a stale session binding by rebinding it to the Project for that path; do not edit/delete
+  SQLite rows manually. A registered path that no longer exists fails closed as workspace unavailable.
 - **Project Analysis** — gated, read-only analysis of allow-listed project metadata
   files → grounded structural answer, persisted as TOOL memory (ADR-0019).
 - **CAP-001 Workspace (read-only)** — `resolve`/`readFile`/`listFiles`/`diff` on the

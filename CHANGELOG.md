@@ -7,6 +7,15 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Fixed — UAT Workspace Binding Regression Coverage
+
+- Documented that command execution uses the current channel/thread Session's registered active Project rather than
+  the runtime process cwd, and that UAT must idempotently re-register the intended repository in that same context
+  before command scenarios to replace stale disposable-workspace bindings.
+- Added focused coverage that valid active Projects preserve their registered `rootPath` through workspace
+  resolution, missing registered roots fail as workspace unavailable, and the resolved command workspace uses the
+  registered Project path without an absolute-path fallback.
+
 ### Added — M2 Connector Composition-Root Wiring
 
 - Registered the Jira, Slack, and Confluence read-only connector adapters in the composition root at commit
