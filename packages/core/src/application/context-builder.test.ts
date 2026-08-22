@@ -477,6 +477,72 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
     expect(prompt.task).toContain(task.description);
   });
 
+  it('keeps immediate turn continuity when explicit User values saturate the ranking window', async () => {
+    const records = Array.from({ length: 12 }, (_, index) =>
+      rec(
+        String(index + 1),
+        'user',
+        `작업 ${index} 완료했고 예산은 ${1000 + index}원이야`,
+      ),
+    );
+    for (let turn = 1; turn <= 4; turn += 1) {
+      records.push(
+        rec(String(11 + turn * 2), 'assistant', `최근 안내 ${turn}`),
+        rec(
+          String(12 + turn * 2),
+          'user',
+          turn === 4 ? '그러면 다음은 어떻게 하면 좋을까' : `최근 사용자 요청 ${turn}`,
+        ),
+      );
+    }
+    records.push(rec('21', 'user', '현재 요청'));
+
+    const memory = {
+      recentShortTerm: async (_scope: MemoryScope, limit: number) => records.slice(-limit),
+    } as unknown as MemoryManager;
+    const task = taskWith({ sessionId: 'S1', requestText: '현재 요청' });
+    const bundle = await new ContextBuilder(memory, {
+      rankingEnabled: true,
+      compressionEnabled: true,
+      maxTokens: 1024,
+      recencyWeight: 0.4,
+      relevanceWeight: 0.6,
+      compressionConfig: { minimumCharactersPerEntry: 80 },
+    }).build(task, ['21']);
+    const prompt = new PromptComposer().compose(task, bundle);
+
+    expect(bundle.conversationTranscript).toHaveLength(10);
+    expect(bundle.conversationTranscript.at(-1)?.content).toBe(
+      '그러면 다음은 어떻게 하면 좋을까',
+    );
+    expect(bundle.conversationTranscript.some((entry) => entry.role === 'assistant')).toBe(true);
+    expect(prompt.context).toContain(
+      'immediatelyPreviousUserTurn: \\"그러면 다음은 어떻게 하면 좋을까\\"',
+    );
+  });
+
+  it('keeps the legacy ten-entry retrieval window for non-blended ranking', async () => {
+    let requestedLimit: number | undefined;
+    const records = Array.from({ length: 20 }, (_, index) =>
+      rec(String(index + 1), index % 2 === 0 ? 'user' : 'assistant', `turn ${index + 1}`),
+    );
+    const memory = {
+      recentShortTerm: async (_scope: MemoryScope, limit: number) => {
+        requestedLimit = limit;
+        return records.slice(-limit);
+      },
+    } as unknown as MemoryManager;
+
+    const bundle = await new ContextBuilder(memory, {
+      maxCharacters: 1024,
+      recencyWeight: 1,
+    }).build(taskWith({ sessionId: 'S1' }));
+
+    expect(requestedLimit).toBe(10);
+    expect(bundle.conversationTranscript).toHaveLength(10);
+    expect(bundle.conversationTranscript[0]?.content).toBe('turn 11');
+  });
+
   it('defaults the recency side of the blend to one minus relevance weight', async () => {
     const memory = {
       recentShortTerm: async () => [

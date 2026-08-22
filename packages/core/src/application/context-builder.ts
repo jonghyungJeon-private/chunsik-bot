@@ -14,8 +14,8 @@ import { scoreSemanticRelevance } from './semantic-relevance';
 const RECENT_LIMIT = 10;
 /** Ranking considers a wider bounded window, then still emits at most RECENT_LIMIT entries. */
 const RANKING_CANDIDATE_LIMIT = RECENT_LIMIT * 2;
-/** Keeps explicit User-provided identifiers ahead of unrelated conversational filler. */
-const EXPLICIT_USER_VALUE_WEIGHT = 1;
+/** Bounded nudge for explicit User-provided identifiers within the normalized blend. */
+const EXPLICIT_USER_VALUE_WEIGHT = 0.5;
 /** Long memories are simply truncated (no summarization in v1). */
 const MAX_MEMORY_CHARS = 400;
 /** Project memory is longer-form; truncated a bit more generously. */
@@ -65,6 +65,7 @@ interface RankedTranscriptEntry {
   entry: ConversationTranscriptEntry;
   chronologicalIndex: number;
   score: number;
+  continuityPriority: number;
 }
 
 const EXPLICIT_VALUE_PATTERN = /(?:[\p{L}\p{N}]+[-_]\d+|\d{2,})/u;
@@ -101,7 +102,10 @@ export class ContextBuilder {
         };
 
     const budget = this.ranking ? ContextBuilder.resolveBudget(this.ranking) : undefined;
-    const retrievalLimit = budget ? RANKING_CANDIDATE_LIMIT : RECENT_LIMIT;
+    const retrievalLimit =
+      budget && this.ranking?.relevanceWeight !== undefined
+        ? RANKING_CANDIDATE_LIMIT
+        : RECENT_LIMIT;
     const fetched = await this.memory.recentShortTerm(
       scope,
       retrievalLimit + excludeMemoryIds.length,
@@ -198,11 +202,15 @@ export class ContextBuilder {
     }
 
     const newestIndex = Math.max(transcript.length - 1, 0);
+    const newestUserIndex = ContextBuilder.newestRoleIndex(transcript, 'user');
+    const newestAssistantIndex = ContextBuilder.newestRoleIndex(transcript, 'assistant');
     const ranked: RankedTranscriptEntry[] = transcript
       .map((entry, chronologicalIndex) => {
         const roleScore = roleWeights[entry.role ?? 'unknown'];
         const explicitValueScore =
-          entry.role === 'user' && EXPLICIT_VALUE_PATTERN.test(entry.content)
+          scoring.blended &&
+          entry.role === 'user' &&
+          EXPLICIT_VALUE_PATTERN.test(entry.content)
             ? EXPLICIT_USER_VALUE_WEIGHT
             : 0;
         const score =
@@ -213,10 +221,27 @@ export class ContextBuilder {
                 scoring.recencyWeight +
               scoreSemanticRelevance(currentSummary, entry.content) * scoring.relevanceWeight
             : roleScore + chronologicalIndex * scoring.recencyWeight);
-        return { entry, chronologicalIndex, score };
+        const continuityPriority =
+          chronologicalIndex === newestUserIndex
+            ? 2
+            : chronologicalIndex === newestAssistantIndex
+              ? 1
+              : 0;
+        return { entry, chronologicalIndex, score, continuityPriority };
       })
-      .sort((a, b) => b.score - a.score || b.chronologicalIndex - a.chronologicalIndex)
-      .slice(0, RECENT_LIMIT);
+      // The PromptComposer contract requires the newest User turn. Keep it, plus the
+      // newest Assistant reply for conversational continuity, before ranking fills the
+      // bounded remainder. The explicit-value boost remains only a bounded nudge.
+      .sort(
+        (a, b) =>
+          b.continuityPriority - a.continuityPriority ||
+          b.score - a.score ||
+          b.chronologicalIndex - a.chronologicalIndex,
+      )
+      .slice(0, RECENT_LIMIT)
+      // Continuity priority controls admission to the fixed-size output window.
+      // Within that window, the configured score still controls budget allocation.
+      .sort((a, b) => b.score - a.score || b.chronologicalIndex - a.chronologicalIndex);
 
     if (minimumCompressionCharacters !== undefined) {
       return ContextBuilder.compressRankedTranscript(
@@ -248,6 +273,16 @@ export class ContextBuilder {
     return selected
       .sort((a, b) => a.chronologicalIndex - b.chronologicalIndex)
       .map(({ entry }) => entry);
+  }
+
+  private static newestRoleIndex(
+    transcript: ConversationTranscriptEntry[],
+    role: ConversationRole,
+  ): number {
+    for (let index = transcript.length - 1; index >= 0; index -= 1) {
+      if (transcript[index]?.role === role) return index;
+    }
+    return -1;
   }
 
   private static compressRankedTranscript(
