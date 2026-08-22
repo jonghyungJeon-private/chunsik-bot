@@ -6982,7 +6982,7 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
     const result = await new ConversationRuntime(deps).handle(messageOf(requestText));
 
     expect(result.status).toBe('RESPONDED');
-    expect(requestedLimit).toBe(11);
+    expect(requestedLimit).toBe(21);
     expect(providerPrompt).toContain('context ranking details');
     expect(providerPrompt).not.toContain('newest unrelated weather item');
   });

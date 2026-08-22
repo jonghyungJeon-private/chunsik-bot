@@ -1,22 +1,28 @@
 import { describe, expect, it } from 'vitest';
 import { ContextBuilder } from './context-builder';
+import { PromptComposer } from './prompt-composer';
 import { Capability, IntentType, MemoryType, RiskLevel, TaskStatus } from '../domain';
 import type { MemoryRecord, MemoryScope, Task } from '../domain';
 import type { MemoryManager } from './memory-manager';
 
 const taskWith = (
-  opts: { sessionId?: string; projectId?: string; platform?: string } = {},
+  opts: {
+    sessionId?: string;
+    projectId?: string;
+    platform?: string;
+    requestText?: string;
+  } = {},
 ): Task => ({
   id: 't1',
   title: 't',
-  description: 'hello',
+  description: opts.requestText ?? 'hello',
   status: TaskStatus.PENDING,
   intent: {
     type: IntentType.CHAT,
     capability: Capability.GENERAL_CHAT,
     confidence: 1,
     requiresWork: true,
-    summary: 'hello',
+    summary: opts.requestText ?? 'hello',
   },
   riskLevel: RiskLevel.LOW,
   context: {
@@ -426,6 +432,49 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
     expect(bundle.conversationTranscript.map((entry) => entry.content)).toEqual([
       'hello context ranking',
     ]);
+  });
+
+  it('retains an earlier explicit User fact through unrelated turns into the provider prompt', async () => {
+    const fact = '코드 이름은 은하수-731, 선호 색은 보라색, 확인 번호는 4829야.';
+    const records = [rec('1', 'user', fact)];
+    for (let turn = 1; turn <= 5; turn += 1) {
+      records.push(
+        rec(String(turn * 2), 'assistant', `무관한 답변 ${turn}`),
+        rec(String(turn * 2 + 1), 'user', `무관한 질문 ${turn}`),
+      );
+    }
+    records.push(rec('12', 'user', '내가 말한 세 가지 값을 기억해?'));
+
+    let requestedLimit: number | undefined;
+    const memory = {
+      recentShortTerm: async (_scope: MemoryScope, limit: number) => {
+        requestedLimit = limit;
+        return records.slice(-limit);
+      },
+    } as unknown as MemoryManager;
+    const task = taskWith({
+      sessionId: 'S1',
+      requestText: '내가 말한 세 가지 값을 기억해?',
+    });
+    const bundle = await new ContextBuilder(memory, {
+      rankingEnabled: true,
+      compressionEnabled: true,
+      maxTokens: 1024,
+      recencyWeight: 0.4,
+      relevanceWeight: 0.6,
+      compressionConfig: { minimumCharactersPerEntry: 80 },
+    }).build(task, ['12']);
+    const prompt = new PromptComposer().compose(task, bundle);
+
+    expect(requestedLimit).toBe(21);
+    expect(bundle.conversationTranscript).toHaveLength(10);
+    expect(bundle.conversationTranscript.some((entry) => entry.content === fact)).toBe(true);
+    expect(bundle.conversationTranscript.some((entry) => entry.content === task.description)).toBe(
+      false,
+    );
+    expect(prompt.context).toContain(fact);
+    expect(prompt.context).toContain('immediatelyPreviousUserTurn: \\"무관한 질문 5\\"');
+    expect(prompt.task).toContain(task.description);
   });
 
   it('defaults the recency side of the blend to one minus relevance weight', async () => {

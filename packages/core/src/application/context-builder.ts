@@ -12,6 +12,10 @@ import { scoreSemanticRelevance } from './semantic-relevance';
 
 /** Default number of recent turns to include (ADR-0017). */
 const RECENT_LIMIT = 10;
+/** Ranking considers a wider bounded window, then still emits at most RECENT_LIMIT entries. */
+const RANKING_CANDIDATE_LIMIT = RECENT_LIMIT * 2;
+/** Keeps explicit User-provided identifiers ahead of unrelated conversational filler. */
+const EXPLICIT_USER_VALUE_WEIGHT = 1;
 /** Long memories are simply truncated (no summarization in v1). */
 const MAX_MEMORY_CHARS = 400;
 /** Project memory is longer-form; truncated a bit more generously. */
@@ -63,6 +67,8 @@ interface RankedTranscriptEntry {
   score: number;
 }
 
+const EXPLICIT_VALUE_PATTERN = /(?:[\p{L}\p{N}]+[-_]\d+|\d{2,})/u;
+
 interface ContextBudget {
   limit: number;
   measure: (content: string) => number;
@@ -94,16 +100,20 @@ export class ContextBuilder {
           ...(task.context.threadId ? { threadId: task.context.threadId } : {}),
         };
 
-    const fetched = await this.memory.recentShortTerm(scope, RECENT_LIMIT + excludeMemoryIds.length);
+    const budget = this.ranking ? ContextBuilder.resolveBudget(this.ranking) : undefined;
+    const retrievalLimit = budget ? RANKING_CANDIDATE_LIMIT : RECENT_LIMIT;
+    const fetched = await this.memory.recentShortTerm(
+      scope,
+      retrievalLimit + excludeMemoryIds.length,
+    );
     const recent = fetched
       .filter((r) => !excludeMemoryIds.includes(r.id))
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-      .slice(-RECENT_LIMIT);
+      .slice(-retrievalLimit);
 
     const transcript = ContextBuilder.toTranscriptEntries(recent);
     const project = task.projectId ? await this.memory.projectMemory(task.projectId) : undefined;
 
-    const budget = this.ranking ? ContextBuilder.resolveBudget(this.ranking) : undefined;
     const minimumCompressionCharacters = this.ranking
       ? ContextBuilder.resolveMinimumCompressionCharacters(this.ranking)
       : undefined;
@@ -191,14 +201,22 @@ export class ContextBuilder {
     const ranked: RankedTranscriptEntry[] = transcript
       .map((entry, chronologicalIndex) => {
         const roleScore = roleWeights[entry.role ?? 'unknown'];
-        const score = scoring.blended
-          ? roleScore +
-            (newestIndex === 0 ? 1 : chronologicalIndex / newestIndex) * scoring.recencyWeight +
-            scoreSemanticRelevance(currentSummary, entry.content) * scoring.relevanceWeight
-          : roleScore + chronologicalIndex * scoring.recencyWeight;
+        const explicitValueScore =
+          entry.role === 'user' && EXPLICIT_VALUE_PATTERN.test(entry.content)
+            ? EXPLICIT_USER_VALUE_WEIGHT
+            : 0;
+        const score =
+          explicitValueScore +
+          (scoring.blended
+            ? roleScore +
+              (newestIndex === 0 ? 1 : chronologicalIndex / newestIndex) *
+                scoring.recencyWeight +
+              scoreSemanticRelevance(currentSummary, entry.content) * scoring.relevanceWeight
+            : roleScore + chronologicalIndex * scoring.recencyWeight);
         return { entry, chronologicalIndex, score };
       })
-      .sort((a, b) => b.score - a.score || b.chronologicalIndex - a.chronologicalIndex);
+      .sort((a, b) => b.score - a.score || b.chronologicalIndex - a.chronologicalIndex)
+      .slice(0, RECENT_LIMIT);
 
     if (minimumCompressionCharacters !== undefined) {
       return ContextBuilder.compressRankedTranscript(
