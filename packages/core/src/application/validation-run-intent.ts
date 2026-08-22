@@ -8,6 +8,14 @@ export interface ExplicitValidationKinds {
 const TEST_NOUN = /(테스트|\btests?\b)/i;
 const TYPECHECK_NOUN = /(typecheck|타입\s*체크|type\s*check)/i;
 
+/**
+ * Obvious command syntax outside the fixed validation allow-list. This is intentionally a small denylist,
+ * not a shell parser: validation execution always derives its argv from the detected kind, while this guard
+ * prevents a validation-shaped message carrying an unrelated fragment from reaching any execution route.
+ */
+const VALIDATION_DENY_FRAGMENT =
+  /(\brm\s+-rf?\b|\bgit\b|\bcurl\b|\bcat\b|\bgrep\b|\b(?:npm|pnpm)\s+install\b|\bpnpm\s+build\b|\bnode\s+--?e(?:val)?\b|;|&&|\|\||\||>)/i;
+
 const POLITE_REQUEST_TAIL =
   String.raw`(?:줘|주세요|주십시오|봐(?:\s*주세요)?|보세요|줄래(?:요)?|주실래요?|주시겠어요|줄\s*수\s*있(?:어(?:요)?|나요)|주실\s*수\s*있(?:나요|어요|습니까))`;
 
@@ -61,4 +69,23 @@ export function detectExplicitValidationKinds(text: string): ExplicitValidationK
     hasCoLocatedUnnegated(text, TYPECHECK_NOUN, DIRECT_TYPECHECK_REQUEST, INFORMATION_QUESTION);
 
   return { test, typecheck };
+}
+
+/**
+ * True only when a denied fragment shares a line with an explicit validation request. Checking the text on
+ * either side of the first denied token catches both `typecheck; rm ...` and `rm ...; typecheck`, while keeping
+ * code-preview payloads that merely mention `test` and `git` on separate lines out of the validation route.
+ */
+export function isDeniedValidationRequest(text: string): boolean {
+  return text.split(/\r?\n/).some((line) => {
+    const denied = VALIDATION_DENY_FRAGMENT.exec(line);
+    if (!denied || denied.index === undefined) return false;
+    const before = line.slice(0, denied.index);
+    const after = line.slice(denied.index + denied[0].length);
+    const fragments = [line, before, after];
+    return fragments.some((fragment) => {
+      const kinds = detectExplicitValidationKinds(fragment);
+      return kinds.test || kinds.typecheck;
+    });
+  });
 }

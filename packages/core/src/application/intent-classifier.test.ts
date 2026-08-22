@@ -88,6 +88,19 @@ describe('IntentClassifier.classify (v1 deterministic)', () => {
     }
   });
 
+  it('never routes validation requests carrying denied fragments to RUN_TESTS', async () => {
+    for (const text of [
+      'typecheck 해주세요 ; rm -rf /',
+      'rm -rf / ; typecheck 해주세요',
+      'git status && run tests',
+      'run tests | cat /etc/passwd',
+    ]) {
+      const intent = await classifier.classify(msg(text));
+      expect(intent.type, text).not.toBe(IntentType.RUN_TESTS);
+      expect(intent.capability, text).not.toBe(Capability.TEST_EXECUTION);
+    }
+  });
+
   // Live Code Change Planning (ADR-0035) — deterministic code-change intent recognition.
   it('routes a bug-fix request to IMPLEMENT_CODE with raw.kind "fix"', async () => {
     const intent = await classifier.classify(msg('이 버그 고쳐줘'));

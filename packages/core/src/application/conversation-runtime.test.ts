@@ -3126,6 +3126,19 @@ describe('Post-Apply Validation Command — runtime (Sprint 2v, ADR-0043)', () =
     }
   });
 
+  it('NO WORKSPACE_APPLIED anchor + denied validation fragment refuses before classifier/orchestrator', async () => {
+    for (const text of ['typecheck 해주세요 ; rm -rf /', 'rm -rf / ; typecheck 해주세요']) {
+      const { deps, calls } = makeDeps({ applyAnchor: null, intent: testIntent });
+      const result = await new ConversationRuntime(deps).handle(messageOf(text));
+      expect(result.status, text).toBe('RESPONDED');
+      expect(result.reply.text, text).toBe(unsupportedText);
+      expect(calls.classify, text).toBe(0);
+      expect(calls.run, text).toBe(0);
+      expect(calls.commandRun, text).toBe(0);
+      expect(calls.workspaceOpen, text).toBe(0);
+    }
+  });
+
   // ── Command surface / denylist (CA 16–20) ───────────────────────────────────────────────────
   it('only pnpm test / pnpm typecheck ever reach command.run (CA 16)', async () => {
     for (const [text, args] of [['테스트 돌려줘', ['test']], ['타입체크 해줘', ['typecheck']]] as const) {

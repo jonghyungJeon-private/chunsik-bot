@@ -1,6 +1,6 @@
 import { describeAiFailure } from './ai-failure';
 import { hasCoLocatedUnnegated, unnegatedMatch } from './intent-negation';
-import { detectExplicitValidationKinds } from './validation-run-intent';
+import { detectExplicitValidationKinds, isDeniedValidationRequest } from './validation-run-intent';
 import { type MutationSafety, safeRequestId, toSafeError } from './safe-error';
 import { RepositoryHostingBlockedError } from './repository-hosting-manager';
 import { RemoteBranchCleanupBlockedError, RemoteBranchCleanupUnverifiedError } from '../domain';
@@ -749,14 +749,6 @@ const FINAL_APPLY_WORDS = [
   'apply to workspace',
 ];
 
-/** A small deterministic denylist of obvious command intent outside the validation allow-list (Sprint 2v,
- *  ADR-0043, CA Required Change #2). NOT a shell parser — just enough to refuse a validation phrase that
- *  also carries a destructive/unrelated command fragment or a shell operator, so it never reaches a run.
- *  Matches: `rm -rf`, git, curl, cat, grep, npm/pnpm install, pnpm build, node -e/--eval, and the shell
- *  operators `;` `&&` `||` `|` `>`. */
-const VALIDATION_DENY_FRAGMENT =
-  /(\brm\s+-rf?\b|\bgit\b|\bcurl\b|\bcat\b|\bgrep\b|\b(?:npm|pnpm)\s+install\b|\bpnpm\s+build\b|\bnode\s+--?e(?:val)?\b|;|&&|\|\||\||>)/i;
-
 /** Mutating git phrases (Sprint 2w, ADR-0044, CA Required Change #5/#6) — must NEVER route to a read-only
  *  preview; checked FIRST (precedence over diff/status). Korean "커밋" counts as a command only with an
  *  action verb, so "커밋 전에 변경사항 요약해줘" is a STATUS phrase; English `commit` stays conservative (any
@@ -1291,7 +1283,7 @@ export class ConversationRuntime {
     // (CA Round 1 #2) Any validation signal combined with an out-of-allow-list fragment is refused before
     // request-shape gating. A denied suffix may prevent an end-anchored request matcher from detecting a kind,
     // but it must never let the message fall through to or trigger command execution.
-    if (VALIDATION_DENY_FRAGMENT.test(t) && hasValidationSignal) return 'unsupported';
+    if (isDeniedValidationRequest(t) && hasValidationSignal) return 'unsupported';
     // Gate first: with no validation token this is NOT our branch — a pure "git status 해줘" falls through
     // untouched (CA Round 1 #7), never a validation "unsupported" reply.
     if (!wantsTypecheck && !wantsTest && !wantsValidate) return null;
@@ -1614,6 +1606,17 @@ export class ConversationRuntime {
     // remote-cleanup/execute/status/deploy phrase while pending re-prompts (no decide, no delete, no auto-approve).
     if (applyAnchor?.status === 'REMOTE_BRANCH_CLEANUP_PENDING') {
       return this.handleRemoteBranchCleanupDecisionTurn(message, session, actor, applyAnchor);
+    }
+    // ADR-0043 safety gate: deny-fragment refusal is anchor-independent and precedes every route that can
+    // execute a derived validation command. Without this guard, a missing/stale WORKSPACE_APPLIED anchor can
+    // fall through to IntentClassifier -> RUN_TESTS -> ExecutionOrchestrator. Keep pending approval decisions
+    // above this check because those turns cannot enter validation execution and must retain decision semantics.
+    if (ConversationRuntime.interpretPostApplyValidationIntent(message.text) === 'unsupported') {
+      return this.respondComposed(
+        message,
+        session,
+        this.deps.composer.composePostApplyValidationUnsupported(message.context),
+      );
     }
     // (Sprint 2y, ADR-0046) Approved git commit EXECUTION — GATED to commit-relevant states only (CA #4).
     // Checked before the 2x commit-intent so "이제 실제 커밋해줘" executes rather than re-printing

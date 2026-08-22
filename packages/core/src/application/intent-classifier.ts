@@ -2,7 +2,7 @@ import { Capability, IntentType } from '../domain';
 import type { InboundMessage, Intent } from '../domain';
 import type { CapabilityRouter } from './capability-router';
 import { hasCoLocatedUnnegated } from './intent-negation';
-import { detectExplicitValidationKinds } from './validation-run-intent';
+import { detectExplicitValidationKinds, isDeniedValidationRequest } from './validation-run-intent';
 
 /**
  * Classifies a natural-language message into an Intent. v1 is MINIMAL and
@@ -104,6 +104,9 @@ export class IntentClassifier {
     // signals are required in one un-negated clause; negation never creates a test-run intent (ADR-0033).
     // A validation noun is only a topic until the same un-negated clause carries request-shaped action
     // semantics. The shared detector also preserves exact allow-listed command strings such as `pnpm test`.
+    // Fail closed before recognizing a kind. This protects the general RUN_TESTS path independently of the
+    // WORKSPACE_APPLIED direct-validation path, including denied fragments placed before a valid request tail.
+    if (isDeniedValidationRequest(text)) return undefined;
     const kinds = detectExplicitValidationKinds(text);
     if (kinds.typecheck) return 'typecheck';
     if (kinds.test) return 'test';
