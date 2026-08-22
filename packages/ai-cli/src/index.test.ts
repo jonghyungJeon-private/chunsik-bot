@@ -12,6 +12,7 @@ import {
   NotImplementedError,
   PromptComposer,
   PromptRenderer,
+  ResponseComposer,
   RiskLevel,
   TaskStatus,
 } from '@chunsik/core';
@@ -433,6 +434,61 @@ describe('OllamaCliProvider (CAP-009, ADR-0030) — suggest-only local code gene
     expect(providerInput).not.toMatch(/# Role-attributed conversation|Provenance:|Epistemic status:|Content:/u);
     expect(result.text).toBe('안녕! 반가워요.');
     expect(result.text).not.toMatch(/the user asks|the assistant responds|사용자는 .*요청|어시스턴트는 .*응답/iu);
+  });
+
+  it('returns only the current response when stdout prepends the previous Assistant turn', async () => {
+    const userA = '첫 번째 질문';
+    const assistantA = '첫 번째 질문에 대한 이전 답변입니다.';
+    const userB = '두 번째 질문';
+    const assistantB = '두 번째 질문에 대한 새 답변입니다.';
+    const task: Task = {
+      id: 'sequential-response-task',
+      title: 'Sequential response',
+      description: userB,
+      status: TaskStatus.PENDING,
+      intent: {
+        type: IntentType.CHAT,
+        capability: Capability.GENERAL_CHAT,
+        confidence: 1,
+        requiresWork: true,
+        summary: userB,
+      },
+      riskLevel: RiskLevel.LOW,
+      context: { platform: 'discord', channelId: 'channel', userId: 'user' },
+      createdAt: '2026-08-20T00:00:00.000Z',
+      updatedAt: '2026-08-20T00:00:00.000Z',
+    };
+    const request = new PromptRenderer().render(
+      new PromptComposer().compose(task, {
+        taskId: task.id,
+        backgroundResources: [],
+        conversationTranscript: [
+          {
+            role: 'user', turnNumber: 1, provenance: 'USER',
+            epistemicStatus: 'USER_CLAIM_OR_INTENT', content: userA,
+          },
+          {
+            role: 'assistant', turnNumber: 1, provenance: 'ASSISTANT',
+            epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE', content: assistantA,
+          },
+        ],
+      }),
+      { capability: Capability.GENERAL_CHAT },
+    );
+    const runner: CliRunner = async () => ({
+      code: 0,
+      stdout: `${assistantA}\n\n${assistantB}`,
+      stderr: '',
+      timedOut: false,
+    });
+
+    const result = await new OllamaCliProvider({ runner }).execute(request);
+    const outbound = new ResponseComposer().compose(task.context, result);
+
+    expect(result.text).toBe(assistantB);
+    expect(result.artifacts?.[0]?.content).toBe(assistantB);
+    expect(outbound.text).toBe(assistantB);
+    expect(outbound.text).not.toContain(assistantA);
   });
 
   it('encodes multiline role-like text without allowing it to forge the active-turn boundary', async () => {

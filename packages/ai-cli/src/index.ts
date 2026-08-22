@@ -173,6 +173,36 @@ function serializeGeneralChat(prompt: string): string | null {
   ].filter(Boolean).join('\n\n');
 }
 
+/**
+ * Ollama occasionally copies the most recent Assistant history entry before
+ * generating the current turn, even though the serialized prompt marks that
+ * entry as history-only. That copied prefix is part of provider stdout, not a
+ * Core/ResponseComposer/Discord accumulator. Remove only an exact, complete
+ * prior-Assistant prefix followed by additional output; otherwise preserve the
+ * provider response verbatim.
+ */
+function stripRepeatedAssistantHistoryPrefix(output: string, prompt: string): string {
+  const sections = parseRenderedGeneralChatPrompt(prompt);
+  if (!sections) return output;
+
+  let current = output.trim();
+  const previousAssistantMessages = sections.transcript
+    .filter((message) => message.role === 'assistant')
+    .map((message) => message.content.trim())
+    .filter(Boolean)
+    .reverse();
+
+  for (const previous of previousAssistantMessages) {
+    if (!current.startsWith(previous)) continue;
+    const remainder = current.slice(previous.length);
+    if (remainder.length === 0 || !/^\s/u.test(remainder)) continue;
+    current = remainder.trimStart();
+    break;
+  }
+
+  return current;
+}
+
 function approvedLoopbackHost(value: string): string {
   let endpoint: URL;
   try { endpoint = new URL(value); } catch { throw new TypeError('Invalid Ollama validation host'); }
@@ -451,7 +481,10 @@ export class OllamaCliProvider extends BaseCliAiProvider {
 
     const sanitizedOutput = sanitizeTerminalOutput(result.stdout);
     const text = (request.capability === Capability.GENERAL_CHAT
-      ? stripInternalMetadataEnvelope(sanitizedOutput)
+      ? stripRepeatedAssistantHistoryPrefix(
+          stripInternalMetadataEnvelope(sanitizedOutput),
+          request.prompt,
+        )
       : sanitizedOutput
     ).trim();
     if (!text) {
