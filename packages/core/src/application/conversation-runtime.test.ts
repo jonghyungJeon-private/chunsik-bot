@@ -6987,7 +6987,7 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
     expect(providerPrompt).not.toContain('newest unrelated weather item');
   });
 
-  it('keeps persisted history separate from the current provider request after runtime reconstruction', async () => {
+  it('keeps USER_A as history and makes post-restart USER_B the only active provider request', async () => {
     const { storage } = makeTaskStorage();
     const { deps: base } = makeDeps({
       intent: intentOf(Capability.GENERAL_CHAT, IntentType.CHAT, true),
@@ -7039,7 +7039,11 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
             async isAvailable() { return true; },
             async execute(request) {
               providerPrompts.push(request.prompt);
-              return { text: '확인했어요.', artifacts: [] };
+              const currentTask = request.prompt.slice(request.prompt.indexOf('# Task'));
+              return {
+                text: currentTask.includes('안녕 ? 뭐하고 살아 ?') ? 'USER_B에 대한 답변' : 'ASSISTANT_A',
+                artifacts: [],
+              };
             },
           };
         },
@@ -7051,7 +7055,7 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
     // Simulate an application restart: runtime-local state is discarded while
     // the session/memory collaborators retain persisted conversation history.
     const resumedRuntime = new ConversationRuntime(deps);
-    await resumedRuntime.handle(messageOf('안녕 ? 뭐하고 살아 ?'));
+    const resumedResult = await resumedRuntime.handle(messageOf('안녕 ? 뭐하고 살아 ?'));
 
     expect(builtTranscripts[0]).toEqual([]);
     expect(builtTranscripts[1]).toContain('user:내가 방금 뭐라했어 ?');
@@ -7078,6 +7082,110 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
     expect(currentTask).toContain('--- Current user message ---');
     expect(currentTask).toContain('안녕 ? 뭐하고 살아 ?');
     expect(currentTask).not.toContain('내가 방금 뭐라했어 ?');
+    expect(resumedResult.reply.text).toBe('USER_B에 대한 답변');
+    expect(persisted.map(({ role, content }) => `${role}:${content}`)).toEqual([
+      'user:내가 방금 뭐라했어 ?',
+      'assistant:ASSISTANT_A',
+      'user:안녕 ? 뭐하고 살아 ?',
+      'assistant:USER_B에 대한 답변',
+    ]);
+  });
+
+  it('keeps A/B as history and makes post-restart USER_C the only active provider request', async () => {
+    const { storage } = makeTaskStorage();
+    const { deps: base } = makeDeps({
+      intent: intentOf(Capability.GENERAL_CHAT, IntentType.CHAT, true),
+    });
+    const persisted: Array<{ id: string; role: 'user' | 'assistant'; content: string }> = [];
+    const providerPrompts: string[] = [];
+    let nextMemoryId = 0;
+    const deps: ConversationRuntimeDeps = {
+      ...base,
+      tasks: new TaskManager(storage),
+      memory: {
+        async recordShortTerm(message) {
+          const record = { id: `user-${nextMemoryId++}`, role: 'user' as const, content: message.text };
+          persisted.push(record);
+          return record;
+        },
+        async recordAssistant(text) {
+          persisted.push({ id: `assistant-${nextMemoryId++}`, role: 'assistant', content: text });
+          return undefined;
+        },
+        async recordToolMemory() { return undefined; },
+      },
+      contextBuilder: {
+        async build(task, excludedIds) {
+          const transcript = persisted.filter((record) => !excludedIds.includes(record.id));
+          return {
+            taskId: task.id,
+            conversationTranscript: transcript.map((record) => ({
+              content: record.content,
+              provenance: record.role === 'user' ? 'USER' as const : 'ASSISTANT' as const,
+              epistemicStatus:
+                record.role === 'user'
+                  ? 'USER_CLAIM_OR_INTENT' as const
+                  : 'ASSISTANT_NON_AUTHORITATIVE' as const,
+            })),
+            backgroundResources: [],
+          };
+        },
+      },
+      promptComposer: new PromptComposer(),
+      promptRenderer: new PromptRenderer(),
+      router: {
+        async select() {
+          return {
+            id: 'multi-history-test-provider',
+            capabilities: [{ capability: Capability.GENERAL_CHAT, priority: 1 }],
+            async isAvailable() { return true; },
+            async execute(request) {
+              providerPrompts.push(request.prompt);
+              const currentTask = request.prompt.slice(request.prompt.indexOf('# Task'));
+              const text = currentTask.includes('"content":"USER_C"')
+                ? 'ANSWER_C'
+                : currentTask.includes('"content":"USER_B"')
+                  ? 'ASSISTANT_B'
+                  : 'ASSISTANT_A';
+              return { text, artifacts: [] };
+            },
+          };
+        },
+      },
+    };
+
+    const firstRuntime = new ConversationRuntime(deps);
+    await firstRuntime.handle(messageOf('USER_A'));
+    await firstRuntime.handle(messageOf('USER_B'));
+
+    const resumedRuntime = new ConversationRuntime(deps);
+    const result = await resumedRuntime.handle(messageOf('USER_C'));
+
+    const resumedPrompt = providerPrompts[2] ?? '';
+    const transcriptStart = resumedPrompt.indexOf('3. Conversation transcript');
+    const authorityBoundaryStart = resumedPrompt.indexOf(
+      '4. Current-turn authority decision boundary',
+    );
+    const transcriptBody = resumedPrompt.slice(transcriptStart, authorityBoundaryStart);
+    const currentTask = resumedPrompt.slice(resumedPrompt.indexOf('# Task'));
+    expect(transcriptBody).toContain('USER_A');
+    expect(transcriptBody).toContain('ASSISTANT_A');
+    expect(transcriptBody).toContain('USER_B');
+    expect(transcriptBody).toContain('ASSISTANT_B');
+    expect(transcriptBody).not.toContain('"content":"USER_C"');
+    expect(currentTask).toContain('"content":"USER_C"');
+    expect(currentTask).not.toContain('USER_A');
+    expect(currentTask).not.toContain('USER_B');
+    expect(resumedPrompt).toContain('immediatelyPreviousUserTurn: \\"USER_B\\"');
+    expect(result.reply.text).toBe('ANSWER_C');
+    expect(persisted.map(({ role, content }) => `${role}:${content}`)).toEqual([
+      'user:USER_A',
+      'assistant:ASSISTANT_A',
+      'user:USER_B',
+      'assistant:ASSISTANT_B',
+      'user:USER_C',
+      'assistant:ANSWER_C',
+    ]);
   });
 
   it('preserves the generic conversation platform from inbound context through task creation into prompt composition', async () => {

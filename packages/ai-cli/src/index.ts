@@ -163,13 +163,13 @@ function serializeGeneralChat(prompt: string): string | null {
     sections.transcript.length === 0
       ? ''
       : [
-          'Previous conversation (continue it naturally; do not analyze or reproduce it):',
+          'Previous conversation (history only; every earlier User request has already been handled):',
           ...sections.transcript.map(renderPreviousConversationMessage),
           'End previous conversation.',
         ].join('\n'),
-    'Continue the conversation by answering the final User message directly.',
+    'The next line is the only current active request. Answer it directly; never answer an earlier User request from history.',
     `User (current active turn): ${JSON.stringify(sections.currentUserMessage.content)}`,
-    'Assistant response:',
+    'Assistant response to the current active turn only:',
   ].filter(Boolean).join('\n\n');
 }
 
