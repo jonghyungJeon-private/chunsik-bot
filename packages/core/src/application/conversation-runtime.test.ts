@@ -7,6 +7,7 @@ import {
   CodeGenerationStatus,
   CommandExecutionStatus,
   IntentType,
+  MemoryType,
   PatchStatus,
   RiskLevel,
   SessionStatus,
@@ -33,6 +34,7 @@ import type {
   RepositoryInfo,
   InboundMessage,
   Intent,
+  MemoryRecord,
   PatchGenerationInput,
   PatchSet,
   PromptSpec,
@@ -62,6 +64,8 @@ import { PromptRenderer } from './prompt-renderer';
 import { ResponseComposer } from './response-composer';
 import type { TestResultDetail } from './response-composer';
 import { IntentClassifier } from './intent-classifier';
+import { ContextBuilder } from './context-builder';
+import type { MemoryManager } from './memory-manager';
 import type { CapabilityRouter } from './capability-router';
 import { buildCanonicalDiff, splitCanonicalDiff } from './preview-delivery';
 import { IntentResolver } from './intent-resolver';
@@ -6907,6 +6911,82 @@ function routedResultOf(status: ProviderGatewayTerminalStatus): RuntimeProviderR
 }
 
 describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => {
+  it('uses configured ContextBuilder ranking and budgeting during a GENERAL_CHAT turn', async () => {
+    const { storage } = makeTaskStorage();
+    const requestText = 'explain context ranking details';
+    const intent = {
+      ...intentOf(Capability.GENERAL_CHAT, IntentType.CHAT, true),
+      summary: requestText,
+    };
+    const { deps: base } = makeDeps({
+      intent,
+      session: sessionOf({ activeProjectId: undefined }),
+    });
+    const records: MemoryRecord[] = [
+      {
+        id: 'history-1',
+        type: MemoryType.SHORT_TERM,
+        scope: { sessionId: 'sess-1' },
+        content: 'context ranking details from earlier',
+        metadata: { role: 'user' },
+        createdAt: '2026-07-01T00:00:01.000Z',
+        updatedAt: '2026-07-01T00:00:01.000Z',
+      },
+      {
+        id: 'history-2',
+        type: MemoryType.SHORT_TERM,
+        scope: { sessionId: 'sess-1' },
+        content: 'newest unrelated weather item',
+        metadata: { role: 'user' },
+        createdAt: '2026-07-01T00:00:02.000Z',
+        updatedAt: '2026-07-01T00:00:02.000Z',
+      },
+    ];
+    let requestedLimit: number | undefined;
+    let providerPrompt = '';
+    const contextMemory = {
+      async recentShortTerm(_scope, limit) {
+        requestedLimit = limit;
+        return records;
+      },
+    } as unknown as MemoryManager;
+    const deps: ConversationRuntimeDeps = {
+      ...base,
+      tasks: new TaskManager(storage),
+      contextBuilder: new ContextBuilder(contextMemory, {
+        rankingEnabled: true,
+        compressionEnabled: true,
+        maxTokens: 6,
+        roleWeights: { user: 0 },
+        recencyWeight: 0.25,
+        relevanceWeight: 0.75,
+        compressionConfig: { minimumCharactersPerEntry: 4 },
+      }),
+      promptComposer: new PromptComposer(),
+      promptRenderer: new PromptRenderer(),
+      router: {
+        async select() {
+          return {
+            id: 'context-ranking-provider',
+            capabilities: [{ capability: Capability.GENERAL_CHAT, priority: 1 }],
+            async isAvailable() { return true; },
+            async execute(request) {
+              providerPrompt = request.prompt;
+              return { text: 'ranked response', artifacts: [] };
+            },
+          };
+        },
+      },
+    };
+
+    const result = await new ConversationRuntime(deps).handle(messageOf(requestText));
+
+    expect(result.status).toBe('RESPONDED');
+    expect(requestedLimit).toBe(11);
+    expect(providerPrompt).toContain('context ranking details');
+    expect(providerPrompt).not.toContain('newest unrelated weather item');
+  });
+
   it('keeps persisted history separate from the current provider request after runtime reconstruction', async () => {
     const { storage } = makeTaskStorage();
     const { deps: base } = makeDeps({
