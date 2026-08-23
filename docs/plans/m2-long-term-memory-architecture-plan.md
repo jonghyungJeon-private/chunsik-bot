@@ -80,6 +80,11 @@ may not establish that entity's current state, choose among conflicting canonica
 serve as a substitute for an exact repository lookup. Canonical Structured State is explicitly not replaced by
 vector similarity retrieval.
 
+The following are Canonical Structured State examples and are **NEVER vector-retrievable**: `activeProjectId`,
+approvals, milestone/task state, ratified ADR state, execution state, and `immediatelyPreviousUserTurn`. Each MUST
+remain deterministic and MUST be read through its existing exact, typed ownership path; none MUST be served through
+vector similarity retrieval, even when a durable memory refers to the same entity or event.
+
 ## MEMORY_WRITE_POLICY
 
 ### Ordinary transcript versus durable memory
@@ -87,6 +92,11 @@ vector similarity retrieval.
 The existing ADR-0017 flow continues to write inbound and outbound turns as `SHORT_TERM`. Ordinary greetings,
 repetition, transient status, speculative Assistant text, provider output, and full tool output do not become
 durable memory merely because they occurred or were persisted as transcript.
+
+The default promotion model is **NOT embed-every-message**. Ordinary transcript remains ordinary transcript unless
+it meets a defined promotion criterion. The only promotion trigger categories are an explicit User instruction,
+system-detected importance under a ratified deterministic policy, or periodic consolidation under a ratified,
+bounded policy. A trigger creates a candidate only; it does not bypass the validation and authority rules below.
 
 A durable-memory candidate may be created only from one of these bounded triggers:
 
@@ -217,6 +227,19 @@ supersession within the same scope, then narrower scope and recency. Similarity 
 
 ## STORAGE_BOUNDARY
 
+Persistence ownership is separated into three non-overlapping responsibilities: structured memory metadata,
+embeddings/vector representation, and canonical state persistence.
+
+1. **Structured memory metadata** is owned by the StorageProvider memory repository (`MemoryRepository`), including
+   durable memory content, provenance, scope, lifecycle, and retention state.
+2. **Embeddings/vector representation** is owned by the replaceable `VectorProvider` adapter as a derived,
+   rebuildable index that maps results back to memory ids.
+3. **Canonical state persistence** remains owned by the existing `Session`, `Task`, `Project`, and `Approval`
+   repositories (and the other existing typed aggregate repositories).
+
+The vector store NEVER owns unrelated canonical state. This separation does not authorize a new persistence
+technology or move an existing aggregate across repository boundaries.
+
 `MemoryRepository` remains the durable source of truth for memory content, provenance, scope, lifecycle, and
 retention state. Infrastructure-specific query optimization can be added through narrow Core ports or specialized
 repository methods only after ratification; Core must not express SQL, SQLite extensions, pgvector operators,
@@ -285,6 +308,12 @@ deduplication. `ContextBuilder` remains the single owner of final per-run contex
 budgeting. It allocates explicit sub-budgets among current conversation, exact active-project background, and
 durable recall; it must preserve the newest continuity turns required by the existing contract. Durable recall may
 not starve current Task facts, required recent turns, or exact active-project background.
+
+The explicit integration ownership chain is: `MemoryRetriever` retrieves candidates -> those candidates merge with
+existing `ContextBuilder`-owned entries -> `ContextBuilder` performs unified ranking -> dedupe -> token budgeting ->
+provider-facing context. `ContextBuilder` remains the single final-budget owner across both existing entries and
+durable recall; `MemoryRetriever`, `PromptComposer`, and provider adapters may not establish a competing final
+budget.
 
 `ContextBundle` will need a ratified structured representation for recalled episodic/semantic entries because its
 current `backgroundResources` type admits only `PROJECT_MEMORY`. Extending that public Core domain contract is an
