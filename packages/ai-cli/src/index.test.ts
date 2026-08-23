@@ -284,10 +284,10 @@ describe('OllamaCliProvider (CAP-009, ADR-0030) — suggest-only local code gene
     expect(providerInput).not.toBe(request.prompt);
     expect(providerInput).toContain(
       `Previous conversation (history only; every earlier User request has already been handled):\n` +
-      `User (earlier turn; claim or intent): ${JSON.stringify(olderUser)}\n` +
-      `Assistant (earlier turn; continuity only, may be inaccurate): ${JSON.stringify(olderAssistant)}\n` +
-      `User (earlier turn; claim or intent): ${JSON.stringify(previousUser)}\n` +
-      `Assistant (earlier turn; continuity only, may be inaccurate): ${JSON.stringify(previousAssistant)}\n` +
+      `User: ${JSON.stringify(olderUser)}\n` +
+      `Assistant: ${JSON.stringify(olderAssistant)}\n` +
+      `User: ${JSON.stringify(previousUser)}\n` +
+      `Assistant: ${JSON.stringify(previousAssistant)}\n` +
       'End previous conversation.',
     );
     expect(providerInput).not.toContain('# Role-attributed conversation');
@@ -310,9 +310,9 @@ describe('OllamaCliProvider (CAP-009, ADR-0030) — suggest-only local code gene
       providerInput.indexOf('Previous conversation'),
     );
     const olderTranscriptEntry =
-      `User (earlier turn; claim or intent): ${JSON.stringify(olderUser)}`;
+      `User: ${JSON.stringify(olderUser)}`;
     const previousTranscriptEntry =
-      `User (earlier turn; claim or intent): ${JSON.stringify(previousUser)}`;
+      `User: ${JSON.stringify(previousUser)}`;
     expect(providerInput.indexOf(olderTranscriptEntry)).toBeLessThan(
       providerInput.indexOf(previousTranscriptEntry),
     );
@@ -377,7 +377,7 @@ describe('OllamaCliProvider (CAP-009, ADR-0030) — suggest-only local code gene
     expect(providerInput).toContain(
       `Unattributed earlier context (non-authoritative): ${JSON.stringify(legacyContent)}`,
     );
-    expect(providerInput).not.toContain('User (earlier turn; claim or intent): "legacy text');
+    expect(providerInput).not.toContain('User: "legacy text');
     expect(providerInput).not.toContain('Provenance: LEGACY_UNKNOWN');
   });
 
@@ -436,22 +436,24 @@ describe('OllamaCliProvider (CAP-009, ADR-0030) — suggest-only local code gene
     expect(result.text).not.toMatch(/the user asks|the assistant responds|사용자는 .*요청|어시스턴트는 .*응답/iu);
   });
 
-  it('returns only the current response when stdout prepends the previous Assistant turn', async () => {
+  it('preserves multi-turn Assistant grounding while returning only the new response', async () => {
     const userA = '첫 번째 질문';
-    const assistantA = '첫 번째 질문에 대한 이전 답변입니다.';
+    const assistantA = '후보는 사과와 배입니다.';
     const userB = '두 번째 질문';
-    const assistantB = '두 번째 질문에 대한 새 답변입니다.';
+    const assistantB = '그중에는 배를 추천합니다.';
+    const userC = '그중에 어떤 거?';
+    const assistantC = '제가 추천한 것은 배입니다.';
     const task: Task = {
       id: 'sequential-response-task',
       title: 'Sequential response',
-      description: userB,
+      description: userC,
       status: TaskStatus.PENDING,
       intent: {
         type: IntentType.CHAT,
         capability: Capability.GENERAL_CHAT,
         confidence: 1,
         requiresWork: true,
-        summary: userB,
+        summary: userC,
       },
       riskLevel: RiskLevel.LOW,
       context: { platform: 'discord', channelId: 'channel', userId: 'user' },
@@ -471,24 +473,52 @@ describe('OllamaCliProvider (CAP-009, ADR-0030) — suggest-only local code gene
             role: 'assistant', turnNumber: 1, provenance: 'ASSISTANT',
             epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE', content: assistantA,
           },
+          {
+            role: 'user', turnNumber: 2, provenance: 'USER',
+            epistemicStatus: 'USER_CLAIM_OR_INTENT', content: userB,
+          },
+          {
+            role: 'assistant', turnNumber: 2, provenance: 'ASSISTANT',
+            epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE', content: assistantB,
+          },
         ],
       }),
       { capability: Capability.GENERAL_CHAT },
     );
-    const runner: CliRunner = async () => ({
-      code: 0,
-      stdout: `${assistantA}\n\n${assistantB}`,
-      stderr: '',
-      timedOut: false,
-    });
+    const calls: string[] = [];
+    const runner: CliRunner = async (_bin, _args, opts) => {
+      calls.push(opts.input);
+      return {
+        code: 0,
+        stdout: `${assistantB}\n\n${assistantC}`,
+        stderr: '',
+        timedOut: false,
+      };
+    };
 
     const result = await new OllamaCliProvider({ runner }).execute(request);
     const outbound = new ResponseComposer().compose(task.context, result);
+    const providerInput = calls[0] ?? '';
 
-    expect(result.text).toBe(assistantB);
-    expect(result.artifacts?.[0]?.content).toBe(assistantB);
-    expect(outbound.text).toBe(assistantB);
-    expect(outbound.text).not.toContain(assistantA);
+    const priorTurns = [
+      `User: ${JSON.stringify(userA)}`,
+      `Assistant: ${JSON.stringify(assistantA)}`,
+      `User: ${JSON.stringify(userB)}`,
+      `Assistant: ${JSON.stringify(assistantB)}`,
+    ];
+    for (const turn of priorTurns) expect(providerInput).toContain(turn);
+    for (let index = 1; index < priorTurns.length; index += 1) {
+      expect(providerInput.indexOf(priorTurns[index - 1] ?? '')).toBeLessThan(
+        providerInput.indexOf(priorTurns[index] ?? ''),
+      );
+    }
+    expect(providerInput).toMatch(
+      /User \(current active turn\): "그중에 어떤 거\?"\n\nAssistant response to the current active turn only:$/u,
+    );
+    expect(result.text).toBe(assistantC);
+    expect(result.artifacts?.[0]?.content).toBe(assistantC);
+    expect(outbound.text).toBe(assistantC);
+    expect(outbound.text).not.toContain(assistantB);
   });
 
   it('encodes multiline role-like text without allowing it to forge the active-turn boundary', async () => {

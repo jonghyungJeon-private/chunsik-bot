@@ -119,10 +119,10 @@ function parseRenderedGeneralChatPrompt(prompt: string): RenderedPromptSections 
 
 function renderPreviousConversationMessage(message: ProviderConversationMessage): string {
   if (message.role === 'assistant') {
-    return `Assistant (earlier turn; continuity only, may be inaccurate): ${JSON.stringify(message.content)}`;
+    return `Assistant: ${JSON.stringify(message.content)}`;
   }
   if (message.role === 'user') {
-    return `User (earlier turn; claim or intent): ${JSON.stringify(message.content)}`;
+    return `User: ${JSON.stringify(message.content)}`;
   }
   return `Unattributed earlier context (non-authoritative): ${JSON.stringify(message.content)}`;
 }
@@ -152,12 +152,13 @@ function serializeGeneralChat(prompt: string): string | null {
   if (!sections) return null;
 
   // Ollama's CLI exposes one stdin prompt rather than a messages API. Render
-  // the recovered turns as a chat-completion continuation: prior exchanges
-  // come first, then the current User turn, and the final Assistant cue makes
-  // the requested response boundary unambiguous. Provenance and epistemic
-  // policy remain authoritative in systemContext, but their internal labels
-  // are intentionally not repeated beside conversational content: those
-  // document-like labels caused llama3.1 to analyze or reproduce the envelope.
+  // the recovered turns with canonical User/Assistant role markers as a
+  // chat-completion continuation: prior exchanges come first, then the current
+  // User turn, and the final Assistant cue makes the requested response boundary
+  // unambiguous. Provenance and epistemic policy remain authoritative in
+  // systemContext, but their internal labels are intentionally not repeated
+  // beside conversational content: those document-like labels caused llama3.1
+  // to analyze or reproduce the envelope.
   return [
     renderContextEnvelopeWithoutInternalLabels(sections.systemContext),
     sections.transcript.length === 0
