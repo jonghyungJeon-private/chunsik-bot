@@ -53,6 +53,13 @@ set of recalled durable memories. It is discarded after the run and must not be 
 The existing `MemoryType.WORKING` name does not require persisted working-memory records. If it is ever used, it
 must have an explicit short lifecycle and must not create a parallel source of current Task truth.
 
+`immediatelyPreviousUserTurn` is a deterministically derived Working-Memory projection over exact `SHORT_TERM`
+transcript entries for the current conversation/session scope; it is not Canonical Structured State or Tier 4 owned
+state. It MUST be derived only from exact `SHORT_TERM` transcript entries belonging to that current scope. It MUST
+NOT be satisfied by episodic, semantic, project, cross-session, or any other durable-memory retrieval, and it remains
+non-vector-retrievable. Retrieval similarity MUST NOT influence which entry is treated as
+`immediatelyPreviousUserTurn`.
+
 ### Tier 2: Episodic Memory
 
 Episodic Memory records attributable events: what the User asked, what operation occurred, what outcome was
@@ -81,9 +88,9 @@ serve as a substitute for an exact repository lookup. Canonical Structured State
 vector similarity retrieval.
 
 The following are Canonical Structured State examples and are **NEVER vector-retrievable**: `activeProjectId`,
-approvals, milestone/task state, ratified ADR state, execution state, and `immediatelyPreviousUserTurn`. Each MUST
-remain deterministic and MUST be read through its existing exact, typed ownership path; none MUST be served through
-vector similarity retrieval, even when a durable memory refers to the same entity or event.
+approvals, milestone/task state, ratified ADR state, and execution state. Each MUST remain deterministic and MUST be
+read through its existing exact, typed ownership path; each MUST NOT be served through vector similarity retrieval,
+even when a durable memory refers to the same entity or event.
 
 ## MEMORY_WRITE_POLICY
 
@@ -94,17 +101,18 @@ repetition, transient status, speculative Assistant text, provider output, and f
 durable memory merely because they occurred or were persisted as transcript.
 
 The default promotion model is **NOT embed-every-message**. Ordinary transcript remains ordinary transcript unless
-it meets a defined promotion criterion. The only promotion trigger categories are an explicit User instruction,
-system-detected importance under a ratified deterministic policy, or periodic consolidation under a ratified,
-bounded policy. A trigger creates a candidate only; it does not bypass the validation and authority rules below.
+it meets a defined promotion criterion. The only promotion trigger categories, and the bounded triggers mapped to
+each category, are:
 
-A durable-memory candidate may be created only from one of these bounded triggers:
+- **Explicit User instruction:** a User instruction to remember or forget something, or project knowledge the User
+  explicitly saves under project scope without replacing the `Project` aggregate.
+- **System-detected importance under a ratified deterministic policy:** a deterministic, verified application event
+  whose owning policy declares it recall-worthy, or a stable User preference repeated or confirmed under a ratified
+  promotion rule.
+- **Periodic consolidation under a ratified, bounded policy:** a bounded summary of completed episodes proposed for
+  promotion, with source record ids retained.
 
-- an explicit User instruction to remember or forget something;
-- a deterministic, verified application event whose owning policy declares it recall-worthy;
-- a stable User preference repeated or confirmed under a ratified promotion rule;
-- a bounded summary of completed episodes proposed for promotion, with source record ids retained;
-- project knowledge explicitly saved under project scope, without replacing the `Project` aggregate.
+A trigger creates a durable-memory candidate only; it does not bypass the validation and authority rules below.
 
 Promotion is two-stage: candidate extraction followed by policy validation. Candidate extraction may eventually use
 an AI capability, but the `MemoryWriter` validates allowed type, scope, size, provenance, authority, source
@@ -308,6 +316,13 @@ deduplication. `ContextBuilder` remains the single owner of final per-run contex
 budgeting. It allocates explicit sub-budgets among current conversation, exact active-project background, and
 durable recall; it must preserve the newest continuity turns required by the existing contract. Durable recall may
 not starve current Task facts, required recent turns, or exact active-project background.
+
+Recalled durable memories MUST NOT be inserted into `conversationTranscript`; durable memories enter
+`ContextBundle` only through the separately defined recall/background representation. `SHORT_TERM` transcript
+entries remain exact conversation-continuity data. Semantic similarity or near-deduplication MUST NOT remove or
+replace an exact `SHORT_TERM` transcript entry because it resembles a durable-memory entry. When a durable-memory
+candidate duplicates or paraphrases an exact transcript entry, deduplication may suppress the durable candidate,
+never the exact transcript entry.
 
 The explicit integration ownership chain is: `MemoryRetriever` retrieves candidates -> those candidates merge with
 existing `ContextBuilder`-owned entries -> `ContextBuilder` performs unified ranking -> dedupe -> token budgeting ->
