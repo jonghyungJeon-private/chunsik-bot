@@ -7,6 +7,14 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Changed — UAT Nested Reference Defect Classification
+
+- Added a focused three-turn provider-boundary regression proving that ContextBuilder excludes only the current
+  inbound memory, PromptComposer preserves the earlier User/Assistant roles and order, and the Ollama CLI input
+  ends with the nested subtype question as the sole active User turn.
+- Classified feedback `786b50ad` as provider/model semantic quality rather than ContextBuilder history loss because
+  the selected `파스타` Assistant turn reaches the provider intact; no phrase-specific handling was added.
+
 ### Fixed — UAT Workspace Binding Regression Coverage
 
 - Documented that command execution uses the current channel/thread Session's registered active Project rather than

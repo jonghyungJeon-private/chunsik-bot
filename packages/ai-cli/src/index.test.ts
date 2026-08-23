@@ -8,7 +8,9 @@ import {
   AiProviderError,
   ArtifactKind,
   Capability,
+  ContextBuilder,
   IntentType,
+  MemoryType,
   NotImplementedError,
   PromptComposer,
   PromptRenderer,
@@ -16,7 +18,7 @@ import {
   RiskLevel,
   TaskStatus,
 } from '@chunsik/core';
-import type { Task } from '@chunsik/core';
+import type { MemoryManager, MemoryRecord, Task } from '@chunsik/core';
 import { ClaudeCliProvider, CodexCliProvider, OllamaCliProvider, maskSecrets } from './index';
 import { INHERITED_ENV_ALLOWLIST, createContainedCliRunner } from './cli-runner';
 import type { CliRunOptions, CliRunner, CliRunResult } from './cli-runner';
@@ -326,6 +328,93 @@ describe('OllamaCliProvider (CAP-009, ADR-0030) — suggest-only local code gene
     expect(result.audit?.sanitizedCommand).toEqual(['ollama', 'run', 'llama3.1']);
     expect(result.audit?.promptSha256).toBe(
       createHash('sha256').update(Buffer.from(request.prompt, 'utf8')).digest('hex'),
+    );
+  });
+
+  it('preserves the selected dish as Assistant history for a nested subtype follow-up', async () => {
+    const choiceRequest = '뭐 먹을까? 한식이랑 파스타 중에 골라줘';
+    const selectedDish = '파스타가 좋을 것 같아';
+    const subtypeRequest = '종류가 다양하잖아 그중에 어떤거?';
+    const records: MemoryRecord[] = [
+      {
+        id: 'nested-user-choice',
+        type: MemoryType.SHORT_TERM,
+        scope: { sessionId: 'nested-reference-session' },
+        content: choiceRequest,
+        metadata: { role: 'user' },
+        createdAt: '2026-08-23T00:00:01.000Z',
+        updatedAt: '2026-08-23T00:00:01.000Z',
+      },
+      {
+        id: 'nested-assistant-selection',
+        type: MemoryType.SHORT_TERM,
+        scope: { sessionId: 'nested-reference-session' },
+        content: selectedDish,
+        metadata: { role: 'assistant' },
+        createdAt: '2026-08-23T00:00:02.000Z',
+        updatedAt: '2026-08-23T00:00:02.000Z',
+      },
+      {
+        id: 'nested-current-user',
+        type: MemoryType.SHORT_TERM,
+        scope: { sessionId: 'nested-reference-session' },
+        content: subtypeRequest,
+        metadata: { role: 'user' },
+        createdAt: '2026-08-23T00:00:03.000Z',
+        updatedAt: '2026-08-23T00:00:03.000Z',
+      },
+    ];
+    const memory = {
+      recentShortTerm: async () => records,
+    } as unknown as MemoryManager;
+    const task: Task = {
+      id: 'nested-reference-task',
+      title: 'Choose a pasta subtype',
+      description: subtypeRequest,
+      status: TaskStatus.PENDING,
+      intent: {
+        type: IntentType.CHAT,
+        capability: Capability.GENERAL_CHAT,
+        confidence: 1,
+        requiresWork: true,
+        summary: subtypeRequest,
+      },
+      riskLevel: RiskLevel.LOW,
+      sessionId: 'nested-reference-session',
+      context: { platform: 'discord', channelId: 'channel', userId: 'user' },
+      createdAt: '2026-08-23T00:00:03.000Z',
+      updatedAt: '2026-08-23T00:00:03.000Z',
+    };
+    const context = await new ContextBuilder(memory).build(task, ['nested-current-user']);
+    const request = new PromptRenderer().render(
+      new PromptComposer().compose(task, context),
+      { capability: Capability.GENERAL_CHAT },
+    );
+    const calls: string[] = [];
+    const runner: CliRunner = async (_bin, _args, opts) => {
+      calls.push(opts.input);
+      return { code: 0, stdout: '봉골레 파스타는 어때?', stderr: '', timedOut: false };
+    };
+
+    await new OllamaCliProvider({ runner }).execute(request);
+
+    expect(context.conversationTranscript).toEqual([
+      expect.objectContaining({ role: 'user', content: choiceRequest }),
+      expect.objectContaining({ role: 'assistant', content: selectedDish }),
+    ]);
+    const providerInput = calls[0] ?? '';
+    const providerTurns = [
+      `User: ${JSON.stringify(choiceRequest)}`,
+      `Assistant: ${JSON.stringify(selectedDish)}`,
+      `User (current active turn): ${JSON.stringify(subtypeRequest)}`,
+    ];
+    const providerTurnIndexes = providerTurns.map((turn) => providerInput.indexOf(turn));
+    expect(providerTurnIndexes.every((index) => index >= 0)).toBe(true);
+    for (let index = 1; index < providerTurnIndexes.length; index += 1) {
+      expect(providerTurnIndexes[index - 1]).toBeLessThan(providerTurnIndexes[index] ?? -1);
+    }
+    expect(providerInput).toMatch(
+      /User \(current active turn\): "종류가 다양하잖아 그중에 어떤거\?"\n\nAssistant response to the current active turn only:$/u,
     );
   });
 

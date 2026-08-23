@@ -39,6 +39,10 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   `715c407a52eee36a7717d1b4b6695b1469bb0a76`. The immediately-previous-user-turn recency grounding defect is
   `RESOLVED_ACCEPTED`; current-turn response behavior is `PASS`; Korean response behavior is `PASS`. No
   transcript/meta-analysis leakage and no internal provenance/epistemic metadata leakage were observed.
+- **Nested-reference feedback `786b50ad`:** focused provider-boundary coverage confirms the prior User choice request,
+  the Assistant selection `파스타가 좋을 것 같아`, and the final User subtype question reach the Ollama CLI input
+  in that role-correct chronological order. The observation is classified as provider/model semantic quality, not
+  a ContextBuilder or history-loss defect; no phrase-specific handling was introduced.
 - **Bounded Provider diagnostics:** under explicit Product Owner approval, the provider recall comparison diagnostic
   executed generation through `ollama-cli` for `llama3.1` and `granite3.3`, and the `llama3.1` stochastic reliability
   diagnostic also executed in its explicitly approved bounded diagnostic scope. These executions were diagnostics
