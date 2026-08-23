@@ -381,6 +381,7 @@ interface Calls {
   lastRunRequest?: ExecutionRequest;
   workspaceList: number;
   workspaceOpen: number;
+  lastProjectGetInput?: string;
   lastWorkspaceOpenInput?: { id: string; rootPath: string };
   classify: number;
   scopeAnchor: number;
@@ -771,7 +772,10 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
     },
     projects: {
       async register() { return { ok: true, message: 'registered' }; },
-      async get() { return opts.project === undefined ? projectOf() : opts.project; },
+      async get(id) {
+        calls.lastProjectGetInput = id;
+        return opts.project === undefined ? projectOf() : opts.project;
+      },
     },
     analyzer: { async prepare() { return { ready: true }; } },
     tasks: {
@@ -1169,8 +1173,10 @@ describe('Live Test Execution — runtime', () => {
     });
     await new ConversationRuntime(deps).handle(messageOf('pnpm test 실행해줘'));
     expect(calls.run).toBe(1);
+    expect(calls.lastProjectGetInput).toBe(project.id);
     expect(calls.lastWorkspaceOpenInput).toEqual({ id: project.id, rootPath: project.rootPath });
     expect(calls.lastRunRequest?.workspaceRef?.rootPath).toBe(project.rootPath);
+    expect(calls.lastRunRequest?.workspaceRef?.rootPath).not.toBe(process.cwd());
     expect(calls.lastRunRequest?.command).toEqual({ command: 'pnpm', args: ['test'] });
   });
 

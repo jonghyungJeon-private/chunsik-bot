@@ -59,7 +59,7 @@ describe('WorkspaceManager (ADR-0022 — core builds the ref)', () => {
   });
 
   it('open() preserves the registered project rootPath exactly', async () => {
-    const { provider } = fakeProvider();
+    const { provider, calls } = fakeProvider();
     const mgr = new WorkspaceManager(provider);
     const registeredRootPath = '/registered/quirkybot-repository';
 
@@ -67,13 +67,15 @@ describe('WorkspaceManager (ADR-0022 — core builds the ref)', () => {
       projectId: 'p1',
       rootPath: registeredRootPath,
     });
+    expect(calls.resolve?.[0]?.[0]).toMatchObject({ rootPath: registeredRootPath });
   });
 
   it('open() rejects when the provider cannot resolve a non-existent registered rootPath', async () => {
     const mgr = new WorkspaceManager(unavailableProvider());
+    const missingRootPath = '/missing/registered-project';
 
-    await expect(mgr.open({ id: 'stale-project', rootPath: '/missing/registered-project' })).rejects.toThrow(
-      'workspace root is not a directory',
+    await expect(mgr.open({ id: 'stale-project', rootPath: missingRootPath })).rejects.toThrow(
+      `workspace root is not a directory: ${missingRootPath}`,
     );
   });
 
