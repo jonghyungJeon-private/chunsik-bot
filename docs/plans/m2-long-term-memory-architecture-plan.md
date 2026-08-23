@@ -1,8 +1,9 @@
 # M2 Long-term and Agentic Memory Architecture Proposal
 
-Status: **PROPOSED / ARCHITECTURE REVIEW REQUIRED**. This document is the first-deliverable architecture
-assessment requested for M2. It makes no ratified architecture decision, selects no vector-storage product, and
-authorizes no implementation, dependency, schema, migration, runtime, provider, network, or data mutation.
+Status: **ARCHITECTURE RATIFIED BY ADR-0073**. This document is the reviewed historical architecture input.
+`DECISIONS.md` ADR-0073 is the canonical accepted decision and ratifies this plan as reviewed at
+`3c94a8db5de2dba3b8350ee0bdfb6d6d1e712fdb`. Ratification selects no vector-storage product and authorizes no
+implementation, dependency, schema, migration, runtime, provider, network, or data mutation.
 
 ## Decision summary
 
@@ -408,5 +409,6 @@ This proposal does not:
 - authorize DB access/mutation, Runtime, application Provider/network execution, Discord, secrets, Live UAT, push,
   PR, or merge.
 
-The next step is exactly one independent Chief Architect architecture review. Product Owner ratification is required
-before any public contract, persistence, adapter selection, or implementation task is issued.
+The architecture review and Product Owner ratification are complete and canonically recorded by ADR-0073.
+Implementation remains subject to a separately approved bounded task and all applicable architecture, persistence,
+adapter-selection, and Strict approval boundaries.

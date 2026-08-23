@@ -5705,3 +5705,54 @@ read-side input Resources from output Artifacts, and its read-only-input princip
 
 ADR-0005 (partially supersedes only the connector-as-`ResourceResolver` aspect; preserves Resource/Artifact
 separation and read-only-input principles).
+
+## ADR-0073 — M2 Long-term and Agentic Memory Architecture
+
+- **Status:** ✅ Accepted (M2)
+- **Date recorded:** 2026-08-24
+- **Authority:** Product Owner ratification after independent Chief Architect architecture review (`PASS`)
+- **Decision basis:** `docs/plans/m2-long-term-memory-architecture-plan.md` as reviewed at
+  `3c94a8db5de2dba3b8350ee0bdfb6d6d1e712fdb`
+
+### Context
+
+The M2 long-term and agentic memory proposal completed independent architecture review and explicit Product Owner
+ratification, but its historical plan still identified itself as proposed and requiring review. Because this file is
+the append-only canonical decision log, that stale status left the accepted architecture unavailable as repository
+authority and blocked the first implementation slice.
+
+### Decision
+
+Ratify the complete architecture in the decision-basis plan exactly as reviewed. The plan remains the historical
+architecture input; this ADR is the canonical accepted decision. The ratified boundary includes:
+
+- distinct Working, Episodic, Semantic Long-Term, and Canonical Structured State tiers;
+- `immediatelyPreviousUserTurn` as a deterministic Working-Memory projection over exact current-session
+  `SHORT_TERM` transcript, never Tier 4 Canonical Structured State;
+- durable recall remaining outside `conversationTranscript`, with durable-memory deduplication forbidden from
+  replacing, removing, or displacing exact `SHORT_TERM` transcript;
+- bounded hybrid retrieval with `ContextBuilder` as the single final provider-context budget owner;
+- storage-neutral Core contracts and separate persistence ownership;
+- no selected vector product;
+- bounded retention and forgetting; and
+- probabilistic memory never overriding canonical approval, security, or project state.
+
+All other scope, ownership, authority, retrieval, deduplication, retention, non-goal, and approval-boundary details
+are accepted exactly as written in the decision-basis plan. This canonicalization introduces no architectural
+semantic beyond that reviewed revision.
+
+### Consequences
+
+- The M2 memory architecture is accepted repository authority and may govern separately approved bounded
+  implementation slices.
+- The plan remains historical input and points to this canonical ADR rather than acting as a competing authority.
+- Any public Core contract, persistence/schema/migration design, or vector-adapter selection still requires the
+  applicable bounded implementation or later architecture decision described by the accepted plan.
+- Ratification does not authorize source implementation, dependency changes, DB/schema mutation, Runtime,
+  Provider/network execution, Discord, secrets, Live UAT, Push, PR, or Merge.
+
+### Relations
+
+Extends ADR-0002 (ContextBuilder), ADR-0003 (PromptComposer), ADR-0017 (bounded exact `SHORT_TERM` transcript),
+ADR-0018 (exact active-project background), and ADR-0063 (provider-neutral provenance and current-fact precedence).
+Preserves the fixed `MemoryType` values and the provider-independent, local-first boundaries in `ARCHITECTURE.md`.
