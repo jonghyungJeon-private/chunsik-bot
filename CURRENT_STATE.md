@@ -501,6 +501,11 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 
 ## M2 gap assessment — first slice
 
+- **Slice 5: COMPLETE_AND_ACCEPTED.** ADR-0073 durable recall now has its bounded Core retrieval and lifecycle
+  plumbing, and the production composition root wires `DefaultMemoryRetriever` to the existing SQLite-owned memory
+  repository through `ContextBuilder`. Durable recall remains separate from the exact `SHORT_TERM` transcript and
+  degrades to empty on repository/retrieval failure without displacing transcript or active-project background.
+  The next M2 priority is the next bounded accepted-memory slice; vector/schema/index work remains deferred.
 - **Acceptance:** the completed M2 gap assessment and ContextBuilder deterministic ranking slice at commit `8fb8e4b`
   are `COMPLETE / REVIEW PASS` and accepted as the first M2 implementation slice. ContextBuilder token estimation at
   commit `9ef5e7c` is also `COMPLETE / REVIEW PASS`.

@@ -82,6 +82,7 @@ import { ClaudeCliProvider, CodexCliProvider, OllamaCliProvider } from '@chunsik
 import { loadConfig } from './config';
 import { createConnectorProviders } from './connector-providers';
 import { ConsoleLogger } from './console-logger';
+import { createProductionContextBuilder } from './context-builder-provider';
 import { GitHubAppGitProvider } from './github-app-git-provider';
 import { createProductionRuntimeProviderRoutingActivation } from './provider-routing/provider-routing-activation';
 
@@ -349,8 +350,9 @@ const application: Provider[] = [
   },
   {
     provide: ContextBuilder,
-    useFactory: (memory: MemoryManager) => new ContextBuilder(memory, config.contextBuilder),
-    inject: [MemoryManager],
+    useFactory: (memory: MemoryManager, storage: StorageProvider) =>
+      createProductionContextBuilder(memory, storage, config.contextBuilder),
+    inject: [MemoryManager, STORAGE_PROVIDER],
   },
   { provide: PromptComposer, useFactory: () => new PromptComposer() },
   {
