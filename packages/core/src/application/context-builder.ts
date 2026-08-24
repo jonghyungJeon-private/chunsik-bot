@@ -211,6 +211,7 @@ export class ContextBuilder {
     const scope: DurableMemoryScope = {
       ...(task.sessionId ? { sessionId: task.sessionId } : {}),
       ...(task.projectId ? { projectId: task.projectId } : {}),
+      ...(task.actorId ? { actorId: task.actorId } : {}),
     };
     if (!scope.sessionId && !scope.projectId) return [];
 

@@ -30,7 +30,6 @@ import {
   PromptRenderer,
   TaskManager,
   MemoryManager,
-  DefaultMemoryWriter,
   ArtifactManager,
   WorkspaceManager,
   GitManager,
@@ -84,6 +83,7 @@ import { loadConfig } from './config';
 import { createConnectorProviders } from './connector-providers';
 import { ConsoleLogger } from './console-logger';
 import { createProductionContextBuilder } from './context-builder-provider';
+import { createProductionConversationRuntime } from './conversation-runtime-provider';
 import { GitHubAppGitProvider } from './github-app-git-provider';
 import { createProductionRuntimeProviderRoutingActivation } from './provider-routing/provider-routing-activation';
 
@@ -455,12 +455,10 @@ const application: Provider[] = [
       // ADR-0040: production ApplyPreviewFlow — a plan-less inert conversation anchor, never discoverable by
       // StatelessApprovalFlow's plan-scoped lookup.
       const applyPreviewFlow = new StatelessApplyPreviewFlow(storage);
-      const memoryWriter = new DefaultMemoryWriter(memory);
-      return new ConversationRuntime({
+      return createProductionConversationRuntime(memory, {
         actors,
         sessions,
         memory,
-        memoryWriter,
         classifier,
         // register via ProjectManager; get via the existing projects repository (ADR-0033 read path).
         projects: {
