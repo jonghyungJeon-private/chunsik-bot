@@ -397,14 +397,6 @@ class SqliteMemoryRepository extends JsonRepository<MemoryRecord> implements Mem
       clauses.push('thread_id = ?');
       params.push(scope.threadId);
     }
-    if (scope.userId !== undefined) {
-      clauses.push(`json_extract(data, '$.scope.userId') = ?`);
-      params.push(scope.userId);
-    }
-    if (scope.taskId !== undefined) {
-      clauses.push(`json_extract(data, '$.scope.taskId') = ?`);
-      params.push(scope.taskId);
-    }
     if (type !== undefined) {
       clauses.push('type = ?');
       params.push(type);

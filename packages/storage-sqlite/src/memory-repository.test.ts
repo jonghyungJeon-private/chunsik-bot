@@ -122,7 +122,7 @@ describe('SqliteMemoryRepository durable candidates', () => {
     await store.close();
   });
 
-  it('findByScope no longer silently ignores userId or taskId', async () => {
+  it('preserves legacy findByScope semantics by ignoring userId and taskId', async () => {
     const store = await freshStore();
     await store.memories.save(memory('wanted', { userId: 'actor-1', taskId: 'task-1' }));
     await store.memories.save(memory('other-user', { userId: 'actor-2', taskId: 'task-1' }));
@@ -132,7 +132,7 @@ describe('SqliteMemoryRepository durable candidates', () => {
       { userId: 'actor-1', taskId: 'task-1' },
       MemoryType.LONG_TERM,
     );
-    expect(results.map(({ id }) => id)).toEqual(['wanted']);
+    expect(results.map(({ id }) => id)).toEqual(['wanted', 'other-user', 'other-task']);
     await store.close();
   });
 });

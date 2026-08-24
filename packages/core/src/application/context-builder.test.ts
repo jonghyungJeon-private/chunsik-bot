@@ -19,6 +19,8 @@ import type {
 } from '../domain';
 import type { MemoryManager } from './memory-manager';
 import type { MemoryRetriever } from './memory-retriever';
+import { DefaultMemoryRetriever } from './memory-retriever';
+import type { DurableMemoryQuery, MemoryRepository } from '../ports';
 
 const taskWith = (
   opts: {
@@ -371,6 +373,64 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
     expect(failed).toEqual(baseline);
     expect(failedCalls).toBe(1);
     expect(unscoped.durableRecall).toBeUndefined();
+  });
+
+  it('degrades repository failure through ContextBuilder without retry or context substitution', async () => {
+    const transcript = [
+      rec('1', 'user', 'exact short-term user turn'),
+      rec('2', 'assistant', 'exact short-term assistant turn'),
+    ];
+    const project = {
+      ...rec('3', undefined, 'exact active-project background'),
+      type: MemoryType.PROJECT,
+      scope: { projectId: 'P1' },
+    };
+    const memory = {
+      recentShortTerm: async () => transcript,
+      projectMemory: async (projectId: string) => (projectId === 'P1' ? project : undefined),
+    } as unknown as MemoryManager;
+    const queries: DurableMemoryQuery[] = [];
+    const failingRepository: MemoryRepository = {
+      async get() {
+        return null;
+      },
+      async save(entity) {
+        return entity;
+      },
+      async delete() {},
+      async list() {
+        return [];
+      },
+      async findByScope() {
+        return [];
+      },
+      async findDurableCandidates(query) {
+        queries.push(query);
+        throw new Error('repository unavailable');
+      },
+    };
+    const retriever = new DefaultMemoryRetriever(failingRepository, {
+      clock: () => '2026-01-04T00:00:00.000Z',
+    });
+
+    const bundle = await new ContextBuilder(memory, {}, retriever).build(
+      taskWith({ sessionId: 'S1', projectId: 'P1' }),
+    );
+
+    expect(queries).toEqual([
+      expect.objectContaining({
+        scope: { sessionId: 'S1', projectId: 'P1' },
+        limit: 10,
+      }),
+    ]);
+    expect(bundle.conversationTranscript.map((entry) => entry.content)).toEqual([
+      'exact short-term user turn',
+      'exact short-term assistant turn',
+    ]);
+    expect(bundle.backgroundResources.map((entry) => entry.content)).toEqual([
+      'exact active-project background',
+    ]);
+    expect(bundle.durableRecall).toBeUndefined();
   });
 
   it('discards malformed resolved durable candidates while retaining valid recall and transcript', async () => {

@@ -73,6 +73,55 @@ function retriever(records: MemoryRecord[], options = {}) {
 }
 
 describe('DefaultMemoryRetriever', () => {
+  it('drops malformed persisted candidates fail-closed without authority escalation', async () => {
+    const valid = record('valid', 'blue sky preference');
+    const malformed = record('malformed', 'blue sky preference malformed', {
+      metadata: {
+        kind: 'SEMANTIC',
+        provenance: 'USER_PROVIDED',
+        authorityLevel: 'ASSISTANT_NON_AUTHORITATIVE',
+      },
+    });
+
+    const results = await retriever([malformed, valid]).retrieve(request());
+
+    expect(results.map(({ memory }) => memory.id)).toEqual(['valid']);
+    expect(results[0]!.memory.authorityLevel).toBe('USER_CLAIM_OR_INTENT');
+    expect(results).not.toContainEqual(
+      expect.objectContaining({
+        memory: expect.objectContaining({ authorityLevel: 'ASSISTANT_NON_AUTHORITATIVE' }),
+      }),
+    );
+  });
+
+  it('excludes authority-unfit candidates without weakening scope or retrying broadly', async () => {
+    const queries: DurableMemoryQuery[] = [];
+    const candidate = record('unfit', 'blue sky preference');
+    const scopedRepository = repository([candidate]);
+    scopedRepository.findDurableCandidates = async (query) => {
+      queries.push(query);
+      return [candidate];
+    };
+    const memoryRetriever = new DefaultMemoryRetriever(scopedRepository, {
+      clock: () => CURRENT_TIME,
+    });
+    const constrainedRequest = createMemoryRetrievalRequest({
+      query: 'blue sky preference',
+      capability: Capability.GENERAL_CHAT,
+      scope: { sessionId: 'session-1', projectId: 'project-1' },
+      authorityFitness: ['ASSISTANT_NON_AUTHORITATIVE'],
+      maxResults: 10,
+    });
+
+    await expect(memoryRetriever.retrieve(constrainedRequest)).resolves.toEqual([]);
+    expect(queries).toEqual([
+      expect.objectContaining({
+        scope: { sessionId: 'session-1', projectId: 'project-1' },
+        limit: 10,
+      }),
+    ]);
+  });
+
   it('ranks stronger lexical overlap ahead of weaker candidates', async () => {
     const results = await retriever([
       record('weak', 'blue ocean'),
