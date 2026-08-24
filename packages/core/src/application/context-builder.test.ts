@@ -1,9 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import { ContextBuilder } from './context-builder';
 import { PromptComposer } from './prompt-composer';
-import { Capability, IntentType, MemoryType, RiskLevel, TaskStatus } from '../domain';
-import type { MemoryRecord, MemoryScope, Task } from '../domain';
+import {
+  Capability,
+  IntentType,
+  MemoryType,
+  RiskLevel,
+  TaskStatus,
+  createDurableMemory,
+  createRetrievedMemory,
+} from '../domain';
+import type {
+  DurableMemoryScope,
+  MemoryRecord,
+  MemoryRetrievalRequest,
+  MemoryScope,
+  Task,
+} from '../domain';
 import type { MemoryManager } from './memory-manager';
+import type { MemoryRetriever } from './memory-retriever';
 
 const taskWith = (
   opts: {
@@ -11,6 +26,7 @@ const taskWith = (
     projectId?: string;
     platform?: string;
     requestText?: string;
+    capability?: Capability;
   } = {},
 ): Task => ({
   id: 't1',
@@ -19,7 +35,7 @@ const taskWith = (
   status: TaskStatus.PENDING,
   intent: {
     type: IntentType.CHAT,
-    capability: Capability.GENERAL_CHAT,
+    capability: opts.capability ?? Capability.GENERAL_CHAT,
     confidence: 1,
     requiresWork: true,
     summary: opts.requestText ?? 'hello',
@@ -46,7 +62,162 @@ const rec = (id: string, role: unknown, content: string): MemoryRecord => ({
   updatedAt: '2026-01-01T00:00:00.000Z',
 });
 
+const durable = (
+  id: string,
+  content: string,
+  opts: {
+    provenance?: 'USER_PROVIDED' | 'ASSISTANT_GENERATED';
+    authorityLevel?: 'USER_CLAIM_OR_INTENT' | 'ASSISTANT_NON_AUTHORITATIVE';
+    relevanceScore?: number;
+    scope?: DurableMemoryScope;
+  } = {},
+) =>
+  createRetrievedMemory({
+    memory: createDurableMemory({
+      id,
+      content,
+      kind: 'SEMANTIC',
+      provenance: opts.provenance ?? 'USER_PROVIDED',
+      authorityLevel: opts.authorityLevel ?? 'USER_CLAIM_OR_INTENT',
+      scope: opts.scope ?? { sessionId: 'S1' },
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      metadata: { sourceRecordId: `source-${id}` },
+    }),
+    relevanceScore: opts.relevanceScore ?? 0.9,
+    retrievalReason: 'bounded task scope and semantic relevance matched',
+  });
+
 describe('ContextBuilder (ADR-0063 structured context)', () => {
+  it('integrates bounded durable recall as separately attributed background', async () => {
+    let request: MemoryRetrievalRequest | undefined;
+    const memory = {
+      recentShortTerm: async () => [rec('1', 'user', 'exact transcript')],
+      projectMemory: async () => undefined,
+    } as unknown as MemoryManager;
+    const retriever: MemoryRetriever = {
+      retrieve: async (value) => {
+        request = value;
+        return [
+          durable('durable-1', 'Remember the purple preference', {
+            scope: { sessionId: 'S1', projectId: 'P1' },
+          }),
+        ];
+      },
+    };
+
+    const bundle = await new ContextBuilder(memory, {}, retriever).build(
+      taskWith({
+        sessionId: 'S1',
+        projectId: 'P1',
+        capability: Capability.SUMMARIZATION,
+      }),
+    );
+
+    expect(request).toMatchObject({
+      query: 'hello',
+      capability: Capability.SUMMARIZATION,
+      scope: { sessionId: 'S1', projectId: 'P1' },
+      maxResults: 10,
+    });
+    expect(bundle.conversationTranscript.map((entry) => entry.content)).toEqual([
+      'exact transcript',
+    ]);
+    expect(bundle.conversationTranscript).not.toContainEqual(
+      expect.objectContaining({ content: 'Remember the purple preference' }),
+    );
+    expect(bundle.durableRecall).toEqual([
+      expect.objectContaining({
+        content: 'Remember the purple preference',
+        provenance: 'USER_PROVIDED',
+        epistemicStatus: 'USER_CLAIM_OR_INTENT',
+        source: expect.objectContaining({
+          memoryId: 'durable-1',
+          kind: 'SEMANTIC',
+          scope: { sessionId: 'S1', projectId: 'P1' },
+          metadata: { sourceRecordId: 'source-durable-1' },
+        }),
+      }),
+    ]);
+  });
+
+  it('suppresses near-duplicate durable recall without displacing exact transcript continuity', async () => {
+    const memory = {
+      recentShortTerm: async () => [
+        rec('1', 'user', '보라색 선호를 기억해 줘'),
+        rec('2', 'assistant', '기억할게요'),
+      ],
+    } as unknown as MemoryManager;
+    const retriever: MemoryRetriever = {
+      retrieve: async () => [durable('duplicate', '보라색, 선호를 기억해 줘!')],
+    };
+    const task = taskWith({ sessionId: 'S1', requestText: '내 선호가 뭐였지?' });
+
+    const bundle = await new ContextBuilder(memory, {}, retriever).build(task);
+    const prompt = new PromptComposer().compose(task, bundle);
+
+    expect(bundle.conversationTranscript.map((entry) => entry.content)).toEqual([
+      '보라색 선호를 기억해 줘',
+      '기억할게요',
+    ]);
+    expect(bundle.durableRecall).toBeUndefined();
+    expect(prompt.context).toContain(
+      'immediatelyPreviousUserTurn: \\"보라색 선호를 기억해 줘\\"',
+    );
+  });
+
+  it('applies the final shared budget after preserving selected transcript', async () => {
+    const memory = {
+      recentShortTerm: async () => [rec('1', 'user', '12345')],
+    } as unknown as MemoryManager;
+    const retriever: MemoryRetriever = {
+      retrieve: async () => [durable('budgeted', 'abcdefghij')],
+    };
+
+    const bundle = await new ContextBuilder(
+      memory,
+      { maxCharacters: 8, roleWeights: { user: 10 }, recencyWeight: 0 },
+      retriever,
+    ).build(taskWith({ sessionId: 'S1' }));
+
+    expect(bundle.conversationTranscript[0]?.content).toBe('12345');
+    expect(bundle.durableRecall?.[0]?.content).toBe('ab…');
+    expect(
+      bundle.conversationTranscript.reduce((sum, entry) => sum + entry.content.length, 0) +
+        (bundle.durableRecall ?? []).reduce((sum, entry) => sum + entry.content.length, 0),
+    ).toBeLessThanOrEqual(8);
+  });
+
+  it('preserves legacy behavior for absent, empty, failed, and unscoped retrieval', async () => {
+    const memory = {
+      recentShortTerm: async () => [rec('1', 'user', 'legacy transcript')],
+    } as unknown as MemoryManager;
+    let failedCalls = 0;
+    const emptyRetriever: MemoryRetriever = { retrieve: async () => [] };
+    const failedRetriever: MemoryRetriever = {
+      retrieve: async () => {
+        failedCalls += 1;
+        throw new Error('degraded recall');
+      },
+    };
+    const unscopedRetriever: MemoryRetriever = {
+      retrieve: async () => {
+        throw new Error('must not broaden to channel scope');
+      },
+    };
+    const scopedTask = taskWith({ sessionId: 'S1' });
+
+    const baseline = await new ContextBuilder(memory).build(scopedTask);
+    const empty = await new ContextBuilder(memory, {}, emptyRetriever).build(scopedTask);
+    const failed = await new ContextBuilder(memory, {}, failedRetriever).build(scopedTask);
+    const unscoped = await new ContextBuilder(memory, {}, unscopedRetriever).build(taskWith());
+
+    expect(empty).toEqual(baseline);
+    expect(failed).toEqual(baseline);
+    expect(failedCalls).toBe(1);
+    expect(unscoped.durableRecall).toBeUndefined();
+  });
+
   it('preserves User/Assistant provenance and epistemic status in same-Session order', async () => {
     let captured: MemoryScope | undefined;
     const memory = {

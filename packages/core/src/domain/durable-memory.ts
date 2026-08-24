@@ -1,6 +1,6 @@
 import { MemoryType } from './enums';
 import type { Id, IsoTimestamp, Metadata } from './common';
-import type { EpistemicStatus } from './prompting';
+import type { Capability } from './enums';
 
 export const MAX_MEMORY_RETRIEVAL_RESULTS = 100;
 
@@ -16,10 +16,10 @@ export type DurableMemoryProvenance =
 export type DurableMemoryKind = 'EPISODIC' | 'SEMANTIC';
 
 /** Durable recall is background; it can never establish a current authoritative fact. */
-export type DurableMemoryAuthorityLevel = Exclude<
-  EpistemicStatus,
-  'AUTHORITATIVE_CURRENT_FACT'
->;
+export type DurableMemoryAuthorityLevel =
+  | 'USER_CLAIM_OR_INTENT'
+  | 'ASSISTANT_NON_AUTHORITATIVE'
+  | 'NON_AUTHORITATIVE_BACKGROUND';
 
 export interface DurableMemoryScope {
   readonly sessionId?: Id;
@@ -79,6 +79,7 @@ export interface MemoryCandidate {
 
 export interface MemoryRetrievalRequestInput {
   query: string;
+  capability: Capability;
   scope: DurableMemoryScope;
   authorityFitness: readonly DurableMemoryAuthorityLevel[];
   maxResults: number;
@@ -87,6 +88,7 @@ export interface MemoryRetrievalRequestInput {
 
 export interface MemoryRetrievalRequest {
   readonly query: string;
+  readonly capability: Capability;
   readonly scope: DurableMemoryScope;
   readonly authorityFitness: readonly DurableMemoryAuthorityLevel[];
   readonly maxResults: number;

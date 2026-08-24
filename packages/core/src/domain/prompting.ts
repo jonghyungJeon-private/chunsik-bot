@@ -1,4 +1,10 @@
-import type { Id } from './common';
+import type { Id, IsoTimestamp, Metadata } from './common';
+import type {
+  DurableMemoryAuthorityLevel,
+  DurableMemoryKind,
+  DurableMemoryProvenance,
+  DurableMemoryScope,
+} from './durable-memory';
 
 /** Where prompt context originated (ADR-0063). */
 export type ContextProvenance =
@@ -6,7 +12,8 @@ export type ContextProvenance =
   | 'USER'
   | 'ASSISTANT'
   | 'PROJECT_MEMORY'
-  | 'LEGACY_UNKNOWN';
+  | 'LEGACY_UNKNOWN'
+  | DurableMemoryProvenance;
 
 /** How strongly a provider may rely on prompt context (ADR-0063). */
 export type EpistemicStatus =
@@ -37,6 +44,23 @@ export interface BackgroundResource {
   epistemicStatus: 'NON_AUTHORITATIVE_BACKGROUND';
 }
 
+/** Durable recall remains attributed, non-authoritative background (ADR-0073). */
+export interface DurableRecallEntry {
+  content: string;
+  provenance: DurableMemoryProvenance;
+  epistemicStatus: DurableMemoryAuthorityLevel;
+  relevanceScore: number;
+  retrievalReason: string;
+  source: {
+    memoryId: Id;
+    kind: DurableMemoryKind;
+    scope: DurableMemoryScope;
+    createdAt: IsoTimestamp;
+    updatedAt: IsoTimestamp;
+    metadata: Readonly<Metadata>;
+  };
+}
+
 /**
  * Assembled, budgeted context for a single execution (ADR-0002 / ADR-0063).
  * Current-turn facts stay on Task; this bundle owns only bounded conversation
@@ -48,6 +72,8 @@ export interface ContextBundle {
   conversationTranscript: ConversationTranscriptEntry[];
   /** Active-project memory, when present, as non-authoritative background. */
   backgroundResources: BackgroundResource[];
+  /** Optional durable recall, always separate from exact conversation transcript. */
+  durableRecall?: DurableRecallEntry[];
 }
 
 /**

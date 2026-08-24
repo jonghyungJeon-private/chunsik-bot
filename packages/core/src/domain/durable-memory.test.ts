@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import * as core from '..';
 import {
+  Capability,
   MemoryType,
   createDurableMemory,
   createMemoryCandidate,
@@ -166,12 +167,14 @@ describe('durable memory value objects', () => {
     expect(
       createMemoryRetrievalRequest({
         query: 'How should status updates be written?',
+        capability: Capability.GENERAL_CHAT,
         scope: { actorId: 'actor-1' },
         authorityFitness: ['USER_CLAIM_OR_INTENT'],
         maxResults: 5,
       }),
     ).toEqual({
       query: 'How should status updates be written?',
+      capability: Capability.GENERAL_CHAT,
       scope: { actorId: 'actor-1' },
       authorityFitness: ['USER_CLAIM_OR_INTENT'],
       maxResults: 5,
@@ -182,6 +185,7 @@ describe('durable memory value objects', () => {
   it('rejects unbounded retrieval and invalid exclusions', () => {
     const base = {
       query: 'status updates',
+      capability: Capability.GENERAL_CHAT,
       scope: { projectId: 'project-1' },
       authorityFitness: ['NON_AUTHORITATIVE_BACKGROUND'] as const,
       maxResults: 5,
@@ -242,6 +246,7 @@ describe('durable memory value objects', () => {
     const excludeIds = ['memory-old'];
     const request = createMemoryRetrievalRequest({
       query: 'status updates',
+      capability: Capability.GENERAL_CHAT,
       scope,
       authorityFitness,
       maxResults: 5,

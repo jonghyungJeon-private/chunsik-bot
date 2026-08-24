@@ -1,13 +1,17 @@
 import type {
   ContextBundle,
   ConversationTranscriptEntry,
+  DurableMemoryAuthorityLevel,
+  DurableMemoryScope,
   Id,
   MemoryRecord,
   MemoryScope,
   Task,
 } from '../domain';
+import { createMemoryRetrievalRequest } from '../domain';
 import { ESTIMATED_CHARACTERS_PER_TOKEN, estimateTokenCount } from '../util/token-estimator';
 import type { MemoryManager } from './memory-manager';
+import type { MemoryRetriever } from './memory-retriever';
 import { scoreSemanticRelevance } from './semantic-relevance';
 
 /** Default number of recent turns to include (ADR-0017). */
@@ -22,6 +26,14 @@ const MAX_MEMORY_CHARS = 400;
 const MAX_PROJECT_CHARS = 1200;
 /** Compression keeps enough text for an entry to remain useful and attributable. */
 const DEFAULT_MINIMUM_COMPRESSION_CHARACTERS = 80;
+/** ContextBuilder owns the final bounded durable-recall output. */
+const DURABLE_RECALL_LIMIT = 10;
+const DURABLE_RECALL_NEAR_DUPLICATE_THRESHOLD = 0.8;
+const DURABLE_AUTHORITY_FITNESS: readonly DurableMemoryAuthorityLevel[] = [
+  'USER_CLAIM_OR_INTENT',
+  'ASSISTANT_NON_AUTHORITATIVE',
+  'NON_AUTHORITATIVE_BACKGROUND',
+];
 
 type ConversationRole = NonNullable<ConversationTranscriptEntry['role']>;
 
@@ -89,6 +101,7 @@ export class ContextBuilder {
   constructor(
     private readonly memory: MemoryManager,
     config: ContextBuilderConfig = {},
+    private readonly memoryRetriever?: MemoryRetriever,
   ) {
     this.ranking = ContextBuilder.validateConfig(config);
   }
@@ -117,12 +130,24 @@ export class ContextBuilder {
 
     const transcript = ContextBuilder.toTranscriptEntries(recent);
     const project = task.projectId ? await this.memory.projectMemory(task.projectId) : undefined;
+    const durableCandidates = await this.retrieveDurableCandidates(task, excludeMemoryIds);
+    const deduplicatedDurableCandidates = durableCandidates.filter(
+      ({ memory: durable }) =>
+        !transcript.some((entry) =>
+          ContextBuilder.isNearDuplicate(durable.content, entry.content),
+        ),
+    );
 
     const minimumCompressionCharacters = this.ranking
       ? ContextBuilder.resolveMinimumCompressionCharacters(this.ranking)
       : undefined;
     if (!this.ranking || !budget) {
-      return ContextBuilder.bundle(task.id, transcript, project);
+      return ContextBuilder.bundle(
+        task.id,
+        transcript,
+        project,
+        ContextBuilder.selectDurableRecall(deduplicatedDurableCandidates),
+      );
     }
 
     let remainingBudget = budget.limit;
@@ -150,17 +175,62 @@ export class ContextBuilder {
       minimumCompressionCharacters,
     );
 
+    remainingBudget = Math.max(
+      0,
+      remainingBudget -
+        conversationTranscript.reduce(
+          (total, entry) => total + budget.measure(entry.content),
+          0,
+        ),
+    );
+    const durableRecall = ContextBuilder.selectDurableRecall(
+      deduplicatedDurableCandidates,
+      budget,
+      remainingBudget,
+    );
+
     return {
       taskId: task.id,
       conversationTranscript,
       backgroundResources,
+      ...(durableRecall.length > 0 ? { durableRecall } : {}),
     };
+  }
+
+  private async retrieveDurableCandidates(
+    task: Task,
+    excludeMemoryIds: readonly Id[],
+  ): Promise<Awaited<ReturnType<MemoryRetriever['retrieve']>>> {
+    if (!this.memoryRetriever) return [];
+
+    const scope: DurableMemoryScope = {
+      ...(task.sessionId ? { sessionId: task.sessionId } : {}),
+      ...(task.projectId ? { projectId: task.projectId } : {}),
+    };
+    if (!scope.sessionId && !scope.projectId) return [];
+
+    try {
+      return await this.memoryRetriever.retrieve(
+        createMemoryRetrievalRequest({
+          query: task.intent.summary,
+          capability: task.intent.capability,
+          scope,
+          authorityFitness: DURABLE_AUTHORITY_FITNESS,
+          maxResults: DURABLE_RECALL_LIMIT,
+          excludeIds: excludeMemoryIds,
+        }),
+      );
+    } catch {
+      // Durable recall is optional/degraded. Never broaden scope or retry implicitly.
+      return [];
+    }
   }
 
   private static bundle(
     taskId: Id,
     transcript: ConversationTranscriptEntry[],
     project: MemoryRecord | undefined,
+    durableRecall: NonNullable<ContextBundle['durableRecall']>,
   ): ContextBundle {
     return {
       taskId,
@@ -168,7 +238,76 @@ export class ContextBuilder {
       backgroundResources: project
         ? [ContextBuilder.toProjectBackground(ContextBuilder.truncate(project.content, MAX_PROJECT_CHARS))]
         : [],
+      ...(durableRecall.length > 0 ? { durableRecall } : {}),
     };
+  }
+
+  private static selectDurableRecall(
+    candidates: Awaited<ReturnType<MemoryRetriever['retrieve']>>,
+    budget?: ContextBudget,
+    availableBudget?: number,
+  ): NonNullable<ContextBundle['durableRecall']> {
+    let remaining = availableBudget ?? Number.POSITIVE_INFINITY;
+    const seenIds = new Set<Id>();
+    const seenContent: string[] = [];
+    const selected: NonNullable<ContextBundle['durableRecall']> = [];
+
+    const ranked = [...candidates].sort(
+      (a, b) =>
+        b.relevanceScore - a.relevanceScore ||
+        b.memory.updatedAt.localeCompare(a.memory.updatedAt) ||
+        a.memory.id.localeCompare(b.memory.id),
+    );
+    for (const candidate of ranked) {
+      if (selected.length >= DURABLE_RECALL_LIMIT || remaining <= 0) break;
+      if (seenIds.has(candidate.memory.id)) continue;
+      if (
+        seenContent.some((content) =>
+          ContextBuilder.isNearDuplicate(candidate.memory.content, content),
+        )
+      ) {
+        continue;
+      }
+
+      const boundedContent = ContextBuilder.truncate(candidate.memory.content, MAX_MEMORY_CHARS);
+      const content = budget ? budget.truncate(boundedContent, remaining) : boundedContent;
+      if (content.length === 0) continue;
+
+      selected.push({
+        content,
+        provenance: candidate.memory.provenance,
+        epistemicStatus: candidate.memory.authorityLevel,
+        relevanceScore: candidate.relevanceScore,
+        retrievalReason: candidate.retrievalReason,
+        source: {
+          memoryId: candidate.memory.id,
+          kind: candidate.memory.kind,
+          scope: { ...candidate.memory.scope },
+          createdAt: candidate.memory.createdAt,
+          updatedAt: candidate.memory.updatedAt,
+          metadata: { ...candidate.memory.metadata },
+        },
+      });
+      seenIds.add(candidate.memory.id);
+      seenContent.push(candidate.memory.content);
+      if (budget) remaining -= budget.measure(content);
+    }
+    return selected;
+  }
+
+  private static isNearDuplicate(left: string, right: string): boolean {
+    const leftKeywords = new Set(ContextBuilder.normalizedKeywords(left));
+    const rightKeywords = new Set(ContextBuilder.normalizedKeywords(right));
+    if (leftKeywords.size === 0 || rightKeywords.size === 0) {
+      return left.trim().toLocaleLowerCase('und') === right.trim().toLocaleLowerCase('und');
+    }
+    const intersection = [...leftKeywords].filter((keyword) => rightKeywords.has(keyword)).length;
+    const union = new Set([...leftKeywords, ...rightKeywords]).size;
+    return intersection / union >= DURABLE_RECALL_NEAR_DUPLICATE_THRESHOLD;
+  }
+
+  private static normalizedKeywords(content: string): string[] {
+    return content.toLocaleLowerCase('und').match(/[\p{L}\p{N}]+/gu) ?? [];
   }
 
   private static toProjectBackground(

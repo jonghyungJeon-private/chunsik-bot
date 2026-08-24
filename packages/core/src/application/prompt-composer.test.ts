@@ -102,6 +102,56 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
     expect(spec.task).not.toContain('"provenance":"CORE_RUNTIME"');
   });
 
+  it('renders durable recall in a separate non-authoritative background section', () => {
+    const spec = composer.compose(mkTask(Capability.GENERAL_CHAT), {
+      taskId: 't1',
+      backgroundResources: [],
+      durableRecall: [
+        {
+          content: 'The user previously preferred concise updates.',
+          provenance: 'USER_PROVIDED',
+          epistemicStatus: 'USER_CLAIM_OR_INTENT',
+          relevanceScore: 0.9,
+          retrievalReason: 'semantic preference match',
+          source: {
+            memoryId: 'memory-1',
+            kind: 'SEMANTIC',
+            scope: { sessionId: 'S1' },
+            createdAt: '2026-01-01T00:00:00.000Z',
+            updatedAt: '2026-01-01T00:00:00.000Z',
+            metadata: { sourceRecordId: 'short-term-1' },
+          },
+        },
+      ],
+      conversationTranscript: [
+        {
+          content: 'Exact current-session transcript',
+          provenance: 'USER',
+          epistemicStatus: 'USER_CLAIM_OR_INTENT',
+        },
+      ],
+    });
+
+    expect(
+      entriesFromSection(
+        spec.context,
+        '2A. Durable recall (non-authoritative background; verify before relying)',
+      ),
+    ).toEqual([
+      {
+        provenance: 'USER_PROVIDED',
+        epistemicStatus: 'USER_CLAIM_OR_INTENT',
+        content: 'The user previously preferred concise updates.',
+      },
+    ]);
+    const transcript = sectionBody(
+      spec.context,
+      '3. Conversation transcript (continuity allowed; not authoritative external-state evidence)',
+    );
+    expect(transcript).toContain('Exact current-session transcript');
+    expect(transcript).not.toContain('The user previously preferred concise updates.');
+  });
+
   it('preserves full history while directing a Korean greeting to stay Korean and omit unrelated topics', () => {
     const priorUser = 'Please explain the old deployment incident.';
     const priorAssistant = 'The old deployment incident involved a stale worker.';

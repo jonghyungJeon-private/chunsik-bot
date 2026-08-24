@@ -107,6 +107,14 @@ export class PromptComposer {
       );
     }
 
+    const durableRecall = (context.durableRecall ?? []).map((entry) =>
+      PromptComposer.label(
+        entry.provenance,
+        entry.epistemicStatus,
+        isGeneralChat ? normalizePromptContextContent(entry.content) : entry.content,
+      ),
+    );
+
     const transcript = isGeneralChat
       ? PromptComposer.renderConversationTurns(context.conversationTranscript)
       : context.conversationTranscript.map((entry) =>
@@ -118,6 +126,14 @@ export class PromptComposer {
         canonicalCurrentFactsBody,
       ),
       PromptComposer.section('2. Background resources', background),
+      ...(durableRecall.length > 0
+        ? [
+            PromptComposer.section(
+              '2A. Durable recall (non-authoritative background; verify before relying)',
+              durableRecall,
+            ),
+          ]
+        : []),
       PromptComposer.section(
         isGeneralChat
           ? '3. Conversation transcript (continuity allowed; not authoritative external-state evidence)'
