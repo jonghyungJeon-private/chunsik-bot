@@ -403,6 +403,14 @@ function renderDiffBlock(diff: GitDiff, maxChars: number): string {
 }
 
 export class ResponseComposer {
+  composeMemoryStored(context: ConversationContext): OutboundMessage {
+    return { context, text: '요청한 내용을 기억해 둘게요.' };
+  }
+
+  composeMemoryStoreFailed(context: ConversationContext): OutboundMessage {
+    return { context, text: '지금은 요청한 내용을 장기 기억에 저장하지 못했어요. 대화는 계속할 수 있어요.' };
+  }
+
   compose(
     context: ConversationContext,
     result: AiExecutionResult,

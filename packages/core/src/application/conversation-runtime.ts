@@ -96,6 +96,7 @@ import type {
   RuntimeProviderRoutingAudit,
 } from './runtime-provider-routing-service';
 import type { IntentResolutionContext } from './intent-resolver';
+import type { MemoryWriter } from './memory-writer';
 import { extractTargetPathCandidates, normalizeRelativePath } from './target-scope';
 import { MAX_COMMIT_MESSAGE_CHARS, isValidCommitMessage } from './commit-message';
 import { isSafePushBranch, isSafePushRemote } from './push-target';
@@ -530,6 +531,8 @@ export interface ConversationRuntimeDeps {
     recordAssistant(text: string, context: ConversationContext, sessionId?: Id): Promise<unknown>;
     recordToolMemory(text: string, opts: { projectId?: Id; sessionId?: Id }): Promise<unknown>;
   };
+  /** Required durable-memory activation policy collaborator (M2, ADR-0073). */
+  readonly memoryWriter: MemoryWriter;
   readonly classifier: { classify(message: InboundMessage): Promise<Intent> };
   readonly projects: {
     register(path: string, session: Session): Promise<{ ok: boolean; message: string; project?: { id: Id } }>;
@@ -1953,6 +1956,40 @@ export class ConversationRuntime {
     // Anything else: fall through untouched — an ELIGIBLE/APPROVED/PATCH_READY/WORKSPACE_APPLIED anchor is
     // an optional follow-up opportunity, never a hard gate ordinary conversation must route around.
 
+    const durableMemoryContent = ConversationRuntime.explicitDurableMemoryContent(message.text);
+    if (durableMemoryContent !== null) {
+      try {
+        const candidate = this.deps.memoryWriter.createCandidate({
+          content: durableMemoryContent,
+          sourceContent: message.text,
+          trigger: 'EXPLICIT_USER_INSTRUCTION',
+          kind: 'SEMANTIC',
+          provenance: 'USER_PROVIDED',
+          authorityLevel: 'USER_CLAIM_OR_INTENT',
+          scope: { sessionId: session.id, actorId: actor.id },
+          metadata: { sourceReferences: [userMemory.id] },
+        });
+        const decision = await this.deps.memoryWriter.promote(candidate);
+        const reply =
+          decision.outcome === 'REJECTED'
+            ? this.deps.composer.composeMemoryStoreFailed(message.context)
+            : this.deps.composer.composeMemoryStored(message.context);
+        return this.respondComposed(message, session, reply);
+      } catch (error) {
+        this.deps.logger.warn('durable memory activation failed', {
+          messageId: message.id,
+          sessionId: session.id,
+          actorId: actor.id,
+          errorName: error instanceof Error ? error.name : typeof error,
+        });
+        return this.respondComposed(
+          message,
+          session,
+          this.deps.composer.composeMemoryStoreFailed(message.context),
+        );
+      }
+    }
+
     const intent = await this.deps.classifier.classify(message);
     this.deps.logger.info('intent classified', {
       capability: intent.capability,
@@ -1995,6 +2032,13 @@ export class ConversationRuntime {
 
     // (F) Work path — a chat/analysis Task (existing single-capability flow, relocated).
     return this.handleWorkTurn(message, session, actor, intent, userMemory.id, readout);
+  }
+
+  /** Exact, provider-free activation grammar. Pending governance flows have already run before this is called. */
+  private static explicitDurableMemoryContent(text: string): string | null {
+    const match = text.trim().match(/^(?:기억해줘|기억해|remember)\s*:\s*(.+)$/isu);
+    const content = match?.[1]?.trim();
+    return content ? content : null;
   }
 
   /** (A) A turn that lands while an approval is pending: interpret + route (ADR-0032 §6). */

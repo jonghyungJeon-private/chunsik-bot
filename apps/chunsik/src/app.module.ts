@@ -30,6 +30,7 @@ import {
   PromptRenderer,
   TaskManager,
   MemoryManager,
+  DefaultMemoryWriter,
   ArtifactManager,
   WorkspaceManager,
   GitManager,
@@ -454,10 +455,12 @@ const application: Provider[] = [
       // ADR-0040: production ApplyPreviewFlow — a plan-less inert conversation anchor, never discoverable by
       // StatelessApprovalFlow's plan-scoped lookup.
       const applyPreviewFlow = new StatelessApplyPreviewFlow(storage);
+      const memoryWriter = new DefaultMemoryWriter(memory);
       return new ConversationRuntime({
         actors,
         sessions,
         memory,
+        memoryWriter,
         classifier,
         // register via ProjectManager; get via the existing projects repository (ADR-0033 read path).
         projects: {

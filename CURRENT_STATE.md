@@ -501,6 +501,11 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 
 ## M2 gap assessment — first slice
 
+- **Durable Memory Write Activation: RATIFIED / IMPLEMENTATION SLICE ACTIVE.** The Product Owner ratified the
+  explicit-command-only architecture at HEAD `c6d89e02ae80b0b202a6646263baabf83437c8d8`. The next bounded M2 slice is
+  the required-`MemoryWriter` activation for `기억해:` / `기억해줘:` / `remember:` after pending-flow interception
+  and before ordinary classification. `GENERAL_CHAT` success, Assistant `SHORT_TERM` recording, and Provider/LLM
+  extraction remain non-triggers; existing ADR-0073 and persistence ownership are unchanged.
 - **Slice 5: COMPLETE_AND_ACCEPTED.** ADR-0073 durable recall now has its bounded Core retrieval and lifecycle
   plumbing, and the production composition root wires `DefaultMemoryRetriever` to the existing SQLite-owned memory
   repository through `ContextBuilder`. Durable recall remains separate from the exact `SHORT_TERM` transcript and

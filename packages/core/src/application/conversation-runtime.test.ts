@@ -35,6 +35,7 @@ import type {
   InboundMessage,
   Intent,
   MemoryRecord,
+  MemoryCandidateInput,
   PatchGenerationInput,
   PatchSet,
   PromptSpec,
@@ -66,6 +67,7 @@ import type { TestResultDetail } from './response-composer';
 import { IntentClassifier } from './intent-classifier';
 import { ContextBuilder } from './context-builder';
 import type { MemoryManager } from './memory-manager';
+import type { MemoryWriteDecision, MemoryWriter } from './memory-writer';
 import type { CapabilityRouter } from './capability-router';
 import { buildCanonicalDiff, splitCanonicalDiff } from './preview-delivery';
 import { IntentResolver } from './intent-resolver';
@@ -389,6 +391,9 @@ interface Calls {
   scopeFindPending: number;
   lastScopeAnchor?: PendingScopeClarification;
   recordAssistant: number;
+  memoryCreateCandidate: number;
+  memoryPromote: number;
+  lastMemoryCandidateInput?: MemoryCandidateInput;
   codeGenerationGenerate: number;
   codeGenerationGetProposal: number;
   lastCodeGenerationInput?: GenerateCodeInput;
@@ -537,6 +542,9 @@ interface Opts {
   runOutcome?: ExecutionOutcome;
   resumeOutcome?: ExecutionOutcome;
   pending?: ApprovalRequest | null;
+  memoryCreateCandidateThrows?: boolean;
+  memoryPromoteThrows?: boolean;
+  memoryPromotionDecision?: MemoryWriteDecision;
   reconstruct?: { request: ExecutionRequest; prior: ExecutionOutcome } | null;
   /** Fake `workspace.list` result per glob — defaults to reporting no hits at all (Sprint 2o). */
   workspaceList?: (glob?: string) => string[];
@@ -669,6 +677,8 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
     scopeClear: 0,
     scopeFindPending: 0,
     recordAssistant: 0,
+    memoryCreateCandidate: 0,
+    memoryPromote: 0,
     codeGenerationGenerate: 0,
     codeGenerationGetProposal: 0,
     workspaceDiff: 0,
@@ -700,6 +710,39 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
   };
   const composer = new ResponseComposer();
   const intentResolver = new IntentResolver();
+  const memoryWriter: MemoryWriter = {
+    createCandidate(input) {
+      calls.memoryCreateCandidate++;
+      calls.lastMemoryCandidateInput = input;
+      if (opts.memoryCreateCandidateThrows) throw new Error('candidate failed');
+      return { ...input, validationState: 'PENDING', metadata: Object.freeze(input.metadata ?? {}) };
+    },
+    async promote(candidate) {
+      calls.memoryPromote++;
+      if (opts.memoryPromoteThrows) throw new Error('promotion failed');
+      return (
+        opts.memoryPromotionDecision ?? {
+          outcome: 'PROMOTED',
+          memory: {
+            id: 'durable-1',
+            content: candidate.content,
+            memoryType: MemoryType.LONG_TERM,
+            kind: candidate.kind,
+            provenance: candidate.provenance,
+            authorityLevel: candidate.authorityLevel,
+            scope: candidate.scope,
+            createdAt: TS,
+            updatedAt: TS,
+            metadata: candidate.metadata,
+          },
+          policyReason: 'accepted',
+        }
+      );
+    },
+    async forget() {
+      return { outcome: 'NOT_FOUND', memoryId: 'missing', policyReason: 'not used' };
+    },
+  };
 
   const approvalFlow: ApprovalFlow = {
     async findPending() {
@@ -764,6 +807,7 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
       async recordAssistant() { calls.recordAssistant++; return undefined; },
       async recordToolMemory() { return undefined; },
     },
+    memoryWriter,
     classifier: {
       async classify() {
         calls.classify++;
@@ -1011,6 +1055,83 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
 // ── Sprint 2k — Conversation Runtime core ───────────────────────────────────────────────────────
 
 describe('ConversationRuntime', () => {
+  it.each([
+    ['기억해:', '기억해: 나는 민트초코를 좋아해'],
+    ['기억해줘:', '  기억해줘: 다음 회의는 화요일이야  '],
+    ['remember:', 'ReMeMbEr: use pnpm for this project'],
+  ])('%s explicit command creates and promotes one scoped durable-memory candidate', async (_prefix, text) => {
+    const { deps, calls } = makeDeps();
+
+    const result = await new ConversationRuntime(deps).handle(messageOf(text));
+
+    expect(result.status).toBe('RESPONDED');
+    expect(result.reply.text).toBe('요청한 내용을 기억해 둘게요.');
+    expect(calls.memoryCreateCandidate).toBe(1);
+    expect(calls.memoryPromote).toBe(1);
+    expect(calls.classify).toBe(0);
+    expect(calls.lastMemoryCandidateInput).toEqual({
+      content: text.trim().replace(/^(?:기억해줘|기억해|remember)\s*:\s*/iu, '').trim(),
+      sourceContent: text,
+      trigger: 'EXPLICIT_USER_INSTRUCTION',
+      kind: 'SEMANTIC',
+      provenance: 'USER_PROVIDED',
+      authorityLevel: 'USER_CLAIM_OR_INTENT',
+      scope: { sessionId: 'sess-1', actorId: 'actor-1' },
+      metadata: { sourceReferences: ['mem-1'] },
+    });
+  });
+
+  it('a message without an activation prefix follows normal classifier routing unchanged', async () => {
+    const { deps, calls } = makeDeps();
+
+    const result = await new ConversationRuntime(deps).handle(messageOf('이 내용을 기억하면 좋겠어'));
+
+    expect(result.status).toBe('RESPONDED');
+    expect(calls.classify).toBe(1);
+    expect(calls.memoryCreateCandidate).toBe(0);
+    expect(calls.memoryPromote).toBe(0);
+  });
+
+  it('pending approval interception has priority over explicit durable-memory activation', async () => {
+    const { deps, calls } = makeDeps({ pending: pendingApprovalOf() });
+
+    const result = await new ConversationRuntime(deps).handle(messageOf('기억해: 승인 흐름이 먼저야'));
+
+    expect(result.status).toBe('RESPONDED');
+    expect(calls.memoryCreateCandidate).toBe(0);
+    expect(calls.memoryPromote).toBe(0);
+    expect(calls.classify).toBe(0);
+  });
+
+  it.each(['createCandidate', 'promote'] as const)(
+    '%s failure warns and returns a non-breaking memory failure response',
+    async (operation) => {
+      const { deps, calls } = makeDeps({
+        memoryCreateCandidateThrows: operation === 'createCandidate',
+        memoryPromoteThrows: operation === 'promote',
+      });
+
+      const result = await new ConversationRuntime(deps).handle(messageOf('기억해: 실패해도 대화는 계속해'));
+
+      expect(result.status).toBe('RESPONDED');
+      expect(result.reply.text).toContain('장기 기억에 저장하지 못했어요');
+      expect(calls.loggerWarn).toBe(1);
+      expect(calls.loggerWarnCalls[0]?.message).toBe('durable memory activation failed');
+      expect(calls.classify).toBe(0);
+    },
+  );
+
+  it('ordinary GENERAL_CHAT success never activates durable memory', async () => {
+    const { deps, calls } = makeDeps();
+
+    const result = await new ConversationRuntime(deps).handle(messageOf('춘식아 안녕?'));
+
+    expect(result.status).toBe('RESPONDED');
+    expect(result.reply.text).toBe('hello');
+    expect(calls.memoryCreateCandidate).toBe(0);
+    expect(calls.memoryPromote).toBe(0);
+  });
+
   it('chat intent → RESPONDED', async () => {
     const { deps, calls } = makeDeps();
     const result = await new ConversationRuntime(deps).handle(messageOf('안녕'));

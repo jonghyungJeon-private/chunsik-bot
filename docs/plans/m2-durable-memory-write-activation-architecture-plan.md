@@ -1,8 +1,28 @@
 # M2 Durable Memory Write Activation Architecture Proposal
 
-Status: **PROPOSED — HUMAN RATIFICATION REQUIRED**. This document narrows the runtime activation of the
-ADR-0073 durable-memory write contract. It does not authorize or implement the production write path. Product
-Owner and independent Chief Architect ratification are required before the implementation slice below begins.
+Status: **RATIFIED**. This document narrows the runtime activation of the ADR-0073 durable-memory write contract.
+
+## Ratification note
+
+The Product Owner ratified this proposal against repository HEAD
+`c6d89e02ae80b0b202a6646263baabf83437c8d8` with the following binding clarifications. Where the earlier proposal
+text differs, this note controls:
+
+- activation is explicit-command-only for the prefixes `기억해:`, `기억해줘:`, and case-insensitive `remember:`;
+- pending approval, scope-clarification, and apply-preview flows retain priority, then activation runs before normal
+  classifier routing;
+- ordinary `GENERAL_CHAT` turns are not promotion triggers, and `SHORT_TERM` Assistant recording never invokes
+  `MemoryWriter`;
+- no Provider or LLM performs extraction;
+- `MemoryWriter` is required at the activation seam and retains application-policy ownership through its existing
+  `createCandidate` / `promote` / `forget` contract; no `candidates()` method is introduced;
+- explicit-command candidate facts map to the existing ADR-0073 vocabulary as
+  `EXPLICIT_USER_INSTRUCTION` (explicit-command), `SEMANTIC`, `USER_PROVIDED` (user), and
+  `USER_CLAIM_OR_INTENT` (user-stated), with both current `sessionId` and `actorId` in scope;
+- `MemoryManager` and the existing `MemoryRepository` path retain persistence ownership;
+- conversation completion is independent from a durable-memory persistence failure: the turn responds with a
+  failure notice and does not continue through classifier/execution;
+- ADR-0073 tier semantics and `MemoryType.LONG_TERM` invariants are unchanged.
 
 ## Existing contract assessment
 
