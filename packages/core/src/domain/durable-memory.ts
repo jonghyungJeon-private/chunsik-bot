@@ -7,9 +7,13 @@ export const MAX_MEMORY_RETRIEVAL_RESULTS = 100;
 export type DurableMemoryProvenance =
   | 'USER_PROVIDED'
   | 'ASSISTANT_GENERATED'
+  | 'CORE_RUNTIME'
   | 'CANONICAL_PROJECT'
-  | 'EPISODIC'
-  | 'SEMANTIC';
+  | 'TOOL_OR_CONNECTOR'
+  | 'LEGACY_UNKNOWN';
+
+/** Recall intent is independent from the source that produced the memory. */
+export type DurableMemoryKind = 'EPISODIC' | 'SEMANTIC';
 
 /** Durable recall is background; it can never establish a current authoritative fact. */
 export type DurableMemoryAuthorityLevel = Exclude<
@@ -18,23 +22,24 @@ export type DurableMemoryAuthorityLevel = Exclude<
 >;
 
 export interface DurableMemoryScope {
-  sessionId?: Id;
-  projectId?: Id;
-  actorId?: Id;
+  readonly sessionId?: Id;
+  readonly projectId?: Id;
+  readonly actorId?: Id;
 }
 
 export interface DurableMemory {
-  id: Id;
-  content: string;
-  memoryType: MemoryType.LONG_TERM;
-  provenance: DurableMemoryProvenance;
-  authorityLevel: DurableMemoryAuthorityLevel;
-  scope: DurableMemoryScope;
-  createdAt: IsoTimestamp;
-  updatedAt: IsoTimestamp;
-  expiresAt?: IsoTimestamp;
-  supersededBy?: Id;
-  metadata: Metadata;
+  readonly id: Id;
+  readonly content: string;
+  readonly memoryType: MemoryType.LONG_TERM;
+  readonly kind: DurableMemoryKind;
+  readonly provenance: DurableMemoryProvenance;
+  readonly authorityLevel: DurableMemoryAuthorityLevel;
+  readonly scope: DurableMemoryScope;
+  readonly createdAt: IsoTimestamp;
+  readonly updatedAt: IsoTimestamp;
+  readonly expiresAt?: IsoTimestamp;
+  readonly supersededBy?: Id;
+  readonly metadata: Readonly<Metadata>;
 }
 
 export type DurableMemoryInput = Omit<DurableMemory, 'memoryType'> & {
@@ -52,6 +57,7 @@ export interface MemoryCandidateInput {
   content: string;
   sourceContent: string;
   trigger: MemoryPromotionTrigger;
+  kind: DurableMemoryKind;
   provenance: DurableMemoryProvenance;
   authorityLevel: DurableMemoryAuthorityLevel;
   scope: DurableMemoryScope;
@@ -60,14 +66,15 @@ export interface MemoryCandidateInput {
 
 /** A transient proposal. It intentionally has no persisted-memory identity or timestamps. */
 export interface MemoryCandidate {
-  content: string;
-  sourceContent: string;
-  trigger: MemoryPromotionTrigger;
-  provenance: DurableMemoryProvenance;
-  authorityLevel: DurableMemoryAuthorityLevel;
-  scope: DurableMemoryScope;
-  validationState: MemoryCandidateValidationState;
-  metadata: Metadata;
+  readonly content: string;
+  readonly sourceContent: string;
+  readonly trigger: MemoryPromotionTrigger;
+  readonly kind: DurableMemoryKind;
+  readonly provenance: DurableMemoryProvenance;
+  readonly authorityLevel: DurableMemoryAuthorityLevel;
+  readonly scope: DurableMemoryScope;
+  readonly validationState: MemoryCandidateValidationState;
+  readonly metadata: Readonly<Metadata>;
 }
 
 export interface MemoryRetrievalRequestInput {
@@ -79,11 +86,11 @@ export interface MemoryRetrievalRequestInput {
 }
 
 export interface MemoryRetrievalRequest {
-  query: string;
-  scope: DurableMemoryScope;
-  authorityFitness: readonly DurableMemoryAuthorityLevel[];
-  maxResults: number;
-  excludeIds: readonly Id[];
+  readonly query: string;
+  readonly scope: DurableMemoryScope;
+  readonly authorityFitness: readonly DurableMemoryAuthorityLevel[];
+  readonly maxResults: number;
+  readonly excludeIds: readonly Id[];
 }
 
 export interface RetrievedMemoryInput {
@@ -124,9 +131,84 @@ function validateScope(scope: DurableMemoryScope): void {
   }
 }
 
+const AUTHORITY_BY_PROVENANCE: Readonly<
+  Record<DurableMemoryProvenance, DurableMemoryAuthorityLevel>
+> = Object.freeze({
+  USER_PROVIDED: 'USER_CLAIM_OR_INTENT',
+  ASSISTANT_GENERATED: 'ASSISTANT_NON_AUTHORITATIVE',
+  CORE_RUNTIME: 'NON_AUTHORITATIVE_BACKGROUND',
+  CANONICAL_PROJECT: 'NON_AUTHORITATIVE_BACKGROUND',
+  TOOL_OR_CONNECTOR: 'NON_AUTHORITATIVE_BACKGROUND',
+  LEGACY_UNKNOWN: 'NON_AUTHORITATIVE_BACKGROUND',
+});
+
+const DURABLE_MEMORY_KINDS: ReadonlySet<string> = new Set(['EPISODIC', 'SEMANTIC']);
+const DURABLE_AUTHORITY_LEVELS: ReadonlySet<string> = new Set(
+  Object.values(AUTHORITY_BY_PROVENANCE),
+);
+
+function validateKind(kind: DurableMemoryKind): void {
+  if (!DURABLE_MEMORY_KINDS.has(kind)) {
+    throw new DurableMemoryValidationError('kind must be EPISODIC or SEMANTIC');
+  }
+}
+
+function validateProvenanceAuthority(
+  provenance: DurableMemoryProvenance,
+  authorityLevel: DurableMemoryAuthorityLevel,
+): void {
+  if (authorityLevel === ('AUTHORITATIVE_CURRENT_FACT' as DurableMemoryAuthorityLevel)) {
+    throw new DurableMemoryValidationError(
+      'durable memory cannot have AUTHORITATIVE_CURRENT_FACT authority',
+    );
+  }
+  if (!DURABLE_AUTHORITY_LEVELS.has(authorityLevel)) {
+    throw new DurableMemoryValidationError('authorityLevel is not valid for durable memory');
+  }
+  const requiredAuthority = AUTHORITY_BY_PROVENANCE[provenance];
+  if (requiredAuthority === undefined) {
+    throw new DurableMemoryValidationError('provenance is not valid for durable memory');
+  }
+  if (authorityLevel !== requiredAuthority) {
+    throw new DurableMemoryValidationError(
+      `${provenance} provenance requires ${requiredAuthority} authority`,
+    );
+  }
+}
+
+function immutableScope(scope: DurableMemoryScope): DurableMemoryScope {
+  return Object.freeze({ ...scope });
+}
+
+function cloneAndFreezeMetadataValue(value: unknown, ancestors: ReadonlySet<object>): unknown {
+  if (value === null || typeof value !== 'object') return value;
+  if (ancestors.has(value)) {
+    throw new DurableMemoryValidationError('metadata must not contain circular references');
+  }
+  const nextAncestors = new Set(ancestors);
+  nextAncestors.add(value);
+  if (Array.isArray(value)) {
+    return Object.freeze(value.map((entry) => cloneAndFreezeMetadataValue(entry, nextAncestors)));
+  }
+  return Object.freeze(
+    Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [
+        key,
+        cloneAndFreezeMetadataValue(entry, nextAncestors),
+      ]),
+    ),
+  );
+}
+
+function immutableMetadata(metadata: Metadata): Readonly<Metadata> {
+  return cloneAndFreezeMetadataValue(metadata, new Set()) as Readonly<Metadata>;
+}
+
 export function createDurableMemory(input: DurableMemoryInput): DurableMemory {
   requireText(input.id, 'id');
   requireText(input.content, 'content');
+  validateKind(input.kind);
+  validateProvenanceAuthority(input.provenance, input.authorityLevel);
   validateScope(input.scope);
   requireTimestamp(input.createdAt, 'createdAt');
   requireTimestamp(input.updatedAt, 'updatedAt');
@@ -146,18 +228,26 @@ export function createDurableMemory(input: DurableMemoryInput): DurableMemory {
     }
   }
 
-  return { ...input, memoryType: MemoryType.LONG_TERM };
+  return Object.freeze({
+    ...input,
+    memoryType: MemoryType.LONG_TERM,
+    scope: immutableScope(input.scope),
+    metadata: immutableMetadata(input.metadata),
+  });
 }
 
 export function createMemoryCandidate(input: MemoryCandidateInput): MemoryCandidate {
   requireText(input.content, 'content');
   requireText(input.sourceContent, 'sourceContent');
+  validateKind(input.kind);
+  validateProvenanceAuthority(input.provenance, input.authorityLevel);
   validateScope(input.scope);
-  return {
+  return Object.freeze({
     ...input,
+    scope: immutableScope(input.scope),
     validationState: 'PENDING',
-    metadata: input.metadata ?? {},
-  };
+    metadata: immutableMetadata(input.metadata ?? {}),
+  });
 }
 
 export function createMemoryRetrievalRequest(
@@ -177,12 +267,27 @@ export function createMemoryRetrievalRequest(
   if (input.authorityFitness.length === 0) {
     throw new DurableMemoryValidationError('authorityFitness must not be empty');
   }
+  for (const authorityLevel of input.authorityFitness) {
+    if (
+      authorityLevel === ('AUTHORITATIVE_CURRENT_FACT' as DurableMemoryAuthorityLevel) ||
+      !DURABLE_AUTHORITY_LEVELS.has(authorityLevel)
+    ) {
+      throw new DurableMemoryValidationError(
+        'authorityFitness contains authority invalid for durable memory',
+      );
+    }
+  }
   const excludeIds = input.excludeIds ?? [];
   for (const id of excludeIds) requireText(id, 'excludeId');
   if (new Set(excludeIds).size !== excludeIds.length) {
     throw new DurableMemoryValidationError('excludeIds must not contain duplicates');
   }
-  return { ...input, excludeIds };
+  return Object.freeze({
+    ...input,
+    scope: immutableScope(input.scope),
+    authorityFitness: Object.freeze([...input.authorityFitness]),
+    excludeIds: Object.freeze([...excludeIds]),
+  });
 }
 
 export function createRetrievedMemory(input: RetrievedMemoryInput): RetrievedMemory {
@@ -194,5 +299,5 @@ export function createRetrievedMemory(input: RetrievedMemoryInput): RetrievedMem
     throw new DurableMemoryValidationError('relevanceScore must be between 0 and 1');
   }
   requireText(input.retrievalReason, 'retrievalReason');
-  return { ...input };
+  return Object.freeze({ ...input });
 }
