@@ -15,6 +15,7 @@ import type {
   CodeProposalRepository,
   CommandExecution,
   CommandExecutionRepository,
+  DurableMemoryQuery,
   Id,
   MemoryRecord,
   MemoryRepository,
@@ -396,6 +397,14 @@ class SqliteMemoryRepository extends JsonRepository<MemoryRecord> implements Mem
       clauses.push('thread_id = ?');
       params.push(scope.threadId);
     }
+    if (scope.userId !== undefined) {
+      clauses.push(`json_extract(data, '$.scope.userId') = ?`);
+      params.push(scope.userId);
+    }
+    if (scope.taskId !== undefined) {
+      clauses.push(`json_extract(data, '$.scope.taskId') = ?`);
+      params.push(scope.taskId);
+    }
     if (type !== undefined) {
       clauses.push('type = ?');
       params.push(type);
@@ -412,6 +421,56 @@ class SqliteMemoryRepository extends JsonRepository<MemoryRecord> implements Mem
       )
       .all(...params) as Row[];
     return rows.map((r) => JSON.parse(r.data) as MemoryRecord);
+  }
+
+  async findDurableCandidates(query: DurableMemoryQuery): Promise<MemoryRecord[]> {
+    if (!Number.isInteger(query.limit) || query.limit < 1) {
+      throw new RangeError('DurableMemoryQuery.limit must be a positive integer');
+    }
+
+    const clauses = [`type = 'LONG_TERM'`];
+    const params: unknown[] = [];
+    const columnScopes: ReadonlyArray<[keyof MemoryScope, string]> = [
+      ['sessionId', 'session_id'],
+      ['projectId', 'project_id'],
+      ['channelId', 'channel_id'],
+      ['threadId', 'thread_id'],
+    ];
+    for (const [key, column] of columnScopes) {
+      const value = query.scope[key];
+      if (value !== undefined) {
+        clauses.push(`${column} = ?`);
+        params.push(value);
+      }
+    }
+    for (const key of ['userId', 'taskId'] as const) {
+      const value = query.scope[key];
+      if (value !== undefined) {
+        clauses.push(`json_extract(data, '$.scope.${key}') = ?`);
+        params.push(value);
+      }
+    }
+    if (query.excludeIds && query.excludeIds.length > 0) {
+      clauses.push(`id NOT IN (${query.excludeIds.map(() => '?').join(', ')})`);
+      params.push(...query.excludeIds);
+    }
+    if (query.excludeExpired) {
+      clauses.push(
+        `(json_type(data, '$.metadata.expiresAt') IS NULL OR datetime(json_extract(data, '$.metadata.expiresAt')) >= datetime('now'))`,
+      );
+    }
+    if (query.excludeSuperseded) {
+      clauses.push(`json_type(data, '$.metadata.supersededBy') IS NULL`);
+    }
+
+    params.push(query.limit);
+    const rows = this.db
+      .prepare(
+        `SELECT data FROM memories WHERE ${clauses.join(' AND ')}
+         ORDER BY json_extract(data, '$.updatedAt') DESC, id ASC LIMIT ?`,
+      )
+      .all(...params) as Row[];
+    return rows.map((row) => JSON.parse(row.data) as MemoryRecord);
   }
 }
 

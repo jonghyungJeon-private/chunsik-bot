@@ -37,8 +37,18 @@ export interface TaskRunRepository extends Repository<TaskRun> {
   listByTask(taskId: Id): Promise<TaskRun[]>;
 }
 
+/** Bounded, storage-neutral candidate lookup for durable-memory recall. */
+export interface DurableMemoryQuery {
+  scope: MemoryScope;
+  limit: number;
+  excludeIds?: string[];
+  excludeExpired?: boolean;
+  excludeSuperseded?: boolean;
+}
+
 export interface MemoryRepository extends Repository<MemoryRecord> {
   findByScope(scope: MemoryScope, type?: MemoryType): Promise<MemoryRecord[]>;
+  findDurableCandidates(query: DurableMemoryQuery): Promise<MemoryRecord[]>;
 }
 
 export interface ArtifactRepository extends Repository<Artifact> {
