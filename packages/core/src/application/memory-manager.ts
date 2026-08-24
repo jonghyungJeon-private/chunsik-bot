@@ -148,6 +148,29 @@ export class MemoryManager {
       .slice(-limit);
   }
 
+  /** Exact durable-memory lookup used by application-owned lifecycle policy. */
+  async durableMemory(id: Id): Promise<MemoryRecord | null> {
+    return this.storage.memories.get(id);
+  }
+
+  /** Scope-bound durable-memory lookup; unbounded repository list is intentionally absent. */
+  async durableMemories(scope: MemoryScope): Promise<MemoryRecord[]> {
+    return this.storage.memories.findByScope(scope, MemoryType.LONG_TERM);
+  }
+
+  /** Persist an application-approved durable record through the existing source of truth. */
+  async saveDurable(record: MemoryRecord): Promise<MemoryRecord> {
+    if (record.type !== MemoryType.LONG_TERM) {
+      throw new Error('saveDurable accepts LONG_TERM memory only');
+    }
+    return this.storage.memories.save(record);
+  }
+
+  /** Apply an application-approved exact forget through the existing repository. */
+  async forgetDurable(id: Id): Promise<void> {
+    await this.storage.memories.delete(id);
+  }
+
   /**
    * Preserve persistence order even when multiple turns arrive within the same
    * clock millisecond. Context retrieval can then select the newest records by

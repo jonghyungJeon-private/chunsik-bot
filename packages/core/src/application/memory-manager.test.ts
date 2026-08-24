@@ -22,8 +22,8 @@ function fakeStorage() {
           (scope.channelId === undefined || r.scope.channelId === scope.channelId),
       );
     },
-    async get() {
-      return null;
+    async get(id: string) {
+      return mem.find((record) => record.id === id) ?? null;
     },
     async delete(id: string) {
       const i = mem.findIndex((m) => m.id === id);
@@ -144,5 +144,48 @@ describe('MemoryManager project memory (ADR-0018)', () => {
     const latest = await mm.projectMemory('P1');
     expect(latest?.content).toBe('# Project: demo');
     expect(await mm.projectMemory('P2')).toBeUndefined();
+  });
+});
+
+describe('MemoryManager durable persistence boundary (ADR-0073)', () => {
+  it('owns exact durable save, scoped read, lookup, and forget operations', async () => {
+    const { storage, mem } = fakeStorage();
+    const mm = new MemoryManager(storage, {} as VectorProvider);
+    const record: MemoryRecord = {
+      id: 'durable-1',
+      type: MemoryType.LONG_TERM,
+      scope: { userId: 'actor-1' },
+      content: 'Prefer concise updates.',
+      metadata: {
+        kind: 'SEMANTIC',
+        provenance: 'USER_PROVIDED',
+        authorityLevel: 'USER_CLAIM_OR_INTENT',
+      },
+      createdAt: '2026-08-24T00:00:00.000Z',
+      updatedAt: '2026-08-24T00:00:00.000Z',
+    };
+
+    await expect(mm.saveDurable(record)).resolves.toBe(record);
+    await expect(mm.durableMemories({ userId: 'actor-1' })).resolves.toEqual([record]);
+    await expect(mm.durableMemory(record.id)).resolves.toBe(record);
+    await mm.forgetDurable(record.id);
+    expect(mem).toEqual([]);
+  });
+
+  it('refuses non-durable writes on the durable persistence path', async () => {
+    const { storage } = fakeStorage();
+    const mm = new MemoryManager(storage, {} as VectorProvider);
+    const shortTerm: MemoryRecord = {
+      id: 'short-1',
+      type: MemoryType.SHORT_TERM,
+      scope: { sessionId: 'session-1' },
+      content: 'transcript',
+      createdAt: '2026-08-24T00:00:00.000Z',
+      updatedAt: '2026-08-24T00:00:00.000Z',
+    };
+
+    await expect(mm.saveDurable(shortTerm)).rejects.toThrow(
+      'saveDurable accepts LONG_TERM memory only',
+    );
   });
 });
