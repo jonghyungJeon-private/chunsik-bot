@@ -210,7 +210,7 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
     ).toBeLessThanOrEqual(8);
   });
 
-  it('ranks transcript and durable recall through one final budget allocation', async () => {
+  it('protects required transcript continuity before allocating any durable remainder', async () => {
     const memory = {
       recentShortTerm: async () => [rec('1', 'assistant', 'low-ranked transcript')],
     } as unknown as MemoryManager;
@@ -228,8 +228,74 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
       retriever,
     ).build(taskWith({ sessionId: 'S1' }));
 
-    expect(bundle.durableRecall?.map((entry) => entry.content)).toEqual(['durable wins']);
-    expect(bundle.conversationTranscript).toEqual([]);
+    expect(bundle.conversationTranscript.map((entry) => entry.content)).toEqual([
+      'low-ranked …',
+    ]);
+    expect(bundle.durableRecall).toBeUndefined();
+  });
+
+  it('preserves the newest User turn and immediatelyPreviousUserTurn under durable pressure', async () => {
+    const memory = {
+      recentShortTerm: async () => [
+        rec('1', 'assistant', 'latest assistant continuity'),
+        rec('2', 'user', 'exact newest user turn'),
+      ],
+    } as unknown as MemoryManager;
+    const retriever: MemoryRetriever = {
+      retrieve: async () => [
+        durable('high-score', 'high scoring durable background', { relevanceScore: 1 }),
+      ],
+    };
+    const task = taskWith({ sessionId: 'S1', requestText: 'current request' });
+
+    const bundle = await new ContextBuilder(
+      memory,
+      {
+        maxCharacters: 52,
+        roleWeights: { user: 0, assistant: 0 },
+        recencyWeight: 0,
+      },
+      retriever,
+    ).build(task);
+    const prompt = new PromptComposer().compose(task, bundle);
+
+    expect(bundle.conversationTranscript.map((entry) => entry.content)).toEqual([
+      'latest assistant continuity',
+      'exact newest user turn',
+    ]);
+    expect(bundle.durableRecall?.map((entry) => entry.content)).toEqual(['hi…']);
+    expect(prompt.context).toContain(
+      'immediatelyPreviousUserTurn: \\"exact newest user turn\\"',
+    );
+  });
+
+  it('applies configured transcript compression when durable recall candidates are present', async () => {
+    const memory = {
+      recentShortTerm: async () => [
+        rec('1', 'assistant', 'abcdefghijkl'),
+        rec('2', 'user', 'mnopqrstuvwx'),
+      ],
+    } as unknown as MemoryManager;
+    const retriever: MemoryRetriever = {
+      retrieve: async () => [durable('compression-pressure', 'durable background')],
+    };
+
+    const bundle = await new ContextBuilder(
+      memory,
+      {
+        maxTokens: 4,
+        recencyWeight: 0,
+        roleWeights: { assistant: 0, user: 10 },
+        compressionConfig: { minimumCharactersPerEntry: 4 },
+      },
+      retriever,
+    ).build(taskWith({ sessionId: 'S1' }));
+
+    expect(bundle.conversationTranscript.map((entry) => entry.content)).toEqual([
+      'abc…',
+      'mnopqrstuvwx',
+    ]);
+    expect(bundle.durableRecall).toBeUndefined();
   });
 
   it('admits zero durable entries when higher-scored transcript consumes the budget', async () => {
@@ -305,6 +371,58 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
     expect(failed).toEqual(baseline);
     expect(failedCalls).toBe(1);
     expect(unscoped.durableRecall).toBeUndefined();
+  });
+
+  it('discards malformed resolved durable candidates while retaining valid recall and transcript', async () => {
+    const memory = {
+      recentShortTerm: async () => [rec('1', 'user', 'exact short-term context')],
+    } as unknown as MemoryManager;
+    const valid = durable('valid', 'valid durable context');
+    const retriever: MemoryRetriever = {
+      retrieve: async () =>
+        [
+          valid,
+          { ...valid, relevanceScore: Number.NaN },
+          { ...valid, memory: { ...valid.memory, content: '   ' } },
+          { memory: null },
+        ] as unknown as Awaited<ReturnType<MemoryRetriever['retrieve']>>,
+    };
+
+    const bundle = await new ContextBuilder(memory, {}, retriever).build(
+      taskWith({ sessionId: 'S1' }),
+    );
+
+    expect(bundle.conversationTranscript.map((entry) => entry.content)).toEqual([
+      'exact short-term context',
+    ]);
+    expect(bundle.durableRecall?.map((entry) => entry.content)).toEqual([
+      'valid durable context',
+    ]);
+  });
+
+  it('degrades all-malformed resolved durable recall to empty without losing existing context', async () => {
+    const memory = {
+      recentShortTerm: async () => [rec('1', 'user', 'exact short-term context')],
+      projectMemory: async () => rec('2', 'project', 'project background'),
+    } as unknown as MemoryManager;
+    const retriever: MemoryRetriever = {
+      retrieve: async () =>
+        [null, { memory: undefined }, { memory: { content: '' } }] as unknown as Awaited<
+          ReturnType<MemoryRetriever['retrieve']>
+        >,
+    };
+
+    const bundle = await new ContextBuilder(memory, {}, retriever).build(
+      taskWith({ sessionId: 'S1', projectId: 'P1' }),
+    );
+
+    expect(bundle.conversationTranscript.map((entry) => entry.content)).toEqual([
+      'exact short-term context',
+    ]);
+    expect(bundle.backgroundResources.map((entry) => entry.content)).toEqual([
+      'project background',
+    ]);
+    expect(bundle.durableRecall).toBeUndefined();
   });
 
   it('preserves User/Assistant provenance and epistemic status in same-Session order', async () => {
@@ -628,7 +746,7 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
     expect(bundle.conversationTranscript.map((entry) => entry.content)).toEqual(['newest']);
   });
 
-  it('preserves the existing recency-only bundle when relevanceWeight is omitted', async () => {
+  it('protects newest User and Assistant continuity when relevanceWeight is omitted', async () => {
     const memory = {
       recentShortTerm: async () => [
         rec('1', 'user', 'hello but older'),
@@ -642,19 +760,10 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
       recencyWeight: 2,
     }).build(taskWith({ sessionId: 'S1' }));
 
-    expect(bundle).toEqual({
-      taskId: 't1',
-      conversationTranscript: [
-        {
-          turnNumber: 1,
-          role: 'assistant',
-          content: 'newest unrelated',
-          provenance: 'ASSISTANT',
-          epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE',
-        },
-      ],
-      backgroundResources: [],
-    });
+    expect(bundle.conversationTranscript.map((entry) => entry.content)).toEqual([
+      'hello but older',
+      '…',
+    ]);
   });
 
   it('uses role relevance to prefer User history over Assistant history', async () => {
@@ -690,7 +799,7 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
     }).build(taskWith({ sessionId: 'S1' }));
 
     expect(bundle.conversationTranscript.map((entry) => entry.content)).toEqual([
-      'hello context ranking',
+      'weather tomorrow for…',
     ]);
   });
 
@@ -818,7 +927,8 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
     }).build(taskWith({ sessionId: 'S1' }));
 
     expect(bundle.conversationTranscript.map((entry) => entry.content)).toEqual([
-      'hello historical context',
+      'he…',
+      'newest unrelated item',
     ]);
   });
 
