@@ -180,14 +180,16 @@ export class DefaultMemoryWriter implements MemoryWriter {
       typeof candidate.metadata['supersedesMemoryId'] === 'string'
         ? candidate.metadata['supersedesMemoryId']
         : undefined;
+    let supersededRecord: MemoryRecord | undefined;
     if (supersededMemoryId !== undefined) {
-      const supersessionRejection = await this.validateSupersession(
+      const supersessionValidation = await this.validateSupersession(
         supersededMemoryId,
         candidate,
       );
-      if (supersessionRejection !== undefined) {
-        return { outcome: 'REJECTED', policyReason: supersessionRejection };
+      if ('policyReason' in supersessionValidation) {
+        return { outcome: 'REJECTED', policyReason: supersessionValidation.policyReason };
       }
+      supersededRecord = supersessionValidation.record;
     }
 
     const timestamp = now();
@@ -214,6 +216,28 @@ export class DefaultMemoryWriter implements MemoryWriter {
       saved = await this.memoryManager.saveDurable(record);
     } catch (cause) {
       throw new MemoryWriterPersistenceError('PROMOTE', cause);
+    }
+    if (supersededRecord !== undefined) {
+      try {
+        await this.memoryManager.saveDurable({
+          ...supersededRecord,
+          metadata: { ...(supersededRecord.metadata ?? {}), supersededBy: saved.id },
+          updatedAt: timestamp,
+        });
+      } catch (cause) {
+        try {
+          await this.memoryManager.forgetDurable(saved.id);
+        } catch (rollbackCause) {
+          throw new MemoryWriterPersistenceError(
+            'PROMOTE',
+            new AggregateError(
+              [cause, rollbackCause],
+              'failed to mark superseded memory and roll back the new version',
+            ),
+          );
+        }
+        throw new MemoryWriterPersistenceError('PROMOTE', cause);
+      }
     }
     const memory = toDurableMemory(saved);
     return supersededMemoryId
@@ -285,23 +309,23 @@ export class DefaultMemoryWriter implements MemoryWriter {
   private async validateSupersession(
     supersededMemoryId: Id,
     candidate: MemoryCandidate,
-  ): Promise<string | undefined> {
+  ): Promise<{ readonly record: MemoryRecord } | { readonly policyReason: string }> {
     let prior: MemoryRecord | null;
     try {
       prior = await this.memoryManager.durableMemory(supersededMemoryId);
     } catch (cause) {
       throw new MemoryWriterPersistenceError('PROMOTE', cause);
     }
-    if (prior === null) return 'superseded memory does not exist';
+    if (prior === null) return { policyReason: 'superseded memory does not exist' };
     if (prior.type !== MemoryType.LONG_TERM || !sameScope(prior, candidate.scope)) {
-      return 'supersession requires an exact LONG_TERM memory scope match';
+      return { policyReason: 'supersession requires an exact LONG_TERM memory scope match' };
     }
     if (metadataText(prior, 'provenance') !== candidate.provenance) {
-      return 'supersession cannot change memory provenance';
+      return { policyReason: 'supersession cannot change memory provenance' };
     }
     if (metadataText(prior, 'supersededBy') !== undefined) {
-      return 'superseded memory is already superseded';
+      return { policyReason: 'superseded memory is already superseded' };
     }
-    return undefined;
+    return { record: prior };
   }
 }

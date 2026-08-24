@@ -49,7 +49,9 @@ function persistence(records: MemoryRecord[] = []) {
     ),
   );
   const saveDurable = vi.fn(async (record: MemoryRecord) => {
-    records.push(record);
+    const index = records.findIndex((existing) => existing.id === record.id);
+    if (index >= 0) records[index] = record;
+    else records.push(record);
     return record;
   });
   const forgetDurable = vi.fn(async (id: string) => {
@@ -131,7 +133,7 @@ describe('DefaultMemoryWriter lifecycle', () => {
     expect(store.saveDurable).not.toHaveBeenCalled();
   });
 
-  it('preserves a validated supersession relation on the new durable version', async () => {
+  it('links both sides of a validated supersession and rejects another replacement', async () => {
     const prior = durableRecord();
     const store = persistence([prior]);
     const writer = new DefaultMemoryWriter(store);
@@ -151,7 +153,54 @@ describe('DefaultMemoryWriter lifecycle', () => {
       policyReason: expect.any(String),
       memory: { metadata: { supersedesMemoryId: prior.id, sourceReferences: ['turn-2'] } },
     });
-    expect(store.saveDurable).toHaveBeenCalledOnce();
+    const newMemoryId = result.outcome === 'SUPERSEDING' ? result.memory.id : undefined;
+    expect(store.saveDurable).toHaveBeenCalledTimes(2);
+    expect(store.saveDurable.mock.calls[1]?.[0]).toMatchObject({
+      id: prior.id,
+      metadata: { supersededBy: newMemoryId },
+    });
+    await expect(
+      writer.promote(
+        writer.createCandidate(
+          candidateInput({
+            content: 'Prefer a two-sentence project update.',
+            metadata: { supersedesMemoryId: prior.id },
+          }),
+        ),
+      ),
+    ).resolves.toMatchObject({
+      outcome: 'REJECTED',
+      policyReason: 'superseded memory is already superseded',
+    });
+    expect(store.saveDurable).toHaveBeenCalledTimes(2);
+  });
+
+  it('rolls back the new version when marking the superseded record fails', async () => {
+    const prior = durableRecord();
+    const store = persistence([prior]);
+    const defaultSave = store.saveDurable.getMockImplementation();
+    if (defaultSave === undefined) throw new Error('expected persistence implementation');
+    store.saveDurable
+      .mockImplementationOnce(defaultSave)
+      .mockRejectedValueOnce(new Error('superseded marker failed'));
+    const writer = new DefaultMemoryWriter(store);
+
+    await expect(
+      writer.promote(
+        writer.createCandidate(
+          candidateInput({
+            content: 'Prefer a one-paragraph project update.',
+            metadata: { supersedesMemoryId: prior.id },
+          }),
+        ),
+      ),
+    ).rejects.toMatchObject({
+      name: 'MemoryWriterPersistenceError',
+      code: 'PERSISTENCE_FAILURE',
+      operation: 'PROMOTE',
+    });
+    expect(store.forgetDurable).toHaveBeenCalledOnce();
+    expect(await store.durableMemories({ userId: 'actor-1' })).toEqual([prior]);
   });
 
   it('owns exact-scope forget policy and invokes deletion only after approval', async () => {
