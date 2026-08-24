@@ -5,13 +5,14 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **Phase:** `M2 = ACTIVE`; `QUIRKYBOT_DEV_V1 = MILESTONE_REACHED / CLOSED` with
+- **Phase:** `M2 = COMPLETE_AND_ACCEPTED / CLOSED`; `QUIRKYBOT_DEV_V1 = MILESTONE_REACHED / CLOSED` with
   `QUIRKYBOT_DEV_V1_ACCEPTANCE_CRITERIA = MET`. Stage 2C Slice 3C was implemented in commit `683297f`, independently
   reviewed `PASS`, and closed the prior delegated offline implementation gap. Bounded Live UAT was `EXECUTED` and
   `PASS` at exact verified HEAD `715c407a52eee36a7717d1b4b6695b1469bb0a76`.
-- **Development governance:** `AUTONOMOUS_DEV_MODE = ENABLED`, `ACTIVE_MILESTONE = M2`. Product Owner
-  retains product/UAT/debug/high-risk authority; Architect AI owns task-level delegated local approval, Codex builds,
-  and Claude independently reviews. Strict external/destructive/Runtime/application-Provider gates remain Human-only.
+- **Development governance:** `AUTONOMOUS_DEV_MODE = ENABLED`; M2 is closed and no successor milestone has been
+  selected. Product Owner retains product/UAT/debug/high-risk authority; Architect AI owns task-level delegated local
+  approval within an active milestone, Codex builds, and Claude independently reviews. Strict
+  external/destructive/Runtime/application-Provider gates remain Human-only.
 - **Development DB governance:** `AUTONOMOUS_DEV_DB = APPROVED`. When `QUOKY_RUNTIME_ENV=dev`, the configured target
   resolves exactly to repository `data/chunsik.db`, and no Production/shared DB is selected, create/open, WAL,
   migrations v1-v6, `PRAGMA user_version`, and bounded normal UAT persistence are delegated. The former
@@ -59,8 +60,9 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 - **Execution facts:** the accepted Live UAT exercised the approved bounded application Runtime, Provider/network,
   and designated development Discord scope at HEAD `715c407`. The earlier diagnostic scopes also executed
   `llama3.1` and `granite3.3` generation through `ollama-cli`; those diagnostics remain separate from Live UAT.
-- **Milestone transition:** `QUIRKYBOT_DEV_V1 = MILESTONE_REACHED / CLOSED`; `M2 = ACTIVE`. DEV_V1 work remains closed,
-  and further delegated implementation is limited to accepted, bounded M2 tasks while all Strict gates remain intact.
+- **Milestone transition:** `QUIRKYBOT_DEV_V1 = MILESTONE_REACHED / CLOSED` and
+  `M2 = COMPLETE_AND_ACCEPTED / CLOSED`. Further milestone implementation requires Product Owner direction while all
+  Strict gates remain intact.
 
 ## Stage 2C — Slice 3C ExecutionPlan Integrity Binding Architecture
 
@@ -499,7 +501,7 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   Risk MEDIUM, no approval halt. Reuse only — no new capability/aggregate/repository/migration, no
   Core/Orchestrator contract change (ADR-0033).
 
-## M2 gap assessment — first slice
+## M2 closure
 
 - **Durable Memory Write Activation: COMPLETE_AND_ACCEPTED.** The Product Owner ratified the explicit-command-only
   architecture at HEAD `c6d89e02ae80b0b202a6646263baabf83437c8d8`; implementation commit
@@ -512,29 +514,25 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   repository through `ContextBuilder`. Durable recall remains separate from the exact `SHORT_TERM` transcript and
   degrades to empty on repository/retrieval failure without displacing transcript or active-project background.
   Together with the accepted explicit-command write activation, both durable recall (Slice 5) and durable write are
-  complete. The next M2 priority is the next bounded accepted-memory or product slice selected under the canonical
-  ROADMAP/ADR sequencing; vector/schema/index work remains deferred.
+  complete. Vector/schema/index work remains deferred and is not part of the ratified M2 scope.
 - **Acceptance:** the completed M2 gap assessment and ContextBuilder deterministic ranking slice at commit `8fb8e4b`
   are `COMPLETE / REVIEW PASS` and accepted as the first M2 implementation slice. ContextBuilder token estimation at
   commit `9ef5e7c` is also `COMPLETE / REVIEW PASS`.
-- **Repository checkpoint:** the Product Owner-confirmed canonical pre-semantic-slice HEAD is
-  `9ef5e7c3f9ccd1450b220f02633bac200ce16f51`. At that checkpoint, local `main` is four commits ahead of
-  `origin/main`; all four commits are `LOCAL / UNPUSHED`. No remote durability or origin synchronization is claimed.
-- **Overall M2: PARTIALLY_COMPLETE.** Existing provider-neutral seams, multi-provider routing, and ContextBuilder are
-  complete for current M2 intent. The Jira, Slack, and Confluence read-only connector adapters are implemented and
+- **Overall M2: COMPLETE_AND_ACCEPTED / CLOSED.** Existing provider-neutral seams, multi-provider routing,
+  ContextBuilder, PromptComposer, durable recall and explicit-command durable writes, and the Jira, Slack, and
+  Confluence read-only connectors are complete for the currently ratified M2 scope. The connector adapters are
   configuration-gated in the composition root.
-- **ContextBuilder: COMPLETE for current M2 intent.** It has optional deterministic relevance selection with configurable
+- **ContextBuilder: COMPLETE for the ratified M2 scope.** It has optional deterministic relevance selection with configurable
   character/token budgets, recency scoring, role weights, bounded keyword-overlap semantic relevance, configurable
   normalized recency/relevance blending, opt-in deterministic lowest-score-first tail compression with a configurable
   per-entry character floor, active-project-first background allocation, and preserved ADR-0063
   provenance/epistemic labels. Selected transcript entries are rendered in their original chronological order to
   preserve PromptComposer's continuity contract. The composition root now supplies explicit GENERAL_CHAT ranking,
   relevance, token-budget, and compression configuration to ConversationRuntime's ContextBuilder. Omitting all Core
-  configuration preserves flat N=10 retrieval. The next M2 priority is concrete read-only connectors per the approved
-  sequencing.
-- **PromptComposer: COMPLETE for current M2 intent.** Structured Task/context layering and ADR-0063 authority,
+  configuration preserves flat N=10 retrieval.
+- **PromptComposer: COMPLETE for the ratified M2 scope.** Structured Task/context layering and ADR-0063 authority,
   provenance, and epistemic rendering are implemented; this slice requires no provider-specific prompt shaping.
-- **Provider routing: COMPLETE for current M2 intent.** Capability/policy/availability-driven routing and stable
+- **Provider routing: COMPLETE for the ratified M2 scope.** Capability/policy/availability-driven routing and stable
   provider selection exist without Core branching on provider ids.
 - **Ollama adapter: COMPLETE; Codex adapter: MISSING.** Ollama implements suggest-only execution and availability;
   Codex remains an explicitly unavailable `NotImplementedError` stub.
@@ -542,7 +540,7 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   `@chunsik/connector-jira`, `@chunsik/connector-slack`, and `@chunsik/connector-confluence` implement the ADR-0072
   read-only `ConnectorProvider` boundary and are registered by the composition root when their required environment
   configuration is complete. Missing or partial configuration leaves the corresponding connector unregistered.
-- **Read-only connector seam: COMPLETE for current M2 intent.** `ConnectorProvider`, `ConnectorManager`, concrete adapter
+- **Read-only connector seam: COMPLETE for the ratified M2 scope.** `ConnectorProvider`, `ConnectorManager`, concrete adapter
   packages, and configuration-gated composition-root injection are wired. The registered connector list contains the
   configured Jira, Slack, and Confluence adapters.
 

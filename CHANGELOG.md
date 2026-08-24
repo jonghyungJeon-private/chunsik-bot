@@ -7,6 +7,13 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Changed — M2 Closure
+
+- Marked M2 `COMPLETE_AND_ACCEPTED / CLOSED` for its currently ratified scope after acceptance of ContextBuilder,
+  PromptComposer, provider routing, read-only connector wiring, durable recall, and explicit-command durable writes.
+- Kept vector/semantic search, a Codex adapter, deeper memory tiers, and schema/index optimization outside the closed
+  M2 scope pending a separately selected milestone direction.
+
 ### Added — M2 Durable Memory Write Activation
 
 - Activated durable writes only for explicit `기억해:`, `기억해줘:`, and case-insensitive `remember:` commands through
