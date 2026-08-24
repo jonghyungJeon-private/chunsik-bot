@@ -17,8 +17,12 @@ Lightweight, living roadmap: **direction and sequence only.** Rules live in
 
 - **M0 — Repository operating system** ✅ done (Sprint 0).
 - **M1 — Walking skeleton:** one natural-language flow, end to end (Sprint 1a → 1b).
-- **M2 — Memory & multi-provider:** Codex/Ollama, ContextBuilder ranking, read-only connectors.
+- **M2 — Memory & multi-provider:** ✅ done for the ratified scope — provider-neutral routing/Ollama,
+  ContextBuilder ranking and bounded compression, durable memory, and read-only connectors. Codex remains deferred.
 - **M3 — Team Edition foundations:** Actor/Policy, networked transports, telemetry.
+
+Current operational phase: **Production Readiness / Release Gate Preparation** for the completed local-first
+Personal Edition scope. This is a source-integration gate, not M3 activation or a Production Runtime-readiness claim.
 
 ## Sprint roadmap
 

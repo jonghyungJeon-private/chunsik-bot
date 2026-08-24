@@ -7,6 +7,14 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Changed — Production Readiness / Release Gate Preparation
+
+- Recorded the completed M2 / `QUIRKYBOT_DEV_V1` source-integration assessment, current local-to-`origin/main`
+  divergence, refreshed `118`-file / `2634`-test validation evidence, carryover classification, and the proposed
+  separately approved Push / PR / Merge / Release sequence.
+- Kept Production Runtime readiness explicitly blocked on production-grade 5C-EG while treating XR and 5C-EG as
+  non-blocking for source integration of the default-off, completed local-first Personal Edition scope.
+
 ### Changed — M2 Closure
 
 - Marked M2 `COMPLETE_AND_ACCEPTED / CLOSED` for its currently ratified scope after acceptance of ContextBuilder,
