@@ -501,16 +501,19 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 
 ## M2 gap assessment — first slice
 
-- **Durable Memory Write Activation: RATIFIED / IMPLEMENTATION SLICE ACTIVE.** The Product Owner ratified the
-  explicit-command-only architecture at HEAD `c6d89e02ae80b0b202a6646263baabf83437c8d8`. The next bounded M2 slice is
-  the required-`MemoryWriter` activation for `기억해:` / `기억해줘:` / `remember:` after pending-flow interception
+- **Durable Memory Write Activation: COMPLETE_AND_ACCEPTED.** The Product Owner ratified the explicit-command-only
+  architecture at HEAD `c6d89e02ae80b0b202a6646263baabf83437c8d8`; implementation commit
+  `2fa59b713177bab22631b40e932fcd04ceff0aa0` received independent review `PASS`. The required `MemoryWriter`
+  activation recognizes only `기억해:` / `기억해줘:` / case-insensitive `remember:` after pending-flow interception
   and before ordinary classification. `GENERAL_CHAT` success, Assistant `SHORT_TERM` recording, and Provider/LLM
-  extraction remain non-triggers; existing ADR-0073 and persistence ownership are unchanged.
+  extraction remain non-triggers; ADR-0073 and existing persistence ownership remain unchanged.
 - **Slice 5: COMPLETE_AND_ACCEPTED.** ADR-0073 durable recall now has its bounded Core retrieval and lifecycle
   plumbing, and the production composition root wires `DefaultMemoryRetriever` to the existing SQLite-owned memory
   repository through `ContextBuilder`. Durable recall remains separate from the exact `SHORT_TERM` transcript and
   degrades to empty on repository/retrieval failure without displacing transcript or active-project background.
-  The next M2 priority is the next bounded accepted-memory slice; vector/schema/index work remains deferred.
+  Together with the accepted explicit-command write activation, both durable recall (Slice 5) and durable write are
+  complete. The next M2 priority is the next bounded accepted-memory or product slice selected under the canonical
+  ROADMAP/ADR sequencing; vector/schema/index work remains deferred.
 - **Acceptance:** the completed M2 gap assessment and ContextBuilder deterministic ranking slice at commit `8fb8e4b`
   are `COMPLETE / REVIEW PASS` and accepted as the first M2 implementation slice. ContextBuilder token estimation at
   commit `9ef5e7c` is also `COMPLETE / REVIEW PASS`.

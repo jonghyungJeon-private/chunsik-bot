@@ -7,6 +7,14 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — M2 Durable Memory Write Activation
+
+- Activated durable writes only for explicit `기억해:`, `기억해줘:`, and case-insensitive `remember:` commands through
+  the required `MemoryWriter` dependency, after pending-flow interception and before ordinary classification.
+- Preserved ADR-0073 and the ratified activation architecture: ordinary chat, Assistant `SHORT_TERM` recording, and
+  Provider/LLM extraction do not trigger durable promotion, and existing `MemoryManager`/repository ownership remains
+  unchanged.
+
 ### Changed — UAT Nested Reference Defect Classification
 
 - Added a focused three-turn provider-boundary regression proving that ContextBuilder excludes only the current
