@@ -24,3 +24,4 @@ export const EXECUTION_PLANNER = Symbol('ExecutionPlanner');
 export const PROVIDER_SELECTOR = Symbol('ProviderSelector');
 export const AI_PROVIDERS = Symbol('AiProviders');
 export const CONNECTOR_PROVIDERS = Symbol('ConnectorProviders');
+export const DURABLE_MEMORY_REPOSITORY = Symbol('DurableMemoryRepository');

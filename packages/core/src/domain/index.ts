@@ -7,6 +7,7 @@ export * from './planning';
 export * from './prompting';
 export * from './task';
 export * from './memory';
+export * from './durable-memory';
 export * from './artifact';
 export * from './project';
 export * from './workspace';

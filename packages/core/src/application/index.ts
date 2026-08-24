@@ -13,6 +13,8 @@ export * from './prompt-composer';
 export * from './prompt-renderer';
 export * from './task-manager';
 export * from './memory-manager';
+export * from './memory-retriever';
+export * from './memory-writer';
 export * from './artifact-manager';
 export * from './workspace-manager';
 export * from './git-manager';
