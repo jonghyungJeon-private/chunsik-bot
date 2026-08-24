@@ -48,12 +48,13 @@ export interface BackgroundResource {
 export interface DurableRecallEntry {
   content: string;
   provenance: DurableMemoryProvenance;
-  epistemicStatus: DurableMemoryAuthorityLevel;
+  epistemicStatus: 'NON_AUTHORITATIVE_BACKGROUND';
   relevanceScore: number;
   retrievalReason: string;
   source: {
     memoryId: Id;
     kind: DurableMemoryKind;
+    authorityLevel: DurableMemoryAuthorityLevel;
     scope: DurableMemoryScope;
     createdAt: IsoTimestamp;
     updatedAt: IsoTimestamp;

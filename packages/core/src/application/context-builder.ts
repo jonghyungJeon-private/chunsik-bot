@@ -1,11 +1,13 @@
 import type {
   ContextBundle,
   ConversationTranscriptEntry,
+  DurableRecallEntry,
   DurableMemoryAuthorityLevel,
   DurableMemoryScope,
   Id,
   MemoryRecord,
   MemoryScope,
+  RetrievedMemory,
   Task,
 } from '../domain';
 import { createMemoryRetrievalRequest } from '../domain';
@@ -28,7 +30,6 @@ const MAX_PROJECT_CHARS = 1200;
 const DEFAULT_MINIMUM_COMPRESSION_CHARACTERS = 80;
 /** ContextBuilder owns the final bounded durable-recall output. */
 const DURABLE_RECALL_LIMIT = 10;
-const DURABLE_RECALL_NEAR_DUPLICATE_THRESHOLD = 0.8;
 const DURABLE_AUTHORITY_FITNESS: readonly DurableMemoryAuthorityLevel[] = [
   'USER_CLAIM_OR_INTENT',
   'ASSISTANT_NON_AUTHORITATIVE',
@@ -80,6 +81,11 @@ interface RankedTranscriptEntry {
   continuityPriority: number;
 }
 
+interface RankedDurableEntry {
+  candidate: RetrievedMemory;
+  score: number;
+}
+
 const EXPLICIT_VALUE_PATTERN = /(?:[\p{L}\p{N}]+[-_]\d+|\d{2,})/u;
 
 interface ContextBudget {
@@ -93,7 +99,8 @@ interface ContextBudget {
  *   - recent SHORT_TERM turns for the SAME session (excluding the current
  *     inbound message, which already appears in the task layer), simply truncated;
  *   - the active project's PROJECT memory summary, if a project is registered.
- * No vector search, no summarization, no long-term recall.
+ * Optional durable recall remains separately attributed and shares the final
+ * ranking budget. No vector search or summarization occurs here.
  */
 export class ContextBuilder {
   private readonly ranking: ContextRankingConfig | undefined;
@@ -133,9 +140,7 @@ export class ContextBuilder {
     const durableCandidates = await this.retrieveDurableCandidates(task, excludeMemoryIds);
     const deduplicatedDurableCandidates = durableCandidates.filter(
       ({ memory: durable }) =>
-        !transcript.some((entry) =>
-          ContextBuilder.isNearDuplicate(durable.content, entry.content),
-        ),
+        !transcript.some((entry) => durable.content === entry.content),
     );
 
     const minimumCompressionCharacters = this.ranking
@@ -166,34 +171,35 @@ export class ContextBuilder {
       }
     }
 
-    const conversationTranscript = ContextBuilder.selectRankedTranscript(
-      transcript,
-      remainingBudget,
-      this.ranking,
-      budget,
-      task.intent.summary,
-      minimumCompressionCharacters,
-    );
-
-    remainingBudget = Math.max(
-      0,
-      remainingBudget -
-        conversationTranscript.reduce(
-          (total, entry) => total + budget.measure(entry.content),
-          0,
-        ),
-    );
-    const durableRecall = ContextBuilder.selectDurableRecall(
-      deduplicatedDurableCandidates,
-      budget,
-      remainingBudget,
-    );
+    const selected =
+      deduplicatedDurableCandidates.length > 0
+        ? ContextBuilder.selectRankedContext(
+            transcript,
+            deduplicatedDurableCandidates,
+            remainingBudget,
+            this.ranking,
+            budget,
+            task.intent.summary,
+          )
+        : {
+            conversationTranscript: ContextBuilder.selectRankedTranscript(
+              transcript,
+              remainingBudget,
+              this.ranking,
+              budget,
+              task.intent.summary,
+              minimumCompressionCharacters,
+            ),
+            durableRecall: [] as DurableRecallEntry[],
+          };
 
     return {
       taskId: task.id,
-      conversationTranscript,
+      conversationTranscript: selected.conversationTranscript,
       backgroundResources,
-      ...(durableRecall.length > 0 ? { durableRecall } : {}),
+      ...(selected.durableRecall.length > 0
+        ? { durableRecall: selected.durableRecall }
+        : {}),
     };
   }
 
@@ -261,11 +267,7 @@ export class ContextBuilder {
     for (const candidate of ranked) {
       if (selected.length >= DURABLE_RECALL_LIMIT || remaining <= 0) break;
       if (seenIds.has(candidate.memory.id)) continue;
-      if (
-        seenContent.some((content) =>
-          ContextBuilder.isNearDuplicate(candidate.memory.content, content),
-        )
-      ) {
+      if (seenContent.includes(candidate.memory.content)) {
         continue;
       }
 
@@ -273,41 +275,38 @@ export class ContextBuilder {
       const content = budget ? budget.truncate(boundedContent, remaining) : boundedContent;
       if (content.length === 0) continue;
 
-      selected.push({
-        content,
-        provenance: candidate.memory.provenance,
-        epistemicStatus: candidate.memory.authorityLevel,
-        relevanceScore: candidate.relevanceScore,
-        retrievalReason: candidate.retrievalReason,
-        source: {
-          memoryId: candidate.memory.id,
-          kind: candidate.memory.kind,
-          scope: { ...candidate.memory.scope },
-          createdAt: candidate.memory.createdAt,
-          updatedAt: candidate.memory.updatedAt,
-          metadata: { ...candidate.memory.metadata },
-        },
-      });
+      selected.push(ContextBuilder.toDurableRecallEntry(candidate, content));
       seenIds.add(candidate.memory.id);
       seenContent.push(candidate.memory.content);
       if (budget) remaining -= budget.measure(content);
     }
-    return selected;
+    return selected.sort(
+      (a, b) =>
+        a.source.createdAt.localeCompare(b.source.createdAt) ||
+        a.source.memoryId.localeCompare(b.source.memoryId),
+    );
   }
 
-  private static isNearDuplicate(left: string, right: string): boolean {
-    const leftKeywords = new Set(ContextBuilder.normalizedKeywords(left));
-    const rightKeywords = new Set(ContextBuilder.normalizedKeywords(right));
-    if (leftKeywords.size === 0 || rightKeywords.size === 0) {
-      return left.trim().toLocaleLowerCase('und') === right.trim().toLocaleLowerCase('und');
-    }
-    const intersection = [...leftKeywords].filter((keyword) => rightKeywords.has(keyword)).length;
-    const union = new Set([...leftKeywords, ...rightKeywords]).size;
-    return intersection / union >= DURABLE_RECALL_NEAR_DUPLICATE_THRESHOLD;
-  }
-
-  private static normalizedKeywords(content: string): string[] {
-    return content.toLocaleLowerCase('und').match(/[\p{L}\p{N}]+/gu) ?? [];
+  private static toDurableRecallEntry(
+    candidate: RetrievedMemory,
+    content: string,
+  ): DurableRecallEntry {
+    return {
+      content,
+      provenance: candidate.memory.provenance,
+      epistemicStatus: 'NON_AUTHORITATIVE_BACKGROUND',
+      relevanceScore: candidate.relevanceScore,
+      retrievalReason: candidate.retrievalReason,
+      source: {
+        memoryId: candidate.memory.id,
+        kind: candidate.memory.kind,
+        authorityLevel: candidate.memory.authorityLevel,
+        scope: { ...candidate.memory.scope },
+        createdAt: candidate.memory.createdAt,
+        updatedAt: candidate.memory.updatedAt,
+        metadata: { ...candidate.memory.metadata },
+      },
+    };
   }
 
   private static toProjectBackground(
@@ -328,6 +327,155 @@ export class ContextBuilder {
     currentSummary: string,
     minimumCompressionCharacters: number | undefined,
   ): ConversationTranscriptEntry[] {
+    const ranked = ContextBuilder.rankTranscript(transcript, config, currentSummary);
+
+    if (minimumCompressionCharacters !== undefined) {
+      return ContextBuilder.compressRankedTranscript(
+        ranked,
+        budget,
+        minimumCompressionCharacters,
+      );
+    }
+
+    let remaining = budget;
+    const selected: RankedTranscriptEntry[] = [];
+    for (const candidate of ranked) {
+      if (remaining <= 0) break;
+      const estimatedSize = contextBudget.measure(candidate.entry.content);
+      if (estimatedSize <= remaining) {
+        selected.push(candidate);
+        remaining -= estimatedSize;
+        continue;
+      }
+      const content = contextBudget.truncate(candidate.entry.content, remaining);
+      if (content.length > 0) {
+        selected.push({ ...candidate, entry: { ...candidate.entry, content } });
+        remaining -= contextBudget.measure(content);
+      }
+    }
+
+    // PromptComposer's transcript contract remains chronological. Ranking determines
+    // relevance-aware selection only; original turn/provenance fields stay untouched.
+    return selected
+      .sort((a, b) => a.chronologicalIndex - b.chronologicalIndex)
+      .map(({ entry }) => entry);
+  }
+
+  private static selectRankedContext(
+    transcript: ConversationTranscriptEntry[],
+    durableCandidates: RetrievedMemory[],
+    availableBudget: number,
+    config: ContextRankingConfig,
+    budget: ContextBudget,
+    currentSummary: string,
+  ): {
+    conversationTranscript: ConversationTranscriptEntry[];
+    durableRecall: DurableRecallEntry[];
+  } {
+    const rankedTranscript = ContextBuilder.rankTranscript(
+      transcript,
+      config,
+      currentSummary,
+    );
+    const seenIds = new Set<Id>();
+    const seenContent = new Set<string>();
+    const rankedDurable: RankedDurableEntry[] = [...durableCandidates]
+      .sort(
+        (a, b) =>
+          b.relevanceScore - a.relevanceScore ||
+          b.memory.updatedAt.localeCompare(a.memory.updatedAt) ||
+          a.memory.id.localeCompare(b.memory.id),
+      )
+      .filter((candidate) => {
+        if (
+          seenIds.has(candidate.memory.id) ||
+          seenContent.has(candidate.memory.content)
+        ) {
+          return false;
+        }
+        seenIds.add(candidate.memory.id);
+        seenContent.add(candidate.memory.content);
+        return true;
+      })
+      .slice(0, DURABLE_RECALL_LIMIT)
+      .map((candidate) => ({ candidate, score: candidate.relevanceScore }));
+
+    const combined = [
+      ...rankedTranscript.map((candidate) => ({
+        kind: 'transcript' as const,
+        score: candidate.score,
+        candidate,
+      })),
+      ...rankedDurable.map((candidate) => ({
+        kind: 'durable' as const,
+        score: candidate.score,
+        candidate,
+      })),
+    ].sort((a, b) => {
+      const byScore = b.score - a.score;
+      if (byScore !== 0) return byScore;
+      if (a.kind !== b.kind) return a.kind === 'transcript' ? -1 : 1;
+      if (a.kind === 'transcript' && b.kind === 'transcript') {
+        return b.candidate.chronologicalIndex - a.candidate.chronologicalIndex;
+      }
+      if (a.kind === 'durable' && b.kind === 'durable') {
+        return (
+          b.candidate.candidate.memory.updatedAt.localeCompare(
+            a.candidate.candidate.memory.updatedAt,
+          ) ||
+          a.candidate.candidate.memory.id.localeCompare(
+            b.candidate.candidate.memory.id,
+          )
+        );
+      }
+      return 0;
+    });
+
+    let remaining = availableBudget;
+    const selectedTranscript: RankedTranscriptEntry[] = [];
+    const selectedDurable: DurableRecallEntry[] = [];
+    for (const ranked of combined) {
+      if (remaining <= 0) break;
+      const originalContent =
+        ranked.kind === 'transcript'
+          ? ranked.candidate.entry.content
+          : ContextBuilder.truncate(
+              ranked.candidate.candidate.memory.content,
+              MAX_MEMORY_CHARS,
+            );
+      const content = budget.truncate(originalContent, remaining);
+      if (content.length === 0) continue;
+
+      if (ranked.kind === 'transcript') {
+        selectedTranscript.push({
+          ...ranked.candidate,
+          entry: { ...ranked.candidate.entry, content },
+        });
+      } else {
+        selectedDurable.push(
+          ContextBuilder.toDurableRecallEntry(ranked.candidate.candidate, content),
+        );
+      }
+      remaining -= budget.measure(content);
+    }
+
+    return {
+      conversationTranscript: selectedTranscript
+        .sort((a, b) => a.chronologicalIndex - b.chronologicalIndex)
+        .map(({ entry }) => entry),
+      durableRecall: selectedDurable.sort(
+        (a, b) =>
+          a.source.createdAt.localeCompare(b.source.createdAt) ||
+          a.source.memoryId.localeCompare(b.source.memoryId),
+      ),
+    };
+  }
+
+  private static rankTranscript(
+    transcript: ConversationTranscriptEntry[],
+    config: ContextRankingConfig,
+    currentSummary: string,
+  ): RankedTranscriptEntry[] {
     const roleWeights: Record<ConversationRole, number> = {
       user: config.roleWeights?.user ?? 2,
       assistant: config.roleWeights?.assistant ?? 1,
@@ -343,7 +491,7 @@ export class ContextBuilder {
     const newestIndex = Math.max(transcript.length - 1, 0);
     const newestUserIndex = ContextBuilder.newestRoleIndex(transcript, 'user');
     const newestAssistantIndex = ContextBuilder.newestRoleIndex(transcript, 'assistant');
-    const ranked: RankedTranscriptEntry[] = transcript
+    return transcript
       .map((entry, chronologicalIndex) => {
         const roleScore = roleWeights[entry.role ?? 'unknown'];
         const explicitValueScore =
@@ -381,37 +529,6 @@ export class ContextBuilder {
       // Continuity priority controls admission to the fixed-size output window.
       // Within that window, the configured score still controls budget allocation.
       .sort((a, b) => b.score - a.score || b.chronologicalIndex - a.chronologicalIndex);
-
-    if (minimumCompressionCharacters !== undefined) {
-      return ContextBuilder.compressRankedTranscript(
-        ranked,
-        budget,
-        minimumCompressionCharacters,
-      );
-    }
-
-    let remaining = budget;
-    const selected: RankedTranscriptEntry[] = [];
-    for (const candidate of ranked) {
-      if (remaining <= 0) break;
-      const estimatedSize = contextBudget.measure(candidate.entry.content);
-      if (estimatedSize <= remaining) {
-        selected.push(candidate);
-        remaining -= estimatedSize;
-        continue;
-      }
-      const content = contextBudget.truncate(candidate.entry.content, remaining);
-      if (content.length > 0) {
-        selected.push({ ...candidate, entry: { ...candidate.entry, content } });
-        remaining -= contextBudget.measure(content);
-      }
-    }
-
-    // PromptComposer's transcript contract remains chronological. Ranking determines
-    // relevance-aware selection only; original turn/provenance fields stay untouched.
-    return selected
-      .sort((a, b) => a.chronologicalIndex - b.chronologicalIndex)
-      .map(({ entry }) => entry);
   }
 
   private static newestRoleIndex(

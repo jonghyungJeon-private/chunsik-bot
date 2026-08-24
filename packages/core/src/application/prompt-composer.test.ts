@@ -110,12 +110,13 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
         {
           content: 'The user previously preferred concise updates.',
           provenance: 'USER_PROVIDED',
-          epistemicStatus: 'USER_CLAIM_OR_INTENT',
+          epistemicStatus: 'NON_AUTHORITATIVE_BACKGROUND',
           relevanceScore: 0.9,
           retrievalReason: 'semantic preference match',
           source: {
             memoryId: 'memory-1',
             kind: 'SEMANTIC',
+            authorityLevel: 'USER_CLAIM_OR_INTENT',
             scope: { sessionId: 'S1' },
             createdAt: '2026-01-01T00:00:00.000Z',
             updatedAt: '2026-01-01T00:00:00.000Z',
@@ -140,7 +141,7 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
     ).toEqual([
       {
         provenance: 'USER_PROVIDED',
-        epistemicStatus: 'USER_CLAIM_OR_INTENT',
+        epistemicStatus: 'NON_AUTHORITATIVE_BACKGROUND',
         content: 'The user previously preferred concise updates.',
       },
     ]);

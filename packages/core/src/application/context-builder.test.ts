@@ -70,6 +70,7 @@ const durable = (
     authorityLevel?: 'USER_CLAIM_OR_INTENT' | 'ASSISTANT_NON_AUTHORITATIVE';
     relevanceScore?: number;
     scope?: DurableMemoryScope;
+    createdAt?: string;
   } = {},
 ) =>
   createRetrievedMemory({
@@ -80,8 +81,8 @@ const durable = (
       provenance: opts.provenance ?? 'USER_PROVIDED',
       authorityLevel: opts.authorityLevel ?? 'USER_CLAIM_OR_INTENT',
       scope: opts.scope ?? { sessionId: 'S1' },
-      createdAt: '2026-01-01T00:00:00.000Z',
-      updatedAt: '2026-01-01T00:00:00.000Z',
+      createdAt: opts.createdAt ?? '2026-01-01T00:00:00.000Z',
+      updatedAt: opts.createdAt ?? '2026-01-01T00:00:00.000Z',
       metadata: { sourceRecordId: `source-${id}` },
     }),
     relevanceScore: opts.relevanceScore ?? 0.9,
@@ -130,10 +131,11 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
       expect.objectContaining({
         content: 'Remember the purple preference',
         provenance: 'USER_PROVIDED',
-        epistemicStatus: 'USER_CLAIM_OR_INTENT',
+        epistemicStatus: 'NON_AUTHORITATIVE_BACKGROUND',
         source: expect.objectContaining({
           memoryId: 'durable-1',
           kind: 'SEMANTIC',
+          authorityLevel: 'USER_CLAIM_OR_INTENT',
           scope: { sessionId: 'S1', projectId: 'P1' },
           metadata: { sourceRecordId: 'source-durable-1' },
         }),
@@ -141,7 +143,7 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
     ]);
   });
 
-  it('suppresses near-duplicate durable recall without displacing exact transcript continuity', async () => {
+  it('suppresses exact-content durable recall without displacing exact transcript continuity', async () => {
     const memory = {
       recentShortTerm: async () => [
         rec('1', 'user', '보라색 선호를 기억해 줘'),
@@ -149,7 +151,7 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
       ],
     } as unknown as MemoryManager;
     const retriever: MemoryRetriever = {
-      retrieve: async () => [durable('duplicate', '보라색, 선호를 기억해 줘!')],
+      retrieve: async () => [durable('duplicate', '보라색 선호를 기억해 줘')],
     };
     const task = taskWith({ sessionId: 'S1', requestText: '내 선호가 뭐였지?' });
 
@@ -164,6 +166,26 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
     expect(prompt.context).toContain(
       'immediatelyPreviousUserTurn: \\"보라색 선호를 기억해 줘\\"',
     );
+  });
+
+  it('keeps non-identical durable content because transcript deduplication is identity-based', async () => {
+    const memory = {
+      recentShortTerm: async () => [rec('1', 'user', '보라색 선호를 기억해 줘')],
+    } as unknown as MemoryManager;
+    const retriever: MemoryRetriever = {
+      retrieve: async () => [durable('similar', '보라색, 선호를 기억해 줘!')],
+    };
+
+    const bundle = await new ContextBuilder(memory, {}, retriever).build(
+      taskWith({ sessionId: 'S1' }),
+    );
+
+    expect(bundle.conversationTranscript.map((entry) => entry.content)).toEqual([
+      '보라색 선호를 기억해 줘',
+    ]);
+    expect(bundle.durableRecall?.map((entry) => entry.content)).toEqual([
+      '보라색, 선호를 기억해 줘!',
+    ]);
   });
 
   it('applies the final shared budget after preserving selected transcript', async () => {
@@ -186,6 +208,73 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
       bundle.conversationTranscript.reduce((sum, entry) => sum + entry.content.length, 0) +
         (bundle.durableRecall ?? []).reduce((sum, entry) => sum + entry.content.length, 0),
     ).toBeLessThanOrEqual(8);
+  });
+
+  it('ranks transcript and durable recall through one final budget allocation', async () => {
+    const memory = {
+      recentShortTerm: async () => [rec('1', 'assistant', 'low-ranked transcript')],
+    } as unknown as MemoryManager;
+    const retriever: MemoryRetriever = {
+      retrieve: async () => [durable('relevant', 'durable wins', { relevanceScore: 1 })],
+    };
+
+    const bundle = await new ContextBuilder(
+      memory,
+      {
+        maxCharacters: 12,
+        roleWeights: { assistant: 0 },
+        recencyWeight: 0,
+      },
+      retriever,
+    ).build(taskWith({ sessionId: 'S1' }));
+
+    expect(bundle.durableRecall?.map((entry) => entry.content)).toEqual(['durable wins']);
+    expect(bundle.conversationTranscript).toEqual([]);
+  });
+
+  it('admits zero durable entries when higher-scored transcript consumes the budget', async () => {
+    const memory = {
+      recentShortTerm: async () => [rec('1', 'user', '12345')],
+    } as unknown as MemoryManager;
+    const retriever: MemoryRetriever = {
+      retrieve: async () => [durable('not-admitted', 'durable')],
+    };
+
+    const bundle = await new ContextBuilder(
+      memory,
+      { maxCharacters: 5, roleWeights: { user: 10 }, recencyWeight: 0 },
+      retriever,
+    ).build(taskWith({ sessionId: 'S1' }));
+
+    expect(bundle.conversationTranscript.map((entry) => entry.content)).toEqual(['12345']);
+    expect(bundle.durableRecall).toBeUndefined();
+  });
+
+  it('orders selected durable recall chronologically after ranked budget admission', async () => {
+    const memory = { recentShortTerm: async () => [] } as unknown as MemoryManager;
+    const retriever: MemoryRetriever = {
+      retrieve: async () => [
+        durable('newer', 'newer durable', {
+          relevanceScore: 0.8,
+          createdAt: '2026-01-03T00:00:00.000Z',
+        }),
+        durable('older', 'older durable', {
+          relevanceScore: 0.9,
+          createdAt: '2026-01-02T00:00:00.000Z',
+        }),
+      ],
+    };
+
+    const bundle = await new ContextBuilder(
+      memory,
+      { maxCharacters: 100, recencyWeight: 0 },
+      retriever,
+    ).build(taskWith({ sessionId: 'S1' }));
+
+    expect(bundle.durableRecall?.map((entry) => entry.content)).toEqual([
+      'older durable',
+      'newer durable',
+    ]);
   });
 
   it('preserves legacy behavior for absent, empty, failed, and unscoped retrieval', async () => {
