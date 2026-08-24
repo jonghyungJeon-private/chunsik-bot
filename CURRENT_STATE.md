@@ -9,9 +9,9 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   `QUIRKYBOT_DEV_V1_ACCEPTANCE_CRITERIA = MET`. Stage 2C Slice 3C was implemented in commit `683297f`, independently
   reviewed `PASS`, and closed the prior delegated offline implementation gap. Bounded Live UAT was `EXECUTED` and
   `PASS` at exact verified HEAD `715c407a52eee36a7717d1b4b6695b1469bb0a76`.
-- **Active milestone:** `Production Readiness / Release Gate Preparation`. M2 and `QUIRKYBOT_DEV_V1` remain closed;
-  this gate prepares their completed local-first Personal Edition scope for source integration and does not reopen
-  implementation or claim Production Runtime readiness.
+- **Active milestone:** `Release Gate Finalization`. M2 and `QUIRKYBOT_DEV_V1` remain closed; source integration is
+  complete, and this gate prepares the final Version 1 release identifier without reopening implementation or
+  claiming Production Runtime readiness.
 - **Development governance:** `AUTONOMOUS_DEV_MODE = ENABLED`; Product Owner retains
   product/UAT/debug/high-risk authority; Architect AI owns task-level delegated local approval within an active
   milestone, Codex builds, and Claude independently reviews. Strict external/destructive/Runtime/application-Provider
@@ -65,21 +65,20 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   `llama3.1` and `granite3.3` generation through `ollama-cli`; those diagnostics remain separate from Live UAT.
 - **Milestone transition:** `QUIRKYBOT_DEV_V1 = MILESTONE_REACHED / CLOSED` and
   `M2 = COMPLETE_AND_ACCEPTED / CLOSED`. The active phase is now
-  `Production Readiness / Release Gate Preparation`; further product implementation still requires Product Owner
-  direction while all Strict gates remain intact.
+  `Release Gate Finalization`; further product implementation still requires Product Owner direction while all
+  Strict gates remain intact.
 
-## Production Readiness / Release Gate Preparation
+## Release Gate Finalization
 
-- **Assessment result:** `SOURCE_INTEGRATION_READY = YES` for the completed M2 / `QUIRKYBOT_DEV_V1` local-first
-  Personal Edition scope. No release-blocking implementation or architecture gap was found for pushing the current
-  source to a review branch and integrating it through a PR. This is not a Production Runtime-readiness claim.
-- **Local versus origin:** at the committed assessment HEAD, local `main` is `53` commits ahead of and `0` commits
-  behind the locally recorded `origin/main` (`6d3a8376532f43cb5e0ac29c6e172742f9b292bc`). The range changes `68` distinct
-  files. No fetch, push, or other remote/network mutation was performed; remote-tracking-ref freshness must be
-  revalidated inside the separately approved Push gate.
+- **Source integration:** `SOURCE_INTEGRATION_GATE = COMPLETE` at exact integrated source HEAD
+  `8500f8fd8049b84ee90ff56d0502111dec26bbb9` (`8500f8f`). At gate completion, local `main == origin/main == remote
+  main` at that SHA. The approved Push was executed directly to `main`; no release branch or PR was required.
+- **Release identifier:** the intended final release tag is `v1.0.0`. This follows the existing annotated
+  `v1.0.0-rc1` tag and the Version 1 architecture audit's explicit final-tag convention. The workspace package
+  version `0.1.0` is not the established repository release line and is not changed by this documentation task.
 - **Canonical documentation:** M2 and DEV_V1 closure agree across this file, `CHANGELOG.md`, and `ROADMAP.md`.
-  `CHANGELOG.md` covers the shipped M2 ContextBuilder, PromptComposer, provider-routing, connector, durable-recall,
-  and explicit durable-write work. `ROADMAP.md` marks M2 done and this release-gate preparation as current.
+  `CHANGELOG.md` records the former Unreleased content under `[1.0.0] - 2026-08-25`; `ROADMAP.md` marks M2 done and
+  release-gate preparation as the current operational phase.
 - **Validation evidence:** `pnpm typecheck` passes with exit `0`. `pnpm test` passes `118` files / `2634` tests on
   Node 22. The former `37` files / `255` tests snapshot was stale and is replaced below.
 - **Carryover classification:** XR-AX and XR filesystem provenance are **non-blocking** for this completed source
@@ -91,25 +90,21 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 - **Other deferred items:** the Codex CLI adapter, Workflow, autonomous Agent Runtime, vector search, and deeper
   memory/index work remain explicitly outside the ratified completed scope and are non-blocking for this source
   integration gate.
-- **Remaining gates:** there is no additional local implementation or ADR required before the first Strict crossing.
-  Push, PR creation, Merge, release tagging/publishing, Production/Release approval, and all Runtime, Provider/network,
-  Discord, Live UAT, secret, destructive, or Production/shared DB work remain separately approval-gated.
+- **Remaining release-gate operation:** local annotated tag creation is the pending Strict operation. With exact
+  Product Owner approval, create `v1.0.0` pointing to `8500f8fd8049b84ee90ff56d0502111dec26bbb9`, using the existing
+  annotated-tag convention and a message identifying the completed local-first Personal Edition / M2 / DEV_V1
+  source scope. The release-note boundary is exactly the `CHANGELOG.md` section
+  `## [1.0.0] - 2026-08-25`; it includes every entry formerly under `[Unreleased]` and no later Unreleased work.
+  The exact prepared creation command below creates the local tag only:
 
-### Proposed Strict Push / PR / Merge / Release sequence
-
-1. **Push approval:** revalidate the remote `main` tip, then obtain exact approval to push the assessed HEAD to a new
-   remote branch named `release/m2-dev-v1-readiness`; do not push directly to `main`.
-2. **PR approval:** after confirming the pushed branch SHA equals the approved local SHA, obtain separate approval to
-   create a PR from `release/m2-dev-v1-readiness` into `main`, titled
-   `release: integrate completed M2 and QuirkyBot DEV_V1 scope`.
-3. **Review gate:** require green `pnpm typecheck` and `pnpm test` evidence at the PR head, verify the exact 68-file
-   range and the carryover/exclusion statements above, and complete independent review. Any remote drift or changed
-   PR head invalidates the prior SHA-bound evidence.
-4. **Merge approval:** obtain exact approval for the reviewed PR and merge it with a merge commit so the bounded local
-   commit history remains auditable; verify the resulting `origin/main` tip without force/reset or branch cleanup.
-5. **Release approval:** from the verified merged `main`, run a fresh release-gate review and obtain separate exact
-   approval before creating the existing release line's final `v1.0.0` tag or publishing release notes/artifacts.
-   Production Runtime activation is excluded until production-grade 5C-EG is resolved and separately approved.
+  ```sh
+  git tag -a v1.0.0 8500f8fd8049b84ee90ff56d0502111dec26bbb9 \
+    -m 'Chunsik v1.0.0' \
+    -m 'Final Version 1 release: completed local-first Personal Edition / M2 / QUIRKYBOT_DEV_V1 source scope. Release notes: CHANGELOG.md [1.0.0] - 2026-08-25.'
+  ```
+- **Strict exclusions:** this prepared action does not authorize pushing the tag, pushing this documentation commit,
+  publishing a GitHub Release or artifacts, Production activation, Runtime or Provider/network execution, Discord,
+  Live UAT, secrets, destructive work, or Production/shared DB mutation. Each requires its own exact approval.
 
 ## Stage 2C — Slice 3C ExecutionPlan Integrity Binding Architecture
 

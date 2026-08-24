@@ -7,6 +7,8 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-08-25
+
 ### Changed — Production Readiness / Release Gate Preparation
 
 - Recorded the completed M2 / `QUIRKYBOT_DEV_V1` source-integration assessment, current local-to-`origin/main`
