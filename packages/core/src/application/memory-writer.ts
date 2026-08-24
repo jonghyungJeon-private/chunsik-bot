@@ -83,6 +83,7 @@ class MemoryWriterPersistenceError extends Error {
 }
 
 const MAX_DURABLE_CONTENT_CHARACTERS = 4_000;
+const WRITER_OWNED_LIFECYCLE_METADATA = ['expiresAt', 'supersededBy'] as const;
 const SECRET_MATERIAL =
   /(?:-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token)\s*[:=]\s*\S+)/i;
 
@@ -293,6 +294,12 @@ export class DefaultMemoryWriter implements MemoryWriter {
     }
     if (candidate.validationState !== 'PENDING') {
       return 'candidate must be pending application validation';
+    }
+    const reservedMetadata = WRITER_OWNED_LIFECYCLE_METADATA.find(
+      (key) => candidate.metadata[key] !== undefined,
+    );
+    if (reservedMetadata !== undefined) {
+      return `candidate metadata cannot set writer-owned lifecycle field: ${reservedMetadata}`;
     }
     if (candidate.content.length > MAX_DURABLE_CONTENT_CHARACTERS) {
       return `candidate exceeds ${MAX_DURABLE_CONTENT_CHARACTERS} characters`;

@@ -117,6 +117,29 @@ describe('DefaultMemoryWriter lifecycle', () => {
     expect(store.saveDurable).not.toHaveBeenCalled();
   });
 
+  it.each(['expiresAt', 'supersededBy'] as const)(
+    'rejects candidate-owned %s lifecycle metadata before persistence',
+    async (reservedField) => {
+      const store = persistence();
+      const writer = new DefaultMemoryWriter(store);
+
+      await expect(
+        writer.promote(
+          writer.createCandidate(
+            candidateInput({ metadata: { [reservedField]: 'candidate-forged-value' } }),
+          ),
+        ),
+      ).resolves.toEqual({
+        outcome: 'REJECTED',
+        policyReason: `candidate metadata cannot set writer-owned lifecycle field: ${reservedField}`,
+      });
+      expect(store.durableMemories).not.toHaveBeenCalled();
+      expect(store.durableMemory).not.toHaveBeenCalled();
+      expect(store.saveDurable).not.toHaveBeenCalled();
+      expect(store.forgetDurable).not.toHaveBeenCalled();
+    },
+  );
+
   it('returns an explicit duplicate relation without persisting', async () => {
     const store = persistence([durableRecord()]);
     const writer = new DefaultMemoryWriter(store);
