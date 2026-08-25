@@ -109,6 +109,9 @@ export interface RuntimeProviderRoutingResult {
 export interface RuntimeProviderRoutingRequest {
   readonly facts: RuntimeProviderRoutingFacts;
   readonly request: AiRequest;
+  /** Raw turn text supplied separately from the rendered prompt for deterministic validation. */
+  readonly recencyFact?: string;
+  readonly currentUserTurn?: string;
   /** Caller-owned TaskRun identity. */
   readonly executionId: string;
 }
@@ -254,7 +257,10 @@ export class RuntimeProviderRoutingService implements RuntimeProviderRouting {
         this.clock,
       );
       gatewayInvoked = true;
-      const result = await gateway.execute(plan, input.request);
+      const result = await gateway.execute(plan, input.request, {
+        ...(input.recencyFact === undefined ? {} : { recencyFact: input.recencyFact }),
+        ...(input.currentUserTurn === undefined ? {} : { currentUserTurn: input.currentUserTurn }),
+      });
       if (
         result.status === ProviderGatewayTerminalStatus.ACCEPTED &&
         result.output !== undefined &&

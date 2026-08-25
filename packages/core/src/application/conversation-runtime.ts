@@ -5130,6 +5130,10 @@ export class ConversationRuntime {
       });
 
       if (capability === Capability.GENERAL_CHAT && this.deps.runtimeProviderRouting) {
+        const recencyFact = [...(bundle.conversationTranscript ?? [])]
+          .reverse()
+          .find((entry) => (entry.role ?? (entry.provenance === 'USER' ? 'user' : 'unknown')) === 'user')
+          ?.content;
         const routed = await this.deps.runtimeProviderRouting.execute({
           facts: {
             capability,
@@ -5137,6 +5141,8 @@ export class ConversationRuntime {
             requiresWork: intent.requiresWork,
           },
           request: aiRequest,
+          ...(recencyFact === undefined ? {} : { recencyFact }),
+          currentUserTurn: message.text,
           executionId: run.id,
         });
         routingAudit = routed.audit;

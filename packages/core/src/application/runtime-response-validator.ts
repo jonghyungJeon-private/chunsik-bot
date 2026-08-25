@@ -19,7 +19,6 @@ const MIN_PROMPT_EXACT_CHARACTERS = 16;
 const MAX_RECENCY_FACT_CHARACTERS = 4_096;
 const MAX_RECENCY_KEYWORDS = 24;
 
-const RECENCY_FACT_MARKER = /immediatelyPreviousUserTurn:\s*("(?:\\.|[^"\\])*")/gu;
 const RECENCY_STOPWORDS = new Set([
   'a', 'an', 'and', 'are', 'as', 'at', 'be', 'been', 'but', 'by', 'for', 'from', 'has', 'have',
   'i', 'in', 'is', 'it', 'my', 'of', 'on', 'or', 'said', 'says', 'that', 'the', 'this', 'to',
@@ -33,7 +32,12 @@ const KOREAN_SUFFIXES = Object.freeze([
   '부터', '보다', '하고', '이나', '라도', '이랑', '랑', '으로', '로', '은', '는', '이', '가',
   '을', '를', '의', '에', '와', '과', '도', '만', '야',
 ]);
-const NEGATION = /(?:\b(?:not|never|no|isn't|aren't|wasn't|weren't|don't|doesn't|didn't|cannot|can't)\b|(?:안|못)\s*[^\s]{0,12}|아니(?:야|다|에요|예요|었)|않(?:아|다|아요|았|는|는다))/iu;
+const EXPLICIT_RECENCY_REFERENCE =
+  /(?:그(?:거|것|걸|게|건)|이(?:거|것|걸|게|건)|저(?:거|것|걸|게|건)|방금|아까|위(?:에|에서)|앞서|전에\s*(?:말|얘기)|(?:뭐|무엇|어떻|어디|누구)(?:였|했|였었)?지|\b(?:that|above|earlier|previous(?:ly)?|you said|what (?:i|we|you) said)\b)/iu;
+const GREETING_OR_ACKNOWLEDGEMENT =
+  /^(?:안녕(?:하세요|하십니까)?|반가워(?:요)?|감사(?:합니다|해요)?|고마워(?:요)?|네|넵|예|응|어|알겠(?:어|어요|습니다)|좋아(?:요)?|okay|ok|thanks?(?: you)?|thank you|hello|hi|hey|got it|sounds good)[\s.!?,~]*$/iu;
+const NEGATION =
+  /(?:\b(?:not|never|no|isn't|aren't|wasn't|weren't|don't|doesn't|didn't|cannot|can't)\b|(?:^|\s)(?:안|못)\s+(?=\S)|아니(?:야|다|에요|예요|었)|않(?:아|다|아요|았|는|는다))/iu;
 
 const SECRET_PATTERNS = Object.freeze([
   /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/iu,
@@ -90,28 +94,35 @@ function recencyHardAnchors(value: string): readonly string[] {
     .slice(0, MAX_RECENCY_KEYWORDS);
 }
 
-function immediatelyPreviousUserTurn(prompt: string): string | null {
-  const facts: string[] = [];
-  for (const match of prompt.matchAll(RECENCY_FACT_MARKER)) {
-    const encoded = match[1];
-    if (encoded === undefined) continue;
-    const decoded: unknown = JSON.parse(encoded);
-    if (
-      typeof decoded !== 'string' ||
-      decoded.length === 0 ||
-      decoded.length > MAX_RECENCY_FACT_CHARACTERS
-    ) {
-      return null;
-    }
-    facts.push(decoded);
-  }
-  if (facts.length === 0 || facts.some((fact) => fact !== facts[0])) return null;
-  return facts[0] ?? null;
+function isRecencyRelevant(currentUserTurn: string, fact: string): boolean {
+  const current = normalize(currentUserTurn);
+  if (!current || GREETING_OR_ACKNOWLEDGEMENT.test(current)) return false;
+  if (EXPLICIT_RECENCY_REFERENCE.test(current)) return true;
+
+  const currentKeywords = new Set(recencyKeywords(current));
+  const factKeywords = recencyKeywords(fact);
+  const sharedKeywords = factKeywords.filter((keyword) => currentKeywords.has(keyword));
+  if (sharedKeywords.length >= 2) return true;
+
+  const currentHardAnchors = new Set(recencyHardAnchors(current));
+  return recencyHardAnchors(fact).some((anchor) => currentHardAnchors.has(anchor));
 }
 
-function hasRecencyGroundingViolation(prompt: string, response: string): boolean {
-  const fact = immediatelyPreviousUserTurn(prompt);
-  if (fact === null) return false;
+function hasRecencyGroundingViolation(
+  recencyFact: string | undefined,
+  currentUserTurn: string | undefined,
+  response: string,
+): boolean {
+  if (
+    recencyFact === undefined ||
+    currentUserTurn === undefined ||
+    recencyFact.length === 0 ||
+    recencyFact.length > MAX_RECENCY_FACT_CHARACTERS ||
+    !isRecencyRelevant(currentUserTurn, recencyFact)
+  ) {
+    return false;
+  }
+  const fact = recencyFact;
   const keywords = recencyKeywords(fact);
   if (keywords.length === 0) return false;
   const responseKeywords = new Set(recencyKeywords(response));
@@ -271,7 +282,7 @@ export class RuntimeResponseValidator {
           reasonCodes.push(ResponseValidationReasonCode.SECRET_EXPOSURE_RISK);
         } else if (
           rule === RuntimeValidationRule.RECENCY_GROUNDING &&
-          hasRecencyGroundingViolation(input.prompt, response)
+          hasRecencyGroundingViolation(input.recencyFact, input.currentUserTurn, response)
         ) {
           reasonCodes.push(ResponseValidationReasonCode.RECENCY_GROUNDING_VIOLATION);
         } else if (

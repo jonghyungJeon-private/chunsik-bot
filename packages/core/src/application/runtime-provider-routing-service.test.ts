@@ -1,9 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import { Capability, IntentType } from '../domain';
+import { Capability, IntentType, RiskLevel, TaskStatus } from '../domain';
+import type { ContextBundle, Task } from '../domain';
 import type { AiExecutionResult, AiProvider, AiRequest } from '../ports';
 import type { MonotonicClock, ProviderDeadlinePolicy } from './deadline-policy';
 import type { ExecutableProviderBinding } from './provider-binding-registry';
 import { ProviderRegistry } from './provider-registry';
+import { PromptComposer } from './prompt-composer';
+import { PromptRenderer } from './prompt-renderer';
 import { ProviderGatewayTerminalStatus } from './provider-routing-gateway';
 import {
   AvailabilityClass,
@@ -290,10 +293,39 @@ describe('RuntimeProviderRoutingService — Slice 5A offline seam', () => {
 
   it('uses the existing bounded semantic escalation path and revalidates the repaired grounded response', async () => {
     const fact = 'The selected release codename is Atlas.';
-    const request: AiRequest = {
-      capability: Capability.GENERAL_CHAT,
-      prompt: `# Context\nimmediatelyPreviousUserTurn: ${JSON.stringify(fact)}`,
+    const currentUserTurn = 'What codename did I say above?';
+    const task: Task = {
+      id: 'task-grounding-repair',
+      title: 'Follow-up',
+      description: currentUserTurn,
+      status: TaskStatus.PENDING,
+      intent: {
+        type: IntentType.CHAT,
+        capability: Capability.GENERAL_CHAT,
+        confidence: 1,
+        requiresWork: true,
+        summary: currentUserTurn,
+      },
+      riskLevel: RiskLevel.LOW,
+      context: { platform: 'test', channelId: 'channel', userId: 'user' },
+      createdAt: '2026-08-25T00:00:00.000Z',
+      updatedAt: '2026-08-25T00:00:00.000Z',
     };
+    const bundle: ContextBundle = {
+      taskId: task.id,
+      conversationTranscript: [
+        {
+          role: 'user',
+          content: fact,
+          provenance: 'USER',
+          epistemicStatus: 'USER_CLAIM_OR_INTENT',
+        },
+      ],
+      backgroundResources: [],
+    };
+    const request = new PromptRenderer().render(new PromptComposer().compose(task, bundle), {
+      capability: Capability.GENERAL_CHAT,
+    });
     const primary = fakeProvider('alpha', true, { text: 'The selected release codename is Zephyr.' });
     const repair = fakeProvider('beta', true, { text: 'The selected release codename is Atlas.' });
     const service = serviceFor([primary, repair], {
@@ -306,6 +338,8 @@ describe('RuntimeProviderRoutingService — Slice 5A offline seam', () => {
     const result = await service.execute({
       facts: { capability: Capability.GENERAL_CHAT, intentType: IntentType.CHAT, requiresWork: true },
       request,
+      recencyFact: fact,
+      currentUserTurn,
       executionId: 'task-run-grounding-repair',
     });
 

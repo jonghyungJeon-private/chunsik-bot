@@ -240,7 +240,11 @@ export class ProviderRoutingGateway {
     this.validator = new RuntimeResponseValidator(profiles);
   }
 
-  async execute(plan: ProviderExecutionPlan, request: AiRequest): Promise<ProviderGatewayResult> {
+  async execute(
+    plan: ProviderExecutionPlan,
+    request: AiRequest,
+    validationFacts: Readonly<{ recencyFact?: string; currentUserTurn?: string }> = {},
+  ): Promise<ProviderGatewayResult> {
     const machine = new RoutingExecutionStateMachine();
     const attempts: ProviderAttemptAudit[] = [];
     let path: ProviderExecutionPath = 'PRIMARY_ONLY';
@@ -446,6 +450,7 @@ export class ProviderRoutingGateway {
       const validation: RuntimeValidationResult = this.validator.validate({
         validationProfile: plan.validationProfile,
         prompt: request.prompt,
+        ...validationFacts,
         contextCorpus: request.contextFiles?.map((file) => file.content),
         result,
       });

@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
+import { Capability, IntentType, RiskLevel, TaskStatus } from '../domain';
+import type { ContextBundle, Task } from '../domain';
 import {
   ResponseValidationReasonCode,
   RuntimeValidationRule,
   ValidationDisposition,
 } from './runtime-response-validation-contracts';
 import { RuntimeResponseValidator, projectBoundedProviderOutput } from './runtime-response-validator';
+import { PromptComposer } from './prompt-composer';
+import { PromptRenderer } from './prompt-renderer';
 import { validationProfileId } from './provider-routing-contracts';
 import {
   AUTHORITY_SENSITIVE,
@@ -21,17 +25,17 @@ function validate(
   profile = GENERAL_CHAT,
   prompt = 'Please summarize the public project status.',
   contextCorpus: readonly string[] = [],
+  recencyFact?: string,
+  currentUserTurn?: string,
 ) {
   return validator.validate({
     validationProfile: profile,
     prompt,
+    ...(recencyFact === undefined ? {} : { recencyFact }),
+    ...(currentUserTurn === undefined ? {} : { currentUserTurn }),
     contextCorpus,
     result: { text },
   });
-}
-
-function recencyPrompt(fact: string): string {
-  return `# Context\n[Provenance: CORE_RUNTIME | Epistemic status: AUTHORITATIVE_CURRENT_FACT]\nimmediatelyPreviousUserTurn: ${JSON.stringify(fact)}`;
 }
 
 describe('RuntimeResponseValidator', () => {
@@ -114,10 +118,14 @@ describe('RuntimeResponseValidator', () => {
   });
 
   it('accepts a GENERAL_CHAT response grounded in bounded entities from the authoritative recent fact', () => {
+    const fact = '내가 가장 좋아하는 음식은 해산물 파스타야.';
     const result = validate(
       '맞아요. 해산물 파스타를 가장 좋아한다고 알려 주셨어요.',
       GENERAL_CHAT,
-      recencyPrompt('내가 가장 좋아하는 음식은 해산물 파스타야.'),
+      'real prompt text is irrelevant to the structured fact',
+      [],
+      fact,
+      '방금 내가 좋아한다고 말한 음식이 뭐였지?',
     );
 
     expect(result).toMatchObject({ disposition: ValidationDisposition.ACCEPT, reasonCodes: [] });
@@ -127,10 +135,14 @@ describe('RuntimeResponseValidator', () => {
     '제가 기억한 바로는 가장 좋아하는 음식은 초밥이에요.',
     '해산물 파스타를 좋아하지 않는다고 말했어요.',
   ])('escalates a GENERAL_CHAT response that ignores or contradicts the authoritative recent fact', (text) => {
+    const fact = '내가 가장 좋아하는 음식은 해산물 파스타야.';
     const result = validate(
       text,
       GENERAL_CHAT,
-      recencyPrompt('내가 가장 좋아하는 음식은 해산물 파스타야.'),
+      'real prompt text is irrelevant to the structured fact',
+      [],
+      fact,
+      '아까 내가 좋아한다고 말한 음식이 뭐였지?',
     );
 
     expect(result).toMatchObject({
@@ -139,11 +151,107 @@ describe('RuntimeResponseValidator', () => {
     });
   });
 
-  it('does not activate recency grounding without the canonical authoritative fact marker', () => {
+  it('does not activate recency grounding without a structured recency fact', () => {
     expect(validate('An unrelated but otherwise valid answer.')).toMatchObject({
       disposition: ValidationDisposition.ACCEPT,
       reasonCodes: [],
     });
+  });
+
+  it('validates structured recency through a real PromptComposer → PromptRenderer prompt', () => {
+    const fact = 'The selected release codename is Atlas.';
+    const currentUserTurn = 'What codename did I say above?';
+    const task: Task = {
+      id: 'task-real-prompt',
+      title: 'Follow-up',
+      description: currentUserTurn,
+      status: TaskStatus.PENDING,
+      intent: {
+        type: IntentType.CHAT,
+        capability: Capability.GENERAL_CHAT,
+        confidence: 1,
+        requiresWork: true,
+        summary: currentUserTurn,
+      },
+      riskLevel: RiskLevel.LOW,
+      context: { platform: 'test', channelId: 'channel', userId: 'user' },
+      createdAt: '2026-08-25T00:00:00.000Z',
+      updatedAt: '2026-08-25T00:00:00.000Z',
+    };
+    const bundle: ContextBundle = {
+      taskId: task.id,
+      conversationTranscript: [
+        {
+          role: 'user',
+          content: fact,
+          provenance: 'USER',
+          epistemicStatus: 'USER_CLAIM_OR_INTENT',
+        },
+      ],
+      backgroundResources: [],
+    };
+    const request = new PromptRenderer().render(new PromptComposer().compose(task, bundle), {
+      capability: Capability.GENERAL_CHAT,
+    });
+
+    expect(request.prompt).toContain('immediatelyPreviousUserTurn: \\"The selected release codename is Atlas.\\"');
+    expect(
+      validate(
+        'The selected release codename is Zephyr.',
+        GENERAL_CHAT,
+        request.prompt,
+        [],
+        fact,
+        currentUserTurn,
+      ),
+    ).toMatchObject({
+      disposition: ValidationDisposition.ESCALATE,
+      reasonCodes: [ResponseValidationReasonCode.RECENCY_GROUNDING_VIOLATION],
+    });
+    expect(
+      validate(
+        'The selected release codename is Atlas.',
+        GENERAL_CHAT,
+        request.prompt,
+        [],
+        fact,
+        currentUserTurn,
+      ),
+    ).toMatchObject({
+      disposition: ValidationDisposition.ACCEPT,
+      reasonCodes: [],
+    });
+  });
+
+  it.each([
+    ['What is the weather tomorrow?', 'It will be sunny tomorrow.'],
+    ['안녕하세요', '안녕하세요! 무엇을 도와드릴까요?'],
+    ['알겠어요', '좋아요.'],
+    ['새 프로젝트의 테스트 전략을 알려줘', '단위 테스트부터 시작하는 것이 좋아요.'],
+  ])('accepts an unrelated, greeting, or topic-shift current turn: %s', (currentUserTurn, response) => {
+    expect(
+      validate(
+        response,
+        GENERAL_CHAT,
+        'prompt text is not parsed',
+        [],
+        '내가 가장 좋아하는 음식은 해산물 파스타야.',
+        currentUserTurn,
+      ),
+    ).toMatchObject({ disposition: ValidationDisposition.ACCEPT, reasonCodes: [] });
+  });
+
+  it('does not treat 안녕하세요 as negated intent', () => {
+    expect(
+      validate(
+        '제 별명은 Atlas예요.',
+        GENERAL_CHAT,
+        'prompt text is not parsed',
+        [],
+        '안녕하세요, 제 별명은 Atlas예요.',
+        '방금 말한 제 별명이 뭐였지?',
+      ),
+    ).toMatchObject({ disposition: ValidationDisposition.ACCEPT, reasonCodes: [] });
   });
 
   it('measures OUTPUT_LIMIT from the complete bounded-output UTF-8 JSON at the exact byte boundary', () => {

@@ -7849,6 +7849,22 @@ describe('Stage 2B Slice 5A — ConversationRuntime integration seam', () => {
     const deps: ConversationRuntimeDeps = {
       ...base,
       ...workTurnHappyPathDeps(),
+      contextBuilder: {
+        async build(task) {
+          return {
+            taskId: task.id,
+            conversationTranscript: [
+              {
+                role: 'user',
+                content: '직전 사용자 원문',
+                provenance: 'USER',
+                epistemicStatus: 'USER_CLAIM_OR_INTENT',
+              },
+            ],
+            backgroundResources: [],
+          };
+        },
+      },
       tasks: new TaskManager(storage),
       promptRenderer: {
         render() {
@@ -7872,6 +7888,8 @@ describe('Stage 2B Slice 5A — ConversationRuntime integration seam', () => {
         requiresWork: true,
       },
       request: { capability: Capability.GENERAL_CHAT, prompt: 'private runtime prompt' },
+      recencyFact: '직전 사용자 원문',
+      currentUserTurn: '라우팅된 대화 요청',
       executionId: expect.any(String),
     });
     expect(legacySelect).not.toHaveBeenCalled();

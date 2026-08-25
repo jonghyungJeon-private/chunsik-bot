@@ -43,6 +43,9 @@ export interface RuntimeValidationResult {
 export interface RuntimeValidationInputView {
   readonly validationProfile: ValidationProfileId;
   readonly prompt: string;
+  /** Raw conversation facts supplied by Runtime; validators never recover these from prompt text. */
+  readonly recencyFact?: string;
+  readonly currentUserTurn?: string;
   readonly contextCorpus?: readonly string[];
   readonly result: {
     readonly text: string;
