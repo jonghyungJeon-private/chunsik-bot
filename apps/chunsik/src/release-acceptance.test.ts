@@ -190,7 +190,7 @@ describe('release acceptance — production composition boundary', () => {
     );
   });
 
-  it('uses production writer wiring for explicit durable persistence without broadening retrieval scope', async () => {
+  it('pins current writer/retriever scope asymmetry while ADR-0073 durable recall remains a known open gap', async () => {
     const harness = acceptanceHarness();
     const firstRuntime = harness.runtime();
 
@@ -203,6 +203,9 @@ describe('release acceptance — production composition boundary', () => {
     expect(durable[0]?.content).toBe('내 배포 창은 화요일이야');
     expect(durable[0]?.scope).toEqual({ sessionId: 'session-1', userId: 'actor-1' });
     expect(resumed.status).toBe('RESPONDED');
+    // Pins current behavior only: the writer persists userId=actorId, while ContextBuilder omits actorId
+    // from retrieval, so scopeMatches rejects the record. ADR-0073 durable recall remains a known gap
+    // for a separately approved scope-reconciliation task, not a ratified release-accepted behavior.
     expect(harness.bundles.at(-1)?.durableRecall).toBeUndefined();
   });
 
@@ -217,6 +220,8 @@ describe('release acceptance — production composition boundary', () => {
     const bundle = harness.bundles.at(-1)!;
 
     expect(bundle.conversationTranscript.some((entry) => entry.content === '장기 사실')).toBe(false);
+    // Pins current behavior only: writer userId=actorId and actorId-free ContextBuilder retrieval cannot
+    // scope-match. This known ADR-0073 durable-recall gap requires a separately approved reconciliation task.
     expect(bundle.durableRecall).toBeUndefined();
     expect(bundle.conversationTranscript.every((entry) => entry.provenance !== 'DURABLE_MEMORY')).toBe(true);
   });

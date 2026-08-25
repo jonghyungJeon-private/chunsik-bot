@@ -164,6 +164,8 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
       taskWith({ sessionId: 'S1', projectId: 'P1', actorId: 'A1' }),
     );
 
+    // Pins the reverted-to retrieval scope only. The writer persists userId=actorId, so omitting actorId
+    // here creates a known open writer/retriever asymmetry gap that a separately approved task must reconcile.
     expect(request?.scope).toEqual({ sessionId: 'S1', projectId: 'P1' });
   });
 
