@@ -18,19 +18,19 @@ const MIN_MULTI_ENTRY_ECHO_CHARACTERS = 48;
 const MIN_PROMPT_EXACT_CHARACTERS = 16;
 const MAX_RECENCY_FACT_CHARACTERS = 4_096;
 const MAX_RECENCY_KEYWORDS = 24;
+const MIN_RECENCY_RELEVANCE_KEYWORD_CHARACTERS = 3;
 
 const RECENCY_STOPWORDS = new Set([
   'a', 'an', 'and', 'are', 'as', 'at', 'be', 'been', 'but', 'by', 'for', 'from', 'has', 'have',
   'i', 'in', 'is', 'it', 'my', 'of', 'on', 'or', 'said', 'says', 'that', 'the', 'this', 'to',
-  'turn', 'user', 'was', 'were', 'with', 'you', 'your', 'current', 'previous', 'recent', 'target',
-  'selected', 'release', 'codename', '그', '그거', '그것', '그리고', '가장', '기억한', '나는',
-  '내가', '너는', '네가', '말', '말했어', '바로', '사용자', '알려', '음식', '이', '이거', '이것',
-  '저', '저거', '저것', '좋아하', '좋아하는', '최근', '현재', '턴',
+  'turn', 'user', 'was', 'were', 'with', 'you', 'your', 'current', 'previous', 'recent', '그',
+  '그거', '그것', '그리고', '가장', '나는', '내가', '너는', '네가', '말', '바로', '사용자', '이',
+  '이거', '이것', '저', '저거', '저것', '최근', '현재', '턴',
 ]);
 const KOREAN_SUFFIXES = Object.freeze([
   '에게서', '이라고', '이라는', '으로는', '에서는', '으로', '에서', '에게', '한테', '처럼', '까지',
-  '부터', '보다', '하고', '이나', '라도', '이랑', '랑', '으로', '로', '은', '는', '이', '가',
-  '을', '를', '의', '에', '와', '과', '도', '만', '야',
+  '부터', '보다', '하고', '이나', '라도', '이랑', '랑', '로', '은', '는', '이', '가', '을', '를',
+  '의', '에', '와', '과', '도', '만', '야',
 ]);
 const EXPLICIT_RECENCY_REFERENCE =
   /(?:그(?:거|것|걸|게|건)|이(?:거|것|걸|게|건)|저(?:거|것|걸|게|건)|방금|아까|위(?:에|에서)|앞서|전에\s*(?:말|얘기)|(?:뭐|무엇|어떻|어디|누구)(?:였|했|였었)?지|\b(?:that|above|earlier|previous(?:ly)?|you said|what (?:i|we|you) said)\b)/iu;
@@ -102,7 +102,9 @@ function isRecencyRelevant(currentUserTurn: string, fact: string): boolean {
   const currentKeywords = new Set(recencyKeywords(current));
   const factKeywords = recencyKeywords(fact);
   const sharedKeywords = factKeywords.filter((keyword) => currentKeywords.has(keyword));
-  if (sharedKeywords.length >= 2) return true;
+  if (sharedKeywords.filter((keyword) => keyword.length >= MIN_RECENCY_RELEVANCE_KEYWORD_CHARACTERS).length >= 2) {
+    return true;
+  }
 
   const currentHardAnchors = new Set(recencyHardAnchors(current));
   return recencyHardAnchors(fact).some((anchor) => currentHardAnchors.has(anchor));
@@ -128,7 +130,20 @@ function hasRecencyGroundingViolation(
   const responseKeywords = new Set(recencyKeywords(response));
   const hardAnchors = recencyHardAnchors(fact);
   if (hardAnchors.some((anchor) => !responseKeywords.has(anchor))) return true;
-  if (!keywords.some((keyword) => responseKeywords.has(keyword))) return true;
+  // Query vocabulary establishes relevance but cannot by itself ground the answer.
+  const current = normalize(currentUserTurn);
+  const currentKeywords = recencyKeywords(current);
+  const groundingKeywords = keywords.filter(
+    (keyword) =>
+      !current.includes(keyword) &&
+      !(
+        /[\p{Script=Hangul}]/u.test(keyword) &&
+        keyword.length >= MIN_RECENCY_RELEVANCE_KEYWORD_CHARACTERS &&
+        currentKeywords.some((currentKeyword) => currentKeyword.startsWith(keyword.slice(0, -1)))
+      ),
+  );
+  const requiredKeywords = groundingKeywords.length === 0 ? keywords : groundingKeywords;
+  if (!requiredKeywords.some((keyword) => responseKeywords.has(keyword))) return true;
   return NEGATION.test(fact) !== NEGATION.test(response);
 }
 
