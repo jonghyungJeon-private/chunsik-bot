@@ -26,6 +26,7 @@ const taskWith = (
   opts: {
     sessionId?: string;
     projectId?: string;
+    actorId?: string;
     platform?: string;
     requestText?: string;
     capability?: Capability;
@@ -50,6 +51,7 @@ const taskWith = (
   },
   ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
   ...(opts.projectId ? { projectId: opts.projectId } : {}),
+  ...(opts.actorId ? { actorId: opts.actorId } : {}),
   createdAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-01T00:00:00.000Z',
 });
@@ -143,6 +145,26 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
         }),
       }),
     ]);
+  });
+
+  it('keeps durable retrieval scoped to the active session and project', async () => {
+    let request: MemoryRetrievalRequest | undefined;
+    const memory = {
+      recentShortTerm: async () => [],
+      projectMemory: async () => undefined,
+    } as unknown as MemoryManager;
+    const retriever: MemoryRetriever = {
+      retrieve: async (value) => {
+        request = value;
+        return [];
+      },
+    };
+
+    await new ContextBuilder(memory, {}, retriever).build(
+      taskWith({ sessionId: 'S1', projectId: 'P1', actorId: 'A1' }),
+    );
+
+    expect(request?.scope).toEqual({ sessionId: 'S1', projectId: 'P1' });
   });
 
   it('suppresses exact-content durable recall without displacing exact transcript continuity', async () => {

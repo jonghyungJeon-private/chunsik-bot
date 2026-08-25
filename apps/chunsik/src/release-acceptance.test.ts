@@ -190,7 +190,7 @@ describe('release acceptance — production composition boundary', () => {
     );
   });
 
-  it('uses production writer/retriever wiring for explicit durable persistence and later recall', async () => {
+  it('uses production writer wiring for explicit durable persistence without broadening retrieval scope', async () => {
     const harness = acceptanceHarness();
     const firstRuntime = harness.runtime();
 
@@ -201,10 +201,9 @@ describe('release acceptance — production composition boundary', () => {
     expect(remembered.status).toBe('RESPONDED');
     expect(durable).toHaveLength(1);
     expect(durable[0]?.content).toBe('내 배포 창은 화요일이야');
+    expect(durable[0]?.scope).toEqual({ sessionId: 'session-1', userId: 'actor-1' });
     expect(resumed.status).toBe('RESPONDED');
-    expect(harness.bundles.at(-1)?.durableRecall).toEqual(
-      expect.arrayContaining([expect.objectContaining({ content: '내 배포 창은 화요일이야' })]),
-    );
+    expect(harness.bundles.at(-1)?.durableRecall).toBeUndefined();
   });
 
   it('never promotes ordinary chat and keeps SHORT_TERM transcript separate from LONG_TERM recall', async () => {
@@ -218,7 +217,7 @@ describe('release acceptance — production composition boundary', () => {
     const bundle = harness.bundles.at(-1)!;
 
     expect(bundle.conversationTranscript.some((entry) => entry.content === '장기 사실')).toBe(false);
-    expect(bundle.durableRecall?.some((entry) => entry.content === '장기 사실')).toBe(true);
+    expect(bundle.durableRecall).toBeUndefined();
     expect(bundle.conversationTranscript.every((entry) => entry.provenance !== 'DURABLE_MEMORY')).toBe(true);
   });
 
