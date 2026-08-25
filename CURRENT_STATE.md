@@ -80,9 +80,10 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 - **Canonical documentation:** M2 and DEV_V1 closure agree across this file, `CHANGELOG.md`, and `ROADMAP.md`.
   `CHANGELOG.md` records the former Unreleased content under `[1.0.0] - 2026-08-25`; `ROADMAP.md` marks M2 done and
   release-gate finalization and release-candidate revalidation as the current operational phase.
-- **Validation status:** the source-integration gate recorded `pnpm typecheck` exit `0` and `pnpm test` passing `118`
-  files / `2634` tests on Node 22. Those results predate the post-gate fixes; release-candidate revalidation is a
-  separate pending step and will establish the evidence for the final release-candidate SHA.
+- **Validation status:** release-candidate revalidation passed at exact HEAD
+  `243544bd5d70a3411cb5a15788f6f6e1c1a6787d`: `pnpm typecheck` exited `0`, and `pnpm test` passed `119` files /
+  `2652` tests on Node `v18.20.5`. This is the validation evidence for the final local release-candidate source SHA;
+  independent review remains a separate subsequent step.
 - **Carryover classification:** XR-AX and XR filesystem provenance are **non-blocking** for this completed source
   integration scope because XR-AX was accepted as optional and remains disabled/unexecuted. Production-grade 5C-EG
   and 5C-EG-I1/I2/V/E are also **non-blocking for source integration only** because enabled production routing
