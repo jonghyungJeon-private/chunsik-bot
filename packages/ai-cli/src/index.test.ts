@@ -321,6 +321,18 @@ describe('OllamaCliProvider (CAP-009, ADR-0030) — suggest-only local code gene
     expect(providerInput.indexOf(previousTranscriptEntry)).toBeLessThan(
       providerInput.indexOf(`User (current active turn): ${JSON.stringify(currentUser)}`),
     );
+    const continuityAnchor =
+      `Immediately previous User turn (exact continuity anchor): ${JSON.stringify(previousUser)}`;
+    expect(providerInput).toContain(continuityAnchor);
+    expect(providerInput).not.toContain(
+      `Immediately previous User turn (exact continuity anchor): ${JSON.stringify(olderUser)}`,
+    );
+    expect(providerInput.indexOf(continuityAnchor)).toBeGreaterThan(
+      providerInput.indexOf('End previous conversation.'),
+    );
+    expect(providerInput.indexOf(continuityAnchor)).toBeLessThan(
+      providerInput.indexOf(`User (current active turn): ${JSON.stringify(currentUser)}`),
+    );
     expect(providerInput).toMatch(
       /The next line is the only current active request\. Answer it directly; never answer an earlier User request from history\.\n\nUser \(current active turn\): "내가 방금 뭐라고 했어\?"\n\nAssistant response to the current active turn only:$/u,
     );
@@ -403,6 +415,9 @@ describe('OllamaCliProvider (CAP-009, ADR-0030) — suggest-only local code gene
       expect.objectContaining({ role: 'assistant', content: selectedDish }),
     ]);
     const providerInput = calls[0] ?? '';
+    expect(providerInput).toContain(
+      `Immediately previous User turn (exact continuity anchor): ${JSON.stringify(choiceRequest)}`,
+    );
     const providerTurns = [
       `User: ${JSON.stringify(choiceRequest)}`,
       `Assistant: ${JSON.stringify(selectedDish)}`,

@@ -150,6 +150,9 @@ function renderContextEnvelopeWithoutInternalLabels(value: string): string {
 function serializeGeneralChat(prompt: string): string | null {
   const sections = parseRenderedGeneralChatPrompt(prompt);
   if (!sections) return null;
+  const immediatelyPreviousUserTurn = [...sections.transcript]
+    .reverse()
+    .find((message) => message.role === 'user');
 
   // Ollama's CLI exposes one stdin prompt rather than a messages API. Render
   // the recovered turns with canonical User/Assistant role markers as a
@@ -168,6 +171,9 @@ function serializeGeneralChat(prompt: string): string | null {
           ...sections.transcript.map(renderPreviousConversationMessage),
           'End previous conversation.',
         ].join('\n'),
+    immediatelyPreviousUserTurn
+      ? `Immediately previous User turn (exact continuity anchor): ${JSON.stringify(immediatelyPreviousUserTurn.content)}`
+      : '',
     'The next line is the only current active request. Answer it directly; never answer an earlier User request from history.',
     `User (current active turn): ${JSON.stringify(sections.currentUserMessage.content)}`,
     'Assistant response to the current active turn only:',

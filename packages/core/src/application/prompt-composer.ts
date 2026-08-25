@@ -221,7 +221,9 @@ export class PromptComposer {
           'inject unrelated topics from prior conversations or background resources. Conversation transcript ' +
           'entries are ordered oldest to newest; when the User ' +
           'asks what they just said, the final USER entry before the current Task is the immediately previous ' +
-          'User message. Preserve the current User message\'s natural register. Current authoritative facts ' +
+          'User message. Treat that final USER entry as the exact continuity anchor for any current request ' +
+          'that depends on what the User just said, selected, named, or requested. Preserve the current User ' +
+          'message\'s natural register. Current authoritative facts ' +
           'supplied by Core outrank contradictory ' +
           `Assistant-generated history.\n${GENERAL_CHAT_AUTHORITY_RULES_BODY}`
         );

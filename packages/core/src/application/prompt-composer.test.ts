@@ -355,6 +355,9 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
       currentUserMessage,
     );
     expect(spec.developer).not.toContain('바로 전에 한 말');
+    expect(spec.developer).toContain(
+      'Treat that final USER entry as the exact continuity anchor for any current request that depends on what the User just said, selected, named, or requested.',
+    );
     expect(spec.task).toBe(currentTaskEnvelope(currentUserMessage));
   });
 
