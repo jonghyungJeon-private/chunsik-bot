@@ -161,16 +161,19 @@ export function createDefaultValidationProfileRegistry(): ValidationProfileRegis
     },
     {
       profileId: GENERAL_CHAT,
-      version: '1',
+      version: '2',
       rules: [
         RuntimeValidationRule.NON_EMPTY,
         RuntimeValidationRule.OUTPUT_LIMIT,
         RuntimeValidationRule.PROMPT_LEAK,
         RuntimeValidationRule.MULTI_ENTRY_ECHO,
         RuntimeValidationRule.SECRET_EXPOSURE_RISK,
+        RuntimeValidationRule.RECENCY_GROUNDING,
       ],
       outputLimitBytes: DEFAULT_OUTPUT_LIMIT_BYTES,
-      escalationEnabled: false,
+      escalationEnabled: true,
+      escalationReliabilityAxis: ValidationReliabilityAxis.SEMANTIC,
+      minimumEscalationReliability: ReliabilityTier.HIGH,
     },
     {
       profileId: AUTHORITY_SENSITIVE,

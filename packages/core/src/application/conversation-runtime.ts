@@ -91,6 +91,7 @@ import type {
   TestResultDetail,
 } from './response-composer';
 import { ProviderGatewayTerminalStatus } from './provider-routing-gateway';
+import { RoutingFailureCode } from './runtime-response-validation-contracts';
 import type {
   RuntimeProviderRouting,
   RuntimeProviderRoutingAudit,
@@ -5180,7 +5181,13 @@ export class ConversationRuntime {
           runId: run.id,
           status: routed.status,
         });
-        const reply = this.deps.composer.composeProviderRoutingTerminal(message.context, routed.status);
+        const reply = this.deps.composer.composeProviderRoutingTerminal(
+          message.context,
+          routed.status,
+          routed.failureCode === RoutingFailureCode.SEMANTIC_VALIDATION_UNRESOLVED
+            ? routed.failureCode
+            : null,
+        );
         return { status: 'FAILED', reply, sessionId: session.id };
       }
 

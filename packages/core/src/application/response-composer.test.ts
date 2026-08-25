@@ -3,6 +3,7 @@ import type { ConversationContext, GitDiff, GitStatus } from '../domain';
 import { ResponseComposer } from './response-composer';
 import type { CodeChangePreview, CodeDiffPreview, PatchSetPreview, TestResultDetail } from './response-composer';
 import { ProviderGatewayTerminalStatus } from './provider-routing-gateway';
+import { RoutingFailureCode } from './runtime-response-validation-contracts';
 
 const CTX: ConversationContext = { platform: 'test', channelId: 'c1', userId: 'u1' };
 const composer = new ResponseComposer();
@@ -48,6 +49,18 @@ describe('ResponseComposer.composeProviderRoutingTerminal', () => {
     const texts = terminalStatuses.map((status) => composer.composeProviderRoutingTerminal(CTX, status).text);
 
     expect(new Set(texts).size).toBe(terminalStatuses.length);
+  });
+
+  it('renders a classified grounding fallback that acknowledges it could not confirm a correct answer', () => {
+    const reply = composer.composeProviderRoutingTerminal(
+      CTX,
+      ProviderGatewayTerminalStatus.HUMAN_REVIEW_REQUIRED,
+      RoutingFailureCode.SEMANTIC_VALIDATION_UNRESOLVED,
+    );
+
+    expect(reply.text).toContain('최근 대화에서 확인된 사실');
+    expect(reply.text).toContain('확정할 수 없어');
+    expect(reply.text).toContain('전달하지 않았어요');
   });
 });
 

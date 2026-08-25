@@ -53,15 +53,21 @@ const DEADLINE_POLICY: ProviderDeadlinePolicy = Object.freeze({
 
 const CLOCK: MonotonicClock = Object.freeze({ nowMs: () => 0 });
 
-function descriptor(id: string): ProviderDescriptor {
+function descriptor(
+  id: string,
+  options: {
+    routingClass?: RoutingClass;
+    semanticReliability?: ReliabilityTier;
+  } = {},
+): ProviderDescriptor {
   return {
     providerId: providerId(id),
     adapterId: adapterId('fake-text-adapter'),
     modelId: `opaque-${id}`,
     capabilities: {
       supportedCapabilities: [Capability.GENERAL_CHAT],
-      routingClasses: [RoutingClass.BALANCED],
-      semanticReliability: ReliabilityTier.STANDARD,
+      routingClasses: [options.routingClass ?? RoutingClass.BALANCED],
+      semanticReliability: options.semanticReliability ?? ReliabilityTier.STANDARD,
       authorityReliability: ReliabilityTier.STANDARD,
       continuityReliability: ReliabilityTier.STANDARD,
       toolUse: SupportLevel.UNSUPPORTED,
@@ -98,8 +104,15 @@ const POLICY: RoutingPolicy = {
     outputSizes: [OutputSizeClass.MEDIUM],
     validationProfiles: [GENERAL_CHAT],
   },
-  eligibility: { requiredRoutingClasses: [RoutingClass.BALANCED] },
-  ranking: [{ dimension: RankingDimension.SEMANTIC_RELIABILITY, direction: SortDirection.DESCENDING }],
+  eligibility: {},
+  ranking: [
+    {
+      dimension: RankingDimension.ROUTING_CLASS,
+      direction: SortDirection.ASCENDING,
+      routingClassPreference: [RoutingClass.BALANCED, RoutingClass.SEMANTIC_HIGH],
+    },
+    { dimension: RankingDimension.SEMANTIC_RELIABILITY, direction: SortDirection.DESCENDING },
+  ],
   terminal: TerminalDecision.NO_SELECTION,
 };
 
@@ -124,8 +137,13 @@ function fakeProvider(
   };
 }
 
-function serviceFor(providers: readonly FakeProvider[]): RuntimeProviderRoutingService {
-  const descriptors = providers.map((provider) => descriptor(provider.id));
+function serviceFor(
+  providers: readonly FakeProvider[],
+  descriptorOptions: Readonly<
+    Record<string, { routingClass?: RoutingClass; semanticReliability?: ReliabilityTier }>
+  > = {},
+): RuntimeProviderRoutingService {
+  const descriptors = providers.map((provider) => descriptor(provider.id, descriptorOptions[provider.id]));
   const providerRegistry = new ProviderRegistry(
     'registry-v1',
     descriptors.map((value) => ({ providerId: value.providerId, descriptor: value })),
@@ -268,6 +286,50 @@ describe('RuntimeProviderRoutingService — Slice 5A offline seam', () => {
     expect(result.audit.terminalCode).toBe(RoutingFailureCode.PROMPT_LEAK);
     expect(provider.isAvailable).toHaveBeenCalledTimes(1);
     expect(provider.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the existing bounded semantic escalation path and revalidates the repaired grounded response', async () => {
+    const fact = 'The selected release codename is Atlas.';
+    const request: AiRequest = {
+      capability: Capability.GENERAL_CHAT,
+      prompt: `# Context\nimmediatelyPreviousUserTurn: ${JSON.stringify(fact)}`,
+    };
+    const primary = fakeProvider('alpha', true, { text: 'The selected release codename is Zephyr.' });
+    const repair = fakeProvider('beta', true, { text: 'The selected release codename is Atlas.' });
+    const service = serviceFor([primary, repair], {
+      beta: {
+        routingClass: RoutingClass.SEMANTIC_HIGH,
+        semanticReliability: ReliabilityTier.HIGH,
+      },
+    });
+
+    const result = await service.execute({
+      facts: { capability: Capability.GENERAL_CHAT, intentType: IntentType.CHAT, requiresWork: true },
+      request,
+      executionId: 'task-run-grounding-repair',
+    });
+
+    expect(result).toMatchObject({
+      status: ProviderGatewayTerminalStatus.ACCEPTED,
+      failureCode: null,
+      acceptedProviderId: 'beta',
+      output: { text: 'The selected release codename is Atlas.' },
+      audit: {
+        gatewayAudit: {
+          path: 'ESCALATION',
+          attemptCount: 2,
+          attempts: [
+            {
+              failureCode: RoutingFailureCode.SEMANTIC_VALIDATION_FAILED,
+              validationReasonCodes: ['RECENCY_GROUNDING_VIOLATION'],
+            },
+            { failureCode: null, validationReasonCodes: [] },
+          ],
+        },
+      },
+    });
+    expect(primary.execute).toHaveBeenCalledTimes(1);
+    expect(repair.execute).toHaveBeenCalledTimes(1);
   });
 
   it('turns unavailable/throwing probes into one immutable no-selection snapshot and a bounded audited result', async () => {

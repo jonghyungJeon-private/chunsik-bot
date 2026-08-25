@@ -16,6 +16,24 @@ const TOKEN_WINDOW_SIZE = 12;
 const MIN_ECHO_ENTRY_CHARACTERS = 24;
 const MIN_MULTI_ENTRY_ECHO_CHARACTERS = 48;
 const MIN_PROMPT_EXACT_CHARACTERS = 16;
+const MAX_RECENCY_FACT_CHARACTERS = 4_096;
+const MAX_RECENCY_KEYWORDS = 24;
+
+const RECENCY_FACT_MARKER = /immediatelyPreviousUserTurn:\s*("(?:\\.|[^"\\])*")/gu;
+const RECENCY_STOPWORDS = new Set([
+  'a', 'an', 'and', 'are', 'as', 'at', 'be', 'been', 'but', 'by', 'for', 'from', 'has', 'have',
+  'i', 'in', 'is', 'it', 'my', 'of', 'on', 'or', 'said', 'says', 'that', 'the', 'this', 'to',
+  'turn', 'user', 'was', 'were', 'with', 'you', 'your', 'current', 'previous', 'recent', 'target',
+  'selected', 'release', 'codename', '그', '그거', '그것', '그리고', '가장', '기억한', '나는',
+  '내가', '너는', '네가', '말', '말했어', '바로', '사용자', '알려', '음식', '이', '이거', '이것',
+  '저', '저거', '저것', '좋아하', '좋아하는', '최근', '현재', '턴',
+]);
+const KOREAN_SUFFIXES = Object.freeze([
+  '에게서', '이라고', '이라는', '으로는', '에서는', '으로', '에서', '에게', '한테', '처럼', '까지',
+  '부터', '보다', '하고', '이나', '라도', '이랑', '랑', '으로', '로', '은', '는', '이', '가',
+  '을', '를', '의', '에', '와', '과', '도', '만', '야',
+]);
+const NEGATION = /(?:\b(?:not|never|no|isn't|aren't|wasn't|weren't|don't|doesn't|didn't|cannot|can't)\b|(?:안|못)\s*[^\s]{0,12}|아니(?:야|다|에요|예요|었)|않(?:아|다|아요|았|는|는다))/iu;
 
 const SECRET_PATTERNS = Object.freeze([
   /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/iu,
@@ -38,6 +56,69 @@ function normalize(value: string): string {
 
 function tokens(value: string): readonly string[] {
   return normalize(value).match(/[\p{L}\p{N}_-]+/gu) ?? [];
+}
+
+function lexicalStem(value: string): string {
+  if (!/[\p{Script=Hangul}]/u.test(value)) return value;
+  for (const suffix of KOREAN_SUFFIXES) {
+    if (value.endsWith(suffix) && value.length - suffix.length >= 2) {
+      return value.slice(0, -suffix.length);
+    }
+  }
+  return value;
+}
+
+function recencyKeywords(value: string): readonly string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const token of tokens(value)) {
+    const stem = lexicalStem(token);
+    if (stem.length < 2 || RECENCY_STOPWORDS.has(stem) || seen.has(stem)) continue;
+    seen.add(stem);
+    result.push(stem);
+    if (result.length === MAX_RECENCY_KEYWORDS) break;
+  }
+  return result;
+}
+
+function recencyHardAnchors(value: string): readonly string[] {
+  const rawTokens = value.normalize('NFKC').match(/[\p{L}\p{N}_-]+/gu) ?? [];
+  return rawTokens
+    .filter((token) => /\p{N}/u.test(token) || /^\p{Lu}/u.test(token))
+    .map((token) => lexicalStem(normalize(token)))
+    .filter((token) => token.length >= 2 && !RECENCY_STOPWORDS.has(token))
+    .slice(0, MAX_RECENCY_KEYWORDS);
+}
+
+function immediatelyPreviousUserTurn(prompt: string): string | null {
+  const facts: string[] = [];
+  for (const match of prompt.matchAll(RECENCY_FACT_MARKER)) {
+    const encoded = match[1];
+    if (encoded === undefined) continue;
+    const decoded: unknown = JSON.parse(encoded);
+    if (
+      typeof decoded !== 'string' ||
+      decoded.length === 0 ||
+      decoded.length > MAX_RECENCY_FACT_CHARACTERS
+    ) {
+      return null;
+    }
+    facts.push(decoded);
+  }
+  if (facts.length === 0 || facts.some((fact) => fact !== facts[0])) return null;
+  return facts[0] ?? null;
+}
+
+function hasRecencyGroundingViolation(prompt: string, response: string): boolean {
+  const fact = immediatelyPreviousUserTurn(prompt);
+  if (fact === null) return false;
+  const keywords = recencyKeywords(fact);
+  if (keywords.length === 0) return false;
+  const responseKeywords = new Set(recencyKeywords(response));
+  const hardAnchors = recencyHardAnchors(fact);
+  if (hardAnchors.some((anchor) => !responseKeywords.has(anchor))) return true;
+  if (!keywords.some((keyword) => responseKeywords.has(keyword))) return true;
+  return NEGATION.test(fact) !== NEGATION.test(response);
 }
 
 function containsTokenWindow(haystack: readonly string[], needle: readonly string[]): boolean {
@@ -147,7 +228,12 @@ function disposition(reasonCodes: readonly ResponseValidationReasonCode[], escal
   }
   if (
     escalationEnabled &&
-    reasonCodes.includes(ResponseValidationReasonCode.AUTHORITY_SCOPE_VIOLATION)
+    reasonCodes.some((code) =>
+      [
+        ResponseValidationReasonCode.AUTHORITY_SCOPE_VIOLATION,
+        ResponseValidationReasonCode.RECENCY_GROUNDING_VIOLATION,
+      ].includes(code),
+    )
   ) {
     return ValidationDisposition.ESCALATE;
   }
@@ -183,6 +269,11 @@ export class RuntimeResponseValidator {
           SECRET_PATTERNS.some((pattern) => pattern.test(response))
         ) {
           reasonCodes.push(ResponseValidationReasonCode.SECRET_EXPOSURE_RISK);
+        } else if (
+          rule === RuntimeValidationRule.RECENCY_GROUNDING &&
+          hasRecencyGroundingViolation(input.prompt, response)
+        ) {
+          reasonCodes.push(ResponseValidationReasonCode.RECENCY_GROUNDING_VIOLATION);
         } else if (
           rule === RuntimeValidationRule.AUTHORITY_SEMANTIC_SCOPE &&
           hasAuthorityScopeViolation(response)

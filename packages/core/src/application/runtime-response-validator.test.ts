@@ -30,6 +30,10 @@ function validate(
   });
 }
 
+function recencyPrompt(fact: string): string {
+  return `# Context\n[Provenance: CORE_RUNTIME | Epistemic status: AUTHORITATIVE_CURRENT_FACT]\nimmediatelyPreviousUserTurn: ${JSON.stringify(fact)}`;
+}
+
 describe('RuntimeResponseValidator', () => {
   it('returns a byte-identical frozen result for the same input without copying bodies', () => {
     const input = {
@@ -107,6 +111,39 @@ describe('RuntimeResponseValidator', () => {
 
     expect(result.disposition).toBe(ValidationDisposition.ACCEPT);
     expect(result.reasonCodes).not.toContain(ResponseValidationReasonCode.PROMPT_LEAK);
+  });
+
+  it('accepts a GENERAL_CHAT response grounded in bounded entities from the authoritative recent fact', () => {
+    const result = validate(
+      '맞아요. 해산물 파스타를 가장 좋아한다고 알려 주셨어요.',
+      GENERAL_CHAT,
+      recencyPrompt('내가 가장 좋아하는 음식은 해산물 파스타야.'),
+    );
+
+    expect(result).toMatchObject({ disposition: ValidationDisposition.ACCEPT, reasonCodes: [] });
+  });
+
+  it.each([
+    '제가 기억한 바로는 가장 좋아하는 음식은 초밥이에요.',
+    '해산물 파스타를 좋아하지 않는다고 말했어요.',
+  ])('escalates a GENERAL_CHAT response that ignores or contradicts the authoritative recent fact', (text) => {
+    const result = validate(
+      text,
+      GENERAL_CHAT,
+      recencyPrompt('내가 가장 좋아하는 음식은 해산물 파스타야.'),
+    );
+
+    expect(result).toMatchObject({
+      disposition: ValidationDisposition.ESCALATE,
+      reasonCodes: [ResponseValidationReasonCode.RECENCY_GROUNDING_VIOLATION],
+    });
+  });
+
+  it('does not activate recency grounding without the canonical authoritative fact marker', () => {
+    expect(validate('An unrelated but otherwise valid answer.')).toMatchObject({
+      disposition: ValidationDisposition.ACCEPT,
+      reasonCodes: [],
+    });
   });
 
   it('measures OUTPUT_LIMIT from the complete bounded-output UTF-8 JSON at the exact byte boundary', () => {

@@ -1,7 +1,7 @@
 import type { Artifact } from '../domain';
 import type { ValidationProfileId } from './provider-routing-contracts';
 
-export const ROUTING_RESPONSE_RULE_CONTRACT_VERSION = 'routing-response-rules-v1' as const;
+export const ROUTING_RESPONSE_RULE_CONTRACT_VERSION = 'routing-response-rules-v2' as const;
 export const ROUTING_FAILURE_MATRIX_VERSION = 'routing-failure-matrix-v4' as const;
 
 export enum ValidationDisposition {
@@ -16,6 +16,7 @@ export enum RuntimeValidationRule {
   PROMPT_LEAK = 'PROMPT_LEAK',
   MULTI_ENTRY_ECHO = 'MULTI_ENTRY_ECHO',
   SECRET_EXPOSURE_RISK = 'SECRET_EXPOSURE_RISK',
+  RECENCY_GROUNDING = 'RECENCY_GROUNDING',
   AUTHORITY_SEMANTIC_SCOPE = 'AUTHORITY_SEMANTIC_SCOPE',
 }
 
@@ -25,6 +26,7 @@ export enum ResponseValidationReasonCode {
   PROMPT_LEAK = 'PROMPT_LEAK',
   MULTI_ENTRY_ECHO = 'MULTI_ENTRY_ECHO',
   SECRET_EXPOSURE_RISK = 'SECRET_EXPOSURE_RISK',
+  RECENCY_GROUNDING_VIOLATION = 'RECENCY_GROUNDING_VIOLATION',
   AUTHORITY_SCOPE_VIOLATION = 'AUTHORITY_SCOPE_VIOLATION',
   VALIDATOR_INTERNAL_FAILURE = 'VALIDATOR_INTERNAL_FAILURE',
 }

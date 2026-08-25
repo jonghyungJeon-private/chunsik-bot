@@ -25,6 +25,7 @@ const REASONS: Readonly<Partial<Record<ResponseValidationReasonCode, RoutingFail
   [ResponseValidationReasonCode.EMPTY_OUTPUT]: RoutingFailureCode.EMPTY_OUTPUT,
   [ResponseValidationReasonCode.OUTPUT_LIMIT_VIOLATION]: RoutingFailureCode.OUTPUT_LIMIT_VIOLATION,
   [ResponseValidationReasonCode.AUTHORITY_SCOPE_VIOLATION]: RoutingFailureCode.SEMANTIC_VALIDATION_FAILED,
+  [ResponseValidationReasonCode.RECENCY_GROUNDING_VIOLATION]: RoutingFailureCode.SEMANTIC_VALIDATION_FAILED,
 });
 
 export function failurePolicy(code: RoutingFailureCode): RoutingFailurePolicy {

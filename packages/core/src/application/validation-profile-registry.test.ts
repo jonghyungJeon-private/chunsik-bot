@@ -29,7 +29,14 @@ describe('ValidationProfileRegistry', () => {
       RuntimeValidationRule.PROMPT_LEAK,
       RuntimeValidationRule.MULTI_ENTRY_ECHO,
       RuntimeValidationRule.SECRET_EXPOSURE_RISK,
+      RuntimeValidationRule.RECENCY_GROUNDING,
     ]);
+    expect(registry.resolve(GENERAL_CHAT)).toMatchObject({
+      version: '2',
+      escalationEnabled: true,
+      escalationReliabilityAxis: ValidationReliabilityAxis.SEMANTIC,
+      minimumEscalationReliability: ReliabilityTier.HIGH,
+    });
     expect(registry.resolve(AUTHORITY_SENSITIVE)).toMatchObject({
       escalationEnabled: true,
       escalationReliabilityAxis: ValidationReliabilityAxis.AUTHORITY,

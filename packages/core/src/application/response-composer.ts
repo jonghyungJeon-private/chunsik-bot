@@ -14,6 +14,8 @@ import { buildCanonicalDiff } from './preview-delivery';
 import { formatSafeErrorText } from './safe-error';
 import type { SafeError, SafeErrorContext } from './safe-error';
 import { ProviderGatewayTerminalStatus } from './provider-routing-gateway';
+import type { ProviderGatewayFailureCode } from './provider-routing-gateway';
+import { RoutingFailureCode } from './runtime-response-validation-contracts';
 
 export type ProviderRoutingTerminalReplyStatus = Exclude<
   ProviderGatewayTerminalStatus,
@@ -498,9 +500,12 @@ export class ResponseComposer {
   composeProviderRoutingTerminal(
     context: ConversationContext,
     status: ProviderRoutingTerminalReplyStatus,
+    failureCode: ProviderGatewayFailureCode | null = null,
   ): OutboundMessage {
     const text =
-      status === ProviderGatewayTerminalStatus.HUMAN_REVIEW_REQUIRED
+      failureCode === RoutingFailureCode.SEMANTIC_VALIDATION_UNRESOLVED
+        ? '최근 대화에서 확인된 사실과 일치하는 응답을 확정할 수 없어 답변을 전달하지 않았어요.'
+        : status === ProviderGatewayTerminalStatus.HUMAN_REVIEW_REQUIRED
         ? '응답을 자동으로 확정할 수 없어 검토가 필요해요.'
         : status === ProviderGatewayTerminalStatus.REJECTED
           ? '응답이 검증 기준을 통과하지 못해 전달하지 않았어요. 다시 시도해 주세요.'
