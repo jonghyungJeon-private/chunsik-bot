@@ -86,7 +86,8 @@ function recencyKeywords(value: string): readonly string[] {
 }
 
 function recencyHardAnchors(value: string): readonly string[] {
-  const rawTokens = value.normalize('NFKC').match(/[\p{L}\p{N}_-]+/gu) ?? [];
+  const [, ...candidateSegments] = value.normalize('NFKC').trim().split(/\s+/u);
+  const rawTokens = candidateSegments.join(' ').match(/[\p{L}\p{N}_-]+/gu) ?? [];
   return rawTokens
     .filter((token) => /\p{N}/u.test(token) || /^\p{Lu}/u.test(token))
     .map((token) => lexicalStem(normalize(token)))
