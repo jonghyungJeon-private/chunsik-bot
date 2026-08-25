@@ -21,8 +21,9 @@ Lightweight, living roadmap: **direction and sequence only.** Rules live in
   ContextBuilder ranking and bounded compression, durable memory, and read-only connectors. Codex remains deferred.
 - **M3 — Team Edition foundations:** Actor/Policy, networked transports, telemetry.
 
-Current operational phase: **Production Readiness / Release Gate Preparation** for the completed local-first
-Personal Edition scope. This is a source-integration gate, not M3 activation or a Production Runtime-readiness claim.
+Current operational phase: **Release Gate Finalization** for the completed local-first Personal Edition scope. The
+intended Version 1 release line includes the post-gate acceptance and reliability fixes and awaits release-candidate
+revalidation. This is not M3 activation or a Production Runtime-readiness claim.
 
 ## Sprint roadmap
 

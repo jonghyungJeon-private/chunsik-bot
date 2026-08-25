@@ -70,17 +70,19 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 
 ## Release Gate Finalization
 
-- **Source integration:** `SOURCE_INTEGRATION_GATE = COMPLETE` at exact integrated source HEAD
-  `8500f8fd8049b84ee90ff56d0502111dec26bbb9` (`8500f8f`). At gate completion, local `main == origin/main == remote
-  main` at that SHA. The approved Push was executed directly to `main`; no release branch or PR was required.
+- **Source integration:** `SOURCE_INTEGRATION_GATE = COMPLETE`. By Product Owner decision, the intended `v1.0.0`
+  release line includes all post-gate release-acceptance, recency-grounding validator, ContextBuilder scope, durable
+  recall scope-disclosure, and immediate-continuity reliability fixes through the current source HEAD. The final
+  release-candidate SHA will be determined only after this canonical documentation update and separate revalidation.
 - **Release identifier:** the intended final release tag is `v1.0.0`. This follows the existing annotated
   `v1.0.0-rc1` tag and the Version 1 architecture audit's explicit final-tag convention. The workspace package
   version `0.1.0` is not the established repository release line and is not changed by this documentation task.
 - **Canonical documentation:** M2 and DEV_V1 closure agree across this file, `CHANGELOG.md`, and `ROADMAP.md`.
   `CHANGELOG.md` records the former Unreleased content under `[1.0.0] - 2026-08-25`; `ROADMAP.md` marks M2 done and
-  release-gate preparation as the current operational phase.
-- **Validation evidence:** `pnpm typecheck` passes with exit `0`. `pnpm test` passes `118` files / `2634` tests on
-  Node 22. The former `37` files / `255` tests snapshot was stale and is replaced below.
+  release-gate finalization and release-candidate revalidation as the current operational phase.
+- **Validation status:** the source-integration gate recorded `pnpm typecheck` exit `0` and `pnpm test` passing `118`
+  files / `2634` tests on Node 22. Those results predate the post-gate fixes; release-candidate revalidation is a
+  separate pending step and will establish the evidence for the final release-candidate SHA.
 - **Carryover classification:** XR-AX and XR filesystem provenance are **non-blocking** for this completed source
   integration scope because XR-AX was accepted as optional and remains disabled/unexecuted. Production-grade 5C-EG
   and 5C-EG-I1/I2/V/E are also **non-blocking for source integration only** because enabled production routing
@@ -90,19 +92,12 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 - **Other deferred items:** the Codex CLI adapter, Workflow, autonomous Agent Runtime, vector search, and deeper
   memory/index work remain explicitly outside the ratified completed scope and are non-blocking for this source
   integration gate.
-- **Remaining release-gate operation:** local annotated tag creation is the pending Strict operation. With exact
-  Product Owner approval, create `v1.0.0` pointing to `8500f8fd8049b84ee90ff56d0502111dec26bbb9`, using the existing
-  annotated-tag convention and a message identifying the completed local-first Personal Edition / M2 / DEV_V1
-  source scope. The release-note boundary is exactly the `CHANGELOG.md` section
-  `## [1.0.0] - 2026-08-25`; it includes every entry formerly under `[Unreleased]` and no later Unreleased work.
-  The exact prepared creation command below creates the local tag only:
-
-  ```sh
-  git tag -a v1.0.0 8500f8fd8049b84ee90ff56d0502111dec26bbb9 \
-    -m 'Chunsik v1.0.0' \
-    -m 'Final Version 1 release: completed local-first Personal Edition / M2 / QUIRKYBOT_DEV_V1 source scope. Release notes: CHANGELOG.md [1.0.0] - 2026-08-25.'
-  ```
-- **Strict exclusions:** this prepared action does not authorize pushing the tag, pushing this documentation commit,
+- **Remaining release-gate sequence:** complete the separately tasked release-candidate revalidation against the
+  final local HEAD after this documentation update, then obtain independent review. The resulting exact SHA is the
+  release-candidate SHA. Creating or pushing an annotated `v1.0.0` tag remains a later Strict operation requiring
+  explicit Product Owner authorization. The release-note boundary is the `CHANGELOG.md` section
+  `## [1.0.0] - 2026-08-25`, including the documented post-gate fixes.
+- **Strict exclusions:** this documentation task does not authorize creating or pushing a tag, pushing this commit,
   publishing a GitHub Release or artifacts, Production activation, Runtime or Provider/network execution, Discord,
   Live UAT, secrets, destructive work, or Production/shared DB mutation. Each requires its own exact approval.
 

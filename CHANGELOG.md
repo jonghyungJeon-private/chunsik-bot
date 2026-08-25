@@ -9,6 +9,18 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [1.0.0] - 2026-08-25
 
+### Added and Fixed — Post-Gate Release Acceptance and Reliability
+
+- Added a deterministic release acceptance suite covering the intended Version 1 behavior without expanding the
+  ratified product architecture or introducing speculative implementation scope.
+- Hardened recent-response grounding validation so immediate continuity is anchored, only relevant follow-up
+  responses require grounding, relevance checks are stricter, and a leading recency hard anchor is not incorrectly
+  treated as supporting evidence.
+- Corrected ContextBuilder scope by reverting the acceptance-only scope broadening and preserving the established
+  conversation-context boundary.
+- Added explicit release acceptance coverage disclosing the remaining durable-recall scope gap rather than implying
+  broader recall support than Version 1 provides.
+
 ### Changed — Production Readiness / Release Gate Preparation
 
 - Recorded the completed M2 / `QUIRKYBOT_DEV_V1` source-integration assessment, current local-to-`origin/main`
