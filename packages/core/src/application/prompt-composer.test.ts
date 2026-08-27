@@ -287,7 +287,7 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
     expect(changedPrimary).toContain('project-changed');
   });
 
-  it('supplies the final USER transcript entry as immediatelyPreviousUserTurn without relocating it', () => {
+  it('keeps the final USER entry only in non-authoritative transcript continuity', () => {
     const currentUserMessage = '내가 방금 뭐라고 했어?';
     const spec = composer.compose(
       mkTask(Capability.GENERAL_CHAT, { requestText: currentUserMessage }),
@@ -326,22 +326,15 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
         ],
       },
     );
-    const fact = envelope(
-      'CORE_RUNTIME',
-      'AUTHORITATIVE_CURRENT_FACT',
-      'immediatelyPreviousUserTurn: "바로 전에 한 말"',
-    );
-
-    expect(sectionBody(spec.context, '1. Current-turn facts supplied by Core')).toContain(fact);
     expect(sectionBody(spec.context, '1. Current-turn facts supplied by Core')).not.toContain(
-      'immediatelyPreviousUserTurn: "오래된 사용자 말"',
+      'immediatelyPreviousUserTurn',
     );
     expect(
       subsectionBody(
         sectionBody(spec.context, '4. Current-turn authority decision boundary'),
         'Authoritative current facts',
       ),
-    ).toContain(fact);
+    ).not.toContain('immediatelyPreviousUserTurn');
     const transcript = sectionBody(
       spec.context,
       '3. Conversation transcript (continuity allowed; not authoritative external-state evidence)',
@@ -361,7 +354,7 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
     expect(spec.task).toBe(currentTaskEnvelope(currentUserMessage));
   });
 
-  it('identifies the only prior USER turn and omits the fact when no prior USER turn exists', () => {
+  it('never promotes a prior USER turn into the current authoritative facts', () => {
     const singlePriorTurn = composer.compose(mkTask(Capability.GENERAL_CHAT), {
       taskId: 't1',
       backgroundResources: [],
@@ -389,9 +382,10 @@ describe('PromptComposer (ADR-0063 precedence contract)', () => {
       ],
     });
 
-    expect(sectionBody(singlePriorTurn.context, '1. Current-turn facts supplied by Core')).toContain(
-      'immediatelyPreviousUserTurn: \\"유일한 이전 사용자 말\\"',
-    );
+    expect(
+      sectionBody(singlePriorTurn.context, '1. Current-turn facts supplied by Core'),
+    ).not.toContain('immediatelyPreviousUserTurn');
+    expect(singlePriorTurn.context).toContain('유일한 이전 사용자 말');
     expect(
       sectionBody(noPriorUserTurn.context, '1. Current-turn facts supplied by Core'),
     ).not.toContain('immediatelyPreviousUserTurn');

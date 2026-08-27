@@ -189,9 +189,8 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
       '기억할게요',
     ]);
     expect(bundle.durableRecall).toBeUndefined();
-    expect(prompt.context).toContain(
-      'immediatelyPreviousUserTurn: \\"보라색 선호를 기억해 줘\\"',
-    );
+    expect(prompt.context).not.toContain('immediatelyPreviousUserTurn');
+    expect(prompt.context).toContain('보라색 선호를 기억해 줘');
   });
 
   it('keeps non-identical durable content because transcript deduplication is identity-based', async () => {
@@ -260,7 +259,7 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
     expect(bundle.durableRecall).toBeUndefined();
   });
 
-  it('preserves the newest User turn and immediatelyPreviousUserTurn under durable pressure', async () => {
+  it('preserves the newest User turn as transcript continuity under durable pressure', async () => {
     const memory = {
       recentShortTerm: async () => [
         rec('1', 'assistant', 'latest assistant continuity'),
@@ -290,9 +289,8 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
       'exact newest user turn',
     ]);
     expect(bundle.durableRecall?.map((entry) => entry.content)).toEqual(['hi…']);
-    expect(prompt.context).toContain(
-      'immediatelyPreviousUserTurn: \\"exact newest user turn\\"',
-    );
+    expect(prompt.context).not.toContain('immediatelyPreviousUserTurn');
+    expect(prompt.context).toContain('exact newest user turn');
   });
 
   it('applies configured transcript compression when durable recall candidates are present', async () => {
@@ -926,7 +924,8 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
       false,
     );
     expect(prompt.context).toContain(fact);
-    expect(prompt.context).toContain('immediatelyPreviousUserTurn: \\"무관한 질문 5\\"');
+    expect(prompt.context).not.toContain('immediatelyPreviousUserTurn');
+    expect(prompt.context).toContain('무관한 질문 5');
     expect(prompt.task).toContain(task.description);
   });
 
@@ -969,9 +968,8 @@ describe('ContextBuilder (ADR-0063 structured context)', () => {
       '그러면 다음은 어떻게 하면 좋을까',
     );
     expect(bundle.conversationTranscript.some((entry) => entry.role === 'assistant')).toBe(true);
-    expect(prompt.context).toContain(
-      'immediatelyPreviousUserTurn: \\"그러면 다음은 어떻게 하면 좋을까\\"',
-    );
+    expect(prompt.context).not.toContain('immediatelyPreviousUserTurn');
+    expect(prompt.context).toContain('그러면 다음은 어떻게 하면 좋을까');
   });
 
   it('keeps the legacy ten-entry retrieval window for non-blended ranking', async () => {

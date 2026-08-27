@@ -7303,7 +7303,7 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
     expect(currentTask).toContain('"content":"USER_C"');
     expect(currentTask).not.toContain('USER_A');
     expect(currentTask).not.toContain('USER_B');
-    expect(resumedPrompt).toContain('immediatelyPreviousUserTurn: \\"USER_B\\"');
+    expect(resumedPrompt).not.toContain('immediatelyPreviousUserTurn');
     expect(result.reply.text).toBe('ANSWER_C');
     expect(persisted.map(({ role, content }) => `${role}:${content}`)).toEqual([
       'user:USER_A',
@@ -7835,6 +7835,81 @@ describe('Follow-up-7 — real TaskManager work-turn lifecycle (F7-A/C)', () => 
 });
 
 describe('Stage 2B Slice 5A — ConversationRuntime integration seam', () => {
+  it('keeps a self-contained current turn active when the immediately prior request is present in the same-session transcript', async () => {
+    const { storage } = makeTaskStorage();
+    const { deps: base } = makeDeps({
+      intent: intentOf(Capability.GENERAL_CHAT, IntentType.CHAT, true),
+      session: sessionOf({ activeProjectId: undefined }),
+    });
+    const prompts: string[] = [];
+    let turn = 0;
+    const accepted = routedResultOf(ProviderGatewayTerminalStatus.ACCEPTED);
+    const executeRouting = vi.fn(async (input) => {
+      prompts.push(input.request.prompt);
+      const text =
+        turn++ === 0
+          ? '저는 Quoky예요. 로컬 우선 AI 도우미입니다.'
+          : input.request.prompt.includes('immediatelyPreviousUserTurn')
+            ? '저는 Quoky예요. 로컬 우선 AI 도우미입니다.'
+            : '좋아요. 오늘 테스트용 선택은 파스타로 기억할게요.';
+      return {
+        ...accepted,
+        output: { ...accepted.output!, text },
+      };
+    });
+    let buildCount = 0;
+    const deps: ConversationRuntimeDeps = {
+      ...base,
+      ...workTurnHappyPathDeps(),
+      tasks: new TaskManager(storage),
+      contextBuilder: {
+        async build(task) {
+          const conversationTranscript =
+            buildCount++ === 0
+              ? []
+              : [
+                  {
+                    role: 'user' as const,
+                    turnNumber: 1,
+                    content: '자기소개해봐',
+                    provenance: 'USER' as const,
+                    epistemicStatus: 'USER_CLAIM_OR_INTENT' as const,
+                  },
+                  {
+                    role: 'assistant' as const,
+                    turnNumber: 1,
+                    content: '저는 Quoky예요. 로컬 우선 AI 도우미입니다.',
+                    provenance: 'ASSISTANT' as const,
+                    epistemicStatus: 'ASSISTANT_NON_AUTHORITATIVE' as const,
+                  },
+                ];
+          return { taskId: task.id, conversationTranscript, backgroundResources: [] };
+        },
+      },
+      promptComposer: new PromptComposer(),
+      promptRenderer: new PromptRenderer(),
+      runtimeProviderRouting: { execute: executeRouting },
+    };
+    const runtime = new ConversationRuntime(deps);
+
+    const first = await runtime.handle(messageOf('자기소개해봐'));
+    const second = await runtime.handle(messageOf('오늘 테스트용으로 파스타를 고를게'));
+
+    expect(first.reply.text).toContain('Quoky');
+    expect(second.status).toBe('RESPONDED');
+    expect(second.reply.text).toContain('파스타');
+    expect(second.reply.text).not.toContain('로컬 우선 AI 도우미');
+    expect(prompts[1]).toContain('[Turn 1] User:');
+    expect(prompts[1]).toContain('자기소개해봐');
+    expect(prompts[1]).toContain('--- Current user message ---');
+    expect(prompts[1]).toContain('오늘 테스트용으로 파스타를 고를게');
+    expect(prompts[1]).not.toContain('immediatelyPreviousUserTurn');
+    expect(executeRouting.mock.calls[1]?.[0]).toMatchObject({
+      recencyFact: '자기소개해봐',
+      currentUserTurn: '오늘 테스트용으로 파스타를 고를게',
+    });
+  });
+
   it('ACCEPTED persists bounded artifacts/audit, completes TaskRun + Task, and never calls the legacy selector', async () => {
     const { storage, taskSaves, runSaves } = makeTaskStorage();
     const { deps: base } = makeDeps({

@@ -194,7 +194,8 @@ describe('RuntimeResponseValidator', () => {
       capability: Capability.GENERAL_CHAT,
     });
 
-    expect(request.prompt).toContain('immediatelyPreviousUserTurn: \\"The selected release codename is Atlas.\\"');
+    expect(request.prompt).not.toContain('immediatelyPreviousUserTurn');
+    expect(request.prompt).toContain(fact);
     expect(
       validate(
         'The selected release codename is Zephyr.',
