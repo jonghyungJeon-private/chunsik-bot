@@ -72,19 +72,18 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 
 - **Source integration:** `SOURCE_INTEGRATION_GATE = COMPLETE`. By Product Owner decision, the intended `v1.0.0`
   release line includes all post-gate release-acceptance, recency-grounding validator, ContextBuilder scope, durable
-  recall scope-disclosure, and immediate-continuity reliability fixes through the current source HEAD. The final
-  release-candidate SHA will be determined only after this canonical documentation update and separate revalidation.
+  recall scope-disclosure, immediate-continuity reliability fixes, and the immediately-previous-user-turn recency
+  grounding defect resolution through stale-turn fix commit `cda25f9f92afa1dd3673598cb1178cc1f869a82c`.
 - **Release identifier:** the intended final release tag is `v1.0.0`. This follows the existing annotated
   `v1.0.0-rc1` tag and the Version 1 architecture audit's explicit final-tag convention. The workspace package
   version `0.1.0` is not the established repository release line and is not changed by this documentation task.
 - **Canonical documentation:** M2 and DEV_V1 closure agree across this file, `CHANGELOG.md`, and `ROADMAP.md`.
   `CHANGELOG.md` records the former Unreleased content under `[1.0.0] - 2026-08-25`; `ROADMAP.md` marks M2 done and
   release-gate finalization and release-candidate revalidation as the current operational phase.
-- **Validation status:** canonical release-candidate revalidation ran on Node `v22.22.1` against exact
-  pre-reconciliation HEAD `0d4fb571d3c49258323a782fa7224efd41b7ecd7`: `pnpm typecheck` exited `0`, and
-  `pnpm test` passed `119` files / `2652` tests. The only tracked change after that run is this `CURRENT_STATE.md`
-  evidence reconciliation, so the validated executable and test content is unchanged; independent review remains
-  a separate subsequent step.
+- **Validation status:** fresh release-candidate revalidation ran on Node `v22.22.1` against exact
+  pre-reconciliation HEAD `cda25f9f92afa1dd3673598cb1178cc1f869a82c`: `pnpm typecheck` exited `0`, and
+  `pnpm test` passed `119` files / `2653` tests. This documentation-only reconciliation changes no executable,
+  test, architecture, configuration, or dependency content; independent review remains a separate subsequent step.
 - **Carryover classification:** XR-AX and XR filesystem provenance are **non-blocking** for this completed source
   integration scope because XR-AX was accepted as optional and remains disabled/unexecuted. Production-grade 5C-EG
   and 5C-EG-I1/I2/V/E are also **non-blocking for source integration only** because enabled production routing
@@ -96,10 +95,10 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   integration gate.
 - **Remaining release-gate sequence:** obtain independent review of the documentation-only reconciliation commit
   that contains this paragraph. That commit—not its validated parent
-  `0d4fb571d3c49258323a782fa7224efd41b7ecd7` or the earlier source-integration commit
-  `243544bd5d70a3411cb5a15788f6f6e1c1a6787d`—is the exact final local release-candidate SHA. Creating or pushing
-  an annotated `v1.0.0` tag remains a later Strict operation requiring explicit Product Owner authorization. The
-  release-note boundary is the `CHANGELOG.md` section
+  `cda25f9f92afa1dd3673598cb1178cc1f869a82c`, the prior documentation commit
+  `472a436`, or the earlier source-integration commits—is the new exact final local release-candidate SHA. Creating
+  or pushing an annotated `v1.0.0` tag remains a later Strict operation requiring explicit Product Owner
+  authorization. The release-note boundary is the `CHANGELOG.md` section
   `## [1.0.0] - 2026-08-25`, including the documented post-gate fixes.
 - **Strict exclusions:** this documentation task does not authorize creating or pushing a tag, pushing this commit,
   publishing a GitHub Release or artifacts, Production activation, Runtime or Provider/network execution, Discord,

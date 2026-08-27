@@ -20,6 +20,8 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
   conversation-context boundary.
 - Added explicit release acceptance coverage disclosing the remaining durable-recall scope gap rather than implying
   broader recall support than Version 1 provides.
+- Fixed the immediately-previous-user-turn recency grounding defect by keeping the current chat turn authoritative
+  when stale rendered context contains a conflicting user turn (`cda25f9`).
 
 ### Changed — Production Readiness / Release Gate Preparation
 
