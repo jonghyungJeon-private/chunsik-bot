@@ -55,8 +55,8 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 - **Remaining Human-only boundaries:** Production/shared DB mutation or migration apply, non-disposable destructive
   DB work, Push, PR, Merge, Production/Release, destructive/unrelated cleanup, and any further Runtime
   start/stop/restart, Discord, or application Provider/network execution remain unapproved.
-- **Live status:** bounded application Runtime / Discord Live UAT is `PASS_EXECUTED` at exact verified HEAD
-  `715c407a52eee36a7717d1b4b6695b1469bb0a76`. ADR-0070 resolved the delegated development DB condition and ADR-0071
+- **Historical Live UAT evidence:** bounded application Runtime / Discord Live UAT was `PASS_EXECUTED` at exact
+  verified HEAD `715c407a52eee36a7717d1b4b6695b1469bb0a76`. ADR-0070 resolved the delegated development DB condition and ADR-0071
   resolved the DEV_V1 UAT live-activation architecture blocker through the bounded configuration-restricted risk
   exception. Production-grade 5C-EG remains `NO_FEASIBLE_ARCHITECTURE_YET / BLOCKED_CARRYOVER`, and
   Production/shared DB mutation remains a separate unapproved Strict boundary.
@@ -74,9 +74,16 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   release line includes all post-gate release-acceptance, recency-grounding validator, ContextBuilder scope, durable
   recall scope-disclosure, immediate-continuity reliability fixes, and the immediately-previous-user-turn recency
   grounding defect resolution through stale-turn fix commit `cda25f9f92afa1dd3673598cb1178cc1f869a82c`.
-- **Release identifier:** the intended final release tag is `v1.0.0`. This follows the existing annotated
-  `v1.0.0-rc1` tag and the Version 1 architecture audit's explicit final-tag convention. The workspace package
-  version `0.1.0` is not the established repository release line and is not changed by this documentation task.
+- **Release identifier and version ownership:** the intended final release tag is `v1.0.0`. Repository inspection
+  establishes that package metadata is intentionally independent of the source release identifier: the private
+  root and every private workspace package have remained at `0.1.0` since their introduction, there is no package
+  publication, release, or version-bump script/configuration, and `CHANGELOG.md` plus Git tags carry the repository
+  release line. The root `package.json` version therefore remains `0.1.0`; no lockfile metadata change is required.
+- **Release acceptance identity:** the historical Live UAT execution evidence remains the `PASS_EXECUTED` run at
+  exact HEAD `715c407a52eee36a7717d1b4b6695b1469bb0a76`. The Product Owner's final `v1.0.0` Live UAT disposition is
+  `COMPLETED_AND_ACCEPTED` and is not rescheduled by this documentation-only reconciliation. Neither statement makes
+  `715c407` the exact final release candidate: the current final local release HEAD is the reconciliation commit
+  containing this paragraph, subject to its independent review.
 - **Canonical documentation:** M2 and DEV_V1 closure agree across this file, `CHANGELOG.md`, and `ROADMAP.md`.
   `CHANGELOG.md` records the former Unreleased content under `[1.0.0] - 2026-08-25`; `ROADMAP.md` marks M2 done and
   release-gate finalization and release-candidate revalidation as the current operational phase.
@@ -623,7 +630,8 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 
 ## Validation
 
-- `pnpm typecheck` — passes (exit 0). `pnpm test` — 118 files / 2634 tests pass (validation runtime: Node 22).
+- Current release validation on Node `v22.22.1`: `pnpm typecheck` — PASS (exit 0); `pnpm test` — PASS,
+  `119` files / `2653` tests.
 - Boundary enforced — Core cannot resolve adapter packages.
 - **Live (Sprint 1g):** real `node dist/main.js` Discord round-trip — register a
   project, then a structure question routed to PROJECT_ANALYSIS, read real files,
