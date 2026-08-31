@@ -101,9 +101,9 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   memory/index work remain explicitly outside the ratified completed scope and are non-blocking for this source
   integration gate.
 - **Remaining release-gate sequence:** obtain independent review of the documentation-only reconciliation commit
-  that contains this paragraph. That commit—not its validated parent
-  `cda25f9f92afa1dd3673598cb1178cc1f869a82c`, the prior documentation commit
-  `472a436`, or the earlier source-integration commits—is the new exact final local release-candidate SHA. Creating
+  that first introduces this corrected paragraph. That commit—not the superseded reconciliation commit
+  `a5906d23ba8d6c27884d6533a6986a28aaf2bf92`, the prior documentation commit `472a436`, or the earlier
+  source-integration commits—is the new exact final local release-candidate SHA. Creating
   or pushing an annotated `v1.0.0` tag remains a later Strict operation requiring explicit Product Owner
   authorization. The release-note boundary is the `CHANGELOG.md` section
   `## [1.0.0] - 2026-08-25`, including the documented post-gate fixes.
