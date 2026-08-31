@@ -9,8 +9,10 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ### Added — M3A-1 Read-only Personal Work Surface
 
-- Added the infrastructure-neutral `ResourceRef` value object and a rebuildable `WorkSurfaceQuery` that combines
-  current-Actor Jira and GitHub personal work with deterministic ordering and explicit partial/unavailable status.
+- Added the infrastructure-neutral `ResourceRef` value object and a rebuildable `WorkSurfaceQuery` whose intended
+  behavior, once external identities exist, combines current-Actor Jira and GitHub personal work with deterministic
+  ordering and explicit partial/unavailable status. Merged, Jira-only, and GitHub-only surfaces are exercised in
+  this slice through injected identities and fakes; M3A-1 adds no live Actor Jira/GitHub identity-provisioning path.
 - Added a read-only GitHub `ConnectorProvider` adapter using the existing composition-root auth infrastructure,
   while leaving GitHub PR lifecycle and all writes on `RepositoryHostingProvider`.
 - Added a natural read-only “show me what I need to work on” conversation path. It performs no AI/provider write,

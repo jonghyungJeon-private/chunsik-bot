@@ -15,6 +15,17 @@ application projection under ADR-0074, not a work database or workflow.
 - Each source reports `AVAILABLE`, `IDENTITY_MISSING`, `NOT_CONFIGURED`, or `UNAVAILABLE`. A one-source result is
   explicitly `PARTIAL`; an unavailable source can never be silently rendered as “you have no work.”
 
+## Live Identity Reachability
+
+M3A-1 supplies no Actor Jira/GitHub identity-provisioning path. `ActorManager.resolveFromContext` seeds only the
+inbound platform identity, while `ActorRepository` exposes no Jira/GitHub identity writer. Therefore, in the live
+product both sources resolve `IDENTITY_MISSING` and the Work Surface is `UNAVAILABLE`; the merged, Jira-only, and
+GitHub-only behavior in this slice is exercised through injected identities and fakes.
+
+A separate approved slice must supply an Actor Jira/GitHub identity-linking path before the live Work Surface can
+become `AVAILABLE`. This is an explicit Chief Architect / Product Owner M3 sequencing need. Adding identity write
+behavior here would violate M3A-1's read-only/no-write boundary.
+
 ## Boundaries
 
 The surface persists nothing and introduces no `WorkItem`, repository, table, migration, lifecycle, connector

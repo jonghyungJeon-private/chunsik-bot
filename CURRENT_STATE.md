@@ -97,6 +97,14 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   items, applies deterministic ordering, and reports complete/partial/unavailable source status. The natural
   personal-work intent is presented without AI execution. `ConversationRuntimeDeps` remains at its starting
   baseline of 31 by replacing the pre-existing unused `risk` dependency with the Work Surface service.
+- **M3A-1 live reachability limitation:** M3A-1 supplies no Actor Jira/GitHub identity-provisioning path.
+  `ActorManager.resolveFromContext` seeds only the inbound platform identity, and `ActorRepository` exposes no
+  Jira/GitHub identity writer. Consequently, both live sources resolve `IDENTITY_MISSING` and the Work Surface is
+  `UNAVAILABLE` until a separate approved slice supplies identity linking; merged, Jira-only, and GitHub-only
+  surfaces in this slice are exercised through injected identities and fakes.
+- **M3 sequencing decision needed:** Chief Architect / Product Owner must sequence a future approved slice that
+  supplies an Actor Jira/GitHub identity path before the live Work Surface can become `AVAILABLE`. Adding that
+  write behavior to M3A-1 would violate this slice's read-only/no-write boundary.
 - **M3A-2 boundary:** narrow CAP-011 `WorkItem`, repository, forward-only additive migration, and persisted personal
   work state. `WorkItem` does not absorb Task, execution, Approval, Provider, arbitrary conversation, or workflow
   state.
