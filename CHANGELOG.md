@@ -7,6 +7,8 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-08-25
+
 ### Changed — Release Consistency Reconciliation
 
 - Reconciled the current release-validation summary to Node `v22.22.1`, `pnpm typecheck` PASS, and `pnpm test`
@@ -14,8 +16,6 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 - Recorded repository evidence that private root/workspace package metadata remains independently versioned at
   `0.1.0`, and distinguished the historical Live UAT execution SHA, its accepted final `v1.0.0` disposition, and
   the current final local release HEAD.
-
-## [1.0.0] - 2026-08-25
 
 ### Added and Fixed — Post-Gate Release Acceptance and Reliability
 
