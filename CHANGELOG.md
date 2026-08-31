@@ -7,6 +7,15 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — M3A-1 Read-only Personal Work Surface
+
+- Added the infrastructure-neutral `ResourceRef` value object and a rebuildable `WorkSurfaceQuery` that combines
+  current-Actor Jira and GitHub personal work with deterministic ordering and explicit partial/unavailable status.
+- Added a read-only GitHub `ConnectorProvider` adapter using the existing composition-root auth infrastructure,
+  while leaving GitHub PR lifecycle and all writes on `RepositoryHostingProvider`.
+- Added a natural read-only “show me what I need to work on” conversation path. It performs no AI/provider write,
+  connector write, WorkItem persistence, schema change, or migration; `ConversationRuntimeDeps` stays at 31.
+
 ## [1.0.0] - 2026-08-25
 
 ### Changed — Release Consistency Reconciliation

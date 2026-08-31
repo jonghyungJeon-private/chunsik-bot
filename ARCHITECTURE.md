@@ -86,7 +86,7 @@ fixed; the implementations are not.
 | `MemoryRecord` (6 types) | Source-of-truth memory | `[NOW]` |
 | `ContextBundle` | Assembled, budgeted context for one run | `[NOW]` |
 | `PromptSpec` | Layered, provider-agnostic prompt | `[NOW]` |
-| `ResourceRef` | Uniform **input** reference (PDF, URL, ticket, repo file) | `[RESERVE]` |
+| `ResourceRef` | Uniform **input** reference (PDF, URL, ticket, repo file) | `[NOW]` (M3A-1, ADR-0074) |
 | `Artifact` (8 kinds) | First-class **output** | `[NOW]` |
 | Domain `Event`s | `TaskCreated`, `TaskStatusChanged`, `RunCompleted`, `Approval*` | `[RESERVE]` |
 | `WorkspaceRef` | Resolved working directory | `[NOW]` |

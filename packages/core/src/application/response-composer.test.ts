@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { ConversationContext, GitDiff, GitStatus } from '../domain';
+import { ResourceRef, type ConversationContext, type GitDiff, type GitStatus } from '../domain';
 import { ResponseComposer } from './response-composer';
 import type { CodeChangePreview, CodeDiffPreview, PatchSetPreview, TestResultDetail } from './response-composer';
 import { ProviderGatewayTerminalStatus } from './provider-routing-gateway';
@@ -24,6 +24,35 @@ describe('ResponseComposer.compose', () => {
       '{"role":"assistant","provenance":"ASSISTANT","content":"안녕?"}';
 
     expect(composer.compose(CTX, { text: contaminated }).text).toBe(contaminated);
+  });
+});
+
+describe('ResponseComposer.composeWorkSurface', () => {
+  it('renders work and an actionable partial-availability indication', () => {
+    const reply = composer.composeWorkSurface(CTX, {
+      status: 'PARTIAL',
+      items: [{ resource: new ResourceRef({ source: 'jira', externalId: 'J-1' }), title: 'Ship M3A-1' }],
+      sources: [
+        { source: 'jira', status: 'AVAILABLE', message: 'available' },
+        { source: 'github', status: 'IDENTITY_MISSING', message: 'missing' },
+      ],
+    });
+    expect(reply.text).toContain('[jira] Ship M3A-1');
+    expect(reply.text).toContain('github: Actor 외부 identity를 설정해 주세요.');
+  });
+
+  it('never renders a partial empty projection as an authoritative no-work result', () => {
+    const reply = composer.composeWorkSurface(CTX, {
+      status: 'PARTIAL',
+      items: [],
+      sources: [
+        { source: 'jira', status: 'AVAILABLE', message: 'available' },
+        { source: 'github', status: 'UNAVAILABLE', message: 'unavailable' },
+      ],
+    });
+    expect(reply.text).toContain('확인 가능한 소스에서는 작업이 없어요.');
+    expect(reply.text).toContain('github: connector 연결 상태를 확인해 주세요.');
+    expect(reply.text).not.toContain('Jira와 GitHub에서 확인된 작업이 없어요.');
   });
 });
 

@@ -870,7 +870,18 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
     },
     artifacts: { async persistAll() { return []; } },
     composer,
-    risk: { requiresApproval: (l) => l === RiskLevel.HIGH || l === RiskLevel.CRITICAL },
+    workSurface: {
+      async forActor() {
+        return {
+          status: 'UNAVAILABLE',
+          items: [],
+          sources: [
+            { source: 'jira', status: 'NOT_CONFIGURED', message: 'jira connector is not configured' },
+            { source: 'github', status: 'NOT_CONFIGURED', message: 'github connector is not configured' },
+          ],
+        };
+      },
+    },
     intentResolver,
     orchestrator: {
       async run(request) { calls.run++; calls.lastRunRequest = request; return opts.runOutcome ?? outcomeOf(ExecutionOutcomeStatus.COMPLETED); },
@@ -1055,6 +1066,46 @@ function makeDeps(opts: Opts = {}): { deps: ConversationRuntimeDeps; calls: Call
 // ── Sprint 2k — Conversation Runtime core ───────────────────────────────────────────────────────
 
 describe('ConversationRuntime', () => {
+  it('dispatches the personal-work intent to WorkSurfaceQuery and presents partial availability', async () => {
+    const { deps } = makeDeps({
+      intent: {
+        type: IntentType.LOOKUP,
+        capability: Capability.READONLY_LOOKUP,
+        confidence: 1,
+        requiresWork: false,
+        summary: 'Show my work',
+        raw: { kind: 'personal-work-surface' },
+      },
+    });
+    let queriedActor: Actor | undefined;
+    const runtimeDeps: ConversationRuntimeDeps = { ...deps, workSurface: {
+      async forActor(actor) {
+        queriedActor = actor;
+        return {
+          status: 'PARTIAL',
+          items: [{ resource: { source: 'jira', externalId: 'J-1', identity: 'jira:J-1' } as never, title: 'Fix it' }],
+          sources: [
+            { source: 'jira', status: 'AVAILABLE', message: 'available' },
+            { source: 'github', status: 'IDENTITY_MISSING', message: 'missing' },
+          ],
+        };
+      },
+    } };
+
+    const result = await new ConversationRuntime(runtimeDeps).handle(messageOf('Show me what I need to work on'));
+
+    expect(queriedActor).toBe(ACTOR);
+    expect(result.reply.text).toContain('[jira] Fix it');
+    expect(result.reply.text).toContain('github: Actor 외부 identity를 설정해 주세요.');
+  });
+
+  it('keeps the accepted ConversationRuntimeDeps count at the starting baseline of 31', () => {
+    const { deps } = makeDeps();
+    expect(Object.keys(deps)).toHaveLength(31);
+    expect(Object.keys(deps)).not.toContain('risk');
+    expect(Object.keys(deps)).toContain('workSurface');
+  });
+
   it.each([
     ['기억해:', '기억해: 나는 민트초코를 좋아해'],
     ['기억해줘:', '  기억해줘: 다음 회의는 화요일이야  '],

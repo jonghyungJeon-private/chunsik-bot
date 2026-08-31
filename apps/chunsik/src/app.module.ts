@@ -48,6 +48,7 @@ import {
   StatelessScopeClarificationFlow,
   StatelessApplyPreviewFlow,
   ConnectorManager,
+  WorkSurfaceQuery,
   ResponseComposer,
   RiskPolicy,
   RepositoryIdentityResolver,
@@ -75,6 +76,7 @@ import { LocalVectorProvider } from '@chunsik/vector-local';
 import { LocalCloneWorkspaceProvider, LocalWorkspaceWriter } from '@chunsik/workspace-local';
 import { LocalGitProvider } from '@chunsik/git-local';
 import { GitHubRepositoryHostingProvider } from '@chunsik/repository-hosting-github';
+import { GitHubConnectorProvider } from '@chunsik/connector-github';
 import { GitHubAppAuth } from '@quoky/github-app-auth';
 import { LocalCommandRunner } from '@chunsik/command-local';
 import { ClaudeCliProvider, CodexCliProvider, OllamaCliProvider } from '@chunsik/ai-cli';
@@ -137,6 +139,7 @@ if (appConfigured && patConfigured) {
 }
 
 let repositoryHostingManager: RepositoryHostingManager | undefined;
+const connectorProviders = [...createConnectorProviders(config.connectors, coreLogger)];
 // GIT_PROVIDER default: the plain LocalGitProvider (local ops + dev-PAT/ambient-credential git). Replaced by the
 // App-auth decorator only in github-app mode, so git push/clone uses a minted installation token via GIT_ASKPASS.
 let gitProvider: GitProvider = new LocalGitProvider();
@@ -146,29 +149,39 @@ if (hostingAuthMode === 'github-app' && repositoryIdentity && config.githubApp) 
   const appAuth = new GitHubAppAuth({ appId: config.githubApp.appId, privateKeyPem: config.githubApp.privateKeyPem });
   // Lazily resolve + cache the installation id (explicit env id, else the reviewed owner/repo). The token source
   // mints/caches a short-lived installation token DOWN-SCOPED to the single target repo (numeric repository_ids +
-  // minimal contents/pull_requests write; ADR-0061 §8.4) — the SINGLE source shared by REST (CAP-010) and git
-  // (CAP-002). "Not installed" or "repo not accessible" throws → surfaced pre-mutation upstream (Blocked /
-  // not-configured); there is no broad-token fallback.
+  // minimal contents/pull_requests write; ADR-0061 §8.4) for REST (CAP-010) and git (CAP-002). The separate
+  // Personal Work connector source requests read-only issues/pull_requests permissions for discovery.
+  // "Not installed" or "repo not accessible" throws → surfaced pre-mutation upstream (Blocked / not-configured);
+  // there is no broad write-token fallback.
   let cachedInstallationId: number | undefined = config.githubAppInstallationId;
-  const tokenSource = async (): Promise<string> => {
+  const currentInstallationId = async (): Promise<number> => {
     if (cachedInstallationId === undefined) {
       const resolved = await appAuth.resolveInstallationId(identity.owner, identity.repo);
       if (resolved === null) throw new Error('github app: not installed on the configured repository');
       cachedInstallationId = resolved;
     }
-    return appAuth.tokenForRepository(cachedInstallationId, identity.owner, identity.repo, {
+    return cachedInstallationId;
+  };
+  const tokenSource = async (): Promise<string> => {
+    return appAuth.tokenForRepository(await currentInstallationId(), identity.owner, identity.repo, {
       contents: 'write',
       pull_requests: 'write',
     });
   };
+  const readTokenSource = async (): Promise<string> => appAuth.tokenForInstallation(
+    await currentInstallationId(),
+    { permissions: { issues: 'read', pull_requests: 'read' } },
+  );
   repositoryHostingManager = new RepositoryHostingManager(
     new GitHubRepositoryHostingProvider({ auth: { kind: 'github-app', tokenSource } }),
   );
+  connectorProviders.push(new GitHubConnectorProvider({ auth: { kind: 'github-app', tokenSource: readTokenSource } }));
   gitProvider = new GitHubAppGitProvider({ makeLocalGit: (runner) => new LocalGitProvider(runner), tokenSource });
 } else if (hostingAuthMode === 'pat' && repositoryIdentity) {
   repositoryHostingManager = new RepositoryHostingManager(
     new GitHubRepositoryHostingProvider({ auth: { kind: 'pat', token: devPatToken } }),
   );
+  connectorProviders.push(new GitHubConnectorProvider({ auth: { kind: 'pat', token: devPatToken } }));
   // Dev PAT is a REST-only convenience (ADR-0061 §11.3): local git push uses the developer's own git credential,
   // so GIT_PROVIDER stays the plain LocalGitProvider.
 }
@@ -209,7 +222,7 @@ const infrastructure: Provider[] = [
       new OllamaCliProvider({ bin: config.ai.ollamaBin, model: config.ai.ollamaModel }),
     ],
   },
-  { provide: CONNECTOR_PROVIDERS, useValue: createConnectorProviders(config.connectors, coreLogger) },
+  { provide: CONNECTOR_PROVIDERS, useValue: connectorProviders },
 ];
 
 /**
@@ -340,6 +353,11 @@ const application: Provider[] = [
     inject: [CONNECTOR_PROVIDERS],
   },
   {
+    provide: WorkSurfaceQuery,
+    useFactory: (connectors: ConnectorManager) => new WorkSurfaceQuery(connectors),
+    inject: [ConnectorManager],
+  },
+  {
     provide: IntentClassifier,
     useFactory: (router: CapabilityRouter) => new IntentClassifier(router),
     inject: [CapabilityRouter],
@@ -427,7 +445,7 @@ const application: Provider[] = [
       router: CapabilityRouter,
       artifacts: ArtifactManager,
       composer: ResponseComposer,
-      risk: RiskPolicy,
+      workSurface: WorkSurfaceQuery,
       intentResolver: IntentResolver,
       orchestrator: ExecutionOrchestrator,
       approvals: ApprovalManager,
@@ -478,7 +496,7 @@ const application: Provider[] = [
         router,
         artifacts,
         composer,
-        risk,
+        workSurface,
         intentResolver,
         orchestrator,
         approvals,
@@ -522,7 +540,7 @@ const application: Provider[] = [
       CapabilityRouter,
       ArtifactManager,
       ResponseComposer,
-      RiskPolicy,
+      WorkSurfaceQuery,
       IntentResolver,
       ExecutionOrchestrator,
       ApprovalManager,

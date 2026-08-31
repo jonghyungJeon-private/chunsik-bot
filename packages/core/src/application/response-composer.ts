@@ -13,6 +13,7 @@ import { newId } from '../util/id';
 import { buildCanonicalDiff } from './preview-delivery';
 import { formatSafeErrorText } from './safe-error';
 import type { SafeError, SafeErrorContext } from './safe-error';
+import type { WorkSurface } from './work-surface-query';
 import { ProviderGatewayTerminalStatus } from './provider-routing-gateway';
 import type { ProviderGatewayFailureCode } from './provider-routing-gateway';
 import { RoutingFailureCode } from './runtime-response-validation-contracts';
@@ -405,6 +406,37 @@ function renderDiffBlock(diff: GitDiff, maxChars: number): string {
 }
 
 export class ResponseComposer {
+  /** Read-only Personal Work Surface. Availability is always explicit when the projection is incomplete. */
+  composeWorkSurface(context: ConversationContext, surface: WorkSurface): OutboundMessage {
+    const lines: string[] = [];
+    if (surface.status === 'UNAVAILABLE') {
+      lines.push('지금은 개인 작업 목록을 불러올 수 없어요.');
+    } else if (surface.items.length === 0) {
+      lines.push(surface.status === 'COMPLETE' ? '현재 Jira와 GitHub에서 확인된 작업이 없어요.' : '확인 가능한 소스에서는 작업이 없어요.');
+    } else {
+      lines.push('지금 확인할 작업이에요:');
+      for (const item of surface.items.slice(0, 20)) {
+        const link = item.url ? ` — ${item.url}` : '';
+        lines.push(`- [${item.resource.source}] ${item.title}${link}`);
+      }
+      if (surface.items.length > 20) lines.push(`- 외 ${surface.items.length - 20}개`);
+    }
+
+    const unavailable = surface.sources.filter((source) => source.status !== 'AVAILABLE');
+    if (unavailable.length > 0) {
+      lines.push('일부 소스 상태:');
+      for (const source of unavailable) {
+        const action = source.status === 'IDENTITY_MISSING'
+          ? 'Actor 외부 identity를 설정해 주세요.'
+          : source.status === 'NOT_CONFIGURED'
+            ? 'connector 설정을 확인해 주세요.'
+            : 'connector 연결 상태를 확인해 주세요.';
+        lines.push(`- ${source.source}: ${action}`);
+      }
+    }
+    return { context, text: clampToMessageBudget(lines.join('\n')) };
+  }
+
   composeMemoryStored(context: ConversationContext): OutboundMessage {
     return { context, text: '요청한 내용을 기억해 둘게요.' };
   }

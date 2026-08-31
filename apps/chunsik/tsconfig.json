@@ -18,6 +18,7 @@
     { "path": "../../packages/command-local" },
     { "path": "../../packages/ai-cli" },
     { "path": "../../packages/connector-confluence" },
+    { "path": "../../packages/connector-github" },
     { "path": "../../packages/connector-jira" },
     { "path": "../../packages/connector-slack" }
   ]

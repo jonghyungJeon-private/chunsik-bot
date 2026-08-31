@@ -32,6 +32,9 @@ importers:
       '@chunsik/connector-confluence':
         specifier: workspace:*
         version: link:../../packages/connector-confluence
+      '@chunsik/connector-github':
+        specifier: workspace:*
+        version: link:../../packages/connector-github
       '@chunsik/connector-jira':
         specifier: workspace:*
         version: link:../../packages/connector-jira
@@ -100,6 +103,12 @@ importers:
         version: link:../core
 
   packages/connector-confluence:
+    dependencies:
+      '@chunsik/core':
+        specifier: workspace:*
+        version: link:../core
+
+  packages/connector-github:
     dependencies:
       '@chunsik/core':
         specifier: workspace:*

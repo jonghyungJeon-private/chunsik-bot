@@ -31,6 +31,7 @@ export * from './command-execution-manager';
 export * from './code-proposal-parser';
 export * from './code-generation-manager';
 export * from './connector-manager';
+export * from './work-surface-query';
 export * from './response-composer';
 export * from './safe-error';
 export * from './preview-delivery';

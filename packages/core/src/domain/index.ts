@@ -9,6 +9,7 @@ export * from './task';
 export * from './memory';
 export * from './durable-memory';
 export * from './artifact';
+export * from './resource-ref';
 export * from './project';
 export * from './workspace';
 export * from './git';

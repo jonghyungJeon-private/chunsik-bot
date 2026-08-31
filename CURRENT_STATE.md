@@ -10,8 +10,8 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   reviewed `PASS`, and closed the prior delegated offline implementation gap. Bounded Live UAT was `EXECUTED` and
   `PASS` at exact verified HEAD `715c407a52eee36a7717d1b4b6695b1469bb0a76`.
 - **Active milestone:** `M3`. The M3 Architecture Rebaseline is `RATIFIED_WITH_CHANGES` through ADR-0074,
-  ADR-0075, and the appended ADR-0032 amendment. M3A-1 is the next bounded implementation slice; it is not started
-  by this documentation ratification.
+  ADR-0075, and the appended ADR-0032 amendment. M3A-1 implements `ResourceRef` plus the first read-only Jira/GitHub
+  Personal Work Surface; Product Owner acceptance and independent review remain the next gate.
 - **Version 1 source release:** `v1.0.0 = COMPLETE / CLOSED` at
   `80bbc94de0493c24036197dabc2ff00dbcd20cbf` (`origin/main` and `v1.0.0^{}`). Tag creation or push is not an
   outstanding release task. This source-release fact does not claim Production Runtime readiness.
@@ -92,6 +92,11 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 - **Status:** `RATIFIED_WITH_CHANGES` in ADR-0074, ADR-0075, and the appended ADR-0032 amendment.
 - **M3A-1 boundary:** `ResourceRef` stable identity plus a read-only, non-authoritative Work Surface only. No
   `WorkItem` repository, persistence, schema, or migration belongs to M3A-1.
+- **M3A-1 implementation:** `WorkSurfaceQuery` resolves explicit Jira/GitHub identities from the current `Actor`,
+  queries only read-only `ConnectorProvider` seams, normalizes connector items to `ResourceRef`-backed projection
+  items, applies deterministic ordering, and reports complete/partial/unavailable source status. The natural
+  personal-work intent is presented without AI execution. `ConversationRuntimeDeps` remains at its starting
+  baseline of 31 by replacing the pre-existing unused `risk` dependency with the Work Surface service.
 - **M3A-2 boundary:** narrow CAP-011 `WorkItem`, repository, forward-only additive migration, and persisted personal
   work state. `WorkItem` does not absorb Task, execution, Approval, Provider, arbitrary conversation, or workflow
   state.

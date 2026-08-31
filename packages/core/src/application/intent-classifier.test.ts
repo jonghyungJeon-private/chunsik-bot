@@ -11,6 +11,21 @@ function msg(text: string): InboundMessage {
 }
 
 describe('IntentClassifier.classify (v1 deterministic)', () => {
+  it.each([
+    '내가 해야 할 일 보여줘',
+    '제가 할 작업 알려줘',
+    'Show me what I need to work on',
+    'List my work',
+  ])('routes the natural personal-work request to the read-only Work Surface: %s', async (text) => {
+    const intent = await classifier.classify(msg(text));
+    expect(intent).toMatchObject({
+      type: IntentType.LOOKUP,
+      capability: Capability.READONLY_LOOKUP,
+      requiresWork: false,
+      raw: { kind: 'personal-work-surface' },
+    });
+  });
+
   it('routes a structure/analysis question to PROJECT_ANALYSIS (ADR-0019)', async () => {
     for (const text of [
       '이 프로젝트가 어떤 구조인지 짧게 설명해줘',

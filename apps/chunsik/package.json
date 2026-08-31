@@ -23,6 +23,7 @@
     "@chunsik/ai-cli": "workspace:*",
     "@chunsik/connector-confluence": "workspace:*",
     "@chunsik/connector-jira": "workspace:*",
+    "@chunsik/connector-github": "workspace:*",
     "@chunsik/connector-slack": "workspace:*",
     "@nestjs/common": "^10.4.4",
     "@nestjs/core": "^10.4.4",

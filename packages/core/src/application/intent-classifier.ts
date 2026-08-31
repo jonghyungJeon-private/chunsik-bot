@@ -19,6 +19,17 @@ export class IntentClassifier {
     void this.router;
     const text = message.text.trim();
 
+    if (IntentClassifier.isPersonalWorkSurface(text)) {
+      return {
+        type: IntentType.LOOKUP,
+        capability: Capability.READONLY_LOOKUP,
+        confidence: 1,
+        requiresWork: false,
+        summary: text.slice(0, 200) || 'Show my personal work',
+        raw: { kind: 'personal-work-surface' },
+      };
+    }
+
     // Explicit preview command (Sprint 4c-Follow-up, ADR-0062 draft) — an unambiguous entry into the code-change
     // preview pipeline (IMPLEMENT_CODE → planningOnly → HIGH-risk plan approval → CodeGeneration preview),
     // independent of NL phrasing. It never applies/commits/pushes — it stops at the read-only diff preview.
@@ -167,5 +178,9 @@ export class IntentClassifier {
     const noun = /(구조|아키텍처|레포|프로젝트|패키지|repo|project|package|structure|architecture)/i;
     const verb = /(분석|설명|알려|analyz|explain|describe|overview)/i;
     return /(분석|analyz)/i.test(text) || (noun.test(text) && verb.test(text));
+  }
+
+  private static isPersonalWorkSurface(text: string): boolean {
+    return /(?:내가|제가|나는)?\s*(?:해야\s*할|할)\s*(?:일|작업).*(?:보여|알려)|(?:show|list|what(?:'s| is))\b.*\b(?:my|i need to)\b.*\bwork\b/i.test(text);
   }
 }
