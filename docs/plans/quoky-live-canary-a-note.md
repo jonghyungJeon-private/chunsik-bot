@@ -5,6 +5,12 @@
 > product, architecture, governance, dependency, configuration, runtime, or
 > provider specification.
 
+## LIVE_REMEDIATION_FIXTURE
+
+CANARY_EXPECTED_STATE = REMEDIATED
+CANARY_ACTUAL_STATE = NEEDS_REMEDIATION
+CANARY_FIXTURE_PURPOSE = validate the normal independent-review remediation path.
+
 - Authorization root: `eb32f834-0449-4838-bf8c-a9d0b9c85b24`
 - Sequence: `QUOKY-LIVE-CANARY-A2-B-C`
 - Frozen ordered sequence: `[QUOKY-LIVE-CANARY-A2, QUOKY-LIVE-CANARY-B, QUOKY-LIVE-CANARY-C]`
