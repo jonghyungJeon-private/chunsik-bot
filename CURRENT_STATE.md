@@ -82,8 +82,10 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 - **Release acceptance identity:** the historical Live UAT execution evidence remains the `PASS_EXECUTED` run at
   exact HEAD `715c407a52eee36a7717d1b4b6695b1469bb0a76`. The Product Owner's final `v1.0.0` Live UAT disposition is
   `COMPLETED_AND_ACCEPTED` and is not rescheduled by this documentation-only reconciliation. Neither statement makes
-  `715c407` the exact final release candidate: the current final local release HEAD is the reconciliation commit
-  containing this paragraph, subject to its independent review.
+  `715c407` the exact final release candidate: the current final local release candidate is the documentation
+  correction commit whose first parent is `e074271e998b1e91cb92044730d3ec1c99c8c745` and which carries forward that
+  parent's `CHANGELOG.md` fold of the reconciliation notes into `## [1.0.0] - 2026-08-25`, subject to independent
+  review of the correction commit itself.
 - **Canonical documentation:** M2 and DEV_V1 closure agree across this file, `CHANGELOG.md`, and `ROADMAP.md`.
   `CHANGELOG.md` records the former Unreleased content under `[1.0.0] - 2026-08-25`; `ROADMAP.md` marks M2 done and
   release-gate finalization and release-candidate revalidation as the current operational phase.
@@ -100,10 +102,11 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 - **Other deferred items:** the Codex CLI adapter, Workflow, autonomous Agent Runtime, vector search, and deeper
   memory/index work remain explicitly outside the ratified completed scope and are non-blocking for this source
   integration gate.
-- **Remaining release-gate sequence:** obtain independent review of the documentation-only reconciliation commit
-  that first introduces this corrected paragraph. That commit—not the superseded reconciliation commit
-  `a5906d23ba8d6c27884d6533a6986a28aaf2bf92`, the prior documentation commit `472a436`, or the earlier
-  source-integration commits—is the new exact final local release-candidate SHA. Creating
+- **Remaining release-gate sequence:** obtain independent review of the documentation-only correction commit
+  identified above by its exact first parent and the carried-forward `CHANGELOG.md` fold. That commit—not the
+  superseded reconciliation commits `26e05fd8f0bf35b7d8fe69ff520110a80d7bd3b8`,
+  `7838e20d2afa80a68bb4de05fce969a071f29f21`, `a5906d23ba8d6c27884d6533a6986a28aaf2bf92`, the prior documentation
+  commit `472a436`, or the earlier source-integration commits—is the exact final local release-candidate SHA. Creating
   or pushing an annotated `v1.0.0` tag remains a later Strict operation requiring explicit Product Owner
   authorization. The release-note boundary is the `CHANGELOG.md` section
   `## [1.0.0] - 2026-08-25`, including the documented post-gate fixes.
