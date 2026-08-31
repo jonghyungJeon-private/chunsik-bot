@@ -1,9 +1,9 @@
 import type { ConnectorProvider, ConnectorQuery, ConnectorResult } from '../ports';
 
 /**
- * Registry over ConnectorProviders. v1 ships ZERO connectors — this exists only
- * to define the extension seam. When Jira/Slack/Confluence arrive (read-only
- * first), they are injected here without any core change.
+ * Registry over ConnectorProviders. Jira, Slack, and Confluence read adapters
+ * are injected by the composition root when their configuration is complete;
+ * Core remains independent of every concrete connector.
  */
 export class ConnectorManager {
   constructor(private readonly connectors: readonly ConnectorProvider[] = []) {}
@@ -19,7 +19,7 @@ export class ConnectorManager {
   async query(source: string, query: ConnectorQuery): Promise<ConnectorResult> {
     const connector = this.connectors.find((c) => c.source === source);
     if (!connector) {
-      // v1: no connectors registered. Return an empty, well-formed result.
+      // A connector may be absent because its configuration is incomplete.
       return { source, items: [] };
     }
     return connector.query(query);

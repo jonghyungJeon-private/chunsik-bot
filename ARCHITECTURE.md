@@ -325,7 +325,7 @@ planning. Approval requests and decisions are persisted as governance records.
 | Queue / Events | in-process | Redis / Kafka | `QueueProvider` / `EventBus` port |
 | Platform | Discord | + Telegram, web | `PlatformAdapter` |
 | Workspace | local clone | git worktrees, sandboxes | `WorkspaceProvider` |
-| Connectors | none | Jira/Slack/Confluence (read-first) | `ResourceResolver` + `ActionProvider`, gated |
+| Connectors | Jira/Slack/Confluence read adapters (config-gated) | additional read/write systems | `ConnectorProvider` (ADR-0072); writes use separately approved narrow ports |
 | Extensibility | manual registration | plugin bundles + manifest | bundle of existing ports `[LATER]` |
 | Orchestration | single task | workflows | `workflowId` reserve → engine `[LATER]` |
 | Execution | single-shot | agentic loops | `AgentProfile` seam → runtime `[LATER]` |

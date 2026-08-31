@@ -5756,3 +5756,125 @@ semantic beyond that reviewed revision.
 Extends ADR-0002 (ContextBuilder), ADR-0003 (PromptComposer), ADR-0017 (bounded exact `SHORT_TERM` transcript),
 ADR-0018 (exact active-project background), and ADR-0063 (provider-neutral provenance and current-fact precedence).
 Preserves the fixed `MemoryType` values and the provider-independent, local-first boundaries in `ARCHITECTURE.md`.
+
+## ADR-0074 — Resource / Work Surface Foundation
+
+- **Status:** ✅ Accepted (M3 Architecture Rebaseline, `RATIFIED_WITH_CHANGES`)
+- **Date recorded:** 2026-08-31
+- **Authority:** Product Owner ratification of the Chief Architect verdict
+- **Decision basis:** `docs/plans/m3-architecture-rebaseline.md`, with the changes recorded here
+
+### Context
+
+The M3 rebaseline identified two missing foundations for a personal work surface: a stable identity for external
+inputs and a bounded way to present work from several authoritative systems. The proposal also showed that treating
+this need as a universal Work Graph would duplicate existing aggregate ownership and invite a graph engine, graph
+database, workflow engine, or event-sourcing architecture without a demonstrated requirement.
+
+### Decision
+
+`ResourceRef` is the stable, provider-independent identity of an external input. It identifies what the system
+reads or correlates; it is not the input payload, connector DTO, cached content, or an output. The existing hard
+boundary remains unchanged: **Resource is input and Artifact is output; Resource and Artifact never merge.**
+
+The M3 Work Model is deliberately narrow:
+
+- `WorkItem` is the durable work aggregate defined by ADR-0075.
+- Work Surface is a non-authoritative read model composed from authoritative work and external-resource sources.
+- Work Surface data is rebuildable and does not become a new system of record.
+- A universal Work Graph, graph database, graph engine, generic graph abstraction, universal event sourcing, and a
+  Workflow engine are explicitly rejected for this foundation.
+
+Ratification establishes the architecture contract but does not claim implementation. `ResourceRef` remains
+`[RESERVE]` until a separately approved implementation slice lands.
+
+### M3A-1 sequencing
+
+M3A-1 contains only `ResourceRef` and the read-only Work Surface needed for the first bounded personal-work view.
+It introduces no `WorkItem` persistence, repository, schema, or database migration. It also introduces no write
+path, MCP, agent, handoff, trigger, receipt, or workflow behavior. `WorkItem` persistence begins only in M3A-2 under
+ADR-0075.
+
+### Consequences
+
+- External inputs can gain stable identity without becoming Artifacts or leaking connector-specific types into Core.
+- The first Work Surface remains a read-only projection rather than a competing source of truth.
+- M3A-1 can deliver a bounded surface before durable personal-work state is introduced.
+- Product source, persistence, migration, connector extensions, and Runtime wiring require separate bounded tasks.
+
+### Relations
+
+Extends ADR-0005's Resource/Artifact separation and partially supersedes ADR-0072 only where ADR-0072 deferred
+`ResourceRef` beyond v1. Preserves `ConnectorProvider` as the implemented canonical read-only connector seam; it
+does not introduce `ResourceResolver` or replace `ConnectorProvider`. Paired with ADR-0075.
+
+## ADR-0075 — CAP-011 Work Model
+
+- **Status:** ✅ Accepted (M3 Architecture Rebaseline, `RATIFIED_WITH_CHANGES`)
+- **Date recorded:** 2026-08-31
+- **Authority:** Product Owner ratification of the Chief Architect verdict
+- **Decision basis:** `docs/plans/m3-architecture-rebaseline.md`, with the changes recorded here
+
+### Context
+
+M3 needs durable personal-work identity that can outlive a conversation and correlate several external resources.
+Existing `Session`, `Task`, and execution-ledger aggregates retain their established ownership; CAP-011 must not
+absorb them or become a generic workflow-state container.
+
+### Decision
+
+Introduce CAP-011 Work Model with `WorkItem` as a narrow aggregate. `WorkItem` owns only:
+
+- durable work identity;
+- actor ownership;
+- an optional project reference;
+- resource correlation;
+- high-level lifecycle/status; and
+- origin.
+
+`WorkItem` explicitly does **not** own `Task`, `TaskRun`, `ExecutionPlan`, `ApprovalRequest`, provider routing,
+arbitrary conversation state, apply-preview flow state, scope-clarification blobs, or generic workflow state.
+Those concepts remain with their current aggregates and capability owners. A reference from a `WorkItem` does not
+transfer ownership, mutation authority, or approval scope.
+
+The Work Model consists of this narrow durable aggregate plus ADR-0074's non-authoritative Work Surface read model.
+It is not a Workflow, agent runtime, universal graph, or event-sourced centre.
+
+### M3A-2 sequencing
+
+M3A-2 may introduce the `WorkItem` repository, a forward-only additive migration, and persisted personal-work
+state. M3A-1 must not introduce any of them. The M3A-2 schema and implementation still require a separately
+approved bounded task and the applicable independent architecture review; this ADR does not apply a migration.
+
+### Consequences
+
+- Durable work can span conversations without expanding `Session` or turning `Task.metadata` into a universal store.
+- Existing execution, approval, routing, and conversation ownership remains intact.
+- Persistence begins additively in M3A-2, after the read-only M3A-1 foundation.
+- No M3 product source, repository, schema, or migration is implemented by this ratification.
+
+### Relations
+
+Builds on ADR-0074. Preserves ADR-0024 Planning ownership, ADR-0025 plan-scoped Approval ownership, and the existing
+`Task`/`TaskRun` meanings. ADR-0032 is amended below to keep persistent work state outside Conversation Runtime.
+
+### ADR-0032 Amendment — M3 ConversationRuntime boundary
+
+- **Status:** ✅ Accepted amendment (`RATIFIED_WITH_CHANGES`)
+- **Date recorded:** 2026-08-31
+- **Authority:** Product Owner ratification of Chief Architect decision D12
+
+This amendment is append-only; the original ADR-0032 entry remains historical authority for its accepted slices.
+For M3 and later slices, `ConversationRuntime` remains the conversation/application entry point for inbound-message
+handling and turn-level presentation. It must not own global or persistent work state. M3 must reduce its work-flow
+responsibility by moving durable work ownership to the capability that owns that state.
+
+For every completed M3 slice, `ConversationRuntimeDeps` must not grow beyond the previous accepted baseline for that
+slice. Adding a dependency requires removing or moving enough responsibility that the completed slice does not
+increase the accepted dependency surface. This constraint is an architecture acceptance condition, not a request
+to hide dependencies behind a new god-interface.
+
+`ConversationRuntime` gains no ownership of M3 work state, agent or handoff state, trigger or scheduler state,
+receipt/provenance state, connector or MCP protocol state, or generic workflow state. It may present bounded Work
+Surface results and conversationally collect decisions while the owning capability retains state and mutation
+authority. Existing `Task`, execution, Planning, Approval, Provider, and Workspace ownership remains unchanged.

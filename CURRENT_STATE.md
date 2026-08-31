@@ -9,9 +9,15 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   `QUIRKYBOT_DEV_V1_ACCEPTANCE_CRITERIA = MET`. Stage 2C Slice 3C was implemented in commit `683297f`, independently
   reviewed `PASS`, and closed the prior delegated offline implementation gap. Bounded Live UAT was `EXECUTED` and
   `PASS` at exact verified HEAD `715c407a52eee36a7717d1b4b6695b1469bb0a76`.
-- **Active milestone:** `Release Gate Finalization`. M2 and `QUIRKYBOT_DEV_V1` remain closed; source integration is
-  complete, and this gate prepares the final Version 1 release identifier without reopening implementation or
-  claiming Production Runtime readiness.
+- **Active milestone:** `M3`. The M3 Architecture Rebaseline is `RATIFIED_WITH_CHANGES` through ADR-0074,
+  ADR-0075, and the appended ADR-0032 amendment. M3A-1 is the next bounded implementation slice; it is not started
+  by this documentation ratification.
+- **Version 1 source release:** `v1.0.0 = COMPLETE / CLOSED` at
+  `80bbc94de0493c24036197dabc2ff00dbcd20cbf` (`origin/main` and `v1.0.0^{}`). Tag creation or push is not an
+  outstanding release task. This source-release fact does not claim Production Runtime readiness.
+- **Quoky operating state:** `QUOKY DEFAULT ORCHESTRATOR = APPROVED`; `QUOKY OPERATIONAL STATUS = NORMAL`;
+  `QUOKY FEATURE FREEZE = YES`. Quoky is the normal development orchestrator again, while feature development of
+  the Quoky control plane itself remains frozen.
 - **Development governance:** `AUTONOMOUS_DEV_MODE = ENABLED`; Product Owner retains
   product/UAT/debug/high-risk authority; Architect AI owns task-level delegated local approval within an active
   milestone, Codex builds, and Claude independently reviews. Strict external/destructive/Runtime/application-Provider
@@ -64,55 +70,35 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   and designated development Discord scope at HEAD `715c407`. The earlier diagnostic scopes also executed
   `llama3.1` and `granite3.3` generation through `ollama-cli`; those diagnostics remain separate from Live UAT.
 - **Milestone transition:** `QUIRKYBOT_DEV_V1 = MILESTONE_REACHED / CLOSED` and
-  `M2 = COMPLETE_AND_ACCEPTED / CLOSED`. The active phase is now
-  `Release Gate Finalization`; further product implementation still requires Product Owner direction while all
-  Strict gates remain intact.
+  `M2 = COMPLETE_AND_ACCEPTED / CLOSED`. M3 is active under the ratified rebaseline and normal delegated
+  development governance; all Strict gates remain intact.
 
-## Release Gate Finalization
+## Version 1 Source Release — Closed
 
-- **Source integration:** `SOURCE_INTEGRATION_GATE = COMPLETE`. By Product Owner decision, the intended `v1.0.0`
-  release line includes all post-gate release-acceptance, recency-grounding validator, ContextBuilder scope, durable
-  recall scope-disclosure, immediate-continuity reliability fixes, and the immediately-previous-user-turn recency
-  grounding defect resolution through stale-turn fix commit `cda25f9f92afa1dd3673598cb1178cc1f869a82c`.
-- **Release identifier and version ownership:** the intended final release tag is `v1.0.0`. Repository inspection
-  establishes that package metadata is intentionally independent of the source release identifier: the private
-  root and every private workspace package have remained at `0.1.0` since their introduction, there is no package
-  publication, release, or version-bump script/configuration, and `CHANGELOG.md` plus Git tags carry the repository
-  release line. The root `package.json` version therefore remains `0.1.0`; no lockfile metadata change is required.
-- **Release acceptance identity:** the historical Live UAT execution evidence remains the `PASS_EXECUTED` run at
-  exact HEAD `715c407a52eee36a7717d1b4b6695b1469bb0a76`. The Product Owner's final `v1.0.0` Live UAT disposition is
-  `COMPLETED_AND_ACCEPTED` and is not rescheduled by this documentation-only reconciliation. Neither statement makes
-  `715c407` the exact final release candidate: the current final local release candidate is the documentation
-  correction commit whose first parent is `e074271e998b1e91cb92044730d3ec1c99c8c745` and which carries forward that
-  parent's `CHANGELOG.md` fold of the reconciliation notes into `## [1.0.0] - 2026-08-25`, subject to independent
-  review of the correction commit itself.
-- **Canonical documentation:** M2 and DEV_V1 closure agree across this file, `CHANGELOG.md`, and `ROADMAP.md`.
-  `CHANGELOG.md` records the former Unreleased content under `[1.0.0] - 2026-08-25`; `ROADMAP.md` marks M2 done and
-  release-gate finalization and release-candidate revalidation as the current operational phase.
-- **Validation status:** fresh release-candidate revalidation ran on Node `v22.22.1` against exact
-  pre-reconciliation HEAD `cda25f9f92afa1dd3673598cb1178cc1f869a82c`: `pnpm typecheck` exited `0`, and
-  `pnpm test` passed `119` files / `2653` tests. This documentation-only reconciliation changes no executable,
-  test, architecture, configuration, or dependency content; independent review remains a separate subsequent step.
-- **Carryover classification:** XR-AX and XR filesystem provenance are **non-blocking** for this completed source
-  integration scope because XR-AX was accepted as optional and remains disabled/unexecuted. Production-grade 5C-EG
-  and 5C-EG-I1/I2/V/E are also **non-blocking for source integration only** because enabled production routing
-  remains fail-closed and the completed Personal Edition scope does not claim external-egress denial. They are
-  **release-blocking for any Production Runtime release or activation that enables Stage 2B routing**; the DEV_V1
-  configuration-restricted UAT exception does not carry into Production or Release.
-- **Other deferred items:** the Codex CLI adapter, Workflow, autonomous Agent Runtime, vector search, and deeper
-  memory/index work remain explicitly outside the ratified completed scope and are non-blocking for this source
-  integration gate.
-- **Remaining release-gate sequence:** obtain independent review of the documentation-only correction commit
-  identified above by its exact first parent and the carried-forward `CHANGELOG.md` fold. That commit—not the
-  superseded reconciliation commits `26e05fd8f0bf35b7d8fe69ff520110a80d7bd3b8`,
-  `7838e20d2afa80a68bb4de05fce969a071f29f21`, `a5906d23ba8d6c27884d6533a6986a28aaf2bf92`, the prior documentation
-  commit `472a436`, or the earlier source-integration commits—is the exact final local release-candidate SHA. Creating
-  or pushing an annotated `v1.0.0` tag remains a later Strict operation requiring explicit Product Owner
-  authorization. The release-note boundary is the `CHANGELOG.md` section
-  `## [1.0.0] - 2026-08-25`, including the documented post-gate fixes.
-- **Strict exclusions:** this documentation task does not authorize creating or pushing a tag, pushing this commit,
-  publishing a GitHub Release or artifacts, Production activation, Runtime or Provider/network execution, Discord,
-  Live UAT, secrets, destructive work, or Production/shared DB mutation. Each requires its own exact approval.
+- **Source identity:** `v1.0.0` resolves to `80bbc94de0493c24036197dabc2ff00dbcd20cbf`; the source release and its
+  acceptance are complete and closed. Package metadata remains independently versioned at `0.1.0`.
+- **No outstanding tag task:** creating, moving, deleting, or pushing a tag is neither pending nor part of M3. The
+  existing tag must remain unchanged.
+- **Historical acceptance:** the accepted Live UAT evidence remains the bounded `PASS_EXECUTED` run at
+  `715c407a52eee36a7717d1b4b6695b1469bb0a76`. It is historical evidence and is not reopened by M3.
+- **Carryovers:** Production-grade 5C-EG and other recorded blocked carryovers remain fail-closed where applicable;
+  they do not reopen the completed source release and do not authorize Production activation.
+- **Strict exclusions:** Push, PR, Merge, tag mutation/push, GitHub Release publication, Production activation,
+  Runtime or Provider/network execution, Discord, Live UAT, secrets, destructive work, and Production/shared DB
+  mutation each remain outside normal delegated local development.
+
+## M3 Architecture Rebaseline
+
+- **Status:** `RATIFIED_WITH_CHANGES` in ADR-0074, ADR-0075, and the appended ADR-0032 amendment.
+- **M3A-1 boundary:** `ResourceRef` stable identity plus a read-only, non-authoritative Work Surface only. No
+  `WorkItem` repository, persistence, schema, or migration belongs to M3A-1.
+- **M3A-2 boundary:** narrow CAP-011 `WorkItem`, repository, forward-only additive migration, and persisted personal
+  work state. `WorkItem` does not absorb Task, execution, Approval, Provider, arbitrary conversation, or workflow
+  state.
+- **Deferred:** `AgentProfile` remains deferred to M3D. MCP, handoff, trigger, receipt, Workflow, graph engine,
+  universal event sourcing, and other later M3 decisions are not authorized by ADR-0074/0075.
+- **Conversation boundary:** `ConversationRuntime` remains an entry point, owns no global/persistent work state, and
+  its dependency surface must not grow beyond the previous accepted baseline for each completed M3 slice.
 
 ## Stage 2C — Slice 3C ExecutionPlan Integrity Binding Architecture
 

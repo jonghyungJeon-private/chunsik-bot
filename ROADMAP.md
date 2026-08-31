@@ -19,11 +19,12 @@ Lightweight, living roadmap: **direction and sequence only.** Rules live in
 - **M1 — Walking skeleton:** one natural-language flow, end to end (Sprint 1a → 1b).
 - **M2 — Memory & multi-provider:** ✅ done for the ratified scope — provider-neutral routing/Ollama,
   ContextBuilder ranking and bounded compression, durable memory, and read-only connectors. Codex remains deferred.
-- **M3 — Team Edition foundations:** Actor/Policy, networked transports, telemetry.
+- **M3 — Personal Work OS foundations:** **active** — Resource identity, a read-only Work Surface, and the
+  narrow CAP-011 Work Model follow the ratified M3 Architecture Rebaseline (ADR-0074/0075).
 
-Current operational phase: **Release Gate Finalization** for the completed local-first Personal Edition scope. The
-intended Version 1 release line includes the post-gate acceptance and reliability fixes and awaits release-candidate
-revalidation. This is not M3 activation or a Production Runtime-readiness claim.
+Current operational phase: **M3**. The `v1.0.0` source release is complete and closed at
+`80bbc94de0493c24036197dabc2ff00dbcd20cbf`; tag creation/push is not an outstanding release task. M3 activation
+does not claim Production Runtime readiness.
 
 ## Sprint roadmap
 
@@ -32,7 +33,9 @@ revalidation. This is not M3 activation or a Production Runtime-readiness claim.
 | **0** ✅ | Bootstrap the repository operating system | docs + collaboration model |
 | **1a** | Walking skeleton: Discord adapter + minimal Session + SQLite persistence + **echo** reply | validates I/O + persistence + boundaries; **no cognition** |
 | **1b** | Intent classification + Planner + ContextBuilder + PromptComposer + capability routing + Claude CLI execution | natural language only, no slash commands; provider chosen by **router**, never hardcoded |
-| **Future** | Memory improvements · Codex · Ollama · Connectors (read-only) | per ADR sequence |
+| **M3A-1** | `ResourceRef` + read-only Work Surface | no WorkItem persistence or migration |
+| **M3A-2** | CAP-011 WorkItem repository + additive migration + persisted personal-work state | ADR-0075 |
+| **Future** | Memory improvements · Codex · additional connectors | per ADR sequence |
 
 ## Deferred capabilities (YAGNI)
 
@@ -41,13 +44,13 @@ Reserve a seam **only when expensive to retrofit.** Most of these already map on
 
 | Capability | Absorbed by | Action now |
 |---|---|---|
-| MCP | `AiProvider` / `ResourceResolver` | none (not a new Core concept) |
+| MCP | separate future `ToolProvider` adapter boundary | deferred; do not use `ConnectorProvider` or AI-provider types |
 | Plugin ecosystem | ADR-0007 (bundle of existing ports) | none |
-| Multi-agent runtime | ADR-0008 (`AgentProfile` seam) | none |
+| Multi-agent runtime | ADR-0008 (`AgentProfile` seam) | `AgentProfile` remains deferred to M3D; no runtime now |
 | Remote workspace | `WorkspaceProvider` (`kind: 'remote'`) | none |
 | Local model manager | `AiProvider` availability/health | none |
 | Multimodal | keep `Artifact`/`Resource` from assuming text-only | note only |
-| Search | `ResourceResolver` + `VectorProvider` | none |
+| Search | future bounded resource retrieval + `VectorProvider` | deferred; `ResourceResolver` is not implemented |
 | Feedback learning, Feature registry, Scheduler, Notification | future additive services | none (no Core seam) |
 
 ## Non-goals (v1)
