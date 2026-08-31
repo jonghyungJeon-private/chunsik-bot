@@ -1,4 +1,4 @@
-# Disposable Quoky Live Canary B Marker
+# Disposable Quoky Live Canary C Marker
 
 > **DISPOSABLE CANARY ARTIFACT:** This note exists only to qualify the Quoky
 > Architect → Builder → exact-HEAD Reviewer control-plane path. It is not a
@@ -8,11 +8,11 @@
 - Authorization root: `eb32f834-0449-4838-bf8c-a9d0b9c85b24`
 - Sequence: `QUOKY-LIVE-CANARY-A2-B-C`
 - Frozen ordered sequence: `[QUOKY-LIVE-CANARY-A2, QUOKY-LIVE-CANARY-B, QUOKY-LIVE-CANARY-C]`
-- Step: `QUOKY-LIVE-CANARY-B`
-- Task: `quoky-live-canary-b-second-pass-doc-only`
-- Base HEAD: `5713502aaa1cfb973c890e293abafca687340e53`
-- Accepted prior step: `QUOKY-LIVE-CANARY-A2`
-- A2 accepted terminal HEAD: `5713502aaa1cfb973c890e293abafca687340e53`
+- Step: `QUOKY-LIVE-CANARY-C`
+- Task: `quoky-live-canary-c-third-pass-doc-only`
+- Base HEAD: `6661fa0008dedc68653709044b055282ef9ac0b0`
+- Accepted prior step: `QUOKY-LIVE-CANARY-B`
+- B accepted terminal HEAD: `6661fa0008dedc68653709044b055282ef9ac0b0`
 - Expected agent order: Kiro Architect → Codex Builder → exact-HEAD Claude Reviewer PASS → Kiro classification
 
 The control plane records the final Builder HEAD and Reviewer verdict from the
@@ -33,3 +33,7 @@ Required terminal invariants to be observed by the control plane:
 No Strict action, application runtime, Discord action, provider/network path,
 secret access, database mutation, release operation, or Quoky source change is
 part of this marker.
+
+Any PUSH associated with CANARY C is **not authorized** by this
+documentation-only step. It remains an unapproved Strict boundary requiring
+separate, explicit Human approval.
