@@ -24,6 +24,7 @@ import type {
   PatchRepository,
   PatchSet,
   Project,
+  ResourceRef,
   Repository,
   WorkspaceChange,
   WorkspaceChangeRepository,
@@ -34,7 +35,10 @@ import type {
   TaskRepository,
   TaskRun,
   TaskRunRepository,
+  WorkItem,
+  WorkItemRepository,
 } from '@chunsik/core';
+import { ResourceRef as DomainResourceRef } from '@chunsik/core';
 
 export interface SqliteConfig {
   /** Path to the SQLite database file, e.g. ./data/chunsik.db */
@@ -187,6 +191,71 @@ class SqliteTaskRunRepository extends JsonRepository<TaskRun> implements TaskRun
       .all(taskId) as Row[];
     return rows.map((r) => JSON.parse(r.data) as TaskRun);
   }
+}
+
+class SqliteWorkItemRepository
+  extends JsonRepository<WorkItem>
+  implements WorkItemRepository
+{
+  override async get(id: Id): Promise<WorkItem | null> {
+    const item = await super.get(id);
+    return item ? hydrateWorkItem(item) : null;
+  }
+
+  override async save(item: WorkItem): Promise<WorkItem> {
+    this.db
+      .prepare(
+        `INSERT INTO work_items (id, actor_id, project_id, status, origin, data)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET actor_id = excluded.actor_id,
+           project_id = excluded.project_id, status = excluded.status,
+           origin = excluded.origin, data = excluded.data`,
+      )
+      .run(
+        item.id,
+        item.actorId,
+        item.projectId ?? null,
+        item.status,
+        item.origin,
+        JSON.stringify(item),
+      );
+    return item;
+  }
+
+  override async list(): Promise<WorkItem[]> {
+    return (await super.list()).map(hydrateWorkItem);
+  }
+
+  async listByActor(actorId: Id): Promise<WorkItem[]> {
+    const rows = this.db
+      .prepare(
+        `SELECT data FROM work_items WHERE actor_id = ?
+         ORDER BY json_extract(data, '$.createdAt'), id`,
+      )
+      .all(actorId) as Row[];
+    return rows.map((row) => hydrateWorkItem(JSON.parse(row.data) as WorkItem));
+  }
+
+  async listByResource(resourceRef: ResourceRef): Promise<WorkItem[]> {
+    const rows = this.db
+      .prepare(
+        `SELECT work_items.data FROM work_items, json_each(work_items.data, '$.resourceRefs') AS resource
+         WHERE json_extract(resource.value, '$.source') = ?
+           AND json_extract(resource.value, '$.externalId') = ?
+         ORDER BY json_extract(work_items.data, '$.createdAt'), work_items.id`,
+      )
+      .all(resourceRef.source, resourceRef.externalId) as Row[];
+    return rows.map((row) => hydrateWorkItem(JSON.parse(row.data) as WorkItem));
+  }
+}
+
+function hydrateWorkItem(item: WorkItem): WorkItem {
+  return {
+    ...item,
+    resourceRefs: item.resourceRefs.map(
+      (ref: ResourceRef) => new DomainResourceRef({ source: ref.source, externalId: ref.externalId }),
+    ),
+  };
 }
 
 class SqliteArtifactRepository extends JsonRepository<Artifact> implements ArtifactRepository {
@@ -471,7 +540,7 @@ class SqliteMemoryRepository extends JsonRepository<MemoryRecord> implements Mem
  * callers see only domain entities. Implemented: actors, sessions, tasks,
  * taskRuns, artifacts, memories, projects, approvals (CAP-004), patches (CAP-005),
  * workspaceChanges (CAP-006), commandExecutions (CAP-007), codeGenerations +
- * codeProposals (CAP-008).
+ * codeProposals (CAP-008), workItems (CAP-011).
  */
 export class SqliteStorageProvider implements StorageProvider {
   private db?: Db;
@@ -484,6 +553,7 @@ export class SqliteStorageProvider implements StorageProvider {
   artifacts!: ArtifactRepository;
   memories!: MemoryRepository;
   projects!: Repository<Project>;
+  workItems!: WorkItemRepository;
   approvals!: ApprovalRepository;
   patches!: PatchRepository;
   workspaceChanges!: WorkspaceChangeRepository;
@@ -510,6 +580,7 @@ export class SqliteStorageProvider implements StorageProvider {
     this.artifacts = new SqliteArtifactRepository(db, 'artifacts');
     this.memories = new SqliteMemoryRepository(db, 'memories');
     this.projects = new JsonRepository<Project>(db, 'projects');
+    this.workItems = new SqliteWorkItemRepository(db, 'work_items');
     this.approvals = new SqliteApprovalRepository(db, 'approvals');
     this.patches = new SqlitePatchRepository(db, 'patches');
     this.workspaceChanges = new SqliteWorkspaceChangeRepository(db, 'workspace_changes');

@@ -127,6 +127,18 @@ export const MIGRATIONS: readonly Migration[] = [
       );
     },
   },
+  {
+    version: 7,
+    name: 'work_items table (CAP-011)',
+    up(db) {
+      db.exec(
+        `CREATE TABLE IF NOT EXISTS work_items (
+           id TEXT PRIMARY KEY, actor_id TEXT NOT NULL, project_id TEXT,
+           status TEXT NOT NULL, origin TEXT NOT NULL, data TEXT NOT NULL);`,
+      );
+      db.exec(`CREATE INDEX IF NOT EXISTS work_items_actor_id ON work_items (actor_id);`);
+    },
+  },
 ];
 
 /** The schema version this build targets (the highest migration version). */

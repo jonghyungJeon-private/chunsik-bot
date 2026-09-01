@@ -49,6 +49,7 @@ import {
   StatelessApplyPreviewFlow,
   ConnectorManager,
   WorkSurfaceQuery,
+  WorkManager,
   ResponseComposer,
   RiskPolicy,
   RepositoryIdentityResolver,
@@ -362,6 +363,11 @@ const application: Provider[] = [
     provide: WorkSurfaceQuery,
     useFactory: (connectors: ConnectorManager) => new WorkSurfaceQuery(connectors),
     inject: [ConnectorManager],
+  },
+  {
+    provide: WorkManager,
+    useFactory: (storage: StorageProvider) => new WorkManager(storage),
+    inject: [STORAGE_PROVIDER],
   },
   {
     provide: IntentClassifier,

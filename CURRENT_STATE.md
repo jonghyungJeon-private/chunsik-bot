@@ -11,8 +11,8 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   `PASS` at exact verified HEAD `715c407a52eee36a7717d1b4b6695b1469bb0a76`.
 - **Active milestone:** `M3`. The M3 Architecture Rebaseline is `RATIFIED_WITH_CHANGES` through ADR-0074,
   ADR-0075, and the appended ADR-0032 amendment. M3A-1 implements `ResourceRef` plus the first read-only Jira/GitHub
-  Personal Work Surface. M3A-1.1 adds the approved app-boundary Actor identity provisioning slice; independent
-  implementation review remains the next gate before any M3A-2 authorization.
+  Personal Work Surface. M3A-1.1 adds app-boundary Actor identity provisioning. M3A-2 implements the bounded
+  CAP-011 WorkItem persistence foundation; independent architecture/implementation review is its next gate.
 - **Version 1 source release:** `v1.0.0 = COMPLETE / CLOSED` at
   `80bbc94de0493c24036197dabc2ff00dbcd20cbf` (`origin/main` and `v1.0.0^{}`). Tag creation or push is not an
   outstanding release task. This source-release fact does not claim Production Runtime readiness.
@@ -25,7 +25,7 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   gates remain Human-only.
 - **Development DB governance:** `AUTONOMOUS_DEV_DB = APPROVED`. When `QUOKY_RUNTIME_ENV=dev`, the configured target
   resolves exactly to repository `data/chunsik.db`, and no Production/shared DB is selected, create/open, WAL,
-  migrations v1-v6, `PRAGMA user_version`, and bounded normal UAT persistence are delegated. The former
+  migrations v1-v7, `PRAGMA user_version`, and bounded normal UAT persistence are delegated. The former
   `DB_MUTATION_NOT_AUTHORIZED` blocker is resolved for that exact development target only.
 - **Offline checkpoint:** `STAGE_2B_OFFLINE_COMPLETION = COMPLETE_AND_ACCEPTED` and
   `STAGE_2B_OFFLINE_BLOCKERS = NONE`.
@@ -109,6 +109,11 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 - **M3A-2 boundary:** narrow CAP-011 `WorkItem`, repository, forward-only additive migration, and persisted personal
   work state. `WorkItem` does not absorb Task, execution, Approval, Provider, arbitrary conversation, or workflow
   state.
+- **M3A-2 implementation:** `WorkItem` persists only durable identity, canonical `Actor.id` ownership, optional
+  `Project.id`, `ResourceRef` correlations, the closed `ACTIVE`/`COMPLETED`/`CANCELED` lifecycle, and typed origin.
+  `WorkManager` provides the application create/read/lifecycle boundary, SQLite migration v7 adds only
+  `work_items`, and repository reload coverage proves durable round-trip. `ConversationRuntime` owns no WorkItem
+  state and `ConversationRuntimeDeps` remains 31.
 - **Deferred:** `AgentProfile` remains deferred to M3D. MCP, handoff, trigger, receipt, Workflow, graph engine,
   universal event sourcing, and other later M3 decisions are not authorized by ADR-0074/0075.
 - **Conversation boundary:** `ConversationRuntime` remains an entry point, owns no global/persistent work state, and

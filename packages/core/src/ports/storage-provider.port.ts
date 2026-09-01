@@ -11,9 +11,11 @@ import type {
   MemoryType,
   PatchSet,
   Project,
+  ResourceRef,
   Session,
   Task,
   TaskRun,
+  WorkItem,
   WorkspaceChange,
 } from '../domain';
 
@@ -63,6 +65,13 @@ export interface ActorRepository extends Repository<Actor> {
 export interface SessionRepository extends Repository<Session> {
   /** The most-recently-active ACTIVE session for a channel/thread, if any. */
   findActiveByContext(channelId: string, threadId?: string): Promise<Session | null>;
+}
+
+export interface WorkItemRepository extends Repository<WorkItem> {
+  /** Durable work owned by one canonical Actor.id. */
+  listByActor(actorId: Id): Promise<WorkItem[]>;
+  /** Work correlated to an external input, without persisting connector DTOs. */
+  listByResource(resource: ResourceRef): Promise<WorkItem[]>;
 }
 
 export interface ApprovalRepository extends Repository<ApprovalRequest> {
@@ -116,6 +125,7 @@ export interface StorageProvider {
   readonly memories: MemoryRepository;
   readonly artifacts: ArtifactRepository;
   readonly projects: Repository<Project>;
+  readonly workItems: WorkItemRepository;
   readonly approvals: ApprovalRepository;
   readonly patches: PatchRepository;
   readonly workspaceChanges: WorkspaceChangeRepository;

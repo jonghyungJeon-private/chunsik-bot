@@ -7,6 +7,15 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — M3A-2 CAP-011 WorkItem Persistence Foundation
+
+- Added the narrow ADR-0075 `WorkItem` aggregate and `WorkManager` application boundary, owning only durable work
+  identity, canonical Actor ownership, optional Project reference, ResourceRef correlation, high-level lifecycle,
+  and typed origin.
+- Added the Core repository contract, SQLite repository, and forward-only additive migration v7 for `work_items`,
+  with reload/round-trip, multi-WorkItem-per-Actor, ResourceRef, optional-Project, lifecycle, origin, and not-found
+  coverage. Conversation Runtime retains no persistent work ownership and its dependency count remains 31.
+
 ### Added — M3A-1.1 Actor Identity Provisioning
 
 - Added a validated non-secret `QUOKY_ACTOR_IDENTITY_MAPPINGS` contract and an app-private startup provisioner that
