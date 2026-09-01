@@ -46,7 +46,9 @@ export class WorkManager {
     return this.storage.workItems.listByResource(resource);
   }
 
-  async transition(item: WorkItem, status: WorkItemStatus): Promise<WorkItem> {
-    return this.storage.workItems.save(transitionWorkItem(item, status, now()));
+  async transition(id: Id, status: WorkItemStatus): Promise<WorkItem> {
+    const canonical = await this.storage.workItems.get(id);
+    if (!canonical) throw new Error(`WorkItem not found: ${id}`);
+    return this.storage.workItems.save(transitionWorkItem(canonical, status, now()));
   }
 }

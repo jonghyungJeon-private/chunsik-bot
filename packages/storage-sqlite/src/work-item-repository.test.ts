@@ -101,7 +101,7 @@ describe('SqliteWorkItemRepository (CAP-011) — migration v7', () => {
     await store.close();
   });
 
-  it.each(['conversation', 'connector', 'trigger'] as const)('round-trips typed %s origin', async (origin) => {
+  it.each(['conversation', 'connector'] as const)('round-trips typed %s origin', async (origin) => {
     const store = await storeAt();
     const manager = new WorkManager(store);
     const created = await manager.create({ actorId: actor.id, origin });
@@ -115,12 +115,50 @@ describe('SqliteWorkItemRepository (CAP-011) — migration v7', () => {
       const store = await storeAt();
       const manager = new WorkManager(store);
       const created = await manager.create({ actorId: actor.id, origin: 'conversation' });
-      const transitioned = await manager.transition(created, status);
+      const transitioned = await manager.transition(created.id, status);
       expect((await manager.get(created.id))?.status).toBe(status);
       expect(transitioned.status).toBe(status);
+      await expect(manager.transition(created.id, WorkItemStatus.ACTIVE)).rejects.toThrow(
+        'Invalid WorkItem transition',
+      );
       await store.close();
     },
   );
+
+  it('transitions the canonical persisted WorkItem and changes only status and updatedAt', async () => {
+    const store = await storeAt();
+    const manager = new WorkManager(store);
+    const stale = await manager.create({
+      actorId: actor.id,
+      origin: 'conversation',
+      resourceRefs: [new ResourceRef({ source: 'jira', externalId: 'STALE' })],
+    });
+    const canonical = {
+      ...stale,
+      actorId: 'actor-canonical',
+      projectId: project.id,
+      resourceRefs: [new ResourceRef({ source: 'github', externalId: 'canonical' })],
+      origin: 'connector' as const,
+      createdAt: '2026-08-31T00:00:00.000Z',
+      updatedAt: '2026-08-31T01:00:00.000Z',
+    };
+    await store.workItems.save(canonical);
+
+    const transitioned = await manager.transition(stale.id, WorkItemStatus.COMPLETED);
+
+    expect(transitioned).toMatchObject({
+      id: canonical.id,
+      actorId: canonical.actorId,
+      projectId: canonical.projectId,
+      origin: canonical.origin,
+      createdAt: canonical.createdAt,
+      status: WorkItemStatus.COMPLETED,
+    });
+    expect(transitioned.resourceRefs.map((ref) => ref.identity)).toEqual(['github:canonical']);
+    expect(transitioned.updatedAt).not.toBe(canonical.updatedAt);
+    expect(await manager.get(stale.id)).toEqual(transitioned);
+    await store.close();
+  });
 
   it('returns null and empty results when no WorkItem matches', async () => {
     const store = await storeAt();

@@ -110,8 +110,9 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   work state. `WorkItem` does not absorb Task, execution, Approval, Provider, arbitrary conversation, or workflow
   state.
 - **M3A-2 implementation:** `WorkItem` persists only durable identity, canonical `Actor.id` ownership, optional
-  `Project.id`, `ResourceRef` correlations, the closed `ACTIVE`/`COMPLETED`/`CANCELED` lifecycle, and typed origin.
-  `WorkManager` provides the application create/read/lifecycle boundary, SQLite migration v7 adds only
+  `Project.id`, `ResourceRef` correlations, the closed `ACTIVE`/`COMPLETED`/`CANCELED` lifecycle, and the narrowed
+  `conversation`/`connector` origin. `WorkManager` transitions by id from the canonical persisted aggregate so only
+  status and `updatedAt` change; SQLite migration v7 adds only
   `work_items`, and repository reload coverage proves durable round-trip. `ConversationRuntime` owns no WorkItem
   state and `ConversationRuntimeDeps` remains 31.
 - **Deferred:** `AgentProfile` remains deferred to M3D. MCP, handoff, trigger, receipt, Workflow, graph engine,

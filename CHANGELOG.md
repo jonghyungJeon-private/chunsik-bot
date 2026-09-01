@@ -11,7 +11,8 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 - Added the narrow ADR-0075 `WorkItem` aggregate and `WorkManager` application boundary, owning only durable work
   identity, canonical Actor ownership, optional Project reference, ResourceRef correlation, high-level lifecycle,
-  and typed origin.
+  and `conversation`/`connector` origin. Lifecycle transitions load the canonical persisted WorkItem by id and
+  change only status and `updatedAt`, preventing stale caller state from replacing ownership or correlations.
 - Added the Core repository contract, SQLite repository, and forward-only additive migration v7 for `work_items`,
   with reload/round-trip, multi-WorkItem-per-Actor, ResourceRef, optional-Project, lifecycle, origin, and not-found
   coverage. Conversation Runtime retains no persistent work ownership and its dependency count remains 31.

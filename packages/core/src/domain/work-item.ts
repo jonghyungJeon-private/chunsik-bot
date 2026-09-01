@@ -9,7 +9,7 @@ export enum WorkItemStatus {
 }
 
 /** Typed creation source; never a generic metadata or trigger-state container. */
-export type WorkItemOrigin = 'conversation' | 'connector' | 'trigger';
+export type WorkItemOrigin = 'conversation' | 'connector';
 
 /**
  * CAP-011 durable personal-work aggregate (ADR-0075).

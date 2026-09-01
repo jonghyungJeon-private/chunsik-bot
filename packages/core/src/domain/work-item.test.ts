@@ -47,17 +47,19 @@ describe('WorkItem (CAP-011)', () => {
     },
   );
 
-  it('keeps completed and canceled states terminal', () => {
-    expect(canTransitionWorkItem(WorkItemStatus.COMPLETED, WorkItemStatus.ACTIVE)).toBe(false);
-    expect(canTransitionWorkItem(WorkItemStatus.CANCELED, WorkItemStatus.ACTIVE)).toBe(false);
-    expect(() =>
-      transitionWorkItem(
-        { ...activeWorkItem(), status: WorkItemStatus.COMPLETED },
-        WorkItemStatus.ACTIVE,
-        createdAt,
-      ),
-    ).toThrow('Invalid WorkItem transition');
-  });
+  it.each([WorkItemStatus.COMPLETED, WorkItemStatus.CANCELED])(
+    'keeps %s terminal',
+    (status) => {
+      expect(canTransitionWorkItem(status, WorkItemStatus.ACTIVE)).toBe(false);
+      expect(() =>
+        transitionWorkItem(
+          { ...activeWorkItem(), status },
+          WorkItemStatus.ACTIVE,
+          createdAt,
+        ),
+      ).toThrow('Invalid WorkItem transition');
+    },
+  );
 
   it('deduplicates ResourceRef correlations by provider-independent identity', () => {
     const refs = uniqueResourceRefs([
