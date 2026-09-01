@@ -18,6 +18,7 @@ import type {
 import { ConsoleLogger } from './console-logger';
 import { loadLocalEnvironment } from './env-loader';
 import { serializeError } from './error-diagnostics';
+import { ActorIdentityProvisioner } from './actor-identity-provisioner';
 
 const log = new ConsoleLogger('chunsik');
 
@@ -45,6 +46,7 @@ async function bootstrap(): Promise<void> {
   const queue = app.get<QueueProvider>(QUEUE_PROVIDER);
   const platform = app.get<PlatformAdapter>(PLATFORM_ADAPTER);
   const core = app.get(ChunsikCore);
+  const actorIdentityProvisioner = app.get(ActorIdentityProvisioner);
 
   // Track B (Sprint 4c-Follow-up-2): secret-free structured diagnostics — name/message/redacted stack/cause plus
   // non-secret correlation context (stage + message/channel/user ids). The raw message text is deliberately NOT
@@ -77,6 +79,7 @@ async function bootstrap(): Promise<void> {
   );
 
   await storage.init();
+  await actorIdentityProvisioner.provision();
   await vector.init();
   await queue.start();
   await platform.start();

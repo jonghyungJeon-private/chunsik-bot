@@ -17,18 +17,29 @@ application projection under ADR-0074, not a work database or workflow.
 
 ## Live Identity Reachability
 
-M3A-1 supplies no Actor Jira/GitHub identity-provisioning path. `ActorManager.resolveFromContext` seeds only the
-inbound platform identity, while `ActorRepository` exposes no Jira/GitHub identity writer. Therefore, in the live
-product both sources resolve `IDENTITY_MISSING` and the Work Surface is `UNAVAILABLE`; the merged, Jira-only, and
-GitHub-only behavior in this slice is exercised through injected identities and fakes.
+M3A-1.1 adds an app-private startup provisioner. `QUOKY_ACTOR_IDENTITY_MAPPINGS` is an optional JSON array whose
+entries have the exact shape below. It is parsed and validated before application, then applied after storage
+initialization and before the platform starts.
 
-A separate approved slice must supply an Actor Jira/GitHub identity-linking path before the live Work Surface can
-become `AVAILABLE`. This is an explicit Chief Architect / Product Owner M3 sequencing need. Adding identity write
-behavior here would violate M3A-1's read-only/no-write boundary.
+```json
+[{"actor":{"platform":"discord","externalId":"123456789"},"identities":{"jira":"jira-assignee-id","github":"octocat"}}]
+```
+
+The Discord locator must already resolve through `ActorRepository.findByExternalIdentity`; provisioning never
+creates an Actor. Jira is a non-blank assignee identifier and is not assumed to be email. GitHub is a validated
+login. The mapping is non-secret and must not contain credentials, tokens, App installation ids, repository owner,
+or tenant data. Unknown fields fail validation.
+
+Provisioning is additive and idempotent. An omitted Jira/GitHub key removes nothing. A missing Actor, blank value,
+different identity for an already-linked platform, identity owned by another Actor, or conflicting effective config
+fails closed. There is no replacement, unlink, merge, discovery, or heuristic resolution. Connector configuration
+and availability remain separate prerequisites, and an actual live read remains a separately authorized network
+operation.
 
 ## Boundaries
 
 The surface persists nothing and introduces no `WorkItem`, repository, table, migration, lifecycle, connector
 write, MCP/tool seam, agent, handoff, trigger, scheduler, receipt, ledger, graph, Workflow, or event sourcing.
 GitHub pull-request lifecycle and writes remain exclusively on `RepositoryHostingProvider`. Conversation Runtime
-only recognizes the bounded intent, invokes `WorkSurfaceQuery`, and hands the result to `ResponseComposer`.
+only recognizes the bounded intent, invokes `WorkSurfaceQuery`, and hands the result to `ResponseComposer`; it does
+not parse configuration or participate in provisioning.

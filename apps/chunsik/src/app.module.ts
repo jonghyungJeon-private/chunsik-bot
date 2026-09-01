@@ -82,6 +82,7 @@ import { LocalCommandRunner } from '@chunsik/command-local';
 import { ClaudeCliProvider, CodexCliProvider, OllamaCliProvider } from '@chunsik/ai-cli';
 
 import { loadConfig } from './config';
+import { ActorIdentityProvisioner } from './actor-identity-provisioner';
 import { createConnectorProviders } from './connector-providers';
 import { ConsoleLogger } from './console-logger';
 import { createProductionContextBuilder } from './context-builder-provider';
@@ -231,6 +232,11 @@ const infrastructure: Provider[] = [
  * metadata — keeping it framework-agnostic.
  */
 const application: Provider[] = [
+  {
+    provide: ActorIdentityProvisioner,
+    useFactory: (storage: StorageProvider) => new ActorIdentityProvisioner(storage, config.actorIdentityMappings),
+    inject: [STORAGE_PROVIDER],
+  },
   { provide: RiskPolicy, useFactory: () => new RiskPolicy() },
   { provide: ResponseComposer, useFactory: () => new ResponseComposer() },
   {

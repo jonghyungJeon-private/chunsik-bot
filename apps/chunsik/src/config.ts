@@ -50,6 +50,16 @@ export interface ChunsikConfig {
   providerRoutingMode: ProviderRoutingMode;
   /** GENERAL_CHAT context selection policy, consumed only by the composition root. */
   contextBuilder: ContextBuilderConfig;
+  /**
+   * Non-secret, operator-owned links from an existing Discord Actor to personal-work identities.
+   * Parsed and validated at the application boundary; credentials and connector tenancy do not belong here.
+   */
+  actorIdentityMappings: ActorIdentityMapping[];
+}
+
+export interface ActorIdentityMapping {
+  actor: { platform: 'discord'; externalId: string };
+  identities: { jira?: string; github?: string };
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ChunsikConfig {
@@ -94,7 +104,87 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ChunsikConfig 
       relevanceWeight: 0.6,
       compressionConfig: { minimumCharactersPerEntry: 80 },
     },
+    actorIdentityMappings: parseActorIdentityMappings(env.QUOKY_ACTOR_IDENTITY_MAPPINGS),
   };
+}
+
+function parseActorIdentityMappings(raw: string | undefined): ActorIdentityMapping[] {
+  if (raw === undefined || raw.trim().length === 0) return [];
+
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    throw new Error('ACTOR_IDENTITY_MAPPINGS_INVALID_JSON');
+  }
+  if (!Array.isArray(value)) throw new Error('ACTOR_IDENTITY_MAPPINGS_MUST_BE_ARRAY');
+
+  const mappings = value.map((entry, index) => parseActorIdentityMapping(entry, index));
+  const configured = new Map<string, string>();
+  const assignedTargets = new Map<string, string>();
+  for (const mapping of mappings) {
+    const locator = `${mapping.actor.platform}\u0000${mapping.actor.externalId}`;
+    for (const platform of ['jira', 'github'] as const) {
+      const externalId = mapping.identities[platform];
+      if (externalId === undefined) continue;
+      const platformKey = `${locator}\u0000${platform}`;
+      const existing = configured.get(platformKey);
+      if (existing !== undefined && existing !== externalId) {
+        throw new Error(`ACTOR_IDENTITY_MAPPINGS_CONFLICTING_${platform.toUpperCase()}`);
+      }
+      configured.set(platformKey, externalId);
+
+      const targetKey = `${platform}\u0000${externalId}`;
+      const assigned = assignedTargets.get(targetKey);
+      if (assigned !== undefined && assigned !== locator) {
+        throw new Error('ACTOR_IDENTITY_MAPPINGS_TARGET_ASSIGNED_TO_MULTIPLE_ACTORS');
+      }
+      assignedTargets.set(targetKey, locator);
+    }
+  }
+  return mappings;
+}
+
+function parseActorIdentityMapping(value: unknown, index: number): ActorIdentityMapping {
+  const entry = requireRecord(value, `ACTOR_IDENTITY_MAPPING_${index}_INVALID`);
+  requireOnlyKeys(entry, ['actor', 'identities'], `ACTOR_IDENTITY_MAPPING_${index}_UNKNOWN_FIELD`);
+  const actor = requireRecord(entry.actor, `ACTOR_IDENTITY_MAPPING_${index}_ACTOR_INVALID`);
+  requireOnlyKeys(actor, ['platform', 'externalId'], `ACTOR_IDENTITY_MAPPING_${index}_ACTOR_UNKNOWN_FIELD`);
+  if (actor.platform !== 'discord') throw new Error(`ACTOR_IDENTITY_MAPPING_${index}_ACTOR_PLATFORM_INVALID`);
+  const actorExternalId = requireNonBlank(actor.externalId, `ACTOR_IDENTITY_MAPPING_${index}_ACTOR_EXTERNAL_ID_INVALID`);
+
+  const identities = requireRecord(entry.identities, `ACTOR_IDENTITY_MAPPING_${index}_IDENTITIES_INVALID`);
+  requireOnlyKeys(identities, ['jira', 'github'], `ACTOR_IDENTITY_MAPPING_${index}_IDENTITIES_UNKNOWN_FIELD`);
+  const jira = identities.jira === undefined
+    ? undefined
+    : requireNonBlank(identities.jira, `ACTOR_IDENTITY_MAPPING_${index}_JIRA_INVALID`);
+  const github = identities.github === undefined
+    ? undefined
+    : requireNonBlank(identities.github, `ACTOR_IDENTITY_MAPPING_${index}_GITHUB_INVALID`);
+  if (github !== undefined && !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(github)) {
+    throw new Error(`ACTOR_IDENTITY_MAPPING_${index}_GITHUB_INVALID`);
+  }
+  if (jira === undefined && github === undefined) {
+    throw new Error(`ACTOR_IDENTITY_MAPPING_${index}_IDENTITIES_EMPTY`);
+  }
+  return {
+    actor: { platform: 'discord', externalId: actorExternalId },
+    identities: { ...(jira === undefined ? {} : { jira }), ...(github === undefined ? {} : { github }) },
+  };
+}
+
+function requireRecord(value: unknown, error: string): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error(error);
+  return value as Record<string, unknown>;
+}
+
+function requireOnlyKeys(value: Record<string, unknown>, allowed: readonly string[], error: string): void {
+  if (Object.keys(value).some((key) => !allowed.includes(key))) throw new Error(error);
+}
+
+function requireNonBlank(value: unknown, error: string): string {
+  if (typeof value !== 'string' || value.trim().length === 0) throw new Error(error);
+  return value.trim();
 }
 
 function nonBlank(value: string | undefined): string | undefined {

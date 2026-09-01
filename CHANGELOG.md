@@ -7,6 +7,15 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — M3A-1.1 Actor Identity Provisioning
+
+- Added a validated non-secret `QUOKY_ACTOR_IDENTITY_MAPPINGS` contract and an app-private startup provisioner that
+  locates existing Discord Actors and additively persists explicit Jira/GitHub `ExternalIdentity` mappings through
+  the existing repository path without creating Actors or changing Core contracts, storage schema, or migrations.
+- Added offline coverage for Jira-only, GitHub-only, merged Work Surface reachability, omitted-identity preservation,
+  idempotence, same-platform and cross-Actor conflicts, missing Actors, and connector availability failures while
+  keeping `ConversationRuntimeDeps` at 31.
+
 ### Added — M3A-1 Read-only Personal Work Surface
 
 - Added the infrastructure-neutral `ResourceRef` value object and a rebuildable `WorkSurfaceQuery` whose intended

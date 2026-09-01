@@ -174,3 +174,43 @@ describe('loadConfig — dormant Provider routing activation (Stage 2B Slice 5C-
     );
   });
 });
+
+describe('loadConfig — Actor identity mappings (M3A-1.1)', () => {
+  it('parses one or more explicit non-secret Discord-to-work identity mappings', () => {
+    const actorIdentityMappings = [
+      { actor: { platform: 'discord', externalId: ' discord-1 ' }, identities: { jira: ' account-123 ', github: 'octocat' } },
+      { actor: { platform: 'discord', externalId: 'discord-2' }, identities: { github: 'hub-user' } },
+    ];
+    expect(loadConfig(env({ QUOKY_ACTOR_IDENTITY_MAPPINGS: JSON.stringify(actorIdentityMappings) })).actorIdentityMappings)
+      .toEqual([
+        { actor: { platform: 'discord', externalId: 'discord-1' }, identities: { jira: 'account-123', github: 'octocat' } },
+        { actor: { platform: 'discord', externalId: 'discord-2' }, identities: { github: 'hub-user' } },
+      ]);
+  });
+
+  it('defaults to no mappings when the variable is absent or blank', () => {
+    expect(loadConfig(env({})).actorIdentityMappings).toEqual([]);
+    expect(loadConfig(env({ QUOKY_ACTOR_IDENTITY_MAPPINGS: '  ' })).actorIdentityMappings).toEqual([]);
+  });
+
+  it.each([
+    ['invalid JSON', '{'],
+    ['non-array root', '{}'],
+    ['blank locator', JSON.stringify([{ actor: { platform: 'discord', externalId: ' ' }, identities: { jira: 'x' } }])],
+    ['wrong locator platform', JSON.stringify([{ actor: { platform: 'slack', externalId: 'x' }, identities: { jira: 'x' } }])],
+    ['blank Jira identity', JSON.stringify([{ actor: { platform: 'discord', externalId: 'x' }, identities: { jira: ' ' } }])],
+    ['invalid GitHub login', JSON.stringify([{ actor: { platform: 'discord', externalId: 'x' }, identities: { github: 'not a login' } }])],
+    ['credential-shaped unknown field', JSON.stringify([{ actor: { platform: 'discord', externalId: 'x' }, identities: { jira: 'x', token: 'secret' } }])],
+    ['empty identities', JSON.stringify([{ actor: { platform: 'discord', externalId: 'x' }, identities: {} }])],
+    ['different same-platform mappings', JSON.stringify([
+      { actor: { platform: 'discord', externalId: 'x' }, identities: { jira: 'one' } },
+      { actor: { platform: 'discord', externalId: 'x' }, identities: { jira: 'two' } },
+    ])],
+    ['same target assigned to different locators', JSON.stringify([
+      { actor: { platform: 'discord', externalId: 'x' }, identities: { jira: 'one' } },
+      { actor: { platform: 'discord', externalId: 'y' }, identities: { jira: 'one' } },
+    ])],
+  ])('fails closed for %s', (_case, value) => {
+    expect(() => loadConfig(env({ QUOKY_ACTOR_IDENTITY_MAPPINGS: value }))).toThrow(/ACTOR_IDENTITY_MAPPING/);
+  });
+});
