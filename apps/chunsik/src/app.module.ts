@@ -15,6 +15,7 @@ import {
   PROVIDER_SELECTOR,
   AI_PROVIDERS,
   CONNECTOR_PROVIDERS,
+  TOOL_PROVIDERS,
   // Application services (pure core)
   ChunsikCore,
   IntentClassifier,
@@ -67,6 +68,7 @@ import type {
   VectorProvider,
   WorkspaceProvider,
   WorkspaceWriter,
+  ToolProvider,
 } from '@chunsik/core';
 
 // Concrete providers — the ONLY file allowed to import them.
@@ -90,6 +92,7 @@ import { createProductionContextBuilder } from './context-builder-provider';
 import { createProductionConversationRuntime } from './conversation-runtime-provider';
 import { GitHubAppGitProvider } from './github-app-git-provider';
 import { createProductionRuntimeProviderRoutingActivation } from './provider-routing/provider-routing-activation';
+import { toolManagerProvider } from './tool-manager-provider';
 
 const config = loadConfig();
 const coreLogger = new ConsoleLogger('chunsik');
@@ -225,6 +228,8 @@ const infrastructure: Provider[] = [
     ],
   },
   { provide: CONNECTOR_PROVIDERS, useValue: connectorProviders },
+  // CAP-012 foundation: immutable empty registry until a separately approved adapter is composed.
+  { provide: TOOL_PROVIDERS, useValue: [] satisfies readonly ToolProvider[] },
 ];
 
 /**
@@ -233,6 +238,7 @@ const infrastructure: Provider[] = [
  * metadata — keeping it framework-agnostic.
  */
 const application: Provider[] = [
+  toolManagerProvider,
   {
     provide: ActorIdentityProvisioner,
     useFactory: (storage: StorageProvider) => new ActorIdentityProvisioner(storage, config.actorIdentityMappings),

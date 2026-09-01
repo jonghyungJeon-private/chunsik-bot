@@ -5878,3 +5878,56 @@ to hide dependencies behind a new god-interface.
 receipt/provenance state, connector or MCP protocol state, or generic workflow state. It may present bounded Work
 Surface results and conversationally collect decisions while the owning capability retains state and mutation
 authority. Existing `Task`, execution, Planning, Approval, Provider, and Workspace ownership remains unchanged.
+
+## ADR-0076 — CAP-012 ToolProvider and MCP Adapter Architecture
+
+- **Status:** ✅ Accepted (M3B-1, `APPROVED_WITH_CHANGES`)
+- **Date recorded:** 2026-09-02
+- **Authority:** Chief Architect
+
+### Context
+
+M3 requires a provider-independent tool boundary before any concrete MCP infrastructure can be introduced. Extending
+`ConnectorProvider`, leaking MCP protocol types into Core, or creating a second approval system would violate the
+existing capability and governance boundaries. M3B-1 therefore establishes only the protocol-neutral foundation.
+
+### Ratified decisions D1–D15
+
+1. **D1:** Core introduces a protocol-neutral `ToolProvider` boundary. Core imports no MCP type or SDK.
+2. **D2:** Tool structural identity is exactly provider `source` plus provider-local tool `name`; there is no separate
+   operation-id hierarchy or `ToolOperationDescriptor`.
+3. **D3:** `ToolSchema` is bounded to JSON null, boolean, number, string, object properties and required fields, and
+   arrays/items. It has no metadata or arbitrary schema-extension escape hatch.
+4. **D4:** Every descriptor has a QuirkyBot-owned `READ_ONLY` or `MUTATING` effect classification.
+5. **D5:** Any future provider-supplied risk metadata is advisory only. QuirkyBot effect and risk policy is authoritative.
+6. **D6:** A provider owns provider-local discovery, availability, descriptor projection, one invocation by tool name,
+   and containment of provider failures behind the bounded result contract.
+7. **D7:** The M3B-1 failure taxonomy is `TOOL_NOT_FOUND`, `TOOL_UNAVAILABLE`, `INVALID_INPUT`,
+   `MUTATION_NOT_AUTHORIZED`, `EXECUTION_FAILED`, and `OUTPUT_INVALID`. It contains no parallel approval result.
+8. **D8:** M3B-1 delegates only `READ_ONLY` invocations. `MUTATING` invocations fail closed with
+   `MUTATION_NOT_AUTHORIZED` before the provider is invoked.
+9. **D9:** Future mutation authorization must reuse the existing governed execution and plan-scoped approval lineage;
+   CAP-012 does not create a parallel Tool approval path.
+10. **D10:** `ToolManager` owns an immutable composition-time registry. Runtime register/unregister, dynamic plugin
+    loading, and registry mutation are prohibited.
+11. **D11:** `ToolManager` owns deterministic duplicate-source and composite-identity rejection, discovery, bounded
+    input/output validation, READ_ONLY delegation, failure classification, and raw-error containment. It owns no
+    WorkItem, conversation, routing, persistence, execution-history, risk-policy, approval, or MCP state.
+12. **D12:** `ToolManager` has no `ApprovalManager` dependency and exposes no public registry-entry domain type.
+13. **D13:** `ToolInvocation` reuses canonical `Actor.id` and optional `ResourceRef` correlation and introduces no
+    parallel actor or resource identity.
+14. **D14:** `ConnectorProvider` remains the canonical read-only connector seam and is neither replaced nor extended by
+    `ToolProvider`.
+15. **D15:** A concrete infrastructure-only MCP adapter is deferred to M3B-2 or later. M3B-1 adds no MCP SDK, live
+    provider, ConversationRuntime tool path, ExecutionOrchestrator stage, persistence, or migration.
+
+### Consequences
+
+M3B-1 can compose an empty immutable tool-provider set and validate the complete Core boundary offline. Concrete MCP
+transport, governed mutation execution, Runtime exposure, external provider calls, and live UAT remain separately
+bounded later work.
+
+### Relations
+
+Extends ADR-0074's provider-neutral `ResourceRef` correlation and preserves ADR-0072's `ConnectorProvider` boundary,
+ADR-0025's plan-scoped Approval ownership, and the ADR-0032 M3 ConversationRuntime dependency freeze.

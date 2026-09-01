@@ -13,3 +13,4 @@ export * from './execution-planner.port';
 export * from './ai-provider.port';
 export * from './provider-selector.port';
 export * from './connector-provider.port';
+export * from './tool-provider.port';
