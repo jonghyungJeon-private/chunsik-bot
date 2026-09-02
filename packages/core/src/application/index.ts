@@ -60,3 +60,4 @@ export * from './runtime-response-validator';
 export * from './runtime-provider-routing-service';
 export * from './tool-manager';
 export * from './agent-profile-registry';
+export * from './work-handoff-manager';

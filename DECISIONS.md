@@ -6113,3 +6113,56 @@ and implementation work.
 Supersedes ADR-0008's speculative AgentProfile field shape while preserving its configuration-only and no-agent-runtime
 principles. Preserves ADR-0031's aggregate-free ExecutionOrchestrator, ADR-0032's ConversationRuntime dependency freeze,
 ADR-0075's Actor-owned WorkItem, ADR-0076's Tool boundary, and ADR-0078's ExecutionReceipt ownership.
+
+## ADR-0080 — CAP-014 Work Handoff Durable Provenance
+
+- **Status:** ✅ Accepted (M3D-2)
+- **Date recorded:** 2026-09-02
+- **Authority:** Chief Architect, Product Decision D18
+
+### Context
+
+M3D needs a durable record that one configured AgentProfile handed bounded work context to another without turning
+that record into agent dispatch, receiving-agent execution, workflow state, authority, or WorkItem ownership. The
+handoff must correlate existing inputs and outputs by their canonical identities while preserving the owners of those
+aggregates.
+
+### Ratified decisions
+
+1. `WorkHandoff` is immutable, durable, and insert-once. Its fields are exactly `id`, required `workItemId`, required
+   distinct `fromAgentProfileId` and `toAgentProfileId`, bounded `objective`, `resourceRefs`, `artifactIds`,
+   `executionReceiptIds`, and `createdAt`.
+2. The objective is trimmed, non-empty, and at most 2,000 characters. Reference collections are defensively copied,
+   immutable, deduplicated by existing stable identity, and retain first-input order.
+3. A handoff is AgentProfile-to-AgentProfile only. Both configured profiles and the canonical WorkItem must exist;
+   source and destination must differ.
+4. Artifact and ExecutionReceipt correlations are ids only and must resolve through their existing canonical
+   repositories before insertion. ResourceRef remains the provider-independent external-input value of ADR-0074.
+5. Correlation transfers no aggregate ownership, permission, approval, execution authority, provider selection,
+   Tool authority, lifecycle, or mutation right.
+6. `WorkHandoffManager` is the sole narrow creation owner. It does not mutate WorkItem, dispatch an agent, execute a
+   Tool or Provider, transition Task, request Approval, manage AgentProfile lifecycle, or own Runtime state. It has no
+   ApprovalManager or RiskPolicy dependency.
+7. `WorkHandoffRepository` is a dedicated insert-once port with only `insert`, `get`, `listByWorkItem`,
+   `listByFromAgent`, and `listByToAgent`. It does not extend the generic repository and exposes no update, save,
+   delete, upsert, or generic query.
+8. SQLite persistence is the forward-only additive migration v9 with the bounded `work_handoffs` columns and lookup
+   indexes for WorkItem, source profile, and destination profile. AgentProfile remains source-controlled configuration
+   and gains no persistence table.
+9. Composition may inject `AgentProfileRegistry` into `WorkHandoffManager`. `ConversationRuntime` gains no dependency,
+   retains its accepted dependency count of 31, and owns no handoff behavior.
+10. `ExecutionOrchestrator`, ToolProvider, Provider routing, Approval, ExecutionReceipt production, and existing
+    WorkItem lifecycle remain unchanged. TriggerSource, proactive/background execution, autonomous loops, agent
+    dispatch, and receiving-agent execution are deferred.
+
+### Consequences
+
+Consumers can query durable, bounded handoff provenance without creating a workflow engine or granting an AgentProfile
+runtime authority. A later separately ratified slice is required to act on a handoff, dispatch or execute an agent, or
+connect handoffs to ConversationRuntime or triggers.
+
+### Relations
+
+Extends ADR-0079's configuration-only AgentProfile identity and ADR-0075's Actor-owned WorkItem. Preserves ADR-0074's
+Resource/Artifact separation, ADR-0078's ExecutionReceipt ownership, ADR-0031's aggregate-free ExecutionOrchestrator,
+and ADR-0032's ConversationRuntime dependency freeze.

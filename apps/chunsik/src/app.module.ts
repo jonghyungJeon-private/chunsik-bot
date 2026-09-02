@@ -53,6 +53,8 @@ import {
   ConnectorManager,
   WorkSurfaceQuery,
   WorkManager,
+  WorkHandoffManager,
+  AgentProfileRegistry,
   ResponseComposer,
   RiskPolicy,
   RepositoryIdentityResolver,
@@ -389,6 +391,12 @@ const application: Provider[] = [
     provide: WorkManager,
     useFactory: (storage: StorageProvider) => new WorkManager(storage),
     inject: [STORAGE_PROVIDER],
+  },
+  {
+    provide: WorkHandoffManager,
+    useFactory: (storage: StorageProvider, profiles: AgentProfileRegistry) =>
+      new WorkHandoffManager(storage, profiles),
+    inject: [STORAGE_PROVIDER, AgentProfileRegistry],
   },
   {
     provide: IntentClassifier,

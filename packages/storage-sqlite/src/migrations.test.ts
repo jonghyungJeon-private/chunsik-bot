@@ -18,18 +18,41 @@ describe('runMigrations (ADR-0020 — versioned schema)', () => {
     expect(res.from).toBe(0);
     expect(res.to).toBe(LATEST_SCHEMA_VERSION);
     expect(userVersion(db)).toBe(LATEST_SCHEMA_VERSION);
-    for (const t of ['actors', 'actor_identities', 'sessions', 'tasks', 'task_runs', 'artifacts', 'projects', 'memories', 'approvals', 'patches', 'workspace_changes', 'command_executions', 'code_generations', 'code_proposals', 'work_items', 'execution_receipts']) {
+    for (const t of ['actors', 'actor_identities', 'sessions', 'tasks', 'task_runs', 'artifacts', 'projects', 'memories', 'approvals', 'patches', 'workspace_changes', 'command_executions', 'code_generations', 'code_proposals', 'work_items', 'execution_receipts', 'work_handoffs']) {
       expect(tableNames(db)).toContain(t);
     }
     db.close();
   });
 
   it('migration v7 preserves the CAP-011 work_items schema', () => {
-    expect(LATEST_SCHEMA_VERSION).toBe(8);
+    expect(LATEST_SCHEMA_VERSION).toBe(9);
     const db = new Database(':memory:');
     runMigrations(db);
     const cols = (db.pragma('table_info(work_items)') as Array<{ name: string }>).map((c) => c.name);
     expect(cols).toEqual(['id', 'actor_id', 'project_id', 'status', 'origin', 'data']);
+    db.close();
+  });
+
+  it('migration v9 adds only the bounded CAP-014 handoff columns and indexes', () => {
+    const db = new Database(':memory:');
+    runMigrations(db);
+    const columns = (db.pragma('table_info(work_handoffs)') as Array<{ name: string }>)
+      .map((column) => column.name);
+    expect(columns).toEqual([
+      'id',
+      'work_item_id',
+      'from_agent_profile_id',
+      'to_agent_profile_id',
+      'created_at',
+      'data',
+    ]);
+    const indexes = (db.pragma('index_list(work_handoffs)') as Array<{ name: string }>)
+      .map((index) => index.name);
+    expect(indexes).toEqual(expect.arrayContaining([
+      'work_handoffs_work_item_id',
+      'work_handoffs_from_agent_profile_id',
+      'work_handoffs_to_agent_profile_id',
+    ]));
     db.close();
   });
 

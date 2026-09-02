@@ -162,6 +162,33 @@ export const MIGRATIONS: readonly Migration[] = [
       );
     },
   },
+  {
+    version: 9,
+    name: 'work handoffs table (CAP-014)',
+    up(db) {
+      db.exec(
+        `CREATE TABLE IF NOT EXISTS work_handoffs (
+           id TEXT PRIMARY KEY,
+           work_item_id TEXT NOT NULL,
+           from_agent_profile_id TEXT NOT NULL,
+           to_agent_profile_id TEXT NOT NULL,
+           created_at TEXT NOT NULL,
+           data TEXT NOT NULL);`,
+      );
+      db.exec(
+        `CREATE INDEX IF NOT EXISTS work_handoffs_work_item_id
+         ON work_handoffs(work_item_id);`,
+      );
+      db.exec(
+        `CREATE INDEX IF NOT EXISTS work_handoffs_from_agent_profile_id
+         ON work_handoffs(from_agent_profile_id);`,
+      );
+      db.exec(
+        `CREATE INDEX IF NOT EXISTS work_handoffs_to_agent_profile_id
+         ON work_handoffs(to_agent_profile_id);`,
+      );
+    },
+  },
 ];
 
 /** The schema version this build targets (the highest migration version). */

@@ -1,5 +1,6 @@
 import type {
   Actor,
+  AgentProfileId,
   Artifact,
   ApprovalRequest,
   CodeGeneration,
@@ -18,6 +19,7 @@ import type {
   Task,
   TaskRun,
   WorkItem,
+  WorkHandoff,
   WorkspaceChange,
 } from '../domain';
 
@@ -109,6 +111,15 @@ export interface ExecutionReceiptRepository {
   findByExecutionPlan(executionPlanId: Id): Promise<ExecutionReceipt[]>;
 }
 
+/** Immutable, insert-once CAP-014 store with only bounded provenance lookups. */
+export interface WorkHandoffRepository {
+  insert(handoff: WorkHandoff): Promise<WorkHandoff>;
+  get(id: Id): Promise<WorkHandoff | null>;
+  listByWorkItem(workItemId: Id): Promise<WorkHandoff[]>;
+  listByFromAgent(agentProfileId: AgentProfileId): Promise<WorkHandoff[]>;
+  listByToAgent(agentProfileId: AgentProfileId): Promise<WorkHandoff[]>;
+}
+
 export interface CodeGenerationRepository extends Repository<CodeGeneration> {
   /** All code-generation runs recorded for a given ExecutionPlan (CAP-008). */
   findByExecutionPlan(executionPlanId: Id): Promise<CodeGeneration[]>;
@@ -144,6 +155,7 @@ export interface StorageProvider {
   readonly workspaceChanges: WorkspaceChangeRepository;
   readonly commandExecutions: CommandExecutionRepository;
   readonly executionReceipts: ExecutionReceiptRepository;
+  readonly workHandoffs: WorkHandoffRepository;
   readonly codeGenerations: CodeGenerationRepository;
   readonly codeProposals: CodeProposalRepository;
 }
