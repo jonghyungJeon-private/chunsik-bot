@@ -5931,3 +5931,73 @@ bounded later work.
 
 Extends ADR-0074's provider-neutral `ResourceRef` correlation and preserves ADR-0072's `ConnectorProvider` boundary,
 ADR-0025's plan-scoped Approval ownership, and the ADR-0032 M3 ConversationRuntime dependency freeze.
+
+## ADR-0077 — MCP Adapter Initialization and Trust Boundary
+
+- **Status:** ✅ Accepted (M3B-2A)
+- **Date recorded:** 2026-09-02
+- **Authority:** Chief Architect
+
+### Context
+
+ADR-0076 ratified the protocol-neutral CAP-012 Core boundary while deferring concrete MCP infrastructure. M3B-2A
+introduces one infrastructure-only MCP client adapter without changing that Core contract or activating a production
+transport. MCP discovery data and annotations originate outside QuirkyBot's trust boundary and therefore cannot grant
+read-only authority, broaden schemas, expose protocol failures, or create a second approval path.
+
+### Ratified decisions
+
+1. The adapter owns an explicit asynchronous `initialize()` lifecycle. Initialization performs one bounded MCP
+   `listTools` discovery, validates and maps the entire result, and only then atomically publishes the snapshot.
+2. `ToolProvider.listTools()` remains a pure synchronous read of one immutable post-initialization snapshot. There is
+   no lazy discovery, runtime rediscovery, refresh loop, reconnect/retry, or list-changed subscription.
+3. Provider identity is trusted composition configuration `mcp:<serverId>`. Server-reported name, title, and version
+   are diagnostic/display data only. Tool identity retains the exact discovered MCP tool name used by `callTool`;
+   duplicate or unrepresentable identities fail initialization closed.
+4. MCP annotations are advisory only. A tool is `READ_ONLY` only when its exact name is explicitly allow-listed by
+   trusted adapter configuration and MCP metadata does not contradict that classification. Unknown, absent,
+   ambiguous, contradictory, or unconfigured effect information maps fail-closed to `MUTATING` or rejects discovery;
+   `readOnlyHint` alone never grants read-only authority.
+5. MCP schemas map only into the bounded ratified `ToolSchema` subset. Any enum, union, constraint, arbitrary metadata,
+   or other semantic that cannot be represented without loss rejects initialization deterministically. Core gains no
+   JSON-Schema escape hatch.
+6. Invocation translates the exact `ToolInvocation.toolName` and JSON object input to MCP `callTool({ name,
+   arguments })`. `ToolManager` remains ahead of the adapter for existence, input validation, the `MUTATING` gate,
+   availability, and output-schema validation. The adapter owns no product authorization and has no `ApprovalManager`.
+7. Representable structured MCP output is preferred. Text-only content uses one small deterministic adapter-owned
+   projection. Binary, image, audio, resource, embedded, malformed, or oversized content fails boundedly and is never
+   dumped or coerced. Raw SDK/JSON-RPC errors, stacks, server internals, environment, credentials, and transport details
+   never cross `ToolResult`.
+8. The adapter uses exactly the six ADR-0076 failure codes. It adds no `TIMEOUT`; adapter timeout or protocol failure
+   maps to `EXECUTION_FAILED`, while malformed or unsupported successful output maps to `OUTPUT_INVALID`.
+9. The adapter owns an idempotent close/teardown lifecycle behind an injected client-session seam. The official MCP v2
+   dependency is adapter-local and exact-pinned as `@modelcontextprotocol/client@2.0.0` (not
+   `@modelcontextprotocol/sdk`). Core retains zero MCP dependencies.
+10. Production transport activation is deferred. This slice adds no `StdioClientTransport`, child process,
+    Streamable HTTP, SSE, network connection, MCP handshake, startup auto-connect, or environment-triggered activation;
+    production `TOOL_PROVIDERS` remains empty.
+11. `ConnectorProvider` and existing connector implementations remain unchanged; `ConnectorToolBridge` is deferred.
+    There is no ConversationRuntime tool integration, ExecutionOrchestrator tool stage, Tool persistence,
+    `ToolInvocation` aggregate, `ExecutionReceipt`, schema migration, or parallel approval path in this slice.
+
+### Consequences
+
+M3B-2A can validate real Core/Application/composition behavior offline while faking only the external MCP client-session
+boundary. A later separately ratified and authorized slice is required to choose and production-activate any live MCP
+transport or expose Tool invocation through ConversationRuntime.
+
+### Implementation compatibility finding — Chief Architect decision required
+
+The exact `@modelcontextprotocol/client@2.0.0` package declares Node `>=20`, while the repository currently permits
+Node `>=18.18` and this slice was validated on Node `v18.20.5`. TypeScript compilation and every fake-session offline
+test pass because the production-unwired adapter imports the official Client only as a type. A direct offline load of
+the official Client on the current Node process fails before construction because `TransformStream` is not globally
+defined. Injecting Node 18's `node:stream/web` `TransformStream` makes offline Client construction and close succeed,
+but adopting that process-global compatibility shim or raising the repository Node baseline is an Architecture choice,
+not a Builder decision. The Chief Architect must ratify one of those directions before any real official-Client runtime
+activation. Until then, production transport activation remains blocked and this slice stays fake-session/offline only.
+
+### Relations
+
+Extends ADR-0076 without changing its Core contract. Preserves ADR-0025 plan-scoped Approval ownership, ADR-0032's M3
+ConversationRuntime dependency freeze, and ADR-0072's independent ConnectorProvider boundary.
