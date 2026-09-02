@@ -18,14 +18,14 @@ describe('runMigrations (ADR-0020 — versioned schema)', () => {
     expect(res.from).toBe(0);
     expect(res.to).toBe(LATEST_SCHEMA_VERSION);
     expect(userVersion(db)).toBe(LATEST_SCHEMA_VERSION);
-    for (const t of ['actors', 'actor_identities', 'sessions', 'tasks', 'task_runs', 'artifacts', 'projects', 'memories', 'approvals', 'patches', 'workspace_changes', 'command_executions', 'code_generations', 'code_proposals', 'work_items']) {
+    for (const t of ['actors', 'actor_identities', 'sessions', 'tasks', 'task_runs', 'artifacts', 'projects', 'memories', 'approvals', 'patches', 'workspace_changes', 'command_executions', 'code_generations', 'code_proposals', 'work_items', 'execution_receipts']) {
       expect(tableNames(db)).toContain(t);
     }
     db.close();
   });
 
-  it('migration v7 adds only the CAP-011 work_items schema', () => {
-    expect(LATEST_SCHEMA_VERSION).toBe(7);
+  it('migration v7 preserves the CAP-011 work_items schema', () => {
+    expect(LATEST_SCHEMA_VERSION).toBe(8);
     const db = new Database(':memory:');
     runMigrations(db);
     const cols = (db.pragma('table_info(work_items)') as Array<{ name: string }>).map((c) => c.name);

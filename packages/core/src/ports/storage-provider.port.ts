@@ -5,6 +5,8 @@ import type {
   CodeGeneration,
   CodeProposal,
   CommandExecution,
+  ExecutionKind,
+  ExecutionReceipt,
   Id,
   MemoryRecord,
   MemoryScope,
@@ -96,6 +98,17 @@ export interface CommandExecutionRepository extends Repository<CommandExecution>
   findByWorkspaceChange(workspaceChangeId: Id): Promise<CommandExecution[]>;
 }
 
+/**
+ * Immutable, insert-once CAP-013 store. It deliberately does not expose the
+ * mutation operations of Repository<T>.
+ */
+export interface ExecutionReceiptRepository {
+  insert(receipt: ExecutionReceipt): Promise<ExecutionReceipt>;
+  get(id: Id): Promise<ExecutionReceipt | null>;
+  findBySource(executionKind: ExecutionKind, sourceId: Id): Promise<ExecutionReceipt | null>;
+  findByExecutionPlan(executionPlanId: Id): Promise<ExecutionReceipt[]>;
+}
+
 export interface CodeGenerationRepository extends Repository<CodeGeneration> {
   /** All code-generation runs recorded for a given ExecutionPlan (CAP-008). */
   findByExecutionPlan(executionPlanId: Id): Promise<CodeGeneration[]>;
@@ -130,6 +143,7 @@ export interface StorageProvider {
   readonly patches: PatchRepository;
   readonly workspaceChanges: WorkspaceChangeRepository;
   readonly commandExecutions: CommandExecutionRepository;
+  readonly executionReceipts: ExecutionReceiptRepository;
   readonly codeGenerations: CodeGenerationRepository;
   readonly codeProposals: CodeProposalRepository;
 }

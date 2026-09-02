@@ -20,5 +20,6 @@ export * from './approval';
 export * from './patch';
 export * from './workspace-change';
 export * from './command-execution';
+export * from './execution-receipt';
 export * from './code-generation';
 export * from './tool';

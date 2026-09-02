@@ -6001,3 +6001,58 @@ activation. Until then, production transport activation remains blocked and this
 
 Extends ADR-0076 without changing its Core contract. Preserves ADR-0025 plan-scoped Approval ownership, ADR-0032's M3
 ConversationRuntime dependency freeze, and ADR-0072's independent ConnectorProvider boundary.
+
+## ADR-0078 — CAP-013 Execution Receipt and Provenance Ownership
+
+- **Status:** ✅ Accepted (M3C-1)
+- **Date recorded:** 2026-09-02
+- **Authority:** Chief Architect
+
+### Context
+
+The execution ledger records producer-owned operational detail, but consumers need a small durable provenance fact
+that does not copy raw execution payload or take ownership from the producing aggregate. M3C-1 introduces CAP-013 for
+actual terminal CommandExecution producers while preserving the existing execution and approval boundaries.
+
+### Ratified decisions
+
+1. **D1:** An `ExecutionReceipt` is immutable, durable, and insert-once.
+2. **D2:** CAP-013 owns receipt identity, derivation, and persistence; the producer retains ownership of execution.
+3. **D3:** Receipts represent only actual terminal executions.
+4. **D4:** M3C-1 records no `BLOCKED` receipt and introduces no non-terminal receipt outcome.
+5. **D5:** `CommandExecution` is the first and only M3C-1 producer.
+6. **D6:** Source identity is the pair `executionKind` plus the canonical producer aggregate id (`sourceId`).
+7. **D7:** CAP-013 introduces no generic `executionId`; receipt id remains distinct from source id.
+8. **D8:** Authorization records only `NOT_REQUIRED` or `APPROVAL` plus `approvalId`; approval status, approver,
+   reason, and decision remain Approval-owned.
+9. **D9:** Receipt derivation reloads the canonical producer directly from `StorageProvider`.
+10. **D10:** `ExecutionReceiptRepository` is a dedicated insert-once port and does not extend `Repository<T>`.
+11. **D11:** SQLite persistence is the forward-only additive migration v8 with uniqueness on producer identity and
+    the single execution-plan lookup index.
+12. **D12:** Receipt recording composes above capabilities after terminal `CommandExecution` persistence; CAP-007
+    and CAP-013 managers do not depend on each other.
+13. **D13:** Receipt-recording failure does not roll back or rerun the command and is not a transaction spanning the
+    producer and receipt stores. The canonical `CommandExecution.id` is retained for reconciliation.
+14. **D14:** A receipt contains no raw execution payload, including command, args, command hash, output, exit code,
+    duration, prompt, response, environment, secret, or arbitrary metadata.
+15. **D15:** CAP-013 owns no receipt digest and does not treat a producer digest or command hash as receipt identity.
+16. **D16:** Actor, WorkItem, ResourceRef, Artifact, Provider, Tool, and other speculative correlation fields are
+    excluded.
+17. **D17:** `ConversationRuntime` gains no dependency and its dependency count does not increase.
+18. **D18:** `ExecutionOrchestrator` may consume the composed command runner but stays aggregate-free and does not own
+    receipt state or policy.
+19. **D19:** Tool and MCP receipt production is deferred; existing ToolProvider and MCP contracts are unchanged.
+20. **D20:** Idempotency is keyed by `(executionKind, sourceId)`; a uniqueness race reloads the existing canonical
+    receipt and never updates or upserts it.
+
+### Consequences
+
+M3C-1 adds a minimal queryable provenance record for terminal commands without duplicating their execution payload.
+A terminal command remains canonical and reconcilable if receipt persistence fails. Additional producer kinds,
+correlation fields, receipt outcomes, retries, event sourcing, and Tool/MCP integration require later ratified slices.
+
+### Relations
+
+Extends ADR-0028's CommandExecution ownership and ADR-0025's plan-scoped approval lineage. Preserves ADR-0031's
+aggregate-free ExecutionOrchestrator, ADR-0032's ConversationRuntime dependency freeze, and ADR-0076/ADR-0077 Tool/MCP
+deferral.

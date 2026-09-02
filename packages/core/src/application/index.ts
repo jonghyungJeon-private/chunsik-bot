@@ -28,6 +28,7 @@ export * from './approval-manager';
 export * from './patch-manager';
 export * from './workspace-write-manager';
 export * from './command-execution-manager';
+export * from './execution-receipt-manager';
 export * from './code-proposal-parser';
 export * from './code-generation-manager';
 export * from './connector-manager';

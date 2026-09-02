@@ -16,6 +16,11 @@ import type {
   CommandExecution,
   CommandExecutionRepository,
   DurableMemoryQuery,
+  ExecutionKind,
+  ExecutionReceipt,
+  ExecutionReceiptFailureClass,
+  ExecutionReceiptOutcome,
+  ExecutionReceiptRepository,
   Id,
   MemoryRecord,
   MemoryRepository,
@@ -47,6 +52,36 @@ export interface SqliteConfig {
 
 type Db = Database.Database;
 type Row = { data: string };
+
+interface ExecutionReceiptRow {
+  id: string;
+  execution_kind: string;
+  source_id: string;
+  execution_plan_id: string;
+  authorization_kind: string;
+  approval_id: string | null;
+  outcome: string;
+  failure_class: string | null;
+  recorded_at: string;
+}
+
+function mapExecutionReceipt(row: ExecutionReceiptRow): ExecutionReceipt {
+  return {
+    id: row.id,
+    executionKind: row.execution_kind as ExecutionKind,
+    sourceId: row.source_id,
+    executionPlanId: row.execution_plan_id,
+    authorization:
+      row.authorization_kind === 'APPROVAL'
+        ? { kind: 'APPROVAL', approvalId: row.approval_id! }
+        : { kind: 'NOT_REQUIRED' },
+    outcome: row.outcome as ExecutionReceiptOutcome,
+    ...(row.failure_class
+      ? { failureClass: row.failure_class as ExecutionReceiptFailureClass }
+      : {}),
+    recordedAt: row.recorded_at,
+  };
+}
 
 /** A SQLite-backed JSON document store for one entity type (id + data). */
 class JsonRepository<T extends { id: Id }> implements Repository<T> {
@@ -379,6 +414,59 @@ class SqliteCommandExecutionRepository
   }
 }
 
+/** Dedicated immutable CAP-013 repository; no UPDATE, UPSERT, or DELETE path. */
+export class SqliteExecutionReceiptRepository implements ExecutionReceiptRepository {
+  constructor(private readonly db: Db) {}
+
+  async insert(receipt: ExecutionReceipt): Promise<ExecutionReceipt> {
+    this.db
+      .prepare(
+        `INSERT INTO execution_receipts (
+           id, execution_kind, source_id, execution_plan_id, authorization_kind,
+           approval_id, outcome, failure_class, recorded_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        receipt.id,
+        receipt.executionKind,
+        receipt.sourceId,
+        receipt.executionPlanId,
+        receipt.authorization.kind,
+        receipt.authorization.kind === 'APPROVAL' ? receipt.authorization.approvalId : null,
+        receipt.outcome,
+        receipt.failureClass ?? null,
+        receipt.recordedAt,
+      );
+    return receipt;
+  }
+
+  async get(id: Id): Promise<ExecutionReceipt | null> {
+    const row = this.db.prepare(`SELECT * FROM execution_receipts WHERE id = ?`).get(id) as
+      | ExecutionReceiptRow
+      | undefined;
+    return row ? mapExecutionReceipt(row) : null;
+  }
+
+  async findBySource(
+    executionKind: ExecutionKind,
+    sourceId: Id,
+  ): Promise<ExecutionReceipt | null> {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM execution_receipts WHERE execution_kind = ? AND source_id = ?`,
+      )
+      .get(executionKind, sourceId) as ExecutionReceiptRow | undefined;
+    return row ? mapExecutionReceipt(row) : null;
+  }
+
+  async findByExecutionPlan(executionPlanId: Id): Promise<ExecutionReceipt[]> {
+    const rows = this.db
+      .prepare(`SELECT * FROM execution_receipts WHERE execution_plan_id = ? ORDER BY recorded_at, id`)
+      .all(executionPlanId) as ExecutionReceiptRow[];
+    return rows.map(mapExecutionReceipt);
+  }
+}
+
 class SqliteCodeGenerationRepository
   extends JsonRepository<CodeGeneration>
   implements CodeGenerationRepository
@@ -540,7 +628,7 @@ class SqliteMemoryRepository extends JsonRepository<MemoryRecord> implements Mem
  * callers see only domain entities. Implemented: actors, sessions, tasks,
  * taskRuns, artifacts, memories, projects, approvals (CAP-004), patches (CAP-005),
  * workspaceChanges (CAP-006), commandExecutions (CAP-007), codeGenerations +
- * codeProposals (CAP-008), workItems (CAP-011).
+ * codeProposals (CAP-008), workItems (CAP-011), executionReceipts (CAP-013).
  */
 export class SqliteStorageProvider implements StorageProvider {
   private db?: Db;
@@ -558,6 +646,7 @@ export class SqliteStorageProvider implements StorageProvider {
   patches!: PatchRepository;
   workspaceChanges!: WorkspaceChangeRepository;
   commandExecutions!: CommandExecutionRepository;
+  executionReceipts!: ExecutionReceiptRepository;
   codeGenerations!: CodeGenerationRepository;
   codeProposals!: CodeProposalRepository;
 
@@ -585,6 +674,7 @@ export class SqliteStorageProvider implements StorageProvider {
     this.patches = new SqlitePatchRepository(db, 'patches');
     this.workspaceChanges = new SqliteWorkspaceChangeRepository(db, 'workspace_changes');
     this.commandExecutions = new SqliteCommandExecutionRepository(db, 'command_executions');
+    this.executionReceipts = new SqliteExecutionReceiptRepository(db);
     this.codeGenerations = new SqliteCodeGenerationRepository(db, 'code_generations');
     this.codeProposals = new SqliteCodeProposalRepository(db, 'code_proposals');
   }

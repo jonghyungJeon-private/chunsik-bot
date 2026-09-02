@@ -139,6 +139,29 @@ export const MIGRATIONS: readonly Migration[] = [
       db.exec(`CREATE INDEX IF NOT EXISTS work_items_actor_id ON work_items (actor_id);`);
     },
   },
+  {
+    version: 8,
+    name: 'execution receipts table (CAP-013)',
+    up(db) {
+      db.exec(
+        `CREATE TABLE IF NOT EXISTS execution_receipts (
+           id TEXT PRIMARY KEY,
+           execution_kind TEXT NOT NULL,
+           source_id TEXT NOT NULL,
+           execution_plan_id TEXT NOT NULL,
+           authorization_kind TEXT NOT NULL,
+           approval_id TEXT NULL,
+           outcome TEXT NOT NULL,
+           failure_class TEXT NULL,
+           recorded_at TEXT NOT NULL,
+           UNIQUE(execution_kind, source_id));`,
+      );
+      db.exec(
+        `CREATE INDEX IF NOT EXISTS execution_receipts_execution_plan_id
+         ON execution_receipts(execution_plan_id);`,
+      );
+    },
+  },
 ];
 
 /** The schema version this build targets (the highest migration version). */

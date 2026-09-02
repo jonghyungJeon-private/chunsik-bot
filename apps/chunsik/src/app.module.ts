@@ -41,6 +41,8 @@ import {
   PatchManager,
   WorkspaceWriteManager,
   CommandExecutionManager,
+  CommandExecutionReceiptRunner,
+  ExecutionReceiptManager,
   CodeGenerationManager,
   ExecutionOrchestrator,
   IntentResolver,
@@ -344,6 +346,17 @@ const application: Provider[] = [
       new CommandExecutionManager(storage, runner, risk),
     inject: [STORAGE_PROVIDER, COMMAND_RUNNER, RiskPolicy],
   },
+  {
+    provide: ExecutionReceiptManager,
+    useFactory: (storage: StorageProvider) => new ExecutionReceiptManager(storage),
+    inject: [STORAGE_PROVIDER],
+  },
+  {
+    provide: CommandExecutionReceiptRunner,
+    useFactory: (command: CommandExecutionManager, receipts: ExecutionReceiptManager) =>
+      new CommandExecutionReceiptRunner(command, receipts),
+    inject: [CommandExecutionManager, ExecutionReceiptManager],
+  },
   // CAP-008 AI Code Generation (compose → render → select → execute → parse → record).
   // Reuses the AiProvider port via ProviderSelector; not orchestrator/Discord wired.
   {
@@ -419,7 +432,7 @@ const application: Provider[] = [
       approval: ApprovalManager,
       patch: PatchManager,
       workspaceWrite: WorkspaceWriteManager,
-      command: CommandExecutionManager,
+      command: CommandExecutionReceiptRunner,
     ) =>
       new ExecutionOrchestrator({
         planning,
@@ -438,7 +451,7 @@ const application: Provider[] = [
       ApprovalManager,
       PatchManager,
       WorkspaceWriteManager,
-      CommandExecutionManager,
+      CommandExecutionReceiptRunner,
     ],
   },
   // Sprint 2k — Conversation Runtime (the single conversation entry; ADR-0032). ChunsikCore
