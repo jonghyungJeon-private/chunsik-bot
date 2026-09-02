@@ -43,6 +43,29 @@ const fake = new OfflineFakeToolProvider();
 })
 class OfflineToolE2eModule {}
 
+async function createMcpApplication(
+  session: McpClientSession,
+  serverId: string,
+): Promise<Awaited<ReturnType<typeof NestFactory.createApplicationContext>>> {
+  @Module({ providers: [
+    {
+      provide: TOOL_PROVIDERS,
+      useFactory: async () => {
+        const provider = new McpToolProvider({ serverId, readOnlyTools: ['lookup'] }, session);
+        await provider.initialize();
+        return [provider] satisfies readonly ToolProvider[];
+      },
+    },
+    toolManagerProvider,
+  ] })
+  class OfflineMcpScenarioModule {}
+
+  return NestFactory.createApplicationContext(OfflineMcpScenarioModule, {
+    logger: false,
+    abortOnError: false,
+  });
+}
+
 describe('CAP-012 local E2E (ephemeral, offline)', () => {
   it('composes the real MCP adapter asynchronously through real Nest and ToolManager', async () => {
     let callCount = 0;
@@ -151,5 +174,97 @@ describe('CAP-012 local E2E (ephemeral, offline)', () => {
     })).rejects.toThrow(
       'Duplicate tool identity: local-e2e-fake:inspect',
     );
+  });
+
+  it('fails duplicate MCP discovery atomically during async real composition', async () => {
+    const session: McpClientSession = {
+      listTools: () => Promise.resolve({ tools: [
+        { name: 'lookup', inputSchema: { type: 'object', properties: {} } },
+        { name: 'lookup', inputSchema: { type: 'object', properties: {} } },
+      ] } as never),
+      callTool: () => Promise.resolve({ content: [] } as never),
+      close: () => Promise.resolve(),
+    };
+    const provider = new McpToolProvider({ serverId: 'duplicate-e2e' }, session);
+
+    await expect(createMcpApplication(session, 'duplicate-e2e')).rejects.toMatchObject({
+      code: 'DUPLICATE_TOOL_IDENTITY',
+    });
+    await expect(provider.initialize()).rejects.toMatchObject({ code: 'DUPLICATE_TOOL_IDENTITY' });
+    expect(() => provider.listTools()).toThrowError(/DISCOVERY_FAILED/);
+  });
+
+  it.each([
+    ['enum', { type: 'object', properties: { state: { type: 'string', enum: ['open'] } } }],
+    ['oneOf', { type: 'object', properties: { value: { oneOf: [{ type: 'string' }] } } }],
+  ])('fails unsupported MCP %s schema during async real composition', async (_name, inputSchema) => {
+    const session: McpClientSession = {
+      listTools: () => Promise.resolve({ tools: [{ name: 'lookup', inputSchema }] } as never),
+      callTool: () => Promise.resolve({ content: [] } as never),
+      close: () => Promise.resolve(),
+    };
+
+    await expect(createMcpApplication(session, 'schema-e2e')).rejects.toMatchObject({
+      code: 'UNREPRESENTABLE_TOOL_SCHEMA',
+    });
+  });
+
+  it('keeps discovery failure atomic during async real composition', async () => {
+    const session: McpClientSession = {
+      listTools: () => Promise.reject(new Error('raw discovery detail')),
+      callTool: () => Promise.resolve({ content: [] } as never),
+      close: () => Promise.resolve(),
+    };
+    const provider = new McpToolProvider({ serverId: 'discovery-e2e' }, session);
+
+    await expect(createMcpApplication(session, 'discovery-e2e')).rejects.toMatchObject({
+      code: 'DISCOVERY_FAILED',
+    });
+    await expect(provider.initialize()).rejects.toMatchObject({ code: 'DISCOVERY_FAILED' });
+    expect(() => provider.listTools()).toThrowError(/DISCOVERY_FAILED/);
+  });
+
+  it('bounds MCP call failures through the real Nest-resolved ToolManager', async () => {
+    const session: McpClientSession = {
+      listTools: () => Promise.resolve({ tools: [{
+        name: 'lookup', inputSchema: { type: 'object', properties: {} },
+      }] } as never),
+      callTool: () => Promise.reject(new Error('raw SDK transport detail')),
+      close: () => Promise.resolve(),
+    };
+    const app = await createMcpApplication(session, 'call-failure-e2e');
+    try {
+      const result = await app.get(ToolManager).invoke('mcp:call-failure-e2e', {
+        toolName: 'lookup', input: {}, actorId: 'actor-e2e',
+      });
+      expect(result).toEqual({
+        ok: false,
+        failure: { code: 'EXECUTION_FAILED', message: 'The tool execution failed.' },
+      });
+      expect(JSON.stringify(result)).not.toContain('raw SDK transport detail');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it.each([
+    ['image', { content: [{ type: 'image', data: 'offline', mimeType: 'image/png' }] }],
+    ['NaN', { content: [], structuredContent: { value: Number.NaN } }],
+  ])('rejects unsupported MCP %s output through the real Nest-resolved ToolManager', async (_name, response) => {
+    const session: McpClientSession = {
+      listTools: () => Promise.resolve({ tools: [{
+        name: 'lookup', inputSchema: { type: 'object', properties: {} },
+      }] } as never),
+      callTool: () => Promise.resolve(response as never),
+      close: () => Promise.resolve(),
+    };
+    const app = await createMcpApplication(session, 'output-e2e');
+    try {
+      await expect(app.get(ToolManager).invoke('mcp:output-e2e', {
+        toolName: 'lookup', input: {}, actorId: 'actor-e2e',
+      })).resolves.toMatchObject({ ok: false, failure: { code: 'OUTPUT_INVALID' } });
+    } finally {
+      await app.close();
+    }
   });
 });
