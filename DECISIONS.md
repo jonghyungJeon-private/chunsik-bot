@@ -6056,3 +6056,60 @@ correlation fields, receipt outcomes, retries, event sourcing, and Tool/MCP inte
 Extends ADR-0028's CommandExecution ownership and ADR-0025's plan-scoped approval lineage. Preserves ADR-0031's
 aggregate-free ExecutionOrchestrator, ADR-0032's ConversationRuntime dependency freeze, and ADR-0076/ADR-0077 Tool/MCP
 deferral.
+
+## ADR-0079 — AgentProfile Identity and Immutable Registry
+
+- **Status:** ✅ Accepted (M3D-1)
+- **Date recorded:** 2026-09-02
+- **Authority:** Chief Architect
+
+### Context
+
+M3D needs a stable, provider-independent identity for source-controlled agent configuration without turning an agent
+persona into an Actor, Provider, execution owner, authority grant, runtime, or persistence aggregate. The first slice
+therefore establishes only the configuration value and immutable composition-time lookup boundary.
+
+### Ratified decisions
+
+1. **D1:** `AgentProfile` is a configuration value, not an aggregate or service. Its fields are exactly `id`,
+   `displayName`, `role`, `purpose`, and `instructions`.
+2. **D2:** `AgentProfileId` is a stable QuirkyBot-owned nominal string identity. It does not reuse `Actor.id`, Provider
+   id, Tool source, Session id, Task id, or WorkItem id.
+3. **D3:** Agent configuration is config-first and source-controlled. M3D-1 adds no database persistence, repository,
+   schema change, migration, refresh, plugin loading, network source, or runtime mutation path; SQLite remains v8.
+4. **D4:** The identity grammar is 1–128 characters: an ASCII alphanumeric first character followed only by ASCII
+   alphanumerics, `.`, `_`, `:`, or `-`. Text fields must be non-empty after trimming, retain their configured value,
+   reject disallowed control characters, and are bounded at 128 characters for `displayName`, 128 for `role`, 1,024
+   for `purpose`, and 16,384 for `instructions`.
+5. **D5:** `AgentProfileRegistry` validates the complete configured set at construction, defensively copies and freezes
+   returned profiles, sorts them lexicographically by id, accepts an empty set, rejects duplicate ids, and fails an
+   unknown lookup closed with a bounded deterministic error. It exposes only `get(id)` and `list()`.
+6. **D6:** Composition configures an empty registry until profiles are explicitly supplied. There is no default or
+   fallback agent.
+7. **D7:** Agent is not Actor. WorkItem ownership remains its canonical `actorId` (`Actor.id`); AgentProfile grants no
+   identity, permission, approval, risk, or execution authority and owns no WorkItem.
+8. **D8:** Agent is not Provider. M3D-1 adds no `providerId`, `modelId`, preferred or allowed Providers, capability or
+   required-capability field, routing hint, or Provider selection behavior.
+9. **D9:** Agent is not Tool. M3D-1 adds no Tool source or name, `ToolEffect`, tool allow-list, authority setting,
+   memory scope, runtime setting, arbitrary metadata, or arbitrary JSON.
+10. **D10:** `ConversationRuntime` owns no Agent state, gains no `AgentProfileRegistry` dependency, and retains its
+    existing dependency count. `ExecutionOrchestrator`, ToolProvider, ExecutionReceipt, and StorageProvider are
+    unchanged.
+11. **D11:** M3D-1 introduces no TriggerSource, proactive execution, autonomous loop, sub-agent runtime, or other Agent
+    runtime behavior. The registry is configuration lookup only.
+12. **D12:** WorkHandoff, WorkHandoffManager, WorkHandoffRepository, any StorageProvider handoff seam, and migration v9
+    are deferred to M3D-2 / CAP-014 and require their own architecture decision; this ADR does not predraft it.
+13. **D13:** M3E Trigger behavior is deferred and is not implied by the AgentProfile seam.
+
+### Consequences
+
+M3D-1 can identify and retrieve validated agent persona configuration deterministically without changing work
+ownership, provider routing, tool authority, persistence, or runtime execution. Any future connection from a profile to
+capabilities, prompts, Providers, Tools, memory, authority, handoff, or triggers requires separately bounded architecture
+and implementation work.
+
+### Relations
+
+Supersedes ADR-0008's speculative AgentProfile field shape while preserving its configuration-only and no-agent-runtime
+principles. Preserves ADR-0031's aggregate-free ExecutionOrchestrator, ADR-0032's ConversationRuntime dependency freeze,
+ADR-0075's Actor-owned WorkItem, ADR-0076's Tool boundary, and ADR-0078's ExecutionReceipt ownership.

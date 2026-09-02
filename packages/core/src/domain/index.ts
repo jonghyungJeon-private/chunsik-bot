@@ -23,3 +23,4 @@ export * from './command-execution';
 export * from './execution-receipt';
 export * from './code-generation';
 export * from './tool';
+export * from './agent-profile';

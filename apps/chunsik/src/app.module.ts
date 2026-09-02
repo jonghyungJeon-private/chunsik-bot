@@ -95,6 +95,7 @@ import { createProductionConversationRuntime } from './conversation-runtime-prov
 import { GitHubAppGitProvider } from './github-app-git-provider';
 import { createProductionRuntimeProviderRoutingActivation } from './provider-routing/provider-routing-activation';
 import { toolManagerProvider } from './tool-manager-provider';
+import { agentProfileRegistryProvider } from './agent-profile-registry-provider';
 
 const config = loadConfig();
 const coreLogger = new ConsoleLogger('chunsik');
@@ -240,6 +241,7 @@ const infrastructure: Provider[] = [
  * metadata — keeping it framework-agnostic.
  */
 const application: Provider[] = [
+  agentProfileRegistryProvider,
   toolManagerProvider,
   {
     provide: ActorIdentityProvisioner,
