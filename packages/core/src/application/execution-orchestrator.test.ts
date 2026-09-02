@@ -29,6 +29,7 @@ import {
   selectStages,
 } from './execution-orchestrator';
 import type { ExecutionOrchestratorDeps, ExecutionRequest, CancelToken } from './execution-orchestrator';
+import { ExecutionReceiptRecordingError } from './execution-receipt-manager';
 
 const TS = '2026-07-01T00:00:00.000Z';
 const PLAN_REF = { id: 'plan-1', goal: 'goal' };
@@ -147,6 +148,7 @@ interface FakeOpts {
   approvalGet?: ApprovalRequest | null; // result of get (resume)
   change?: WorkspaceChange;
   command?: CommandExecution;
+  commandThrows?: Error;
   patchThrows?: boolean;
 }
 
@@ -212,6 +214,7 @@ function makeDeps(opts: FakeOpts = {}): { deps: ExecutionOrchestratorDeps; calls
     command: {
       async run() {
         calls.command++;
+        if (opts.commandThrows) throw opts.commandThrows;
         return opts.command ?? commandOf(CommandExecutionStatus.SUCCEEDED);
       },
     },
@@ -400,6 +403,24 @@ describe('ExecutionOrchestrator.run', () => {
     });
     expect(out.status).toBe(ExecutionOutcomeStatus.STOPPED_ON_FAILURE);
     expect(out.lastStage).toBe(ExecutionStage.COMMAND_EXECUTION);
+  });
+
+  it('receipt failure preserves the already-persisted command id for downstream reconciliation', async () => {
+    const insertFailure = new Error('receipt insert failed');
+    const { deps, calls } = makeDeps({
+      commandThrows: new ExecutionReceiptRecordingError('cmd-persisted', insertFailure),
+    });
+    const out = await new ExecutionOrchestrator(deps).run({
+      ...codeChange(),
+      requiredCapabilities: [Capability.TEST_EXECUTION],
+      command: { command: 'pnpm', args: ['test'] },
+    });
+
+    expect(out.status).toBe(ExecutionOutcomeStatus.STOPPED_ON_FAILURE);
+    expect(out.lastStage).toBe(ExecutionStage.COMMAND_EXECUTION);
+    expect(out.refs.commandExecutionId).toBe('cmd-persisted');
+    expect(out.stoppedReason).toContain('execution receipt recording failed');
+    expect(calls.command).toBe(1);
   });
 
   it('cancellation before the first stage → CANCELLED; no capability is called', async () => {

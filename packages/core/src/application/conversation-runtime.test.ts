@@ -1377,6 +1377,24 @@ describe('Live Test Execution — runtime', () => {
     expect(result.reply.text).toContain('종료 코드: 1');
   });
 
+  it('receipt persistence failure still reports the canonical succeeded command result', async () => {
+    const { deps, calls } = makeDeps({
+      intent: testIntent,
+      runOutcome: outcomeOf(ExecutionOutcomeStatus.STOPPED_ON_FAILURE, 'cmd-persisted'),
+      commandExec: commandExecOf(CommandExecutionStatus.SUCCEEDED, ['test'], 0, {
+        id: 'cmd-persisted',
+        stdout: 'ok\n',
+      }),
+    });
+
+    const result = await new ConversationRuntime(deps).handle(messageOf('테스트 돌려줘'));
+
+    expect(calls.commandExecGet).toBe(1);
+    expect(result.status).toBe('RESPONDED');
+    expect(result.reply.text).toContain('통과');
+    expect(result.reply.text).not.toBe(new ResponseComposer().composeCommandUnavailable(CTX).text);
+  });
+
   it('command timed out → composeTestTimedOut (distinct from composeCommandUnavailable), system failure', async () => {
     const { deps } = makeDeps({
       intent: testIntent,
