@@ -6166,3 +6166,70 @@ connect handoffs to ConversationRuntime or triggers.
 Extends ADR-0079's configuration-only AgentProfile identity and ADR-0075's Actor-owned WorkItem. Preserves ADR-0074's
 Resource/Artifact separation, ADR-0078's ExecutionReceipt ownership, ADR-0031's aggregate-free ExecutionOrchestrator,
 and ADR-0032's ConversationRuntime dependency freeze.
+
+## ADR-0081 — Trigger Provenance and Proactive Work Decision Foundation
+
+- **Status:** ✅ Accepted (M3E-1)
+- **Date recorded:** 2026-09-03
+- **Authority:** Product Owner ratification of Chief Architect decisions D1–D15
+
+### Context
+
+M3E needs a bounded way to record why existing work was considered for proactive continuation before any scheduler,
+background runtime, agent dispatch, or execution behavior is introduced. A trigger observation must not itself become
+authority, approval, execution permission, durable workflow state, or a second owner of WorkItem lifecycle.
+
+### Ratified decisions D1–D15
+
+1. **D1:** `TriggerSource` is an immutable Core domain value describing application-level trigger provenance. It is
+   not a port, provider, aggregate, event, scheduler, queue message, or durable record.
+2. **D2:** The only M3E-1 kind is `INTERNAL_CONTINUATION`. Unsupported, absent, or malformed kinds fail closed.
+3. **D3:** Its fields are exactly `kind`, bounded `provenanceId`, and supplied `observedAt`. `provenanceId` is the
+   stable correlation identity of the observation and does not become WorkItem, Actor, AgentProfile, Provider, Tool,
+   Session, Task, Approval, or Execution identity.
+4. **D4:** `provenanceId` uses the deterministic 1–128 character QuirkyBot-owned identity grammar: an ASCII
+   alphanumeric first character followed only by ASCII alphanumerics, `.`, `_`, `:`, or `-`.
+5. **D5:** `observedAt` is explicit caller input and must be a canonical UTC ISO-8601 timestamp with millisecond
+   precision. Evaluation uses no clock, randomness, implicit current time, or generated identity.
+6. **D6:** Trigger provenance grants no identity, authority, permission, approval, execution, dispatch, Provider,
+   Tool, WorkItem mutation, handoff creation, or scheduling right; each remains `NONE` in M3E-1.
+7. **D7:** `ProactiveWorkDecision` is an immutable, non-durable value with exactly `workItemId`, `agentProfileId`,
+   `trigger`, `disposition`, and `reason`. It is not an aggregate, receipt, handoff, approval, execution plan, or event.
+8. **D8:** Dispositions are exactly `CONTINUE` and `NO_ACTION`. Reasons are exactly `ACTIVE_WORK_ITEM`,
+   `WORK_ITEM_COMPLETED`, and `WORK_ITEM_CANCELED`; only their lifecycle-consistent pairings are valid.
+9. **D9:** `ProactiveWorkService` is the sole M3E-1 evaluation owner. It canonical-loads an existing WorkItem by id
+   through `StorageProvider.workItems.get` and resolves the explicitly supplied `AgentProfileId` through the immutable
+   `AgentProfileRegistry`.
+10. **D10:** A valid trigger, known profile, and canonical `ACTIVE` WorkItem deterministically produce
+    `CONTINUE / ACTIVE_WORK_ITEM`. `COMPLETED` and `CANCELED` produce `NO_ACTION` with their corresponding bounded
+    reason.
+11. **D11:** Unknown WorkItem, unknown AgentProfile, malformed request, and malformed TriggerSource fail closed with
+    bounded deterministic Core errors. No default or fallback WorkItem, AgentProfile, trigger, or outcome exists.
+12. **D12:** Evaluation is read-only and side-effect-free. It does not mutate WorkItem, create WorkHandoff, request or
+    inspect Approval, execute or dispatch work, invoke Tool or Provider, route a Provider, or persist the decision.
+13. **D13:** The service depends only on the existing smallest WorkItem read seam and AgentProfileRegistry. It has no
+    dependency on `ApprovalManager`, `ExecutionOrchestrator`, `AiProvider`, `ToolProvider`, provider routing, queue,
+    scheduler, clock, id generator, or concrete adapter.
+14. **D14:** M3E-1 introduces no TriggerProvider port, adapter, caller, runtime entry point, ConversationRuntime or
+    ExecutionOrchestrator change, autonomous loop, background runtime, schema, migration, SQLite fixture, or durable
+    write path. The accepted ConversationRuntime dependency baseline remains exactly 31.
+15. **D15:** Future scheduling, trigger ingestion, agent dispatch/execution, handoff continuation, persistence, and
+    runtime exposure require separately ratified and bounded slices. M3E-1 authorizes only this decision foundation.
+
+### Validation boundary
+
+`E2E = NOT_APPLICABLE` — M3E-1 is a pure read-only application decision foundation with no runtime entry point or
+durable write path.
+
+### Consequences
+
+Core can make one deterministic, inspectable decision about whether already-active work is eligible for continuation
+without implying that continuation has been approved or executed. Later M3E slices can introduce concrete trigger or
+runtime behavior only behind a separately ratified boundary, while this value remains provider- and platform-neutral.
+
+### Relations
+
+Implements the M3E decision foundation anticipated by ADR-0079 and ADR-0080 while preserving ADR-0075 WorkItem
+ownership, ADR-0025 Approval ownership, ADR-0031's aggregate-free ExecutionOrchestrator, and ADR-0032's exact
+ConversationRuntime dependency baseline. It supersedes the earlier rebaseline placeholder that described ADR-0081 as
+a definition-only `TriggerSource` port: M3E-1 defines a domain provenance value and no trigger-provider port.

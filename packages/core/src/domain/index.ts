@@ -25,3 +25,5 @@ export * from './code-generation';
 export * from './tool';
 export * from './agent-profile';
 export * from './work-handoff';
+export * from './trigger-source';
+export * from './proactive-work-decision';
