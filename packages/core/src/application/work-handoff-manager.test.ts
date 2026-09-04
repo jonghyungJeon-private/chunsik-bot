@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   AgentProfileRegistry,
+  WorkHandoffIdempotencyError,
+  WorkHandoffIdempotencyFailureCode,
   WorkHandoffManager,
 } from './index';
 import {
@@ -69,12 +71,12 @@ function harness() {
     listByToAgent: async (id) => [...rows.values()].filter((row) => row.toAgentProfileId === id),
   };
   const storage = {
-    workItems: { get: vi.fn(async (id: string) => id === workItem.id ? workItem : null) },
+    workItems: { get: vi.fn(async (id: string) => id === 'work-1' || id === 'work-2' ? { ...workItem, id } : null) },
     artifacts: { get: vi.fn(async (id: string) => id === artifact.id ? artifact : null) },
     executionReceipts: { get: vi.fn(async (id: string) => id === receipt.id ? receipt : null) },
     workHandoffs: repository,
   } as unknown as StorageProvider;
-  const registry = new AgentProfileRegistry([profile('builder'), profile('reviewer')]);
+  const registry = new AgentProfileRegistry([profile('builder'), profile('reviewer'), profile('other')]);
   return { manager: new WorkHandoffManager(storage, registry), storage, repository, rows };
 }
 
@@ -89,6 +91,12 @@ const request = () => ({
   ],
   artifactIds: ['artifact-1', 'artifact-1'],
   executionReceiptIds: ['receipt-1', 'receipt-1'],
+});
+
+const recordRequest = () => ({
+  ...request(),
+  handoffId: 'handoff-1',
+  createdAt: TS,
 });
 
 describe('WorkHandoffManager (CAP-014)', () => {
@@ -134,5 +142,61 @@ describe('WorkHandoffManager (CAP-014)', () => {
     })).rejects.toThrow(/fromAgentProfileId/);
     await expect(h.manager.create({ ...request(), artifactIds: [''] })).rejects.toThrow(/reference ids/);
     expect(h.storage.workItems.get).not.toHaveBeenCalled();
+  });
+
+  it('records once and returns the existing canonical value for an identical retry', async () => {
+    const h = harness();
+    const first = await h.manager.recordIdempotent(recordRequest());
+    const retry = await h.manager.recordIdempotent(recordRequest());
+    expect(retry).toEqual(first);
+    expect(h.repository.insert).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['workItemId', { workItemId: 'work-2' }],
+    ['agent', { toAgentProfileId: agentProfileId('other') }],
+    ['objective', { objective: 'Different' }],
+    ['resource refs', { resourceRefs: [] }],
+    ['artifact refs', { artifactIds: [] }],
+    ['receipt refs', { executionReceiptIds: [] }],
+    ['createdAt', { createdAt: '2026-09-02T00:00:01.000Z' }],
+  ])('fails closed for same-id conflicting %s', async (_label, override) => {
+    const h = harness();
+    h.rows.set('handoff-1', {
+      id: 'handoff-1', workItemId: 'work-1', fromAgentProfileId: agentProfileId('builder'),
+      toAgentProfileId: agentProfileId('reviewer'), objective: 'Review CAP-014.',
+      resourceRefs: [new ResourceRef({ source: 'jira', externalId: 'CAP-014' })],
+      artifactIds: ['artifact-1'], executionReceiptIds: ['receipt-1'], createdAt: TS,
+    });
+    await expect(h.manager.recordIdempotent({ ...recordRequest(), ...override })).rejects.toEqual(
+      new WorkHandoffIdempotencyError(WorkHandoffIdempotencyFailureCode.CONFLICT),
+    );
+    expect(h.repository.insert).not.toHaveBeenCalled();
+  });
+
+  it('allows a different handoffId for a legitimate second delegation', async () => {
+    const h = harness();
+    await h.manager.recordIdempotent(recordRequest());
+    await h.manager.recordIdempotent({ ...recordRequest(), handoffId: 'handoff-2' });
+    expect(h.repository.insert).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([true, false])('reconciles an insert collision with semantic equality=%s', async (equal) => {
+    const h = harness();
+    const candidate = {
+      id: 'handoff-1', workItemId: 'work-1', fromAgentProfileId: agentProfileId('builder'),
+      toAgentProfileId: agentProfileId('reviewer'), objective: equal ? 'Review CAP-014.' : 'Conflict',
+      resourceRefs: [new ResourceRef({ source: 'jira', externalId: 'CAP-014' })],
+      artifactIds: ['artifact-1'], executionReceiptIds: ['receipt-1'], createdAt: TS,
+    };
+    vi.mocked(h.repository.insert).mockImplementationOnce(async () => {
+      h.rows.set('handoff-1', candidate);
+      throw new Error('unique collision');
+    });
+    if (equal) await expect(h.manager.recordIdempotent(recordRequest())).resolves.toEqual(candidate);
+    else await expect(h.manager.recordIdempotent(recordRequest())).rejects.toEqual(
+      new WorkHandoffIdempotencyError(WorkHandoffIdempotencyFailureCode.CONFLICT),
+    );
+    expect(h.repository.insert).toHaveBeenCalledTimes(1);
   });
 });

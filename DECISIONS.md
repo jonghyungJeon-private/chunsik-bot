@@ -6233,3 +6233,66 @@ Implements the M3E decision foundation anticipated by ADR-0079 and ADR-0080 whil
 ownership, ADR-0025 Approval ownership, ADR-0031's aggregate-free ExecutionOrchestrator, and ADR-0032's exact
 ConversationRuntime dependency baseline. It supersedes the earlier rebaseline placeholder that described ADR-0081 as
 a definition-only `TriggerSource` port: M3E-1 defines a domain provenance value and no trigger-provider port.
+
+## ADR-0082 — Proactive Delegation and WorkHandoff Application Integration
+
+- **Status:** ✅ Accepted (M3E-2)
+- **Date recorded:** 2026-09-04
+- **Authority:** Chief Architect / Product Owner verified gate resolution
+
+### Context
+
+M3E needs one bounded application path that can decide whether an existing active WorkItem is eligible for an explicit
+AgentProfile-to-AgentProfile delegation and, in a separate durable stage, record CAP-014 provenance. The path must not
+turn eligibility into authority, mutate the WorkItem, dispatch the destination agent, or widen Runtime, Approval,
+execution, Provider, Tool, or persistence ownership.
+
+### Ratified decisions D1–D16
+
+1. **D1:** `ProactiveDelegationDecision` is a public immutable, non-durable Core value distinct from
+   `ProactiveWorkDecision`; the latter remains unchanged and gains no `DELEGATE` disposition.
+2. **D2:** Delegation dispositions are exactly `DELEGATE` and `NO_ACTION`. Reasons are exactly
+   `DELEGATABLE_ACTIVE_WORK_ITEM`, `WORK_ITEM_COMPLETED`, and `WORK_ITEM_CANCELED`, with only lifecycle-consistent
+   pairings accepted.
+3. **D3:** One bounded request carries `trigger`, `workItemId`, `fromAgentProfileId`, `toAgentProfileId`, `objective`,
+   caller-supplied `handoffId`, caller-supplied `createdAt`, and optional `resourceRefs`, `artifactIds`, and
+   `executionReceiptIds`. It does not duplicate the `WorkHandoff` aggregate.
+4. **D4:** `ProactiveDelegationService.evaluate` is pure and read-only. It validates the request and TriggerSource,
+   canonical-loads the WorkItem, resolves both profiles, and returns only an eligibility decision.
+5. **D5:** Only canonical `ACTIVE` work is delegatable. `COMPLETED` and `CANCELED` return `NO_ACTION`; unknown or
+   malformed input, unknown profiles, and identical source/destination profiles fail closed.
+6. **D6:** `record` is a separate durable-effect stage. It revalidates canonical eligibility immediately before
+   invoking CAP-014 and treats no earlier decision as an authority token.
+7. **D7:** Record-time stale `ACTIVE` to `COMPLETED` or `CANCELED` state fails closed with zero WorkHandoff writes.
+8. **D8:** `WorkHandoffManager` remains the canonical CAP-014 validation and persistence owner. The proactive service
+   depends on it directly and does not depend on `ProactiveWorkService`.
+9. **D9:** CAP-014 adds the bounded `recordIdempotent` operation while preserving existing `create` insert-once
+   behavior. No UPDATE, overwrite, generic UPSERT, table, schema, migration, or persistence owner is added.
+10. **D10:** A missing `handoffId` inserts once; an existing id with exactly equal canonical durable payload returns
+    the persisted value with zero write; an existing id with differing payload fails closed with
+    `WORK_HANDOFF_IDEMPOTENCY_CONFLICT`.
+11. **D11:** Exact semantic equality includes id, WorkItem, both AgentProfiles, objective, all three reference
+    collections, and `createdAt`. It is neither partial nor fuzzy.
+12. **D12:** A concurrent uniqueness collision is reconciled by re-reading the canonical handoff: exact equality
+    returns it and any difference fails closed. Domain semantic comparison remains in `WorkHandoffManager`.
+13. **D13:** Different `handoffId` values remain legitimate distinct delegation records; no uniqueness is introduced
+    on WorkItem or AgentProfile correlations.
+14. **D14:** WorkItem mutation, ApprovalManager, ExecutionOrchestrator, Provider, Tool, agent dispatch, and destination
+    Agent execution remain zero. A handoff grants no authority or execution permission.
+15. **D15:** `ConversationRuntime` and its accepted dependency count of 31 remain unchanged. There is no production
+    caller, new capability, TriggerRecord, scheduler, queue, background runtime, or runtime wiring.
+16. **D16:** SQLite remains schema v9. Local E2E uses only isolated ephemeral SQLite and exercises real migrations,
+    repositories, registries, managers, evaluate/record separation, durable reload, and bounded correlation queries;
+    executing that DB-mutating test remains a separate Human gate.
+
+### Consequences
+
+Core can distinguish read-only delegation eligibility from an idempotent durable provenance effect without creating an
+agent runtime or widening authority. A later separately ratified slice is required to dispatch or execute the receiving
+agent, create a production caller, or integrate this behavior into ConversationRuntime.
+
+### Relations
+
+Extends ADR-0081's trigger and read-only decision foundation and ADR-0080's CAP-014 provenance aggregate. Preserves
+ADR-0075 WorkItem ownership, ADR-0025 Approval ownership, ADR-0031's aggregate-free ExecutionOrchestrator, and
+ADR-0032's exact ConversationRuntime dependency baseline.

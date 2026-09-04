@@ -3,7 +3,7 @@ import {
   createWorkHandoff,
   isAgentProfileId,
 } from '../domain';
-import type { AgentProfileId, Id, ResourceRef, WorkHandoff } from '../domain';
+import type { AgentProfileId, Id, IsoTimestamp, ResourceRef, WorkHandoff } from '../domain';
 import type { StorageProvider } from '../ports';
 import { now } from '../util/clock';
 import { newId } from '../util/id';
@@ -17,6 +17,23 @@ export interface CreateWorkHandoffInput {
   readonly resourceRefs?: readonly ResourceRef[];
   readonly artifactIds?: readonly Id[];
   readonly executionReceiptIds?: readonly Id[];
+}
+
+export interface RecordWorkHandoffInput extends CreateWorkHandoffInput {
+  readonly handoffId: Id;
+  readonly createdAt: IsoTimestamp;
+}
+
+export enum WorkHandoffIdempotencyFailureCode {
+  CONFLICT = 'WORK_HANDOFF_IDEMPOTENCY_CONFLICT',
+}
+
+export class WorkHandoffIdempotencyError extends Error {
+  constructor(readonly code: WorkHandoffIdempotencyFailureCode) {
+    super(code);
+    this.name = 'WorkHandoffIdempotencyError';
+    Object.freeze(this);
+  }
 }
 
 function validateRequest(input: CreateWorkHandoffInput): void {
@@ -73,6 +90,37 @@ export class WorkHandoffManager {
   ) {}
 
   async create(input: CreateWorkHandoffInput): Promise<WorkHandoff> {
+    return this.createCanonical(input, newId(), now());
+  }
+
+  async recordIdempotent(input: RecordWorkHandoffInput): Promise<WorkHandoff> {
+    const candidate = await this.buildCanonical(input, input.handoffId, input.createdAt);
+    const existing = await this.storage.workHandoffs.get(candidate.id);
+    if (existing) return requireSemanticEquality(existing, candidate);
+
+    try {
+      return await this.storage.workHandoffs.insert(candidate);
+    } catch (error) {
+      const concurrent = await this.storage.workHandoffs.get(candidate.id);
+      if (!concurrent) throw error;
+      return requireSemanticEquality(concurrent, candidate);
+    }
+  }
+
+  private async createCanonical(
+    input: CreateWorkHandoffInput,
+    id: Id,
+    createdAt: IsoTimestamp,
+  ): Promise<WorkHandoff> {
+    const handoff = await this.buildCanonical(input, id, createdAt);
+    return this.storage.workHandoffs.insert(handoff);
+  }
+
+  private async buildCanonical(
+    input: CreateWorkHandoffInput,
+    id: Id,
+    createdAt: IsoTimestamp,
+  ): Promise<WorkHandoff> {
     validateRequest(input);
     const workItem = await this.storage.workItems.get(input.workItemId);
     if (!workItem) throw new Error(`WorkItem not found: ${input.workItemId}`);
@@ -97,7 +145,7 @@ export class WorkHandoffManager {
     }
 
     const handoff = createWorkHandoff({
-      id: newId(),
+      id,
       workItemId: workItem.id,
       fromAgentProfileId: input.fromAgentProfileId,
       toAgentProfileId: input.toAgentProfileId,
@@ -105,8 +153,16 @@ export class WorkHandoffManager {
       resourceRefs: input.resourceRefs ?? [],
       artifactIds,
       executionReceiptIds,
-      createdAt: now(),
+      createdAt,
     });
-    return this.storage.workHandoffs.insert(handoff);
+    return handoff;
   }
+}
+
+function requireSemanticEquality(existing: WorkHandoff, candidate: WorkHandoff): WorkHandoff {
+  const canonical = createWorkHandoff(existing);
+  if (JSON.stringify(canonical) !== JSON.stringify(candidate)) {
+    throw new WorkHandoffIdempotencyError(WorkHandoffIdempotencyFailureCode.CONFLICT);
+  }
+  return canonical;
 }
