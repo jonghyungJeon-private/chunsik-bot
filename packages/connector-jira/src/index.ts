@@ -79,7 +79,9 @@ export class JiraConnectorProvider implements ConnectorProvider {
   }
 
   async query(input: ConnectorQuery): Promise<ConnectorResult> {
-    const jql = requireNonEmpty(input?.query, 'query');
+    const jql = input?.query === 'personal-work'
+      ? personalWorkJql(input.params?.actorExternalId)
+      : requireNonEmpty(input?.query, 'query');
     const url = new URL('/rest/api/3/search', this.baseUrl);
     url.searchParams.set('jql', jql);
 
@@ -149,6 +151,11 @@ export class JiraConnectorProvider implements ConnectorProvider {
   private redactToken(value: string): string {
     return value.split(this.apiToken).join('[redacted]');
   }
+}
+
+function personalWorkJql(actorExternalId: unknown): string {
+  const identity = requireNonEmpty(actorExternalId, 'actor identity');
+  return `assignee = "${identity.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}" AND resolution = Unresolved`;
 }
 
 function requireNonEmpty(value: unknown, label: string): string {

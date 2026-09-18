@@ -1,19 +1,25 @@
 import type {
   Actor,
+  AgentProfileId,
   Artifact,
   ApprovalRequest,
   CodeGeneration,
   CodeProposal,
   CommandExecution,
+  ExecutionKind,
+  ExecutionReceipt,
   Id,
   MemoryRecord,
   MemoryScope,
   MemoryType,
   PatchSet,
   Project,
+  ResourceRef,
   Session,
   Task,
   TaskRun,
+  WorkItem,
+  WorkHandoff,
   WorkspaceChange,
 } from '../domain';
 
@@ -65,6 +71,13 @@ export interface SessionRepository extends Repository<Session> {
   findActiveByContext(channelId: string, threadId?: string): Promise<Session | null>;
 }
 
+export interface WorkItemRepository extends Repository<WorkItem> {
+  /** Durable work owned by one canonical Actor.id. */
+  listByActor(actorId: Id): Promise<WorkItem[]>;
+  /** Work correlated to an external input, without persisting connector DTOs. */
+  listByResource(resource: ResourceRef): Promise<WorkItem[]>;
+}
+
 export interface ApprovalRepository extends Repository<ApprovalRequest> {
   /** All approval requests governing a given ExecutionPlan (CAP-004). */
   findByExecutionPlan(executionPlanId: Id): Promise<ApprovalRequest[]>;
@@ -85,6 +98,26 @@ export interface CommandExecutionRepository extends Repository<CommandExecution>
   findByExecutionPlan(executionPlanId: Id): Promise<CommandExecution[]>;
   /** All command executions recorded for a given WorkspaceChange (CAP-007). */
   findByWorkspaceChange(workspaceChangeId: Id): Promise<CommandExecution[]>;
+}
+
+/**
+ * Immutable, insert-once CAP-013 store. It deliberately does not expose the
+ * mutation operations of Repository<T>.
+ */
+export interface ExecutionReceiptRepository {
+  insert(receipt: ExecutionReceipt): Promise<ExecutionReceipt>;
+  get(id: Id): Promise<ExecutionReceipt | null>;
+  findBySource(executionKind: ExecutionKind, sourceId: Id): Promise<ExecutionReceipt | null>;
+  findByExecutionPlan(executionPlanId: Id): Promise<ExecutionReceipt[]>;
+}
+
+/** Immutable, insert-once CAP-014 store with only bounded provenance lookups. */
+export interface WorkHandoffRepository {
+  insert(handoff: WorkHandoff): Promise<WorkHandoff>;
+  get(id: Id): Promise<WorkHandoff | null>;
+  listByWorkItem(workItemId: Id): Promise<WorkHandoff[]>;
+  listByFromAgent(agentProfileId: AgentProfileId): Promise<WorkHandoff[]>;
+  listByToAgent(agentProfileId: AgentProfileId): Promise<WorkHandoff[]>;
 }
 
 export interface CodeGenerationRepository extends Repository<CodeGeneration> {
@@ -116,10 +149,13 @@ export interface StorageProvider {
   readonly memories: MemoryRepository;
   readonly artifacts: ArtifactRepository;
   readonly projects: Repository<Project>;
+  readonly workItems: WorkItemRepository;
   readonly approvals: ApprovalRepository;
   readonly patches: PatchRepository;
   readonly workspaceChanges: WorkspaceChangeRepository;
   readonly commandExecutions: CommandExecutionRepository;
+  readonly executionReceipts: ExecutionReceiptRepository;
+  readonly workHandoffs: WorkHandoffRepository;
   readonly codeGenerations: CodeGenerationRepository;
   readonly codeProposals: CodeProposalRepository;
 }

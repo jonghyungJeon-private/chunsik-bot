@@ -9,6 +9,7 @@ import type {
   ApprovalRequest,
   Artifact,
   ArtifactRepository,
+  AgentProfileId,
   CodeGeneration,
   CodeGenerationRepository,
   CodeProposal,
@@ -16,6 +17,11 @@ import type {
   CommandExecution,
   CommandExecutionRepository,
   DurableMemoryQuery,
+  ExecutionKind,
+  ExecutionReceipt,
+  ExecutionReceiptFailureClass,
+  ExecutionReceiptOutcome,
+  ExecutionReceiptRepository,
   Id,
   MemoryRecord,
   MemoryRepository,
@@ -24,6 +30,7 @@ import type {
   PatchRepository,
   PatchSet,
   Project,
+  ResourceRef,
   Repository,
   WorkspaceChange,
   WorkspaceChangeRepository,
@@ -34,7 +41,12 @@ import type {
   TaskRepository,
   TaskRun,
   TaskRunRepository,
+  WorkItem,
+  WorkItemRepository,
+  WorkHandoff,
+  WorkHandoffRepository,
 } from '@chunsik/core';
+import { ResourceRef as DomainResourceRef, createWorkHandoff } from '@chunsik/core';
 
 export interface SqliteConfig {
   /** Path to the SQLite database file, e.g. ./data/chunsik.db */
@@ -43,6 +55,40 @@ export interface SqliteConfig {
 
 type Db = Database.Database;
 type Row = { data: string };
+
+interface ExecutionReceiptRow {
+  id: string;
+  execution_kind: string;
+  source_id: string;
+  execution_plan_id: string;
+  authorization_kind: string;
+  approval_id: string | null;
+  outcome: string;
+  failure_class: string | null;
+  recorded_at: string;
+}
+
+interface WorkHandoffRow {
+  data: string;
+}
+
+function mapExecutionReceipt(row: ExecutionReceiptRow): ExecutionReceipt {
+  return {
+    id: row.id,
+    executionKind: row.execution_kind as ExecutionKind,
+    sourceId: row.source_id,
+    executionPlanId: row.execution_plan_id,
+    authorization:
+      row.authorization_kind === 'APPROVAL'
+        ? { kind: 'APPROVAL', approvalId: row.approval_id! }
+        : { kind: 'NOT_REQUIRED' },
+    outcome: row.outcome as ExecutionReceiptOutcome,
+    ...(row.failure_class
+      ? { failureClass: row.failure_class as ExecutionReceiptFailureClass }
+      : {}),
+    recordedAt: row.recorded_at,
+  };
+}
 
 /** A SQLite-backed JSON document store for one entity type (id + data). */
 class JsonRepository<T extends { id: Id }> implements Repository<T> {
@@ -189,6 +235,71 @@ class SqliteTaskRunRepository extends JsonRepository<TaskRun> implements TaskRun
   }
 }
 
+class SqliteWorkItemRepository
+  extends JsonRepository<WorkItem>
+  implements WorkItemRepository
+{
+  override async get(id: Id): Promise<WorkItem | null> {
+    const item = await super.get(id);
+    return item ? hydrateWorkItem(item) : null;
+  }
+
+  override async save(item: WorkItem): Promise<WorkItem> {
+    this.db
+      .prepare(
+        `INSERT INTO work_items (id, actor_id, project_id, status, origin, data)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET actor_id = excluded.actor_id,
+           project_id = excluded.project_id, status = excluded.status,
+           origin = excluded.origin, data = excluded.data`,
+      )
+      .run(
+        item.id,
+        item.actorId,
+        item.projectId ?? null,
+        item.status,
+        item.origin,
+        JSON.stringify(item),
+      );
+    return item;
+  }
+
+  override async list(): Promise<WorkItem[]> {
+    return (await super.list()).map(hydrateWorkItem);
+  }
+
+  async listByActor(actorId: Id): Promise<WorkItem[]> {
+    const rows = this.db
+      .prepare(
+        `SELECT data FROM work_items WHERE actor_id = ?
+         ORDER BY json_extract(data, '$.createdAt'), id`,
+      )
+      .all(actorId) as Row[];
+    return rows.map((row) => hydrateWorkItem(JSON.parse(row.data) as WorkItem));
+  }
+
+  async listByResource(resourceRef: ResourceRef): Promise<WorkItem[]> {
+    const rows = this.db
+      .prepare(
+        `SELECT work_items.data FROM work_items, json_each(work_items.data, '$.resourceRefs') AS resource
+         WHERE json_extract(resource.value, '$.source') = ?
+           AND json_extract(resource.value, '$.externalId') = ?
+         ORDER BY json_extract(work_items.data, '$.createdAt'), work_items.id`,
+      )
+      .all(resourceRef.source, resourceRef.externalId) as Row[];
+    return rows.map((row) => hydrateWorkItem(JSON.parse(row.data) as WorkItem));
+  }
+}
+
+function hydrateWorkItem(item: WorkItem): WorkItem {
+  return {
+    ...item,
+    resourceRefs: item.resourceRefs.map(
+      (ref: ResourceRef) => new DomainResourceRef({ source: ref.source, externalId: ref.externalId }),
+    ),
+  };
+}
+
 class SqliteArtifactRepository extends JsonRepository<Artifact> implements ArtifactRepository {
   override async save(artifact: Artifact): Promise<Artifact> {
     this.db
@@ -307,6 +418,116 @@ class SqliteCommandExecutionRepository
       .prepare(`SELECT data FROM command_executions WHERE workspace_change_id = ?`)
       .all(workspaceChangeId) as Row[];
     return rows.map((r) => JSON.parse(r.data) as CommandExecution);
+  }
+}
+
+/** Dedicated immutable CAP-013 repository; no UPDATE, UPSERT, or DELETE path. */
+export class SqliteExecutionReceiptRepository implements ExecutionReceiptRepository {
+  constructor(private readonly db: Db) {}
+
+  async insert(receipt: ExecutionReceipt): Promise<ExecutionReceipt> {
+    this.db
+      .prepare(
+        `INSERT INTO execution_receipts (
+           id, execution_kind, source_id, execution_plan_id, authorization_kind,
+           approval_id, outcome, failure_class, recorded_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        receipt.id,
+        receipt.executionKind,
+        receipt.sourceId,
+        receipt.executionPlanId,
+        receipt.authorization.kind,
+        receipt.authorization.kind === 'APPROVAL' ? receipt.authorization.approvalId : null,
+        receipt.outcome,
+        receipt.failureClass ?? null,
+        receipt.recordedAt,
+      );
+    return receipt;
+  }
+
+  async get(id: Id): Promise<ExecutionReceipt | null> {
+    const row = this.db.prepare(`SELECT * FROM execution_receipts WHERE id = ?`).get(id) as
+      | ExecutionReceiptRow
+      | undefined;
+    return row ? mapExecutionReceipt(row) : null;
+  }
+
+  async findBySource(
+    executionKind: ExecutionKind,
+    sourceId: Id,
+  ): Promise<ExecutionReceipt | null> {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM execution_receipts WHERE execution_kind = ? AND source_id = ?`,
+      )
+      .get(executionKind, sourceId) as ExecutionReceiptRow | undefined;
+    return row ? mapExecutionReceipt(row) : null;
+  }
+
+  async findByExecutionPlan(executionPlanId: Id): Promise<ExecutionReceipt[]> {
+    const rows = this.db
+      .prepare(`SELECT * FROM execution_receipts WHERE execution_plan_id = ? ORDER BY recorded_at, id`)
+      .all(executionPlanId) as ExecutionReceiptRow[];
+    return rows.map(mapExecutionReceipt);
+  }
+}
+
+function mapWorkHandoff(row: WorkHandoffRow): WorkHandoff {
+  return createWorkHandoff(JSON.parse(row.data) as WorkHandoff);
+}
+
+/** Dedicated immutable CAP-014 repository; no UPDATE, UPSERT, or DELETE path. */
+export class SqliteWorkHandoffRepository implements WorkHandoffRepository {
+  constructor(private readonly db: Db) {}
+
+  async insert(handoff: WorkHandoff): Promise<WorkHandoff> {
+    const immutable = createWorkHandoff(handoff);
+    this.db
+      .prepare(
+        `INSERT INTO work_handoffs (
+           id, work_item_id, from_agent_profile_id, to_agent_profile_id, created_at, data
+         ) VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        immutable.id,
+        immutable.workItemId,
+        immutable.fromAgentProfileId,
+        immutable.toAgentProfileId,
+        immutable.createdAt,
+        JSON.stringify(immutable),
+      );
+    return immutable;
+  }
+
+  async get(id: Id): Promise<WorkHandoff | null> {
+    const row = this.db.prepare(`SELECT data FROM work_handoffs WHERE id = ?`).get(id) as
+      | WorkHandoffRow
+      | undefined;
+    return row ? mapWorkHandoff(row) : null;
+  }
+
+  async listByWorkItem(workItemId: Id): Promise<WorkHandoff[]> {
+    return this.listBy('work_item_id', workItemId);
+  }
+
+  async listByFromAgent(agentProfileId: AgentProfileId): Promise<WorkHandoff[]> {
+    return this.listBy('from_agent_profile_id', agentProfileId);
+  }
+
+  async listByToAgent(agentProfileId: AgentProfileId): Promise<WorkHandoff[]> {
+    return this.listBy('to_agent_profile_id', agentProfileId);
+  }
+
+  private async listBy(
+    column: 'work_item_id' | 'from_agent_profile_id' | 'to_agent_profile_id',
+    value: string,
+  ): Promise<WorkHandoff[]> {
+    const rows = this.db
+      .prepare(`SELECT data FROM work_handoffs WHERE ${column} = ? ORDER BY created_at, id`)
+      .all(value) as WorkHandoffRow[];
+    return rows.map(mapWorkHandoff);
   }
 }
 
@@ -471,7 +692,8 @@ class SqliteMemoryRepository extends JsonRepository<MemoryRecord> implements Mem
  * callers see only domain entities. Implemented: actors, sessions, tasks,
  * taskRuns, artifacts, memories, projects, approvals (CAP-004), patches (CAP-005),
  * workspaceChanges (CAP-006), commandExecutions (CAP-007), codeGenerations +
- * codeProposals (CAP-008).
+ * codeProposals (CAP-008), workItems (CAP-011), executionReceipts (CAP-013),
+ * workHandoffs (CAP-014).
  */
 export class SqliteStorageProvider implements StorageProvider {
   private db?: Db;
@@ -484,10 +706,13 @@ export class SqliteStorageProvider implements StorageProvider {
   artifacts!: ArtifactRepository;
   memories!: MemoryRepository;
   projects!: Repository<Project>;
+  workItems!: WorkItemRepository;
   approvals!: ApprovalRepository;
   patches!: PatchRepository;
   workspaceChanges!: WorkspaceChangeRepository;
   commandExecutions!: CommandExecutionRepository;
+  executionReceipts!: ExecutionReceiptRepository;
+  workHandoffs!: WorkHandoffRepository;
   codeGenerations!: CodeGenerationRepository;
   codeProposals!: CodeProposalRepository;
 
@@ -510,10 +735,13 @@ export class SqliteStorageProvider implements StorageProvider {
     this.artifacts = new SqliteArtifactRepository(db, 'artifacts');
     this.memories = new SqliteMemoryRepository(db, 'memories');
     this.projects = new JsonRepository<Project>(db, 'projects');
+    this.workItems = new SqliteWorkItemRepository(db, 'work_items');
     this.approvals = new SqliteApprovalRepository(db, 'approvals');
     this.patches = new SqlitePatchRepository(db, 'patches');
     this.workspaceChanges = new SqliteWorkspaceChangeRepository(db, 'workspace_changes');
     this.commandExecutions = new SqliteCommandExecutionRepository(db, 'command_executions');
+    this.executionReceipts = new SqliteExecutionReceiptRepository(db);
+    this.workHandoffs = new SqliteWorkHandoffRepository(db);
     this.codeGenerations = new SqliteCodeGenerationRepository(db, 'code_generations');
     this.codeProposals = new SqliteCodeProposalRepository(db, 'code_proposals');
   }

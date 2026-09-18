@@ -15,6 +15,7 @@ import {
   PROVIDER_SELECTOR,
   AI_PROVIDERS,
   CONNECTOR_PROVIDERS,
+  TOOL_PROVIDERS,
   // Application services (pure core)
   ChunsikCore,
   IntentClassifier,
@@ -40,6 +41,8 @@ import {
   PatchManager,
   WorkspaceWriteManager,
   CommandExecutionManager,
+  CommandExecutionReceiptRunner,
+  ExecutionReceiptManager,
   CodeGenerationManager,
   ExecutionOrchestrator,
   IntentResolver,
@@ -48,6 +51,10 @@ import {
   StatelessScopeClarificationFlow,
   StatelessApplyPreviewFlow,
   ConnectorManager,
+  WorkSurfaceQuery,
+  WorkManager,
+  WorkHandoffManager,
+  AgentProfileRegistry,
   ResponseComposer,
   RiskPolicy,
   RepositoryIdentityResolver,
@@ -65,6 +72,7 @@ import type {
   VectorProvider,
   WorkspaceProvider,
   WorkspaceWriter,
+  ToolProvider,
 } from '@chunsik/core';
 
 // Concrete providers — the ONLY file allowed to import them.
@@ -75,17 +83,21 @@ import { LocalVectorProvider } from '@chunsik/vector-local';
 import { LocalCloneWorkspaceProvider, LocalWorkspaceWriter } from '@chunsik/workspace-local';
 import { LocalGitProvider } from '@chunsik/git-local';
 import { GitHubRepositoryHostingProvider } from '@chunsik/repository-hosting-github';
+import { GitHubConnectorProvider } from '@chunsik/connector-github';
 import { GitHubAppAuth } from '@quoky/github-app-auth';
 import { LocalCommandRunner } from '@chunsik/command-local';
 import { ClaudeCliProvider, CodexCliProvider, OllamaCliProvider } from '@chunsik/ai-cli';
 
 import { loadConfig } from './config';
+import { ActorIdentityProvisioner } from './actor-identity-provisioner';
 import { createConnectorProviders } from './connector-providers';
 import { ConsoleLogger } from './console-logger';
 import { createProductionContextBuilder } from './context-builder-provider';
 import { createProductionConversationRuntime } from './conversation-runtime-provider';
 import { GitHubAppGitProvider } from './github-app-git-provider';
 import { createProductionRuntimeProviderRoutingActivation } from './provider-routing/provider-routing-activation';
+import { toolManagerProvider } from './tool-manager-provider';
+import { agentProfileRegistryProvider } from './agent-profile-registry-provider';
 
 const config = loadConfig();
 const coreLogger = new ConsoleLogger('chunsik');
@@ -137,6 +149,7 @@ if (appConfigured && patConfigured) {
 }
 
 let repositoryHostingManager: RepositoryHostingManager | undefined;
+const connectorProviders = [...createConnectorProviders(config.connectors, coreLogger)];
 // GIT_PROVIDER default: the plain LocalGitProvider (local ops + dev-PAT/ambient-credential git). Replaced by the
 // App-auth decorator only in github-app mode, so git push/clone uses a minted installation token via GIT_ASKPASS.
 let gitProvider: GitProvider = new LocalGitProvider();
@@ -146,29 +159,39 @@ if (hostingAuthMode === 'github-app' && repositoryIdentity && config.githubApp) 
   const appAuth = new GitHubAppAuth({ appId: config.githubApp.appId, privateKeyPem: config.githubApp.privateKeyPem });
   // Lazily resolve + cache the installation id (explicit env id, else the reviewed owner/repo). The token source
   // mints/caches a short-lived installation token DOWN-SCOPED to the single target repo (numeric repository_ids +
-  // minimal contents/pull_requests write; ADR-0061 §8.4) — the SINGLE source shared by REST (CAP-010) and git
-  // (CAP-002). "Not installed" or "repo not accessible" throws → surfaced pre-mutation upstream (Blocked /
-  // not-configured); there is no broad-token fallback.
+  // minimal contents/pull_requests write; ADR-0061 §8.4) for REST (CAP-010) and git (CAP-002). The separate
+  // Personal Work connector source requests read-only issues/pull_requests permissions for discovery.
+  // "Not installed" or "repo not accessible" throws → surfaced pre-mutation upstream (Blocked / not-configured);
+  // there is no broad write-token fallback.
   let cachedInstallationId: number | undefined = config.githubAppInstallationId;
-  const tokenSource = async (): Promise<string> => {
+  const currentInstallationId = async (): Promise<number> => {
     if (cachedInstallationId === undefined) {
       const resolved = await appAuth.resolveInstallationId(identity.owner, identity.repo);
       if (resolved === null) throw new Error('github app: not installed on the configured repository');
       cachedInstallationId = resolved;
     }
-    return appAuth.tokenForRepository(cachedInstallationId, identity.owner, identity.repo, {
+    return cachedInstallationId;
+  };
+  const tokenSource = async (): Promise<string> => {
+    return appAuth.tokenForRepository(await currentInstallationId(), identity.owner, identity.repo, {
       contents: 'write',
       pull_requests: 'write',
     });
   };
+  const readTokenSource = async (): Promise<string> => appAuth.tokenForInstallation(
+    await currentInstallationId(),
+    { permissions: { issues: 'read', pull_requests: 'read' } },
+  );
   repositoryHostingManager = new RepositoryHostingManager(
     new GitHubRepositoryHostingProvider({ auth: { kind: 'github-app', tokenSource } }),
   );
+  connectorProviders.push(new GitHubConnectorProvider({ auth: { kind: 'github-app', tokenSource: readTokenSource } }));
   gitProvider = new GitHubAppGitProvider({ makeLocalGit: (runner) => new LocalGitProvider(runner), tokenSource });
 } else if (hostingAuthMode === 'pat' && repositoryIdentity) {
   repositoryHostingManager = new RepositoryHostingManager(
     new GitHubRepositoryHostingProvider({ auth: { kind: 'pat', token: devPatToken } }),
   );
+  connectorProviders.push(new GitHubConnectorProvider({ auth: { kind: 'pat', token: devPatToken } }));
   // Dev PAT is a REST-only convenience (ADR-0061 §11.3): local git push uses the developer's own git credential,
   // so GIT_PROVIDER stays the plain LocalGitProvider.
 }
@@ -209,7 +232,9 @@ const infrastructure: Provider[] = [
       new OllamaCliProvider({ bin: config.ai.ollamaBin, model: config.ai.ollamaModel }),
     ],
   },
-  { provide: CONNECTOR_PROVIDERS, useValue: createConnectorProviders(config.connectors, coreLogger) },
+  { provide: CONNECTOR_PROVIDERS, useValue: connectorProviders },
+  // CAP-012 foundation: immutable empty registry until a separately approved adapter is composed.
+  { provide: TOOL_PROVIDERS, useValue: [] satisfies readonly ToolProvider[] },
 ];
 
 /**
@@ -218,6 +243,13 @@ const infrastructure: Provider[] = [
  * metadata — keeping it framework-agnostic.
  */
 const application: Provider[] = [
+  agentProfileRegistryProvider,
+  toolManagerProvider,
+  {
+    provide: ActorIdentityProvisioner,
+    useFactory: (storage: StorageProvider) => new ActorIdentityProvisioner(storage, config.actorIdentityMappings),
+    inject: [STORAGE_PROVIDER],
+  },
   { provide: RiskPolicy, useFactory: () => new RiskPolicy() },
   { provide: ResponseComposer, useFactory: () => new ResponseComposer() },
   {
@@ -318,6 +350,17 @@ const application: Provider[] = [
       new CommandExecutionManager(storage, runner, risk),
     inject: [STORAGE_PROVIDER, COMMAND_RUNNER, RiskPolicy],
   },
+  {
+    provide: ExecutionReceiptManager,
+    useFactory: (storage: StorageProvider) => new ExecutionReceiptManager(storage),
+    inject: [STORAGE_PROVIDER],
+  },
+  {
+    provide: CommandExecutionReceiptRunner,
+    useFactory: (command: CommandExecutionManager, receipts: ExecutionReceiptManager) =>
+      new CommandExecutionReceiptRunner(command, receipts),
+    inject: [CommandExecutionManager, ExecutionReceiptManager],
+  },
   // CAP-008 AI Code Generation (compose → render → select → execute → parse → record).
   // Reuses the AiProvider port via ProviderSelector; not orchestrator/Discord wired.
   {
@@ -338,6 +381,22 @@ const application: Provider[] = [
     provide: ConnectorManager,
     useFactory: (connectors: readonly ConnectorProvider[]) => new ConnectorManager(connectors),
     inject: [CONNECTOR_PROVIDERS],
+  },
+  {
+    provide: WorkSurfaceQuery,
+    useFactory: (connectors: ConnectorManager) => new WorkSurfaceQuery(connectors),
+    inject: [ConnectorManager],
+  },
+  {
+    provide: WorkManager,
+    useFactory: (storage: StorageProvider) => new WorkManager(storage),
+    inject: [STORAGE_PROVIDER],
+  },
+  {
+    provide: WorkHandoffManager,
+    useFactory: (storage: StorageProvider, profiles: AgentProfileRegistry) =>
+      new WorkHandoffManager(storage, profiles),
+    inject: [STORAGE_PROVIDER, AgentProfileRegistry],
   },
   {
     provide: IntentClassifier,
@@ -383,7 +442,7 @@ const application: Provider[] = [
       approval: ApprovalManager,
       patch: PatchManager,
       workspaceWrite: WorkspaceWriteManager,
-      command: CommandExecutionManager,
+      command: CommandExecutionReceiptRunner,
     ) =>
       new ExecutionOrchestrator({
         planning,
@@ -402,7 +461,7 @@ const application: Provider[] = [
       ApprovalManager,
       PatchManager,
       WorkspaceWriteManager,
-      CommandExecutionManager,
+      CommandExecutionReceiptRunner,
     ],
   },
   // Sprint 2k — Conversation Runtime (the single conversation entry; ADR-0032). ChunsikCore
@@ -427,7 +486,7 @@ const application: Provider[] = [
       router: CapabilityRouter,
       artifacts: ArtifactManager,
       composer: ResponseComposer,
-      risk: RiskPolicy,
+      workSurface: WorkSurfaceQuery,
       intentResolver: IntentResolver,
       orchestrator: ExecutionOrchestrator,
       approvals: ApprovalManager,
@@ -478,7 +537,7 @@ const application: Provider[] = [
         router,
         artifacts,
         composer,
-        risk,
+        workSurface,
         intentResolver,
         orchestrator,
         approvals,
@@ -522,7 +581,7 @@ const application: Provider[] = [
       CapabilityRouter,
       ArtifactManager,
       ResponseComposer,
-      RiskPolicy,
+      WorkSurfaceQuery,
       IntentResolver,
       ExecutionOrchestrator,
       ApprovalManager,

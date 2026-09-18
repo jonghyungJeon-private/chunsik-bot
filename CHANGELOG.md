@@ -7,6 +7,36 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — M3A-2 CAP-011 WorkItem Persistence Foundation
+
+- Added the narrow ADR-0075 `WorkItem` aggregate and `WorkManager` application boundary, owning only durable work
+  identity, canonical Actor ownership, optional Project reference, ResourceRef correlation, high-level lifecycle,
+  and `conversation`/`connector` origin. Lifecycle transitions load the canonical persisted WorkItem by id and
+  change only status and `updatedAt`, preventing stale caller state from replacing ownership or correlations.
+- Added the Core repository contract, SQLite repository, and forward-only additive migration v7 for `work_items`,
+  with reload/round-trip, multi-WorkItem-per-Actor, ResourceRef, optional-Project, lifecycle, origin, and not-found
+  coverage. Conversation Runtime retains no persistent work ownership and its dependency count remains 31.
+
+### Added — M3A-1.1 Actor Identity Provisioning
+
+- Added a validated non-secret `QUOKY_ACTOR_IDENTITY_MAPPINGS` contract and an app-private startup provisioner that
+  locates existing Discord Actors and additively persists explicit Jira/GitHub `ExternalIdentity` mappings through
+  the existing repository path without creating Actors or changing Core contracts, storage schema, or migrations.
+- Added offline coverage for Jira-only, GitHub-only, merged Work Surface reachability, omitted-identity preservation,
+  idempotence, same-platform and cross-Actor conflicts, missing Actors, and connector availability failures while
+  keeping `ConversationRuntimeDeps` at 31.
+
+### Added — M3A-1 Read-only Personal Work Surface
+
+- Added the infrastructure-neutral `ResourceRef` value object and a rebuildable `WorkSurfaceQuery` whose intended
+  behavior, once external identities exist, combines current-Actor Jira and GitHub personal work with deterministic
+  ordering and explicit partial/unavailable status. Merged, Jira-only, and GitHub-only surfaces are exercised in
+  this slice through injected identities and fakes; M3A-1 adds no live Actor Jira/GitHub identity-provisioning path.
+- Added a read-only GitHub `ConnectorProvider` adapter using the existing composition-root auth infrastructure,
+  while leaving GitHub PR lifecycle and all writes on `RepositoryHostingProvider`.
+- Added a natural read-only “show me what I need to work on” conversation path. It performs no AI/provider write,
+  connector write, WorkItem persistence, schema change, or migration; `ConversationRuntimeDeps` stays at 31.
+
 ## [1.0.0] - 2026-08-25
 
 ### Changed — Release Consistency Reconciliation

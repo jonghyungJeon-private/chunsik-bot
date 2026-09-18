@@ -127,6 +127,68 @@ export const MIGRATIONS: readonly Migration[] = [
       );
     },
   },
+  {
+    version: 7,
+    name: 'work_items table (CAP-011)',
+    up(db) {
+      db.exec(
+        `CREATE TABLE IF NOT EXISTS work_items (
+           id TEXT PRIMARY KEY, actor_id TEXT NOT NULL, project_id TEXT,
+           status TEXT NOT NULL, origin TEXT NOT NULL, data TEXT NOT NULL);`,
+      );
+      db.exec(`CREATE INDEX IF NOT EXISTS work_items_actor_id ON work_items (actor_id);`);
+    },
+  },
+  {
+    version: 8,
+    name: 'execution receipts table (CAP-013)',
+    up(db) {
+      db.exec(
+        `CREATE TABLE IF NOT EXISTS execution_receipts (
+           id TEXT PRIMARY KEY,
+           execution_kind TEXT NOT NULL,
+           source_id TEXT NOT NULL,
+           execution_plan_id TEXT NOT NULL,
+           authorization_kind TEXT NOT NULL,
+           approval_id TEXT NULL,
+           outcome TEXT NOT NULL,
+           failure_class TEXT NULL,
+           recorded_at TEXT NOT NULL,
+           UNIQUE(execution_kind, source_id));`,
+      );
+      db.exec(
+        `CREATE INDEX IF NOT EXISTS execution_receipts_execution_plan_id
+         ON execution_receipts(execution_plan_id);`,
+      );
+    },
+  },
+  {
+    version: 9,
+    name: 'work handoffs table (CAP-014)',
+    up(db) {
+      db.exec(
+        `CREATE TABLE IF NOT EXISTS work_handoffs (
+           id TEXT PRIMARY KEY,
+           work_item_id TEXT NOT NULL,
+           from_agent_profile_id TEXT NOT NULL,
+           to_agent_profile_id TEXT NOT NULL,
+           created_at TEXT NOT NULL,
+           data TEXT NOT NULL);`,
+      );
+      db.exec(
+        `CREATE INDEX IF NOT EXISTS work_handoffs_work_item_id
+         ON work_handoffs(work_item_id);`,
+      );
+      db.exec(
+        `CREATE INDEX IF NOT EXISTS work_handoffs_from_agent_profile_id
+         ON work_handoffs(from_agent_profile_id);`,
+      );
+      db.exec(
+        `CREATE INDEX IF NOT EXISTS work_handoffs_to_agent_profile_id
+         ON work_handoffs(to_agent_profile_id);`,
+      );
+    },
+  },
 ];
 
 /** The schema version this build targets (the highest migration version). */

@@ -29,6 +29,7 @@ import type {
   WorkspaceRef,
 } from '../domain';
 import type { Logger } from '../ports';
+import { ExecutionReceiptRecordingError } from './execution-receipt-manager';
 
 /**
  * Execution Orchestrator (Sprint 2j, ADR-0031) — the FIRST Application-layer
@@ -400,6 +401,12 @@ export class ExecutionOrchestrator {
           args: request.command.args,
         });
       } catch (err) {
+        if (err instanceof ExecutionReceiptRecordingError) {
+          // The command already reached a terminal persisted state before CAP-013
+          // receipt recording failed. Preserve its canonical id so downstream
+          // consumers report the real command result instead of "never ran".
+          refs.commandExecutionId = err.commandExecutionId;
+        }
         return this.failed(ExecutionStage.COMMAND_EXECUTION, selectedStages, refs, err);
       }
       refs.commandExecutionId = execution.id;

@@ -62,6 +62,13 @@ describe('JiraConnectorProvider', () => {
     await expect(provider(fake.fetchImpl).query({ query: 'project = NONE' })).resolves.toEqual({ source: 'jira', items: [] });
   });
 
+  it('renders the protocol-neutral personal-work query inside the Jira adapter', async () => {
+    const fake = fakeFetch(200, { issues: [] });
+    await provider(fake.fetchImpl).query({ query: 'personal-work', params: { actorExternalId: 'account-123' } });
+    const url = new URL(fake.calls[0]!.url);
+    expect(url.searchParams.get('jql')).toBe('assignee = "account-123" AND resolution = Unresolved');
+  });
+
   it('sends Basic auth without returning or exposing the token', async () => {
     const fake = fakeFetch(200, { issues: [{ key: 'SEC-1', fields: { summary: 'Safe', description: TOKEN } }] });
     const result = await provider(fake.fetchImpl).query({ query: 'key = SEC-1' });

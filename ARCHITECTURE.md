@@ -86,7 +86,7 @@ fixed; the implementations are not.
 | `MemoryRecord` (6 types) | Source-of-truth memory | `[NOW]` |
 | `ContextBundle` | Assembled, budgeted context for one run | `[NOW]` |
 | `PromptSpec` | Layered, provider-agnostic prompt | `[NOW]` |
-| `ResourceRef` | Uniform **input** reference (PDF, URL, ticket, repo file) | `[RESERVE]` |
+| `ResourceRef` | Uniform **input** reference (PDF, URL, ticket, repo file) | `[NOW]` (M3A-1, ADR-0074) |
 | `Artifact` (8 kinds) | First-class **output** | `[NOW]` |
 | Domain `Event`s | `TaskCreated`, `TaskStatusChanged`, `RunCompleted`, `Approval*` | `[RESERVE]` |
 | `WorkspaceRef` | Resolved working directory | `[NOW]` |
@@ -325,7 +325,7 @@ planning. Approval requests and decisions are persisted as governance records.
 | Queue / Events | in-process | Redis / Kafka | `QueueProvider` / `EventBus` port |
 | Platform | Discord | + Telegram, web | `PlatformAdapter` |
 | Workspace | local clone | git worktrees, sandboxes | `WorkspaceProvider` |
-| Connectors | none | Jira/Slack/Confluence (read-first) | `ResourceResolver` + `ActionProvider`, gated |
+| Connectors | Jira/Slack/Confluence read adapters (config-gated) | additional read/write systems | `ConnectorProvider` (ADR-0072); writes use separately approved narrow ports |
 | Extensibility | manual registration | plugin bundles + manifest | bundle of existing ports `[LATER]` |
 | Orchestration | single task | workflows | `workflowId` reserve → engine `[LATER]` |
 | Execution | single-shot | agentic loops | `AgentProfile` seam → runtime `[LATER]` |

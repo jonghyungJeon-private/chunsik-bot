@@ -98,6 +98,7 @@ import type {
 } from './runtime-provider-routing-service';
 import type { IntentResolutionContext } from './intent-resolver';
 import type { MemoryWriter } from './memory-writer';
+import type { WorkSurface } from './work-surface-query';
 import { extractTargetPathCandidates, normalizeRelativePath } from './target-scope';
 import { MAX_COMMIT_MESSAGE_CHARS, isValidCommitMessage } from './commit-message';
 import { isSafePushBranch, isSafePushRemote } from './push-target';
@@ -586,7 +587,8 @@ export interface ConversationRuntimeDeps {
   readonly runtimeProviderRouting?: RuntimeProviderRouting;
   readonly artifacts: { persistAll(taskId: Id, runId: Id, artifacts: Artifact[]): Promise<Id[]> };
   readonly composer: ResponseComposer;
-  readonly risk: { requiresApproval(level: RiskLevel): boolean };
+  /** Read-only, rebuildable personal-work projection. Replaces the unused legacy `risk` dependency (31 → 31). */
+  readonly workSurface: { forActor(actor: Actor): Promise<WorkSurface> };
   readonly intentResolver: {
     resolve(intent: Intent, context: IntentResolutionContext): ExecutionRequest | null;
     isExecution(intent: Intent): boolean;
@@ -1996,6 +1998,11 @@ export class ConversationRuntime {
       capability: intent.capability,
       requiresWork: intent.requiresWork,
     });
+
+    if (intent.type === IntentType.LOOKUP && intent.raw?.kind === 'personal-work-surface') {
+      const surface = await this.deps.workSurface.forActor(actor);
+      return this.respondComposed(message, session, this.deps.composer.composeWorkSurface(message.context, surface));
+    }
 
     // (B) Project registration — deterministic command (ADR-0018).
     if (intent.type === IntentType.REGISTER_PROJECT) {

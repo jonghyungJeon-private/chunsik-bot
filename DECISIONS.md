@@ -5756,3 +5756,543 @@ semantic beyond that reviewed revision.
 Extends ADR-0002 (ContextBuilder), ADR-0003 (PromptComposer), ADR-0017 (bounded exact `SHORT_TERM` transcript),
 ADR-0018 (exact active-project background), and ADR-0063 (provider-neutral provenance and current-fact precedence).
 Preserves the fixed `MemoryType` values and the provider-independent, local-first boundaries in `ARCHITECTURE.md`.
+
+## ADR-0074 — Resource / Work Surface Foundation
+
+- **Status:** ✅ Accepted (M3 Architecture Rebaseline, `RATIFIED_WITH_CHANGES`)
+- **Date recorded:** 2026-08-31
+- **Authority:** Product Owner ratification of the Chief Architect verdict
+- **Decision basis:** `docs/plans/m3-architecture-rebaseline.md`, with the changes recorded here
+
+### Context
+
+The M3 rebaseline identified two missing foundations for a personal work surface: a stable identity for external
+inputs and a bounded way to present work from several authoritative systems. The proposal also showed that treating
+this need as a universal Work Graph would duplicate existing aggregate ownership and invite a graph engine, graph
+database, workflow engine, or event-sourcing architecture without a demonstrated requirement.
+
+### Decision
+
+`ResourceRef` is the stable, provider-independent identity of an external input. It identifies what the system
+reads or correlates; it is not the input payload, connector DTO, cached content, or an output. The existing hard
+boundary remains unchanged: **Resource is input and Artifact is output; Resource and Artifact never merge.**
+
+The M3 Work Model is deliberately narrow:
+
+- `WorkItem` is the durable work aggregate defined by ADR-0075.
+- Work Surface is a non-authoritative read model composed from authoritative work and external-resource sources.
+- Work Surface data is rebuildable and does not become a new system of record.
+- A universal Work Graph, graph database, graph engine, generic graph abstraction, universal event sourcing, and a
+  Workflow engine are explicitly rejected for this foundation.
+
+Ratification establishes the architecture contract but does not claim implementation. `ResourceRef` remains
+`[RESERVE]` until a separately approved implementation slice lands.
+
+### M3A-1 sequencing
+
+M3A-1 contains only `ResourceRef` and the read-only Work Surface needed for the first bounded personal-work view.
+It introduces no `WorkItem` persistence, repository, schema, or database migration. It also introduces no write
+path, MCP, agent, handoff, trigger, receipt, or workflow behavior. `WorkItem` persistence begins only in M3A-2 under
+ADR-0075.
+
+### Consequences
+
+- External inputs can gain stable identity without becoming Artifacts or leaking connector-specific types into Core.
+- The first Work Surface remains a read-only projection rather than a competing source of truth.
+- M3A-1 can deliver a bounded surface before durable personal-work state is introduced.
+- Product source, persistence, migration, connector extensions, and Runtime wiring require separate bounded tasks.
+
+### Relations
+
+Extends ADR-0005's Resource/Artifact separation and partially supersedes ADR-0072 only where ADR-0072 deferred
+`ResourceRef` beyond v1. Preserves `ConnectorProvider` as the implemented canonical read-only connector seam; it
+does not introduce `ResourceResolver` or replace `ConnectorProvider`. Paired with ADR-0075.
+
+## ADR-0075 — CAP-011 Work Model
+
+- **Status:** ✅ Accepted (M3 Architecture Rebaseline, `RATIFIED_WITH_CHANGES`)
+- **Date recorded:** 2026-08-31
+- **Authority:** Product Owner ratification of the Chief Architect verdict
+- **Decision basis:** `docs/plans/m3-architecture-rebaseline.md`, with the changes recorded here
+
+### Context
+
+M3 needs durable personal-work identity that can outlive a conversation and correlate several external resources.
+Existing `Session`, `Task`, and execution-ledger aggregates retain their established ownership; CAP-011 must not
+absorb them or become a generic workflow-state container.
+
+### Decision
+
+Introduce CAP-011 Work Model with `WorkItem` as a narrow aggregate. `WorkItem` owns only:
+
+- durable work identity;
+- actor ownership;
+- an optional project reference;
+- resource correlation;
+- high-level lifecycle/status; and
+- origin.
+
+`WorkItem` explicitly does **not** own `Task`, `TaskRun`, `ExecutionPlan`, `ApprovalRequest`, provider routing,
+arbitrary conversation state, apply-preview flow state, scope-clarification blobs, or generic workflow state.
+Those concepts remain with their current aggregates and capability owners. A reference from a `WorkItem` does not
+transfer ownership, mutation authority, or approval scope.
+
+The Work Model consists of this narrow durable aggregate plus ADR-0074's non-authoritative Work Surface read model.
+It is not a Workflow, agent runtime, universal graph, or event-sourced centre.
+
+### M3A-2 sequencing
+
+M3A-2 may introduce the `WorkItem` repository, a forward-only additive migration, and persisted personal-work
+state. M3A-1 must not introduce any of them. The M3A-2 schema and implementation still require a separately
+approved bounded task and the applicable independent architecture review; this ADR does not apply a migration.
+
+### Consequences
+
+- Durable work can span conversations without expanding `Session` or turning `Task.metadata` into a universal store.
+- Existing execution, approval, routing, and conversation ownership remains intact.
+- Persistence begins additively in M3A-2, after the read-only M3A-1 foundation.
+- No M3 product source, repository, schema, or migration is implemented by this ratification.
+
+### Relations
+
+Builds on ADR-0074. Preserves ADR-0024 Planning ownership, ADR-0025 plan-scoped Approval ownership, and the existing
+`Task`/`TaskRun` meanings. ADR-0032 is amended below to keep persistent work state outside Conversation Runtime.
+
+### ADR-0032 Amendment — M3 ConversationRuntime boundary
+
+- **Status:** ✅ Accepted amendment (`RATIFIED_WITH_CHANGES`)
+- **Date recorded:** 2026-08-31
+- **Authority:** Product Owner ratification of Chief Architect decision D12
+
+This amendment is append-only; the original ADR-0032 entry remains historical authority for its accepted slices.
+For M3 and later slices, `ConversationRuntime` remains the conversation/application entry point for inbound-message
+handling and turn-level presentation. It must not own global or persistent work state. M3 must reduce its work-flow
+responsibility by moving durable work ownership to the capability that owns that state.
+
+For every completed M3 slice, `ConversationRuntimeDeps` must not grow beyond the previous accepted baseline for that
+slice. Adding a dependency requires removing or moving enough responsibility that the completed slice does not
+increase the accepted dependency surface. This constraint is an architecture acceptance condition, not a request
+to hide dependencies behind a new god-interface.
+
+`ConversationRuntime` gains no ownership of M3 work state, agent or handoff state, trigger or scheduler state,
+receipt/provenance state, connector or MCP protocol state, or generic workflow state. It may present bounded Work
+Surface results and conversationally collect decisions while the owning capability retains state and mutation
+authority. Existing `Task`, execution, Planning, Approval, Provider, and Workspace ownership remains unchanged.
+
+## ADR-0076 — CAP-012 ToolProvider and MCP Adapter Architecture
+
+- **Status:** ✅ Accepted (M3B-1, `APPROVED_WITH_CHANGES`)
+- **Date recorded:** 2026-09-02
+- **Authority:** Chief Architect
+
+### Context
+
+M3 requires a provider-independent tool boundary before any concrete MCP infrastructure can be introduced. Extending
+`ConnectorProvider`, leaking MCP protocol types into Core, or creating a second approval system would violate the
+existing capability and governance boundaries. M3B-1 therefore establishes only the protocol-neutral foundation.
+
+### Ratified decisions D1–D15
+
+1. **D1:** Core introduces a protocol-neutral `ToolProvider` boundary. Core imports no MCP type or SDK.
+2. **D2:** Tool structural identity is exactly provider `source` plus provider-local tool `name`; there is no separate
+   operation-id hierarchy or `ToolOperationDescriptor`.
+3. **D3:** `ToolSchema` is bounded to JSON null, boolean, number, string, object properties and required fields, and
+   arrays/items. It has no metadata or arbitrary schema-extension escape hatch.
+4. **D4:** Every descriptor has a QuirkyBot-owned `READ_ONLY` or `MUTATING` effect classification.
+5. **D5:** Any future provider-supplied risk metadata is advisory only. QuirkyBot effect and risk policy is authoritative.
+6. **D6:** A provider owns provider-local discovery, availability, descriptor projection, one invocation by tool name,
+   and containment of provider failures behind the bounded result contract.
+7. **D7:** The M3B-1 failure taxonomy is `TOOL_NOT_FOUND`, `TOOL_UNAVAILABLE`, `INVALID_INPUT`,
+   `MUTATION_NOT_AUTHORIZED`, `EXECUTION_FAILED`, and `OUTPUT_INVALID`. It contains no parallel approval result.
+8. **D8:** M3B-1 delegates only `READ_ONLY` invocations. `MUTATING` invocations fail closed with
+   `MUTATION_NOT_AUTHORIZED` before the provider is invoked.
+9. **D9:** Future mutation authorization must reuse the existing governed execution and plan-scoped approval lineage;
+   CAP-012 does not create a parallel Tool approval path.
+10. **D10:** `ToolManager` owns an immutable composition-time registry. Runtime register/unregister, dynamic plugin
+    loading, and registry mutation are prohibited.
+11. **D11:** `ToolManager` owns deterministic duplicate-source and composite-identity rejection, discovery, bounded
+    input/output validation, READ_ONLY delegation, failure classification, and raw-error containment. It owns no
+    WorkItem, conversation, routing, persistence, execution-history, risk-policy, approval, or MCP state.
+12. **D12:** `ToolManager` has no `ApprovalManager` dependency and exposes no public registry-entry domain type.
+13. **D13:** `ToolInvocation` reuses canonical `Actor.id` and optional `ResourceRef` correlation and introduces no
+    parallel actor or resource identity.
+14. **D14:** `ConnectorProvider` remains the canonical read-only connector seam and is neither replaced nor extended by
+    `ToolProvider`.
+15. **D15:** A concrete infrastructure-only MCP adapter is deferred to M3B-2 or later. M3B-1 adds no MCP SDK, live
+    provider, ConversationRuntime tool path, ExecutionOrchestrator stage, persistence, or migration.
+
+### Consequences
+
+M3B-1 can compose an empty immutable tool-provider set and validate the complete Core boundary offline. Concrete MCP
+transport, governed mutation execution, Runtime exposure, external provider calls, and live UAT remain separately
+bounded later work.
+
+### Relations
+
+Extends ADR-0074's provider-neutral `ResourceRef` correlation and preserves ADR-0072's `ConnectorProvider` boundary,
+ADR-0025's plan-scoped Approval ownership, and the ADR-0032 M3 ConversationRuntime dependency freeze.
+
+## ADR-0077 — MCP Adapter Initialization and Trust Boundary
+
+- **Status:** ✅ Accepted (M3B-2A)
+- **Date recorded:** 2026-09-02
+- **Authority:** Chief Architect
+
+### Context
+
+ADR-0076 ratified the protocol-neutral CAP-012 Core boundary while deferring concrete MCP infrastructure. M3B-2A
+introduces one infrastructure-only MCP client adapter without changing that Core contract or activating a production
+transport. MCP discovery data and annotations originate outside QuirkyBot's trust boundary and therefore cannot grant
+read-only authority, broaden schemas, expose protocol failures, or create a second approval path.
+
+### Ratified decisions
+
+1. The adapter owns an explicit asynchronous `initialize()` lifecycle. Initialization performs one bounded MCP
+   `listTools` discovery, validates and maps the entire result, and only then atomically publishes the snapshot.
+2. `ToolProvider.listTools()` remains a pure synchronous read of one immutable post-initialization snapshot. There is
+   no lazy discovery, runtime rediscovery, refresh loop, reconnect/retry, or list-changed subscription.
+3. Provider identity is trusted composition configuration `mcp:<serverId>`. Server-reported name, title, and version
+   are diagnostic/display data only. Tool identity retains the exact discovered MCP tool name used by `callTool`;
+   duplicate or unrepresentable identities fail initialization closed.
+4. MCP annotations are advisory only. A tool is `READ_ONLY` only when its exact name is explicitly allow-listed by
+   trusted adapter configuration and MCP metadata does not contradict that classification. Unknown, absent,
+   ambiguous, contradictory, or unconfigured effect information maps fail-closed to `MUTATING` or rejects discovery;
+   `readOnlyHint` alone never grants read-only authority.
+5. MCP schemas map only into the bounded ratified `ToolSchema` subset. Any enum, union, constraint, arbitrary metadata,
+   or other semantic that cannot be represented without loss rejects initialization deterministically. Core gains no
+   JSON-Schema escape hatch.
+6. Invocation translates the exact `ToolInvocation.toolName` and JSON object input to MCP `callTool({ name,
+   arguments })`. `ToolManager` remains ahead of the adapter for existence, input validation, the `MUTATING` gate,
+   availability, and output-schema validation. The adapter owns no product authorization and has no `ApprovalManager`.
+7. Representable structured MCP output is preferred. Text-only content uses one small deterministic adapter-owned
+   projection. Binary, image, audio, resource, embedded, malformed, or oversized content fails boundedly and is never
+   dumped or coerced. Raw SDK/JSON-RPC errors, stacks, server internals, environment, credentials, and transport details
+   never cross `ToolResult`.
+8. The adapter uses exactly the six ADR-0076 failure codes. It adds no `TIMEOUT`; adapter timeout or protocol failure
+   maps to `EXECUTION_FAILED`, while malformed or unsupported successful output maps to `OUTPUT_INVALID`.
+9. The adapter owns an idempotent close/teardown lifecycle behind an injected client-session seam. The official MCP v2
+   dependency is adapter-local and exact-pinned as `@modelcontextprotocol/client@2.0.0` (not
+   `@modelcontextprotocol/sdk`). Core retains zero MCP dependencies.
+10. Production transport activation is deferred. This slice adds no `StdioClientTransport`, child process,
+    Streamable HTTP, SSE, network connection, MCP handshake, startup auto-connect, or environment-triggered activation;
+    production `TOOL_PROVIDERS` remains empty.
+11. `ConnectorProvider` and existing connector implementations remain unchanged; `ConnectorToolBridge` is deferred.
+    There is no ConversationRuntime tool integration, ExecutionOrchestrator tool stage, Tool persistence,
+    `ToolInvocation` aggregate, `ExecutionReceipt`, schema migration, or parallel approval path in this slice.
+
+### Consequences
+
+M3B-2A can validate real Core/Application/composition behavior offline while faking only the external MCP client-session
+boundary. A later separately ratified and authorized slice is required to choose and production-activate any live MCP
+transport or expose Tool invocation through ConversationRuntime.
+
+### Implementation compatibility finding — Chief Architect decision required
+
+The exact `@modelcontextprotocol/client@2.0.0` package declares Node `>=20`, while the repository currently permits
+Node `>=18.18` and this slice was validated on Node `v18.20.5`. TypeScript compilation and every fake-session offline
+test pass because the production-unwired adapter imports the official Client only as a type. A direct offline load of
+the official Client on the current Node process fails before construction because `TransformStream` is not globally
+defined. Injecting Node 18's `node:stream/web` `TransformStream` makes offline Client construction and close succeed,
+but adopting that process-global compatibility shim or raising the repository Node baseline is an Architecture choice,
+not a Builder decision. The Chief Architect must ratify one of those directions before any real official-Client runtime
+activation. Until then, production transport activation remains blocked and this slice stays fake-session/offline only.
+
+### Relations
+
+Extends ADR-0076 without changing its Core contract. Preserves ADR-0025 plan-scoped Approval ownership, ADR-0032's M3
+ConversationRuntime dependency freeze, and ADR-0072's independent ConnectorProvider boundary.
+
+## ADR-0078 — CAP-013 Execution Receipt and Provenance Ownership
+
+- **Status:** ✅ Accepted (M3C-1)
+- **Date recorded:** 2026-09-02
+- **Authority:** Chief Architect
+
+### Context
+
+The execution ledger records producer-owned operational detail, but consumers need a small durable provenance fact
+that does not copy raw execution payload or take ownership from the producing aggregate. M3C-1 introduces CAP-013 for
+actual terminal CommandExecution producers while preserving the existing execution and approval boundaries.
+
+### Ratified decisions
+
+1. **D1:** An `ExecutionReceipt` is immutable, durable, and insert-once.
+2. **D2:** CAP-013 owns receipt identity, derivation, and persistence; the producer retains ownership of execution.
+3. **D3:** Receipts represent only actual terminal executions.
+4. **D4:** M3C-1 records no `BLOCKED` receipt and introduces no non-terminal receipt outcome.
+5. **D5:** `CommandExecution` is the first and only M3C-1 producer.
+6. **D6:** Source identity is the pair `executionKind` plus the canonical producer aggregate id (`sourceId`).
+7. **D7:** CAP-013 introduces no generic `executionId`; receipt id remains distinct from source id.
+8. **D8:** Authorization records only `NOT_REQUIRED` or `APPROVAL` plus `approvalId`; approval status, approver,
+   reason, and decision remain Approval-owned.
+9. **D9:** Receipt derivation reloads the canonical producer directly from `StorageProvider`.
+10. **D10:** `ExecutionReceiptRepository` is a dedicated insert-once port and does not extend `Repository<T>`.
+11. **D11:** SQLite persistence is the forward-only additive migration v8 with uniqueness on producer identity and
+    the single execution-plan lookup index.
+12. **D12:** Receipt recording composes above capabilities after terminal `CommandExecution` persistence; CAP-007
+    and CAP-013 managers do not depend on each other.
+13. **D13:** Receipt-recording failure does not roll back or rerun the command and is not a transaction spanning the
+    producer and receipt stores. The canonical `CommandExecution.id` is retained for reconciliation.
+14. **D14:** A receipt contains no raw execution payload, including command, args, command hash, output, exit code,
+    duration, prompt, response, environment, secret, or arbitrary metadata.
+15. **D15:** CAP-013 owns no receipt digest and does not treat a producer digest or command hash as receipt identity.
+16. **D16:** Actor, WorkItem, ResourceRef, Artifact, Provider, Tool, and other speculative correlation fields are
+    excluded.
+17. **D17:** `ConversationRuntime` gains no dependency and its dependency count does not increase.
+18. **D18:** `ExecutionOrchestrator` may consume the composed command runner but stays aggregate-free and does not own
+    receipt state or policy.
+19. **D19:** Tool and MCP receipt production is deferred; existing ToolProvider and MCP contracts are unchanged.
+20. **D20:** Idempotency is keyed by `(executionKind, sourceId)`; a uniqueness race reloads the existing canonical
+    receipt and never updates or upserts it.
+
+### Consequences
+
+M3C-1 adds a minimal queryable provenance record for terminal commands without duplicating their execution payload.
+A terminal command remains canonical and reconcilable if receipt persistence fails. Additional producer kinds,
+correlation fields, receipt outcomes, retries, event sourcing, and Tool/MCP integration require later ratified slices.
+
+### Relations
+
+Extends ADR-0028's CommandExecution ownership and ADR-0025's plan-scoped approval lineage. Preserves ADR-0031's
+aggregate-free ExecutionOrchestrator, ADR-0032's ConversationRuntime dependency freeze, and ADR-0076/ADR-0077 Tool/MCP
+deferral.
+
+## ADR-0079 — AgentProfile Identity and Immutable Registry
+
+- **Status:** ✅ Accepted (M3D-1)
+- **Date recorded:** 2026-09-02
+- **Authority:** Chief Architect
+
+### Context
+
+M3D needs a stable, provider-independent identity for source-controlled agent configuration without turning an agent
+persona into an Actor, Provider, execution owner, authority grant, runtime, or persistence aggregate. The first slice
+therefore establishes only the configuration value and immutable composition-time lookup boundary.
+
+### Ratified decisions
+
+1. **D1:** `AgentProfile` is a configuration value, not an aggregate or service. Its fields are exactly `id`,
+   `displayName`, `role`, `purpose`, and `instructions`.
+2. **D2:** `AgentProfileId` is a stable QuirkyBot-owned nominal string identity. It does not reuse `Actor.id`, Provider
+   id, Tool source, Session id, Task id, or WorkItem id.
+3. **D3:** Agent configuration is config-first and source-controlled. M3D-1 adds no database persistence, repository,
+   schema change, migration, refresh, plugin loading, network source, or runtime mutation path; SQLite remains v8.
+4. **D4:** The identity grammar is 1–128 characters: an ASCII alphanumeric first character followed only by ASCII
+   alphanumerics, `.`, `_`, `:`, or `-`. Text fields must be non-empty after trimming, retain their configured value,
+   reject disallowed control characters, and are bounded at 128 characters for `displayName`, 128 for `role`, 1,024
+   for `purpose`, and 16,384 for `instructions`.
+5. **D5:** `AgentProfileRegistry` validates the complete configured set at construction, defensively copies and freezes
+   returned profiles, sorts them lexicographically by id, accepts an empty set, rejects duplicate ids, and fails an
+   unknown lookup closed with a bounded deterministic error. It exposes only `get(id)` and `list()`.
+6. **D6:** Composition configures an empty registry until profiles are explicitly supplied. There is no default or
+   fallback agent.
+7. **D7:** Agent is not Actor. WorkItem ownership remains its canonical `actorId` (`Actor.id`); AgentProfile grants no
+   identity, permission, approval, risk, or execution authority and owns no WorkItem.
+8. **D8:** Agent is not Provider. M3D-1 adds no `providerId`, `modelId`, preferred or allowed Providers, capability or
+   required-capability field, routing hint, or Provider selection behavior.
+9. **D9:** Agent is not Tool. M3D-1 adds no Tool source or name, `ToolEffect`, tool allow-list, authority setting,
+   memory scope, runtime setting, arbitrary metadata, or arbitrary JSON.
+10. **D10:** `ConversationRuntime` owns no Agent state, gains no `AgentProfileRegistry` dependency, and retains its
+    existing dependency count. `ExecutionOrchestrator`, ToolProvider, ExecutionReceipt, and StorageProvider are
+    unchanged.
+11. **D11:** M3D-1 introduces no TriggerSource, proactive execution, autonomous loop, sub-agent runtime, or other Agent
+    runtime behavior. The registry is configuration lookup only.
+12. **D12:** WorkHandoff, WorkHandoffManager, WorkHandoffRepository, any StorageProvider handoff seam, and migration v9
+    are deferred to M3D-2 / CAP-014 and require their own architecture decision; this ADR does not predraft it.
+13. **D13:** M3E Trigger behavior is deferred and is not implied by the AgentProfile seam.
+
+### Consequences
+
+M3D-1 can identify and retrieve validated agent persona configuration deterministically without changing work
+ownership, provider routing, tool authority, persistence, or runtime execution. Any future connection from a profile to
+capabilities, prompts, Providers, Tools, memory, authority, handoff, or triggers requires separately bounded architecture
+and implementation work.
+
+### Relations
+
+Supersedes ADR-0008's speculative AgentProfile field shape while preserving its configuration-only and no-agent-runtime
+principles. Preserves ADR-0031's aggregate-free ExecutionOrchestrator, ADR-0032's ConversationRuntime dependency freeze,
+ADR-0075's Actor-owned WorkItem, ADR-0076's Tool boundary, and ADR-0078's ExecutionReceipt ownership.
+
+## ADR-0080 — CAP-014 Work Handoff Durable Provenance
+
+- **Status:** ✅ Accepted (M3D-2)
+- **Date recorded:** 2026-09-02
+- **Authority:** Chief Architect, Product Decision D18
+
+### Context
+
+M3D needs a durable record that one configured AgentProfile handed bounded work context to another without turning
+that record into agent dispatch, receiving-agent execution, workflow state, authority, or WorkItem ownership. The
+handoff must correlate existing inputs and outputs by their canonical identities while preserving the owners of those
+aggregates.
+
+### Ratified decisions
+
+1. `WorkHandoff` is immutable, durable, and insert-once. Its fields are exactly `id`, required `workItemId`, required
+   distinct `fromAgentProfileId` and `toAgentProfileId`, bounded `objective`, `resourceRefs`, `artifactIds`,
+   `executionReceiptIds`, and `createdAt`.
+2. The objective is trimmed, non-empty, and at most 2,000 characters. Reference collections are defensively copied,
+   immutable, deduplicated by existing stable identity, and retain first-input order.
+3. A handoff is AgentProfile-to-AgentProfile only. Both configured profiles and the canonical WorkItem must exist;
+   source and destination must differ.
+4. Artifact and ExecutionReceipt correlations are ids only and must resolve through their existing canonical
+   repositories before insertion. ResourceRef remains the provider-independent external-input value of ADR-0074.
+5. Correlation transfers no aggregate ownership, permission, approval, execution authority, provider selection,
+   Tool authority, lifecycle, or mutation right.
+6. `WorkHandoffManager` is the sole narrow creation owner. It does not mutate WorkItem, dispatch an agent, execute a
+   Tool or Provider, transition Task, request Approval, manage AgentProfile lifecycle, or own Runtime state. It has no
+   ApprovalManager or RiskPolicy dependency.
+7. `WorkHandoffRepository` is a dedicated insert-once port with only `insert`, `get`, `listByWorkItem`,
+   `listByFromAgent`, and `listByToAgent`. It does not extend the generic repository and exposes no update, save,
+   delete, upsert, or generic query.
+8. SQLite persistence is the forward-only additive migration v9 with the bounded `work_handoffs` columns and lookup
+   indexes for WorkItem, source profile, and destination profile. AgentProfile remains source-controlled configuration
+   and gains no persistence table.
+9. Composition may inject `AgentProfileRegistry` into `WorkHandoffManager`. `ConversationRuntime` gains no dependency,
+   retains its accepted dependency count of 31, and owns no handoff behavior.
+10. `ExecutionOrchestrator`, ToolProvider, Provider routing, Approval, ExecutionReceipt production, and existing
+    WorkItem lifecycle remain unchanged. TriggerSource, proactive/background execution, autonomous loops, agent
+    dispatch, and receiving-agent execution are deferred.
+
+### Consequences
+
+Consumers can query durable, bounded handoff provenance without creating a workflow engine or granting an AgentProfile
+runtime authority. A later separately ratified slice is required to act on a handoff, dispatch or execute an agent, or
+connect handoffs to ConversationRuntime or triggers.
+
+### Relations
+
+Extends ADR-0079's configuration-only AgentProfile identity and ADR-0075's Actor-owned WorkItem. Preserves ADR-0074's
+Resource/Artifact separation, ADR-0078's ExecutionReceipt ownership, ADR-0031's aggregate-free ExecutionOrchestrator,
+and ADR-0032's ConversationRuntime dependency freeze.
+
+## ADR-0081 — Trigger Provenance and Proactive Work Decision Foundation
+
+- **Status:** ✅ Accepted (M3E-1)
+- **Date recorded:** 2026-09-03
+- **Authority:** Product Owner ratification of Chief Architect decisions D1–D15
+
+### Context
+
+M3E needs a bounded way to record why existing work was considered for proactive continuation before any scheduler,
+background runtime, agent dispatch, or execution behavior is introduced. A trigger observation must not itself become
+authority, approval, execution permission, durable workflow state, or a second owner of WorkItem lifecycle.
+
+### Ratified decisions D1–D15
+
+1. **D1:** `TriggerSource` is an immutable Core domain value describing application-level trigger provenance. It is
+   not a port, provider, aggregate, event, scheduler, queue message, or durable record.
+2. **D2:** The only M3E-1 kind is `INTERNAL_CONTINUATION`. Unsupported, absent, or malformed kinds fail closed.
+3. **D3:** Its fields are exactly `kind`, bounded `provenanceId`, and supplied `observedAt`. `provenanceId` is the
+   stable correlation identity of the observation and does not become WorkItem, Actor, AgentProfile, Provider, Tool,
+   Session, Task, Approval, or Execution identity.
+4. **D4:** `provenanceId` uses the deterministic 1–128 character QuirkyBot-owned identity grammar: an ASCII
+   alphanumeric first character followed only by ASCII alphanumerics, `.`, `_`, `:`, or `-`.
+5. **D5:** `observedAt` is explicit caller input and must be a canonical UTC ISO-8601 timestamp with millisecond
+   precision. Evaluation uses no clock, randomness, implicit current time, or generated identity.
+6. **D6:** Trigger provenance grants no identity, authority, permission, approval, execution, dispatch, Provider,
+   Tool, WorkItem mutation, handoff creation, or scheduling right; each remains `NONE` in M3E-1.
+7. **D7:** `ProactiveWorkDecision` is an immutable, non-durable value with exactly `workItemId`, `agentProfileId`,
+   `trigger`, `disposition`, and `reason`. It is not an aggregate, receipt, handoff, approval, execution plan, or event.
+8. **D8:** Dispositions are exactly `CONTINUE` and `NO_ACTION`. Reasons are exactly `ACTIVE_WORK_ITEM`,
+   `WORK_ITEM_COMPLETED`, and `WORK_ITEM_CANCELED`; only their lifecycle-consistent pairings are valid.
+9. **D9:** `ProactiveWorkService` is the sole M3E-1 evaluation owner. It canonical-loads an existing WorkItem by id
+   through `StorageProvider.workItems.get` and resolves the explicitly supplied `AgentProfileId` through the immutable
+   `AgentProfileRegistry`.
+10. **D10:** A valid trigger, known profile, and canonical `ACTIVE` WorkItem deterministically produce
+    `CONTINUE / ACTIVE_WORK_ITEM`. `COMPLETED` and `CANCELED` produce `NO_ACTION` with their corresponding bounded
+    reason.
+11. **D11:** Unknown WorkItem, unknown AgentProfile, malformed request, and malformed TriggerSource fail closed with
+    bounded deterministic Core errors. No default or fallback WorkItem, AgentProfile, trigger, or outcome exists.
+12. **D12:** Evaluation is read-only and side-effect-free. It does not mutate WorkItem, create WorkHandoff, request or
+    inspect Approval, execute or dispatch work, invoke Tool or Provider, route a Provider, or persist the decision.
+13. **D13:** The service depends only on the existing smallest WorkItem read seam and AgentProfileRegistry. It has no
+    dependency on `ApprovalManager`, `ExecutionOrchestrator`, `AiProvider`, `ToolProvider`, provider routing, queue,
+    scheduler, clock, id generator, or concrete adapter.
+14. **D14:** M3E-1 introduces no TriggerProvider port, adapter, caller, runtime entry point, ConversationRuntime or
+    ExecutionOrchestrator change, autonomous loop, background runtime, schema, migration, SQLite fixture, or durable
+    write path. The accepted ConversationRuntime dependency baseline remains exactly 31.
+15. **D15:** Future scheduling, trigger ingestion, agent dispatch/execution, handoff continuation, persistence, and
+    runtime exposure require separately ratified and bounded slices. M3E-1 authorizes only this decision foundation.
+
+### Validation boundary
+
+`E2E = NOT_APPLICABLE` — M3E-1 is a pure read-only application decision foundation with no runtime entry point or
+durable write path.
+
+### Consequences
+
+Core can make one deterministic, inspectable decision about whether already-active work is eligible for continuation
+without implying that continuation has been approved or executed. Later M3E slices can introduce concrete trigger or
+runtime behavior only behind a separately ratified boundary, while this value remains provider- and platform-neutral.
+
+### Relations
+
+Implements the M3E decision foundation anticipated by ADR-0079 and ADR-0080 while preserving ADR-0075 WorkItem
+ownership, ADR-0025 Approval ownership, ADR-0031's aggregate-free ExecutionOrchestrator, and ADR-0032's exact
+ConversationRuntime dependency baseline. It supersedes the earlier rebaseline placeholder that described ADR-0081 as
+a definition-only `TriggerSource` port: M3E-1 defines a domain provenance value and no trigger-provider port.
+
+## ADR-0082 — Proactive Delegation and WorkHandoff Application Integration
+
+- **Status:** ✅ Accepted (M3E-2)
+- **Date recorded:** 2026-09-04
+- **Authority:** Chief Architect / Product Owner verified gate resolution
+
+### Context
+
+M3E needs one bounded application path that can decide whether an existing active WorkItem is eligible for an explicit
+AgentProfile-to-AgentProfile delegation and, in a separate durable stage, record CAP-014 provenance. The path must not
+turn eligibility into authority, mutate the WorkItem, dispatch the destination agent, or widen Runtime, Approval,
+execution, Provider, Tool, or persistence ownership.
+
+### Ratified decisions D1–D16
+
+1. **D1:** `ProactiveDelegationDecision` is a public immutable, non-durable Core value distinct from
+   `ProactiveWorkDecision`; the latter remains unchanged and gains no `DELEGATE` disposition.
+2. **D2:** Delegation dispositions are exactly `DELEGATE` and `NO_ACTION`. Reasons are exactly
+   `DELEGATABLE_ACTIVE_WORK_ITEM`, `WORK_ITEM_COMPLETED`, and `WORK_ITEM_CANCELED`, with only lifecycle-consistent
+   pairings accepted.
+3. **D3:** One bounded request carries `trigger`, `workItemId`, `fromAgentProfileId`, `toAgentProfileId`, `objective`,
+   caller-supplied `handoffId`, caller-supplied `createdAt`, and optional `resourceRefs`, `artifactIds`, and
+   `executionReceiptIds`. It does not duplicate the `WorkHandoff` aggregate.
+4. **D4:** `ProactiveDelegationService.evaluate` is pure and read-only. It validates the request and TriggerSource,
+   canonical-loads the WorkItem, resolves both profiles, and returns only an eligibility decision.
+5. **D5:** Only canonical `ACTIVE` work is delegatable. `COMPLETED` and `CANCELED` return `NO_ACTION`; unknown or
+   malformed input, unknown profiles, and identical source/destination profiles fail closed.
+6. **D6:** `record` is a separate durable-effect stage. It revalidates canonical eligibility immediately before
+   invoking CAP-014 and treats no earlier decision as an authority token.
+7. **D7:** Record-time stale `ACTIVE` to `COMPLETED` or `CANCELED` state fails closed with zero WorkHandoff writes.
+8. **D8:** `WorkHandoffManager` remains the canonical CAP-014 validation and persistence owner. The proactive service
+   depends on it directly and does not depend on `ProactiveWorkService`.
+9. **D9:** CAP-014 adds the bounded `recordIdempotent` operation while preserving existing `create` insert-once
+   behavior. No UPDATE, overwrite, generic UPSERT, table, schema, migration, or persistence owner is added.
+10. **D10:** A missing `handoffId` inserts once; an existing id with exactly equal canonical durable payload returns
+    the persisted value with zero write; an existing id with differing payload fails closed with
+    `WORK_HANDOFF_IDEMPOTENCY_CONFLICT`.
+11. **D11:** Exact semantic equality includes id, WorkItem, both AgentProfiles, objective, all three reference
+    collections, and `createdAt`. It is neither partial nor fuzzy.
+12. **D12:** A concurrent uniqueness collision is reconciled by re-reading the canonical handoff: exact equality
+    returns it and any difference fails closed. Domain semantic comparison remains in `WorkHandoffManager`.
+13. **D13:** Different `handoffId` values remain legitimate distinct delegation records; no uniqueness is introduced
+    on WorkItem or AgentProfile correlations.
+14. **D14:** WorkItem mutation, ApprovalManager, ExecutionOrchestrator, Provider, Tool, agent dispatch, and destination
+    Agent execution remain zero. A handoff grants no authority or execution permission.
+15. **D15:** `ConversationRuntime` and its accepted dependency count of 31 remain unchanged. There is no production
+    caller, new capability, TriggerRecord, scheduler, queue, background runtime, or runtime wiring.
+16. **D16:** SQLite remains schema v9. Local E2E uses only isolated ephemeral SQLite and exercises real migrations,
+    repositories, registries, managers, evaluate/record separation, durable reload, and bounded correlation queries;
+    executing that DB-mutating test remains a separate Human gate.
+
+### Consequences
+
+Core can distinguish read-only delegation eligibility from an idempotent durable provenance effect without creating an
+agent runtime or widening authority. A later separately ratified slice is required to dispatch or execute the receiving
+agent, create a production caller, or integrate this behavior into ConversationRuntime.
+
+### Relations
+
+Extends ADR-0081's trigger and read-only decision foundation and ADR-0080's CAP-014 provenance aggregate. Preserves
+ADR-0075 WorkItem ownership, ADR-0025 Approval ownership, ADR-0031's aggregate-free ExecutionOrchestrator, and
+ADR-0032's exact ConversationRuntime dependency baseline.
