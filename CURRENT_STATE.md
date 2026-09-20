@@ -5,6 +5,9 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
+- **M3E-3:** WorkHandoff consumption eligibility service implemented locally (ADR-0083); immutable
+  CONTINUE/NO_ACTION decisions only, schema v9 and Runtime dependency baseline 31 unchanged.
+  Exact-HEAD independent Claude / Chief Architect review remains pending before merge.
 - **Phase:** `M2 = COMPLETE_AND_ACCEPTED / CLOSED`; `QUIRKYBOT_DEV_V1 = MILESTONE_REACHED / CLOSED` with
   `QUIRKYBOT_DEV_V1_ACCEPTANCE_CRITERIA = MET`. Stage 2C Slice 3C was implemented in commit `683297f`, independently
   reviewed `PASS`, and closed the prior delegated offline implementation gap. Bounded Live UAT was `EXECUTED` and

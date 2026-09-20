@@ -63,3 +63,4 @@ export * from './agent-profile-registry';
 export * from './work-handoff-manager';
 export * from './proactive-work-service';
 export * from './proactive-delegation-service';
+export * from './work-handoff-consumption-service';

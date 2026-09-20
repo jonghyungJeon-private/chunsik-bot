@@ -6296,3 +6296,58 @@ agent, create a production caller, or integrate this behavior into ConversationR
 Extends ADR-0081's trigger and read-only decision foundation and ADR-0080's CAP-014 provenance aggregate. Preserves
 ADR-0075 WorkItem ownership, ADR-0025 Approval ownership, ADR-0031's aggregate-free ExecutionOrchestrator, and
 ADR-0032's exact ConversationRuntime dependency baseline.
+
+
+## ADR-0083 — WorkHandoff Consumption Eligibility Decision
+
+- **Status:** Proposed contract documentation within the authorized M3E-3 boundary; independent Chief Architect review pending
+- **Date:** 2026-09-20
+
+### Context
+
+ADR-0082 produces durable handoff provenance but does not interpret it for continuation eligibility.
+M3E-3 authorizes a read-only consumption decision while preserving ARCHITECTURE.md sections 3 and 8,
+ADR-0080 creation ownership, and the execution boundary.
+
+### Decision
+
+`WorkHandoffConsumptionService.evaluate(handoffId)` canonical-loads the durable handoff, its referenced
+WorkItem, and both configured AgentProfiles through existing read seams. The request supplies only the
+handoff identity; callers cannot supply a stale aggregate or substitute a receiving profile.
+
+The immutable, non-durable result contains exactly `handoffId`, `workItemId`, `fromAgentProfileId`,
+`toAgentProfileId`, `disposition`, and `reason`. ACTIVE maps to CONTINUE / ACTIVE_WORK_ITEM;
+COMPLETED and CANCELED map to NO_ACTION / WORK_ITEM_COMPLETED and WORK_ITEM_CANCELED respectively.
+Unknown lifecycle values fail closed rather than being treated as cancellation.
+
+Identity validation preserves the existing durable handoff contract of canonical non-empty text;
+it does not retroactively impose the proactive producer's narrower caller-supplied ID grammar.
+Malformed requests or handoff payloads, absent handoffs or WorkItems, unresolved source/destination
+profiles, and mismatched repository lookup identities fail with bounded `WorkHandoffConsumptionError`
+codes. Infrastructure exceptions propagate without a decision. Existing domain handoff validation
+checks profile separation and reference shape. Artifact and receipt correlation ownership stays with
+the creation owner; consumption does not re-resolve those correlations or interpret them as authority.
+
+The result is a snapshot of observed canonical state, not an atomic lease or an authority token.
+Repeated calls reread current state and perform zero writes. WorkHandoffManager remains the sole
+creation/idempotency owner and gains no consumption behavior. No schema or migration is added: SQLite
+stays at v9. Production wiring, capabilities, ExecutionOrchestrator, and ConversationRuntime remain
+unchanged; the accepted Runtime dependency baseline is 31.
+
+### Consequences
+
+Eligibility can be inspected deterministically without executing continuation. CONTINUE grants no
+agent dispatch, receiving-agent execution, Provider or tool execution, WorkItem mutation, approval,
+ConversationRuntime execution, or user-facing continuation. Claim/lease/acknowledgement, retry engines,
+schedulers/triggers, autonomous loops, and production callers remain outside this slice.
+
+Offline validation composes real Core application services, registry, managers, repositories, and
+migrations against mkdtemp SQLite, including durable produce/reopen/consume and terminal NO_ACTION.
+No external boundary is constructed. Ephemeral test DB execution is authorized by this task handoff.
+
+### V1 / V2
+
+[NOW] Bounded unwired eligibility service. [LATER] Dispatch, execution, scheduling and runtime integration
+require a separately authorized architectural slice. Chief Architect decision required before merge:
+independent review of this exact committed contract and implementation; this document does not claim
+that review or ratification has occurred.
