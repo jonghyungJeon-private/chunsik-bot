@@ -7,6 +7,17 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — M3E-4 Handoff Continuation Admission and TaskRun Binding
+
+- Added unwired continuation admission to an existing canonical Task, with atomic state revalidation and an
+  immutable one-to-one handoff/task binding. Exact TaskRun provenance uses the existing taskId relationship;
+  no TaskRun is created or started and no execution authority is granted.
+- Added SQLite v10 binding persistence, idempotent replay/conflict handling and disposable restart/stale-state
+  coverage. CAP-013 receipt producers, WorkHandoff/WorkItem ownership and runtime wiring remain unchanged.
+- Ratified ADR-0084 for independently reviewed implementation `825e97e89745eb5942090299ab3cafe5612edc5d`
+  (PASS_WITH_NON_BLOCKING_FINDINGS, 0 blocking findings); synchronized canonical M3D/M3E foundation statuses,
+  including M3E-3 delivery via PR #58. The architecture contract and Product implementation are unchanged.
+
 ### Added — M3E-3 WorkHandoff Consumption Decision
 
 - Ratified ADR-0083 for implementation `5ef1c26d065b20bb14684d1f272264af13fabc26` following independent

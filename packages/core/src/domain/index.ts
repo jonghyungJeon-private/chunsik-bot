@@ -28,3 +28,4 @@ export * from './work-handoff';
 export * from './trigger-source';
 export * from './proactive-work-decision';
 export * from './proactive-delegation-decision';
+export * from './continuation-binding';

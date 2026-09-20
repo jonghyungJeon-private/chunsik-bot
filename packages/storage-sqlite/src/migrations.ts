@@ -189,6 +189,16 @@ export const MIGRATIONS: readonly Migration[] = [
       );
     },
   },
+  {
+    version: 10,
+    name: 'immutable handoff continuation bindings (M3E-4)',
+    up(db) {
+      db.exec(`CREATE TABLE IF NOT EXISTS continuation_bindings (
+        handoff_id TEXT PRIMARY KEY NOT NULL,
+        task_id TEXT NOT NULL UNIQUE,
+        recorded_at TEXT NOT NULL);`);
+    },
+  },
 ];
 
 /** The schema version this build targets (the highest migration version). */

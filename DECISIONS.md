@@ -6354,3 +6354,83 @@ No external boundary is constructed. Ephemeral test DB execution is authorized b
 require a separately authorized architectural slice. The next delivery boundary is independent Claude
 exact-HEAD review of the documentation close-out commit; publication, PR and merge remain separately
 authorized steps.
+
+
+## ADR-0084 — WorkHandoff Continuation Admission and TaskRun Binding
+
+- **Status:** Ratified
+- **Date:** 2026-09-21
+- **Ratified implementation HEAD:** `825e97e89745eb5942090299ab3cafe5612edc5d`
+- **Independent Review:** PASS_WITH_NON_BLOCKING_FINDINGS; **Blocking Findings:** 0
+- **Independent Architecture Review:** ADR_0084_READY_FOR_CHIEF_ARCHITECT_RATIFICATION
+- **Chief Architect Ratification:** APPROVED, as confirmed by the Product Owner's M3E-4 ratification
+  close-out instruction. The substantive architecture contract is unchanged.
+
+### Context
+
+M3E-3 is delivered through PR #58 at main `618b5afcc6079be956d3756f9281506907571dde`.
+TaskRun already denotes one execution attempt, and TaskManager.startRun records STARTED with startedAt.
+Creating a run merely to reserve an identity would misrepresent execution. Task is conversation-anchored;
+WorkItem is durable personal work and must not acquire execution ownership. CAP-013 already owns receipts.
+
+### Decision
+
+Use an immutable continuation binding (Option B) plus existing TaskRun.taskId (Option C). Admission accepts
+only handoffId and an EXISTING Task id, never a prior CONTINUE decision. It creates no Task and no TaskRun.
+One handoff binds to exactly one Task, and one Task to exactly one handoff. The binding has only handoffId,
+taskId and recordedAt; WorkItem and destination AgentProfile are resolved from immutable WorkHandoff.
+TaskRun.id remains the sole attempt identity. resolveRun(handoffId, taskRunId) is a read-only exact-id
+provenance lookup that verifies the run belongs to the bound Task. It never chooses a latest run, starts,
+claims or authorizes one. Multiple legitimate future attempts belong to the same continuation through
+TaskRun.taskId; there is no second attempt identifier or mutable run pointer in the binding.
+
+WorkHandoffContinuationService owns admission and read-only correlation. It re-evaluates M3E-3 eligibility,
+loads canonical handoff, WorkItem and Task, validates both profiles, and requires ACTIVE work, a PENDING
+Task with matching Actor and optional Project, and no existing TaskRuns for initial admission. It never
+fabricates conversation context. A terminal WorkItem returns NO_ACTION without writes, including replay.
+Missing, malformed, unknown or inconsistent state fails closed. Existing bindings can be read for historical
+provenance after completion, but replay admission still requires current eligible/PENDING state.
+
+A dedicated ContinuationBindingRepository port performs atomic compare-and-insert: under the storage
+transaction it rechecks exact handoff/WorkItem/Task snapshots and absence of runs for initial admission.
+Concurrent changed state is STALE_STATE. Matching handoff/task replay returns the original immutable record;
+a different task for the same handoff or a different handoff for the same task is CONFLICT. Unique keys enforce
+both directions. A rejected operation leaves no partial write. Snapshot comparison covers complete persisted
+values, not only updatedAt; timestamps alone are not treated as revision tokens. Profiles are immutable
+composition-time configuration. No old decision object can create a binding or attach a newer run.
+
+SQLite v10 is additive: one continuation_bindings table with handoff primary key, unique task id and timestamp.
+There is no generic save/update/delete port and no workflow, worker, lease, receipt or execution state.
+The dedicated port is injected explicitly; StorageProvider and runtime composition remain unchanged.
+
+### TaskRun concurrency
+
+M3E-4 creates zero TaskRuns, so it does not expose concurrent attempt allocation. Existing startRun uses
+listByTask.length + 1 and is NOT safe for future concurrent/autonomous execution. Before enabling that path,
+TaskManager/repository must gain atomic attempt allocation or storage-enforced uniqueness with fail-closed
+handling. This slice adds no speculative TaskRun lifecycle or migration. Future execution must separately
+validate current work/task state and existing Approval requirements; a binding or resolved run is never authority.
+
+### Canonical status synchronization
+
+ARCHITECTURE concept labels reflect already accepted ADR-0075 (WorkItem), ADR-0078 (ExecutionReceipt),
+ADR-0079 (configuration-only AgentProfile), ADR-0080 (WorkHandoff), ADR-0081/0082 (bounded trigger/delegation)
+and Ratified ADR-0083 (read-only consumption). The old AgentProfile speculative fields are superseded by
+ADR-0079's exact id/displayName/role/purpose/instructions configuration. No runtime/agent-loop status is promoted.
+ROADMAP and CURRENT_STATE reflect delivered M3D/M3E foundations and PR #58, not retroactive new architecture.
+
+### Consequences
+
+Restart-safe handoff → Task → exact TaskRun provenance is possible with no attempt or receipt duplication.
+Callers must provide a canonically created Task with real conversation context; this slice does not synthesize
+one from a WorkItem. The cost is one narrow durable relation and an atomic persistence contract. Admission is
+not dispatch, a lease, acknowledgement, receipt, approval or permission. WorkHandoffManager, WorkItem ownership,
+CAP-013 producer kinds/COMMAND, AgentProfile configuration, ConversationRuntime and ExecutionOrchestrator stay
+unchanged. Ephemeral SQLite tests cover persistence, races, stale state and exact replay; no live DB is used.
+
+### V1 / V2
+
+[NOW] Locally complete, independently reviewed admission/binding implementation with ratified architecture.
+The documentation close-out remains subject to exact-HEAD review; no Push/PR/Merge is claimed.
+[LATER] Actual receiving-agent execution, TaskRun creation for continuations, concurrency hardening,
+runtime wiring, retries, schedulers and loops require separate approval. No execution authority is introduced by M3E-4.

@@ -41,7 +41,7 @@ function databasePath(): string {
   return join(directory, 'ephemeral.db');
 }
 
-describe('CAP-014 Local E2E — real Core/Application/SQLite v9, no external boundary', () => {
+describe('CAP-014 Local E2E — real Core/Application/SQLite v10, no external boundary', () => {
   it('evaluates and durably records proactive delegation across the real composition chain', async () => {
     const path = databasePath();
     const storage = new SqliteStorageProvider({ dbPath: path });
@@ -109,6 +109,6 @@ describe('CAP-014 Local E2E — real Core/Application/SQLite v9, no external bou
     await expect(reopened.workHandoffs.listByWorkItem(workItem.id)).resolves.toEqual([handoff]);
     await reopened.close();
     const db = new Database(path, { readonly: true });
-    try { expect(db.pragma('user_version', { simple: true })).toBe(9); } finally { db.close(); }
+    try { expect(db.pragma('user_version', { simple: true })).toBe(10); } finally { db.close(); }
   });
 });

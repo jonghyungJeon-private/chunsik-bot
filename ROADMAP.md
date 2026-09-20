@@ -35,6 +35,12 @@ does not claim Production Runtime readiness.
 | **1b** | Intent classification + Planner + ContextBuilder + PromptComposer + capability routing + Claude CLI execution | natural language only, no slash commands; provider chosen by **router**, never hardcoded |
 | **M3A-1** | `ResourceRef` + read-only Work Surface | no WorkItem persistence or migration |
 | **M3A-2** | CAP-011 WorkItem repository + additive migration + persisted personal-work state | ADR-0075 |
+| **M3B** ✅ | ToolProvider and bounded MCP adapter foundations | ADR-0076/0077; no autonomous execution |
+| **M3C** ✅ | CAP-013 command execution receipts | ADR-0078 |
+| **M3D** ✅ | Immutable AgentProfile registry and durable WorkHandoff | ADR-0079/0080; no agent runtime |
+| **M3E-1/2** ✅ | Trigger provenance, decisions and idempotent handoff production | ADR-0081/0082 |
+| **M3E-3** ✅ | Read-only handoff consumption eligibility | ADR-0083 Ratified; delivered |
+| **M3E-4** | Continuation admission and TaskRun correlation | Locally complete + independently reviewed; ADR-0084 Ratified; no run creation/execution |
 | **Future** | Memory improvements · Codex · additional connectors | per ADR sequence |
 
 ## Deferred capabilities (YAGNI)
@@ -44,9 +50,9 @@ Reserve a seam **only when expensive to retrofit.** Most of these already map on
 
 | Capability | Absorbed by | Action now |
 |---|---|---|
-| MCP | separate future `ToolProvider` adapter boundary | deferred; do not use `ConnectorProvider` or AI-provider types |
+| Further MCP execution/integration | bounded `ToolProvider` adapter foundation exists | separate authorization; no autonomous loop |
 | Plugin ecosystem | ADR-0007 (bundle of existing ports) | none |
-| Multi-agent runtime | ADR-0008 (`AgentProfile` seam) | `AgentProfile` remains deferred to M3D; no runtime now |
+| Multi-agent runtime | ADR-0008 (`AgentProfile` seam) | immutable profile/registry implemented in M3D; runtime remains deferred |
 | Remote workspace | `WorkspaceProvider` (`kind: 'remote'`) | none |
 | Local model manager | `AiProvider` availability/health | none |
 | Multimodal | keep `Artifact`/`Resource` from assuming text-only | note only |

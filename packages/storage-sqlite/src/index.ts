@@ -2,6 +2,8 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
 import { runMigrations } from './migrations';
+import { SqliteContinuationBindingRepository } from './continuation-binding-repository';
+import type { ContinuationBindingRepository } from '@chunsik/core';
 import type {
   Actor,
   ActorRepository,
@@ -703,6 +705,8 @@ export class SqliteStorageProvider implements StorageProvider {
   sessions!: SessionRepository;
   tasks!: TaskRepository;
   taskRuns!: TaskRunRepository;
+  /** Explicit opt-in port; not wired into Product runtime. */
+  continuationBindings!: ContinuationBindingRepository;
   artifacts!: ArtifactRepository;
   memories!: MemoryRepository;
   projects!: Repository<Project>;
@@ -732,6 +736,7 @@ export class SqliteStorageProvider implements StorageProvider {
     this.sessions = new SqliteSessionRepository(db, 'sessions');
     this.tasks = new SqliteTaskRepository(db, 'tasks');
     this.taskRuns = new SqliteTaskRunRepository(db, 'task_runs');
+    this.continuationBindings = new SqliteContinuationBindingRepository(db);
     this.artifacts = new SqliteArtifactRepository(db, 'artifacts');
     this.memories = new SqliteMemoryRepository(db, 'memories');
     this.projects = new JsonRepository<Project>(db, 'projects');
