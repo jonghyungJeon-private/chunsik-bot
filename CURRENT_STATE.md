@@ -8,12 +8,16 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 - **M3E-3:** Delivered through PR #58 (merge commit `618b5afcc6079be956d3756f9281506907571dde`).
   ADR-0083 is Ratified; independent implementation review PASS and documentation close-out review
   PASS_WITH_NON_BLOCKING_FINDINGS preceded delivery. Consumption remains read-only and grants no authority.
-- **M3E-4:** Local continuation admission/binding implementation; ADR-0084 is Proposed and awaits independent
-  exact-HEAD implementation/architecture review. One immutable handoff↔Task binding, with exact TaskRun lookup
+- **M3E-4:** Implementation COMPLETE at `825e97e89745eb5942090299ab3cafe5612edc5d`; independent Claude review
+  PASS_WITH_NON_BLOCKING_FINDINGS (0 blocking findings), and ADR-0084 Ratified by the Chief Architect per the
+  Product Owner's ratification close-out instruction. ContinuationBinding is immutable handoff↔Task provenance
+  only; TaskRun remains the canonical execution-attempt identity, with exact TaskRun lookup
   through existing TaskRun.taskId. No Task/TaskRun creation, execution, dispatch or runtime wiring. SQLite v10
   adds only the binding relation; existing CAP-013/014 ownership and Runtime dependency baseline 31 are unchanged.
   Initial admission revalidates canonical ACTIVE work/PENDING task and no prior runs atomically; exact replay
-  is idempotent and conflicting/stale state fails closed. Concurrent TaskRun allocation remains future work.
+  is idempotent and conflicting/stale state fails closed. Actual receiving-agent execution remains later;
+  concurrent-attempt allocation hardening is required before concurrent/autonomous execution. Next: independent
+  exact-HEAD review of the documentation close-out; Push/PR/Merge are not claimed or authorized by this close-out.
 - **Phase:** `M2 = COMPLETE_AND_ACCEPTED / CLOSED`; `QUIRKYBOT_DEV_V1 = MILESTONE_REACHED / CLOSED` with
   `QUIRKYBOT_DEV_V1_ACCEPTANCE_CRITERIA = MET`. Stage 2C Slice 3C was implemented in commit `683297f`, independently
   reviewed `PASS`, and closed the prior delegated offline implementation gap. Bounded Live UAT was `EXECUTED` and
@@ -21,7 +25,8 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 - **Active milestone:** `M3`. The M3 Architecture Rebaseline is `RATIFIED_WITH_CHANGES` through ADR-0074,
   ADR-0075, and the appended ADR-0032 amendment. M3A-1 implements `ResourceRef` plus the first read-only Jira/GitHub
   Personal Work Surface. M3A-1.1 adds app-boundary Actor identity provisioning. M3A-2 implements the bounded
-  CAP-011 WorkItem persistence foundation; accepted M3B–M3E-3 foundations are delivered, and M3E-4 is local/proposed.
+  CAP-011 WorkItem persistence foundation; accepted M3B–M3E-3 foundations are delivered, and M3E-4 is locally
+  complete/reviewed with ratified architecture.
 - **Version 1 source release:** `v1.0.0 = COMPLETE / CLOSED` at
   `80bbc94de0493c24036197dabc2ff00dbcd20cbf` (`origin/main` and `v1.0.0^{}`). Tag creation or push is not an
   outstanding release task. This source-release fact does not claim Production Runtime readiness.

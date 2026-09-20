@@ -79,6 +79,7 @@ fixed; the implementations are not.
 | `Task` | A unit of work within a session | `[NOW]` |
 | `WorkItem` | Actor-owned durable work, high-level lifecycle only (ADR-0075) | `[NOW]` |
 | `WorkHandoff` | Immutable AgentProfile-to-AgentProfile provenance (ADR-0080) | `[NOW]` |
+| `ContinuationBinding` | Immutable WorkHandoff ↔ Task provenance/correlation (ADR-0084); not execution state, runtime authority, TaskRun, receipt or workflow | `[NOW]` |
 | `ExecutionReceipt` | Immutable CAP-013 command execution provenance (ADR-0078) | `[NOW]` |
 | `TriggerSource` | Bounded provenance and read-only decisions (ADR-0081/0082/0083), no scheduler | `[NOW]` (execution `[LATER]`) |
 | `TaskRun` | One execution attempt of a Task (+ `Usage`/cost) | `[NOW]` (Usage `[RESERVE]`) |

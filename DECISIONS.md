@@ -6358,10 +6358,13 @@ authorized steps.
 
 ## ADR-0084 — WorkHandoff Continuation Admission and TaskRun Binding
 
-- **Status:** Proposed
+- **Status:** Ratified
 - **Date:** 2026-09-21
-- **Implementation authority:** Product Owner M3E-4 Direct CLI Sprint; independent architecture review and
-  ratification remain required. This proposal is not self-ratified.
+- **Ratified implementation HEAD:** `825e97e89745eb5942090299ab3cafe5612edc5d`
+- **Independent Review:** PASS_WITH_NON_BLOCKING_FINDINGS; **Blocking Findings:** 0
+- **Independent Architecture Review:** ADR_0084_READY_FOR_CHIEF_ARCHITECT_RATIFICATION
+- **Chief Architect Ratification:** APPROVED, as confirmed by the Product Owner's M3E-4 ratification
+  close-out instruction. The substantive architecture contract is unchanged.
 
 ### Context
 
@@ -6427,6 +6430,7 @@ unchanged. Ephemeral SQLite tests cover persistence, races, stale state and exac
 
 ### V1 / V2
 
-[NOW] Local proposed admission/binding implementation awaiting independent review. [LATER] Actual receiving-agent
-execution, TaskRun creation for continuations, concurrency hardening, runtime wiring, retries, schedulers and
-loops require separate approval. No execution authority is introduced by M3E-4.
+[NOW] Locally complete, independently reviewed admission/binding implementation with ratified architecture.
+The documentation close-out remains subject to exact-HEAD review; no Push/PR/Merge is claimed.
+[LATER] Actual receiving-agent execution, TaskRun creation for continuations, concurrency hardening,
+runtime wiring, retries, schedulers and loops require separate approval. No execution authority is introduced by M3E-4.

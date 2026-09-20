@@ -40,7 +40,7 @@ does not claim Production Runtime readiness.
 | **M3D** ✅ | Immutable AgentProfile registry and durable WorkHandoff | ADR-0079/0080; no agent runtime |
 | **M3E-1/2** ✅ | Trigger provenance, decisions and idempotent handoff production | ADR-0081/0082 |
 | **M3E-3** ✅ | Read-only handoff consumption eligibility | ADR-0083 Ratified; delivered |
-| **M3E-4** | Continuation admission and TaskRun correlation | ADR-0084 Proposed; no run creation/execution |
+| **M3E-4** | Continuation admission and TaskRun correlation | Locally complete + independently reviewed; ADR-0084 Ratified; no run creation/execution |
 | **Future** | Memory improvements · Codex · additional connectors | per ADR sequence |
 
 ## Deferred capabilities (YAGNI)
