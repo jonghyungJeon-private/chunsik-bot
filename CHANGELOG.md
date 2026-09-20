@@ -7,6 +7,21 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — M3E-5 Atomic TaskRun Start and Attempt Allocation
+
+- Made the canonical TaskRun start boundary atomic: a storage-neutral `TaskRunRepository.start()` replaces the
+  former `listByTask().length + 1` allocation, so storage owns concurrent ordinal allocation while Core gains no
+  SQLite dependency. TaskRun remains the canonical execution-attempt identity and `attempt` an ordinal within one
+  Task; no ExecutionAttempt aggregate, receipt kind, retry engine, lease, scheduler or Agent runtime is added.
+- Added SQLite v11 enforcement of `(taskId, attempt)` uniqueness and immutable start identity. A start requires a
+  canonical Task already RUNNING; stale, missing or non-RUNNING Task snapshots are rejected with no partial write.
+  Existing `completeRun`/`failRun` update semantics and CAP-013/Approval/Provider ownership remain unchanged.
+- Added disposable SQLite atomic-start, cross-connection allocation, fail-closed and migration v11 forward/rollback
+  coverage. No continuation auto-run wiring, Provider/Tool execution or execution authority is introduced.
+- Ratified ADR-0085 for independently reviewed implementation `ff12ffa73e68ffc810b4a7d9698c219a378cc382`
+  (PASS_WITH_NON_BLOCKING_FINDINGS, 0 blocking findings); synchronized canonical M3E-4 delivery through
+  merged PR #59 (`285f3663beff5334419e8ddf967855b440df8a5e`). The architecture contract is unchanged.
+
 ### Added — M3E-4 Handoff Continuation Admission and TaskRun Binding
 
 - Added unwired continuation admission to an existing canonical Task, with atomic state revalidation and an

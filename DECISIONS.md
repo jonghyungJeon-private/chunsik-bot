@@ -6438,9 +6438,13 @@ runtime wiring, retries, schedulers and loops require separate approval. No exec
 
 ## ADR-0085 — Atomic TaskRun Start and Attempt Allocation
 
-- **Status:** Proposed
+- **Status:** Ratified
 - **Date:** 2026-09-21
-- **Authority:** Product Owner M3E-5 local implementation Sprint; independent architecture review and ratification pending.
+- **Ratified implementation HEAD:** `ff12ffa73e68ffc810b4a7d9698c219a378cc382`
+- **Independent Review:** PASS_WITH_NON_BLOCKING_FINDINGS; **Blocking Findings:** 0
+- **Independent Architecture Review:** ADR_0085_READY_FOR_CHIEF_ARCHITECT_RATIFICATION
+- **Chief Architect Ratification:** APPROVED, as confirmed by the Product Owner's M3E-5 ratification
+  close-out instruction. The substantive architecture contract is unchanged.
 
 ### Context
 
@@ -6486,5 +6490,6 @@ and M3E-4 regression coverage. No shared/live DB is migrated in this Sprint.
 
 ### V1 / V2
 
-[NOW] Proposed atomic start foundation, pending independent review. [LATER] Run-scoped execution authority,
+[NOW] Ratified atomic start foundation, locally complete and independently reviewed at
+`ff12ffa73e68ffc810b4a7d9698c219a378cc382`; no Push/PR/Merge is claimed. [LATER] Run-scoped execution authority,
 continuation execution, idempotent start-request keys and autonomous runtimes require separate decisions.

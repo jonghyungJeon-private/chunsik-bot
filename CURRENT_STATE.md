@@ -17,6 +17,17 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   Initial admission revalidates canonical ACTIVE work/PENDING task and no prior runs atomically; exact replay
   is idempotent and conflicting/stale state fails closed. Actual receiving-agent execution remains later.
   M3E-5 removes the concurrent-attempt allocation precondition by hardening the canonical TaskRun start boundary.
+- **M3E-5:** Implementation COMPLETE at `ff12ffa73e68ffc810b4a7d9698c219a378cc382`; independent review
+  PASS_WITH_NON_BLOCKING_FINDINGS (0 blocking findings); ADR-0085 Ratified by the Chief Architect; schema `v11`.
+  TaskRun remains the canonical execution-attempt identity and `attempt` an ordinal within one Task; no
+  ExecutionAttempt aggregate, Receipt kind, retry engine, lease, scheduler or Agent runtime is introduced.
+  Atomic `TaskRunRepository.start()` replaces the former `listByTask().length + 1` allocation, so storage —
+  not the application layer — owns concurrent ordinal allocation, while Core stays storage-neutral. SQLite
+  enforces `(taskId, attempt)` uniqueness and immutable start identity; a canonical Task must already be
+  RUNNING and stale/missing/non-RUNNING Task snapshots fail closed with no partial write. Existing
+  `completeRun`/`failRun` update semantics are preserved. Actual continuation execution, receiving-agent
+  dispatch and Agent runtime remain later and gain no authority here. Not yet delivered: no Push/PR/Merge
+  is claimed.
 - **Phase:** `M2 = COMPLETE_AND_ACCEPTED / CLOSED`; `QUIRKYBOT_DEV_V1 = MILESTONE_REACHED / CLOSED` with
   `QUIRKYBOT_DEV_V1_ACCEPTANCE_CRITERIA = MET`. Stage 2C Slice 3C was implemented in commit `683297f`, independently
   reviewed `PASS`, and closed the prior delegated offline implementation gap. Bounded Live UAT was `EXECUTED` and
@@ -24,8 +35,9 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 - **Active milestone:** `M3`. The M3 Architecture Rebaseline is `RATIFIED_WITH_CHANGES` through ADR-0074,
   ADR-0075, and the appended ADR-0032 amendment. M3A-1 implements `ResourceRef` plus the first read-only Jira/GitHub
   Personal Work Surface. M3A-1.1 adds app-boundary Actor identity provisioning. M3A-2 implements the bounded
-  CAP-011 WorkItem persistence foundation; accepted M3B–M3E-3 foundations are delivered, and M3E-4 is delivered
-  through PR #59 with ratified architecture (ADR-0084).
+  CAP-011 WorkItem persistence foundation; accepted M3B–M3E-3 foundations are delivered, M3E-4 is delivered
+  through PR #59 with ratified architecture (ADR-0084), and M3E-5 is locally complete/independently reviewed
+  with ADR-0085 Ratified.
 - **Version 1 source release:** `v1.0.0 = COMPLETE / CLOSED` at
   `80bbc94de0493c24036197dabc2ff00dbcd20cbf` (`origin/main` and `v1.0.0^{}`). Tag creation or push is not an
   outstanding release task. This source-release fact does not claim Production Runtime readiness.
