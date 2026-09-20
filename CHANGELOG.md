@@ -7,6 +7,18 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — M3E-3 WorkHandoff Consumption Decision
+
+- Ratified ADR-0083 for implementation `5ef1c26d065b20bb14684d1f272264af13fabc26` following independent
+  Claude review PASS and Chief Architect ratification, as confirmed by the Product Owner's close-out instruction;
+  the architecture contract and Product behavior are unchanged. The documentation close-out awaits independent
+  exact-HEAD review before separately authorized publication, PR and merge.
+
+- Added an unwired read-only Core service that loads canonical handoff/work/profile relationships and returns
+  immutable continuation eligibility or terminal NO_ACTION, with bounded typed failures and no execution authority.
+- Added unit failure/lifecycle coverage and extended real SQLite v9 local E2E through produce, reopen, consume,
+  and terminal lifecycle evaluation. Creation ownership, migrations and production wiring remain unchanged.
+
 ### Added — M3A-2 CAP-011 WorkItem Persistence Foundation
 
 - Added the narrow ADR-0075 `WorkItem` aggregate and `WorkManager` application boundary, owning only durable work

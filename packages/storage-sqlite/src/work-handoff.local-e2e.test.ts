@@ -13,11 +13,14 @@ import {
   ResourceRef,
   TriggerSourceKind,
   WorkHandoffManager,
+  WorkHandoffConsumptionService,
+  WorkItemStatus,
   WorkManager,
   agentProfileId,
 } from '@chunsik/core';
 import type { AgentProfile, ExecutionReceipt } from '@chunsik/core';
 import { SqliteStorageProvider } from './index';
+import Database from 'better-sqlite3';
 
 const directories: string[] = [];
 afterEach(() => directories.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true })));
@@ -93,6 +96,19 @@ describe('CAP-014 Local E2E — real Core/Application/SQLite v9, no external bou
     await expect(reopened.workHandoffs.listByWorkItem(workItem.id)).resolves.toEqual([handoff]);
     await expect(reopened.workHandoffs.listByFromAgent(agentProfileId('builder'))).resolves.toEqual([handoff]);
     await expect(reopened.workHandoffs.listByToAgent(agentProfileId('reviewer'))).resolves.toEqual([handoff]);
+    const consumer = new WorkHandoffConsumptionService(reopened, registry);
+    const before = await reopened.workItems.get(workItem.id);
+    const decision = await consumer.evaluate(handoff.id);
+    expect(decision).toMatchObject({ handoffId: handoff.id, disposition: 'CONTINUE', reason: 'ACTIVE_WORK_ITEM' });
+    expect(Object.isFrozen(decision)).toBe(true);
+    await expect(reopened.workItems.get(workItem.id)).resolves.toEqual(before);
+    await new WorkManager(reopened).transition(workItem.id, WorkItemStatus.COMPLETED);
+    await expect(consumer.evaluate(handoff.id)).resolves.toMatchObject({
+      disposition: 'NO_ACTION', reason: 'WORK_ITEM_COMPLETED',
+    });
+    await expect(reopened.workHandoffs.listByWorkItem(workItem.id)).resolves.toEqual([handoff]);
     await reopened.close();
+    const db = new Database(path, { readonly: true });
+    try { expect(db.pragma('user_version', { simple: true })).toBe(9); } finally { db.close(); }
   });
 });
