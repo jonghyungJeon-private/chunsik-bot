@@ -7,7 +7,10 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 
 - **M3E-3:** WorkHandoff consumption eligibility service implemented locally (ADR-0083); immutable
   CONTINUE/NO_ACTION decisions only, schema v9 and Runtime dependency baseline 31 unchanged.
-  Exact-HEAD independent Claude / Chief Architect review remains pending before merge.
+  Independent Claude review of implementation HEAD `5ef1c26d065b20bb14684d1f272264af13fabc26` is PASS
+  with no blocking findings, and ADR-0083 is Ratified per the Product Owner's Direct CLI close-out instruction.
+  The service remains bounded, read-only and unwired, granting no execution authority. Next: independent Claude
+  exact-HEAD review of this documentation close-out commit, then separately authorized publication, PR and merge.
 - **Phase:** `M2 = COMPLETE_AND_ACCEPTED / CLOSED`; `QUIRKYBOT_DEV_V1 = MILESTONE_REACHED / CLOSED` with
   `QUIRKYBOT_DEV_V1_ACCEPTANCE_CRITERIA = MET`. Stage 2C Slice 3C was implemented in commit `683297f`, independently
   reviewed `PASS`, and closed the prior delegated offline implementation gap. Bounded Live UAT was `EXECUTED` and
@@ -19,9 +22,9 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 - **Version 1 source release:** `v1.0.0 = COMPLETE / CLOSED` at
   `80bbc94de0493c24036197dabc2ff00dbcd20cbf` (`origin/main` and `v1.0.0^{}`). Tag creation or push is not an
   outstanding release task. This source-release fact does not claim Production Runtime readiness.
-- **Quoky operating state:** `QUOKY DEFAULT ORCHESTRATOR = APPROVED`; `QUOKY OPERATIONAL STATUS = NORMAL`;
-  `QUOKY FEATURE FREEZE = YES`. Quoky is the normal development orchestrator again, while feature development of
-  the Quoky control plane itself remains frozen.
+- **Current Product delivery mode:** Quoky orchestration is FROZEN for current Product delivery per the
+  Product Owner's M3E-3 close-out instruction. Use Direct CLI FAST DELIVERY for this close-out; Quoky execution
+  and control-state mutation are outside scope.
 - **Development governance:** `AUTONOMOUS_DEV_MODE = ENABLED`; Product Owner retains
   product/UAT/debug/high-risk authority; Architect AI owns task-level delegated local approval within an active
   milestone, Codex builds, and Claude independently reviews. Strict external/destructive/Runtime/application-Provider

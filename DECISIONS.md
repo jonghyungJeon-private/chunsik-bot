@@ -6300,7 +6300,10 @@ ADR-0032's exact ConversationRuntime dependency baseline.
 
 ## ADR-0083 — WorkHandoff Consumption Eligibility Decision
 
-- **Status:** Proposed contract documentation within the authorized M3E-3 boundary; independent Chief Architect review pending
+- **Status:** Ratified
+- **Ratification:** Chief Architect ratification applies to the independently reviewed M3E-3 implementation at
+  `5ef1c26d065b20bb14684d1f272264af13fabc26` (Claude review: PASS, no blocking findings), as confirmed by the
+  Product Owner's Direct CLI close-out Sprint instruction. The substantive architecture contract is unchanged.
 - **Date:** 2026-09-20
 
 ### Context
@@ -6348,6 +6351,6 @@ No external boundary is constructed. Ephemeral test DB execution is authorized b
 ### V1 / V2
 
 [NOW] Bounded unwired eligibility service. [LATER] Dispatch, execution, scheduling and runtime integration
-require a separately authorized architectural slice. Chief Architect decision required before merge:
-independent review of this exact committed contract and implementation; this document does not claim
-that review or ratification has occurred.
+require a separately authorized architectural slice. The next delivery boundary is independent Claude
+exact-HEAD review of the documentation close-out commit; publication, PR and merge remain separately
+authorized steps.
