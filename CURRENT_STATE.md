@@ -5,12 +5,15 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
-- **M3E-3:** WorkHandoff consumption eligibility service implemented locally (ADR-0083); immutable
-  CONTINUE/NO_ACTION decisions only, schema v9 and Runtime dependency baseline 31 unchanged.
-  Independent Claude review of implementation HEAD `5ef1c26d065b20bb14684d1f272264af13fabc26` is PASS
-  with no blocking findings, and ADR-0083 is Ratified per the Product Owner's Direct CLI close-out instruction.
-  The service remains bounded, read-only and unwired, granting no execution authority. Next: independent Claude
-  exact-HEAD review of this documentation close-out commit, then separately authorized publication, PR and merge.
+- **M3E-3:** Delivered through PR #58 (merge commit `618b5afcc6079be956d3756f9281506907571dde`).
+  ADR-0083 is Ratified; independent implementation review PASS and documentation close-out review
+  PASS_WITH_NON_BLOCKING_FINDINGS preceded delivery. Consumption remains read-only and grants no authority.
+- **M3E-4:** Local continuation admission/binding implementation; ADR-0084 is Proposed and awaits independent
+  exact-HEAD implementation/architecture review. One immutable handoff↔Task binding, with exact TaskRun lookup
+  through existing TaskRun.taskId. No Task/TaskRun creation, execution, dispatch or runtime wiring. SQLite v10
+  adds only the binding relation; existing CAP-013/014 ownership and Runtime dependency baseline 31 are unchanged.
+  Initial admission revalidates canonical ACTIVE work/PENDING task and no prior runs atomically; exact replay
+  is idempotent and conflicting/stale state fails closed. Concurrent TaskRun allocation remains future work.
 - **Phase:** `M2 = COMPLETE_AND_ACCEPTED / CLOSED`; `QUIRKYBOT_DEV_V1 = MILESTONE_REACHED / CLOSED` with
   `QUIRKYBOT_DEV_V1_ACCEPTANCE_CRITERIA = MET`. Stage 2C Slice 3C was implemented in commit `683297f`, independently
   reviewed `PASS`, and closed the prior delegated offline implementation gap. Bounded Live UAT was `EXECUTED` and
@@ -18,12 +21,12 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 - **Active milestone:** `M3`. The M3 Architecture Rebaseline is `RATIFIED_WITH_CHANGES` through ADR-0074,
   ADR-0075, and the appended ADR-0032 amendment. M3A-1 implements `ResourceRef` plus the first read-only Jira/GitHub
   Personal Work Surface. M3A-1.1 adds app-boundary Actor identity provisioning. M3A-2 implements the bounded
-  CAP-011 WorkItem persistence foundation; independent architecture/implementation review is its next gate.
+  CAP-011 WorkItem persistence foundation; accepted M3B–M3E-3 foundations are delivered, and M3E-4 is local/proposed.
 - **Version 1 source release:** `v1.0.0 = COMPLETE / CLOSED` at
   `80bbc94de0493c24036197dabc2ff00dbcd20cbf` (`origin/main` and `v1.0.0^{}`). Tag creation or push is not an
   outstanding release task. This source-release fact does not claim Production Runtime readiness.
 - **Current Product delivery mode:** Quoky orchestration is FROZEN for current Product delivery per the
-  Product Owner's M3E-3 close-out instruction. Use Direct CLI FAST DELIVERY for this close-out; Quoky execution
+  Product Owner's M3E-4 instruction. Use Direct CLI FAST DELIVERY; Quoky execution
   and control-state mutation are outside scope.
 - **Development governance:** `AUTONOMOUS_DEV_MODE = ENABLED`; Product Owner retains
   product/UAT/debug/high-risk authority; Architect AI owns task-level delegated local approval within an active
@@ -121,8 +124,9 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   status and `updatedAt` change; SQLite migration v7 adds only
   `work_items`, and repository reload coverage proves durable round-trip. `ConversationRuntime` owns no WorkItem
   state and `ConversationRuntimeDeps` remains 31.
-- **Deferred:** `AgentProfile` remains deferred to M3D. MCP, handoff, trigger, receipt, Workflow, graph engine,
-  universal event sourcing, and other later M3 decisions are not authorized by ADR-0074/0075.
+- **Later ratified foundations:** ADR-0076/0077 supply bounded ToolProvider/MCP foundations; ADR-0078 owns
+  receipts; ADR-0079/0080 supply AgentProfile and handoff; ADR-0081/0082/0083 supply trigger provenance, delegation
+  and read-only consumption. Workflow, autonomous execution, graph engines and universal event sourcing remain deferred.
 - **Conversation boundary:** `ConversationRuntime` remains an entry point, owns no global/persistent work state, and
   its dependency surface must not grow beyond the previous accepted baseline for each completed M3 slice.
 

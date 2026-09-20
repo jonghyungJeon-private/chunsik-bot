@@ -77,12 +77,16 @@ fixed; the implementations are not.
 | `Actor` / `Principal` | Platform-independent identity authz hangs off | `[NOW]` |
 | `Session` | Conversation aggregate root (thin: identity, lifecycle, pointers) | `[NOW]` |
 | `Task` | A unit of work within a session | `[NOW]` |
+| `WorkItem` | Actor-owned durable work, high-level lifecycle only (ADR-0075) | `[NOW]` |
+| `WorkHandoff` | Immutable AgentProfile-to-AgentProfile provenance (ADR-0080) | `[NOW]` |
+| `ExecutionReceipt` | Immutable CAP-013 command execution provenance (ADR-0078) | `[NOW]` |
+| `TriggerSource` | Bounded provenance and read-only decisions (ADR-0081/0082/0083), no scheduler | `[NOW]` (execution `[LATER]`) |
 | `TaskRun` | One execution attempt of a Task (+ `Usage`/cost) | `[NOW]` (Usage `[RESERVE]`) |
 | `Intent` | Classified meaning of a message → a `Capability` | `[NOW]` |
 | `Plan` / `PlanStep` | **Intra-task** decomposition | `[NOW]` |
 | `Workflow` | **Inter-task** orchestration (≠ Plan) | `[LATER]` (field not reserved — YAGNI per ADR-0013; JSON storage makes late-add free) |
 | `Capability` | The routing key from need → provider | `[NOW]` |
-| `AgentProfile` | Config bundling capability + prompt template + risk + allowed resources | `[RESERVE]` |
+| `AgentProfile` | Immutable persona configuration: id, displayName, role, purpose, instructions (ADR-0079) | `[NOW]` (runtime `[LATER]`) |
 | `MemoryRecord` (6 types) | Source-of-truth memory | `[NOW]` |
 | `ContextBundle` | Assembled, budgeted context for one run | `[NOW]` |
 | `PromptSpec` | Layered, provider-agnostic prompt | `[NOW]` |
@@ -231,8 +235,8 @@ fixed; the implementations are not.
    model never adds a capability; adding a skill might.
 2. Risk is a function of capability + concrete operation (see Workspace Rules).
 3. Routing order: **Intent → Capability → (AgentProfile) → Provider.** Capability
-   is the routing key; `AgentProfile` (when introduced) sits above capability as
-   the "who/how," provider below as the "which engine."
+   is the routing key. The current `AgentProfile` is configuration-only (ADR-0079);
+   integration above capability/provider routing remains `[LATER]`.
 
 ---
 
@@ -240,8 +244,9 @@ fixed; the implementations are not.
 
 1. v1 has **no agent runtime.** Execution is single-shot: PromptComposer →
    Provider → Artifact.
-2. The agent seam is **configuration, not a service**: an `AgentProfile` bundles
-   `{role, capability, promptTemplateRef, riskProfile, allowedResources}`.
+2. The agent seam is **configuration, not a runtime**: an `AgentProfile` contains
+   `{id, displayName, role, purpose, instructions}` (ADR-0079). The immutable registry is lookup only;
+   capability, Provider, Tool and authority bindings are not profile fields.
 3. Autonomous loops (plan-act-observe, tool use, sub-agents) are `[LATER]` and
    MUST sit behind the `AgentProfile` seam without changing Capability/Provider
    contracts.

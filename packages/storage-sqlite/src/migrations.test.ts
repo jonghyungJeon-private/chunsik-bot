@@ -25,7 +25,7 @@ describe('runMigrations (ADR-0020 — versioned schema)', () => {
   });
 
   it('migration v7 preserves the CAP-011 work_items schema', () => {
-    expect(LATEST_SCHEMA_VERSION).toBe(9);
+    expect(LATEST_SCHEMA_VERSION).toBe(10);
     const db = new Database(':memory:');
     runMigrations(db);
     const cols = (db.pragma('table_info(work_items)') as Array<{ name: string }>).map((c) => c.name);

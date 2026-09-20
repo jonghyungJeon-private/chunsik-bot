@@ -25,3 +25,5 @@ export const PROVIDER_SELECTOR = Symbol('ProviderSelector');
 export const AI_PROVIDERS = Symbol('AiProviders');
 export const CONNECTOR_PROVIDERS = Symbol('ConnectorProviders');
 export const TOOL_PROVIDERS = Symbol('ToolProviders');
+// M3E-4 explicit admission persistence; no runtime binding yet.
+export const CONTINUATION_BINDING_REPOSITORY = Symbol('ContinuationBindingRepository');
