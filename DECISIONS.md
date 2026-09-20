@@ -6431,6 +6431,60 @@ unchanged. Ephemeral SQLite tests cover persistence, races, stale state and exac
 ### V1 / V2
 
 [NOW] Locally complete, independently reviewed admission/binding implementation with ratified architecture.
-The documentation close-out remains subject to exact-HEAD review; no Push/PR/Merge is claimed.
+M3E-4 was delivered through PR #59 at main `285f3663beff5334419e8ddf967855b440df8a5e`.
 [LATER] Actual receiving-agent execution, TaskRun creation for continuations, concurrency hardening,
 runtime wiring, retries, schedulers and loops require separate approval. No execution authority is introduced by M3E-4.
+
+
+## ADR-0085 — Atomic TaskRun Start and Attempt Allocation
+
+- **Status:** Proposed
+- **Date:** 2026-09-21
+- **Authority:** Product Owner M3E-5 local implementation Sprint; independent architecture review and ratification pending.
+
+### Context
+
+M3E-4 is delivered through PR #59. TaskRun is already the canonical attempt identity. The only Product
+startRun caller, ConversationRuntime, persists PENDING → PLANNING → RUNNING before starting a run.
+TaskManager currently allocates listByTask.length + 1 outside storage, allowing collisions and reuse of gaps.
+
+### Decision
+
+Keep TaskManager.startRun(task, capability) and TaskRun unchanged. Strengthen TaskRunRepository with
+start(task, capability): atomic canonical Task snapshot validation, attempt allocation and insert. Only a
+canonical RUNNING Task may cross this boundary, preserving the existing Product caller's lifecycle. A missing,
+stale, invented or non-RUNNING Task fails closed. Capability must be a known Capability; no new routing policy
+or approval is inferred. Each invocation is a distinct attempt, not request idempotency.
+
+SQLite uses a bounded-wait IMMEDIATE transaction. It compares the complete persisted Task with the supplied
+snapshot, computes MAX(attempt) + 1 (or 1), generates TaskRun.id using shared newId and startedAt using shared
+now inside the transaction, and inserts STARTED. Commit establishes the canonical attempt start fact, not
+Provider dispatch or external-effect authority. There is no reservation, retry loop, task transition or run reuse.
+An exhausted safe-integer ordinal fails closed with no write.
+
+Additive v11 validates existing task_runs JSON identity and positive safe-integer attempts before installing a
+unique expression index on (task_id, json_extract(data, '$.attempt')). No columns or historical values are rewritten.
+Malformed identities/ordinals and duplicate historical ordinals abort migration transactionally at v10 without
+renumbering. Insert/update triggers enforce the same identity/ordinal validity; update additionally protects
+id/taskId/attempt/startedAt/capability against mutation. Existing save remains compatible for explicit valid
+historical inserts and completeRun/failRun updates; it cannot change an existing start identity. No destructive
+rebuild or parallel attempt aggregate is introduced. Terminal update conflict/version policy is unchanged.
+
+### Consequences
+
+Independent SQLite connections/processes allocate distinct ordinals without lost inserts; the DB uniqueness
+invariant also applies to ordinary repository saves. The run's id is canonical identity; its ordinal is local to
+its Task. A failed transaction leaves no partial run. Allocation uses the greatest persisted ordinal rather than
+row count. Existing generic deletion semantics are unchanged; deleted history is not reconstructed, and callers
+must retain run history if lifetime ordinal monotonicity across deletions is required.
+
+Core has no SQLite dependency. ContinuationBinding remains provenance only and gains no run-start caller.
+CAP-013, WorkItem, WorkHandoff, Approval and Provider/Tool authority are unchanged. No runtime integration,
+scheduler, leases, worker ownership, retries, receipt producer extension or autonomous execution is added.
+Real disposable SQLite worker concurrency and migration rollback tests are required, alongside completion/failure
+and M3E-4 regression coverage. No shared/live DB is migrated in this Sprint.
+
+### V1 / V2
+
+[NOW] Proposed atomic start foundation, pending independent review. [LATER] Run-scoped execution authority,
+continuation execution, idempotent start-request keys and autonomous runtimes require separate decisions.

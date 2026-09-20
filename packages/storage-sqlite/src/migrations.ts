@@ -199,6 +199,44 @@ export const MIGRATIONS: readonly Migration[] = [
         recorded_at TEXT NOT NULL);`);
     },
   },
+  {
+    version: 11,
+    name: 'TaskRun atomic attempt identity enforcement',
+    up(db) {
+      const rows = db.prepare('SELECT id, task_id, data FROM task_runs').all() as
+        Array<{ id: string; task_id: string; data: string }>;
+      for (const row of rows) {
+        const run = JSON.parse(row.data) as { id?: unknown; taskId?: unknown; attempt?: unknown } | null;
+        if (!run || !row.id || !row.task_id || run.id !== row.id || run.taskId !== row.task_id
+          || !Number.isSafeInteger(run.attempt) || (run.attempt as number) < 1) {
+          throw new Error('TASK_RUN_MIGRATION_INVALID_HISTORY');
+        }
+      }
+      db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS task_runs_task_attempt
+        ON task_runs(task_id, json_extract(data, '$.attempt'));`);
+      for (const operation of ['INSERT', 'UPDATE']) {
+        db.exec(`CREATE TRIGGER IF NOT EXISTS task_runs_validate_${operation.toLowerCase()}
+          BEFORE ${operation} ON task_runs BEGIN
+          SELECT CASE WHEN json_valid(NEW.data) = 0 THEN RAISE(ABORT, 'INVALID_TASK_RUN_JSON') END;
+          SELECT CASE WHEN NEW.id IS NULL OR NEW.id = '' OR NEW.task_id IS NULL OR NEW.task_id = ''
+            OR json_extract(NEW.data, '$.id') IS NOT NEW.id
+            OR json_extract(NEW.data, '$.taskId') IS NOT NEW.task_id
+            OR json_type(NEW.data, '$.attempt') IS NOT 'integer'
+            OR json_extract(NEW.data, '$.attempt') < 1
+            OR json_extract(NEW.data, '$.attempt') > 9007199254740991
+            THEN RAISE(ABORT, 'INVALID_TASK_RUN_IDENTITY') END;
+          END;`);
+      }
+      db.exec(`CREATE TRIGGER IF NOT EXISTS task_runs_immutable_start
+        BEFORE UPDATE ON task_runs BEGIN
+        SELECT CASE WHEN NEW.id IS NOT OLD.id OR NEW.task_id IS NOT OLD.task_id
+          OR json_extract(NEW.data, '$.attempt') IS NOT json_extract(OLD.data, '$.attempt')
+          OR json_extract(NEW.data, '$.startedAt') IS NOT json_extract(OLD.data, '$.startedAt')
+          OR json_extract(NEW.data, '$.capability') IS NOT json_extract(OLD.data, '$.capability')
+          THEN RAISE(ABORT, 'TASK_RUN_START_IDENTITY_IMMUTABLE') END;
+        END;`);
+    },
+  },
 ];
 
 /** The schema version this build targets (the highest migration version). */

@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
@@ -48,7 +49,7 @@ import type {
   WorkHandoff,
   WorkHandoffRepository,
 } from '@chunsik/core';
-import { ResourceRef as DomainResourceRef, createWorkHandoff } from '@chunsik/core';
+import { Capability, TaskStatus, TaskRunStatus, newId, now, ResourceRef as DomainResourceRef, createWorkHandoff } from '@chunsik/core';
 
 export interface SqliteConfig {
   /** Path to the SQLite database file, e.g. ./data/chunsik.db */
@@ -219,6 +220,26 @@ class SqliteTaskRepository extends JsonRepository<Task> implements TaskRepositor
 }
 
 class SqliteTaskRunRepository extends JsonRepository<TaskRun> implements TaskRunRepository {
+  async start(task: Task, capability: Capability): Promise<TaskRun> {
+    return this.db.transaction(() => {
+      const row = this.db.prepare('SELECT data FROM tasks WHERE id = ?').get(task.id) as Row | undefined;
+      if (!row || task.status !== TaskStatus.RUNNING || !Object.values(Capability).includes(capability)
+        || !isDeepStrictEqual(JSON.parse(row.data), JSON.parse(JSON.stringify(task)))) {
+        throw new Error('TASK_RUN_START_INVALID_OR_STALE_TASK');
+      }
+      const previous = this.db.prepare(
+        "SELECT MAX(json_extract(data, '$.attempt')) AS attempt FROM task_runs WHERE task_id = ?",
+      ).get(task.id) as { attempt: number | null };
+      const attempt = (previous.attempt ?? 0) + 1;
+      if (!Number.isSafeInteger(attempt) || attempt < 1) throw new Error('TASK_RUN_ATTEMPT_EXHAUSTED');
+      const run: TaskRun = { id: newId(), taskId: task.id, attempt, status: TaskRunStatus.STARTED,
+        capability, artifactIds: [], startedAt: now() };
+      this.db.prepare('INSERT INTO task_runs (id, task_id, data) VALUES (?, ?, ?)')
+        .run(run.id, run.taskId, JSON.stringify(run));
+      return run;
+    }).immediate();
+  }
+
   override async save(run: TaskRun): Promise<TaskRun> {
     this.db
       .prepare(

@@ -109,6 +109,6 @@ describe('CAP-014 Local E2E — real Core/Application/SQLite v10, no external bo
     await expect(reopened.workHandoffs.listByWorkItem(workItem.id)).resolves.toEqual([handoff]);
     await reopened.close();
     const db = new Database(path, { readonly: true });
-    try { expect(db.pragma('user_version', { simple: true })).toBe(10); } finally { db.close(); }
+    try { expect(db.pragma('user_version', { simple: true })).toBe(11); } finally { db.close(); }
   });
 });

@@ -110,7 +110,7 @@ describe('M3E-4 disposable SQLite admission', () => {
       for (const m of MIGRATIONS.filter(m => m.version <= 9)) m.up(db);
       db.pragma('user_version = 9');
       db.prepare('INSERT INTO tasks (id, channel_id, data) VALUES (?, ?, ?)').run('historical', 'channel', '{"id":"historical"}');
-      expect(runMigrations(db)).toEqual({ from: 9, to: 10, applied: [10] });
+      expect(runMigrations(db)).toEqual({ from: 9, to: 11, applied: [10, 11] });
       expect(runMigrations(db).applied).toEqual([]);
       expect(db.prepare('SELECT data FROM tasks WHERE id = ?').get('historical')).toEqual({ data: '{"id":"historical"}' });
       expect((db.pragma('table_info(continuation_bindings)') as {name: string}[]).map(x => x.name))
