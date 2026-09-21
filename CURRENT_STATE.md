@@ -6,11 +6,11 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
 - **Product identity migration:** Quoky Platform (`Quoky`), workspace `@quoky/*`, application
-  `apps/quoky`, root package `quoky-platform`. Source rename is **COMPLETE locally** at implementation HEAD
+  `apps/quoky`, root package `quoky-platform`. Source rename is **DELIVERED** through **PR #61**
+  (merge commit `9014a6190a167a1414197faeae2ad21164d930df`), from implementation HEAD
   `34f911174429385ca3b954df2cc0ddc7888a3230`. Independent exact-HEAD review:
   **PASS_WITH_NON_BLOCKING_FINDINGS**, **0 blocking findings**. ADR-0086 is **Ratified**;
-  Chief Architect ratification is **APPROVED**, with no remediation required before delivery.
-  Delivery: **NOT YET PUSHED / PR'D / MERGED**. Non-blocking dispositions are recorded in ADR-0086.
+  Chief Architect ratification is **APPROVED**. Non-blocking dispositions are recorded in ADR-0086.
   Historical names and paths in older implementation entries below describe their original Sprint.
   Current source imports and application paths use the new namespace. Legacy environment aliases,
   `./data/chunsik.db`, `.chunsik/context.md`, `.chunsik/task.md`, and `.chunsik-tmp` are preserved.
