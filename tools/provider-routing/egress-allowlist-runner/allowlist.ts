@@ -14,7 +14,7 @@ import {
   COMMAND_ORDER_VERSION,
 } from './contracts';
 
-const ROOT = '/Users/seongsujeonjonghyeong/demo_Project/chunsik-bot-2';
+const ROOT = '/Users/seongsujeonjonghyeong/demo_Project/quoky-platform';
 const ENVIRONMENT = Object.freeze({ LANG: 'C', LC_ALL: 'C' });
 const STOP_CONDITIONS = Object.freeze([
   'ALLOWLIST_UNRESOLVED', 'BASELINE_MISMATCH', 'EXECUTABLE_MISMATCH', 'COMMAND_SAFETY_BLOCKED',
