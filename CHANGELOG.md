@@ -28,7 +28,7 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 - Aligned the current ACTIVE_MILESTONE pointer in AGENTS.md and Development Mode from M2 to M3, as confirmed
   by Current State, Roadmap and the ratified M3 rebaseline. Historical M2 records and approval boundaries remain unchanged.
 
-### Changed — Quoky Platform Product Identity (local implementation)
+### Changed — Quoky Platform Product Identity
 
 - Migrated active workspace packages to `@quoky/*`, composition root to `apps/quoky`, and root package to
   `quoky-platform`; renamed current Product symbols without changing domain/execution semantics.
@@ -38,6 +38,7 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
   `bef459aaf3a77549dd44760a21ea839073b0cb46` (ADR-0085 Ratified, schema v11).
 - ADR-0086 is Ratified following independent PASS_WITH_NON_BLOCKING_FINDINGS (0 blocking findings)
   and Chief Architect approval of implementation `34f911174429385ca3b954df2cc0ddc7888a3230`.
+- Delivered through PR #61 (merge commit `9014a6190a167a1414197faeae2ad21164d930df`).
   No remediation is required before delivery. Source delivery, external repository rename, runtime activation
   and Execution Admission implementation have not occurred in this Sprint.
 
