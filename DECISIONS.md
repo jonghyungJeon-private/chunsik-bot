@@ -6570,3 +6570,246 @@ neither designs nor approves it. Receiving-agent dispatch, runtime agents and au
 - Outbound User-Agent `chunsik-bot` → `quoky-platform`: **ACCEPTED_INTENTIONAL_BRANDING_CHANGE**.
 - User-visible PR/approval copy uses Quoky Platform: **ACCEPTED_INTENTIONAL_BRANDING_CHANGE**.
 - Governance milestone M2 versus current M3: **SEPARATE_GOVERNANCE_FOLLOWUP**; unchanged here.
+
+
+---
+
+## ADR-0087 — Continuation Execution Admission
+
+- **Status:** PROPOSED — ready for independent Chief Architect review; not Ratified
+- **Date:** 2026-09-21
+- **Audit base:** `8dd6251da676bf33032a273d9044284d98bf1489`
+- **Sprint:** M3E-6A, architecture/ADR only. M3E-6 implementation: **NOT STARTED**.
+
+### Context
+
+ADR-0083 separates continuation eligibility from authority; ADR-0084 records immutable handoff/Task
+correlation; ADR-0085 makes TaskRun start and ordinal allocation atomic. None authorizes a receiving agent.
+ARCHITECTURE.md §§2–4, 10–12 require inward dependencies, existing capability ownership and approval at
+external-effect boundaries. ADR-0086 changes identity only. This proposal does not amend those invariants.
+
+#### Codebase audit and provenance versus authority
+
+Paths below are relative to the repository; these are implementation observations at the audit base.
+
+| Concept / inspected source | Existing ownership and meaning |
+|---|---|
+| `packages/core/src/domain/work-item.ts`, `application/work-manager.ts` | `WorkManager` owns Actor-owned durable work lifecycle: ACTIVE → COMPLETED/CANCELED. Not Task lifecycle or permission. |
+| `packages/core/src/domain/work-handoff.ts`, `application/work-handoff-manager.ts` | `WorkHandoffManager` validates and inserts immutable profile-to-profile provenance. No revocation/current-handoff pointer or execution grant exists. |
+| `packages/core/src/application/work-handoff-consumption-service.ts` | `WorkHandoffConsumptionService.evaluate` returns ephemeral `WorkHandoffConsumptionDecision`: CONTINUE or terminal NO_ACTION. It reads work and both profiles; no state or authority is acquired. |
+| `packages/core/src/domain/continuation-binding.ts`, `application/work-handoff-continuation-service.ts`, `ports/continuation-binding.port.ts` | `WorkHandoffContinuationService.admit` binds an existing PENDING Task; `resolveRun` proves exact-id historical correlation only. `ContinuationBindingRepository.admit` is atomic provenance insertion, not execution admission. |
+| `packages/core/src/domain/task.ts`, `application/task-manager.ts` | `TaskManager` owns Task and TaskRun lifecycle. Task is conversation-anchored; TaskRun.id identifies one actual attempt. `transition` checks its supplied Task then saves; it is not a canonical compare-and-set. `completeRun`/`failRun` likewise do not implement conflict arbitration. |
+| `packages/core/src/ports/storage-provider.port.ts`, `packages/storage-sqlite/src/index.ts` (`SqliteTaskRunRepository.start`) | `TaskManager.startRun` delegates to `TaskRunRepository.start`: exact canonical RUNNING Task comparison, ordinal allocation and STARTED insertion in one transaction. It does not check WorkItem, binding, Approval, outstanding runs or request replay. Two starts with the same Task can create two valid runs. |
+| `packages/storage-sqlite/src/continuation-binding-repository.ts` | Atomic full-snapshot comparison of handoff/work/Task plus one-to-one binding uniqueness. Initial insertion requires no runs. This PENDING-only boundary cannot be reused to start a RUNNING Task. |
+| `packages/core/src/domain/approval.ts`, `application/approval-manager.ts`, `application/approval-policy.ts`, `ports/storage-provider.port.ts` | `ApprovalManager` alone mutates persisted `ApprovalRequest`, via `ApprovalRepository`; `ApprovalPolicy` uses RiskPolicy. Authority is scoped to `ExecutionPlanRef`, not a profile or TaskRun. `isApproved(planId)` means any approved request and is insufficient for exact approval selection. |
+| `packages/core/src/domain/execution-plan.ts`, `domain/enums.ts` | ExecutionPlan is in-memory; its Ref may carry integrity. Approval statuses are PENDING/APPROVED/REJECTED. There is no persisted expiry or revocation lifecycle; policy `expiresAt` is reserved and not enforced. Task.planId is not proof of an exact CAP-003 plan's contents. |
+| `packages/core/src/domain/agent-profile.ts`, `application/agent-profile-registry.ts` | `AgentProfileRegistry` freezes composition-time configuration. Profile identity/instructions confer neither Actor authority nor runtime permission. |
+| `packages/core/src/domain/execution-receipt.ts`, `application/execution-receipt-manager.ts` | `ExecutionReceiptManager` derives CAP-013 terminal COMMAND provenance; `CommandExecutionReceiptRunner` composes command then receipt. A receipt is not approval or a generic run acknowledgement. |
+| `packages/core/src/application/execution-orchestrator.ts` | `ExecutionOrchestrator` is stateless intra-task capability sequencing, threading plan/approval refs and stopping on denial/failure. It owns no aggregate, TaskRun or cross-task runtime. It is a composition precedent, not the continuation authority owner. |
+| `packages/core/src/application/conversation-runtime.ts` (`handleWorkTurn`) | Current work path makes legal PENDING → PLANNING → RUNNING transitions, starts a run, then prepares context/workspace and calls a provider. Thus STARTED precedes provider invocation but already denotes an actual attempt. It is not receiving-agent execution. |
+| `apps/quoky/src/app.module.ts` | Composition root wires managers/orchestrator. Consumption/continuation execution is not wired. Wiring is not Product policy. |
+
+### Decision
+
+Select **Option B — Core Application Admission Service**, with **Option A — a small pure policy** where
+useful. Proposed owner: `ContinuationExecutionAdmissionService` in `packages/core/src/application`
+(name is a proposal, not an existing class). Compose narrow views of existing repositories/managers;
+retain WorkManager, TaskManager, ApprovalManager and CAP-013 ownership. Add **no aggregate, repository,
+schema, durable admission state machine or receipt**.
+
+This is sufficient for a bounded admission assessment with fail-closed restart semantics. It is **not**
+evidence that today's unchanged repository methods provide an atomic execution-authorization boundary.
+The concrete start/check race below requires strengthening the existing owner contract before future
+receiving-agent activation. Adding an admission row would not repair that race.
+
+#### What admission authorizes
+
+| Boundary | Meaning and authority |
+|---|---|
+| 1. Continuation eligibility | ACTIVE canonical work and valid handoff/profile relationships permit further consideration. Old CONTINUE values grant nothing. |
+| 2. Task lifecycle eligibility | The bound Task has valid Actor/Project/conversation relationships and a legal lifecycle path. Only TaskManager performs transitions. PENDING is not executable; RUNNING alone is not a permission. |
+| 3. TaskRun creation/start | Only TaskManager through the canonical atomic start contract may begin an actual attempt. Admission assessment neither creates a run nor reserves an id. |
+| 4. Receiving-agent entry | A fresh exact-run assessment is a necessary continuation-specific gate for one immediate entry within the owning live attempt. It is not a transferable invocation token. The future execution owner must prove it started this exact run in this invocation and satisfy the atomicity/pre-effect conditions below. M3E-6 does not expose or invoke that path. |
+| 5. Provider/tool/command | Admission conveys no capability permission, standing tool permission or provider selection. Existing capability policies and Approval still apply to each requested operation. |
+| 6. External effects | Workspace/Git/network/Discord and other effects retain their own exact-scope approval and effect-time gates. Admission never replaces them. |
+
+The composition contributes canonical relationship validation, current lifecycle/approval evaluation,
+explicit denial reasons, and an exact TaskRun correlation for the current attempt. It owns no lifecycle.
+Do not return a generic `executeAllowed` boolean. Conceptual outcomes distinguish NO_ACTION (terminal work),
+BLOCKED (missing, inconsistent, stale or unsupported authority), pre-start eligibility (no run authority),
+and exact-run admission assessment. A positive assessment carries at least handoffId, workItemId, taskId,
+taskRunId, destinationAgentProfileId, capability and the exact plan/approval references where applicable.
+It is an ephemeral read result, not a bearer credential, claim, receipt or restart checkpoint.
+
+Inputs identify canonical entities; they do not accept prior decisions as authority. A caller-supplied
+TaskRun.id is only a lookup key. An exact-run result uses `taskRuns.get(taskRunId)` and requires returned
+id equality, `run.taskId === binding.taskId`, valid immutable start identity and STARTED status. An
+externally supplied STARTED id cannot establish ownership of a live invocation. Terminal runs support
+historical correlation only. `resolveRun` alone is not admission.
+
+Never select the latest run, highest attempt, inferred current run, most recent STARTED run or MAX(attempt)
+as authority. ADR-0085's MAX(attempt) allocation is an ordinal implementation detail, never run selection.
+Future downstream entry receives the exact id returned by its own TaskManager.startRun, threaded unchanged
+through the live call chain and checked against the canonical row. It never rediscovers an id from Task.
+
+#### Effect-time revalidation
+
+Rebuild facts immediately before authoritative attempt start, then recheck before receiving-agent entry
+and before each separately governed effect. Any wait, asynchronous gap, plan change, restart or retry
+invalidates prior assessments. An assessment is valid only as a point-in-time observation, with no TTL
+or promise that later effects remain authorized.
+
+- Reload and validate the exact WorkHandoff and its WorkItem relation. “Current” means this canonical
+  immutable record is valid and actionable through current work/profile relationships; no latest-handoff,
+  consumed flag or invented revocation field exists. Missing/corrupt/inconsistent records fail closed.
+- Reload ContinuationBinding and require the exact handoff/Task pair. Do not rebind or create a replacement.
+- Require canonical WorkItem ACTIVE, matching Task Actor and optional Project, valid conversation context,
+  and the same intended continuation. Binding proves identity, not unchanged Task content. Changes to
+  intent, capability, context, workspace or plan require fresh evaluation; do not compare against an
+  invented historical Task snapshot in ContinuationBinding.
+- Require the canonical Task to permit the current phase. Use TaskManager's legal transitions, including
+  FAILED → PLANNING for a separately requested new attempt. RUNNING is required at start and immediate entry.
+  Compare full persisted snapshots for in-flight stale detection, not updatedAt alone.
+- Resolve both profiles from the current immutable registry, especially the destination; do not transfer
+  an old process's configuration assumptions across restart or infer runtime availability from a profile.
+- Determine approval requirements through existing policy/owners for the exact intended operation/plan.
+  Where required, load the selected ApprovalRequest by exact id and require APPROVED with matching
+  ExecutionPlanRef (including integrity where that contract requires it). Neither any-approved-for-plan
+  lookup, a cached ApprovalRef, Task.planId, nor a handoff's receipt references substitutes for this check.
+  Reconstructed scope must be verifiable; a lost in-memory plan is not reconstructed from its id alone.
+- An explicit expiry requirement cannot currently be proved by ApprovalManager. Deny unsupported/expired
+  authority rather than invent an expiry field or assume indefinite validity for that requirement. Future
+  expiry/revocation behavior belongs to Approval under its own approved change, never to admission.
+- After actual start, validate the exact returned TaskRun and capability, its relationship to Task and
+  binding, and the owning live invocation. Missing, terminal, conflicting or ambiguous runs cannot invoke.
+
+A prior eligibility decision can become stale through work completion, Task mutation, plan/approval change
+or configuration replacement; persistence of provenance does not preserve execution authority.
+
+#### Ordering and the meaning of STARTED
+
+1. Read/evaluate pre-start facts without writes, run creation or reservation. Planning and required approval
+   preparation stay with existing owners. Pre-start evaluation has no exact run id and cannot authorize entry.
+2. A separately authorized future execution owner enters an actual synchronous attempt path, resolves
+   prerequisites and uses TaskManager for legal lifecycle transitions to RUNNING. Assessment alone must not
+   move a Task to RUNNING. There is no queue/wait-for-worker after starting a run.
+3. At the real attempt boundary, TaskManager performs guarded atomic start as specified below. The canonical
+   commit begins the attempt and returns its exact TaskRun.id. No run is created merely to obtain an id for
+   an assessment. M3E-6 admission evaluation can inspect an existing run but cannot manufacture one.
+4. Within that same owning invocation, revalidate for the exact run and, only if every gate holds, enter
+   the future receiving-agent path once. A returned assessment is not an instruction to another caller to
+   dispatch later. Provider/tool/command/external effects retain independent gates.
+5. TaskManager records success/failure for that exact attempt and legal Task transitions. A local failure
+   or timeout after start but before provider invocation is a real failed attempt, not a reserved run or
+   proof that a provider executed. If start never committed, there is no run to complete/fail. Do not roll
+   back or erase committed attempt history. CAP-013 records only actual terminal command producers, when
+   present; do not create an admission/TaskRun receipt.
+
+M3E-6 implements none of the receiving-agent execution path. A later activation must satisfy this ordering;
+it cannot call start merely to make an unwired admission demonstration return an exact id.
+
+#### Atomicity and concurrency: evidence and minimum boundary
+
+There is a concrete race: read ACTIVE work and APPROVED approval → another writer completes work or changes
+relevant authority → today's `start(task, capability)` still succeeds because it compares only Task.
+A second concurrent start also succeeds with another ordinal. Sequential re-reads or an in-memory decision
+cannot close this gap. TaskManager.transition's unchecked save can additionally overwrite a changed Task.
+
+Keep policy in Core and atomic comparison/insertion in the existing persistence owner. Before enabling a
+continuation start caller, strengthen the **existing TaskManager / TaskRunRepository start boundary** with
+storage-neutral expected canonical facts for the exact handoff, binding, work, RUNNING Task and selected
+approval/plan reference when required. Atomically compare the full persisted values, require the Core
+eligibility predicates, reject any unresolved STARTED run for this bound Task, and insert the new run with
+ADR-0085's allocation in the same transaction. A mismatch returns a bounded stale/conflict failure with no
+partial run. This is a proposed extension of an existing contract, not a new repository or implemented API.
+Registry configuration is immutable within the process; it is resolved in Core, not stored in that transaction.
+Plan facts must be validated by their owner; storage cannot manufacture a lost plan or interpret policy.
+
+Task lifecycle changes needed by that future caller must likewise compare canonical expected Task through
+the existing Task owner/persistence contract, rather than overwriting stale state. This does not create a
+second lifecycle owner. Existing M3E-5 start behavior for other callers is not silently changed by this ADR.
+A historical assessment needs no write transaction; it must advertise that it is not a dispatch authority.
+
+The start commit is the linearization point for attempt admission. Work/approval changes ordered before
+it reject the start; changes after it do not erase history, but must block subsequent entry/effects when
+observed by their respective gates. No local transaction can atomically commit a remote invocation. This
+proposal makes no exactly-once external-effect or instantaneous distributed revocation claim. Any future
+requirement for stronger delivery guarantees needs its own architecture before activation.
+
+Another start detected before entry invalidates the continuation assessment; no winner is inferred from
+attempt order. All participating continuation writers must use the guarded owner path; generic saves or
+legacy start callers must not be able to bypass that activation contract for bound Tasks. Until that is
+proved, concurrent receiving-agent execution remains disabled. No lease, heartbeat, worker claim, global
+stateVersion, distributed lock, reservation repository or retry engine is required for this bounded design.
+The proposed existing-owner contract hardening requires later authorized implementation and concurrency
+verification; it is not part of this documentation-only Sprint.
+
+#### Stale, replay, timeout and restart behavior
+
+These are deterministic semantic outcomes, not new persisted statuses or finalized API error names.
+
+| Case | Required behavior |
+|---|---|
+| WorkItem terminal after earlier eligibility | NO_ACTION; no new start or entry. If an attempt already began, its owner stops and records its actual outcome, without deleting history. |
+| Handoff invalid/missing or no longer actionable | Invalid/missing/inconsistent → BLOCKED; terminal parent → NO_ACTION. No unsupported revocation/current-pointer model is inferred. |
+| ContinuationBinding mismatch | BLOCKED conflict; never repair by rebinding or substituting a Task. |
+| Task changed after binding | Re-evaluate current canonical Task and exact scope. Legal planned evolution is allowed; relationship/scope mismatch blocks. Change after in-flight evaluation fails the guarded snapshot comparison. |
+| Task no longer executable | BLOCKED; no bypass of TaskManager transitions and no run start from terminal state. |
+| AgentProfile missing | BLOCKED configuration failure; no fallback profile or provider. |
+| Approval denied or pending | BLOCKED; no run start for an operation requiring that approval and no invocation/effect. |
+| Approval expired | BLOCKED if validity is expired or cannot be proved under a required expiry rule; expiry enforcement is not implemented today. |
+| Approval changed | Discard assessment, reload exact approval/scope; snapshot conflict blocks. Do not switch to another approved request implicitly. |
+| Duplicate admission request | Read-only re-evaluation may return the same assessment if facts match; creates zero runs and dispatches zero times. No durable idempotency key is claimed. |
+| Same TaskRun presented twice | Repeated reads are permitted; presentation alone never authorizes either invocation. Only the original live owner may enter once; repeat dispatch or ownership reconstruction is refused. |
+| Another TaskRun started | BLOCKED conflicting/ambiguous attempt; do not select latest or supersede the supplied exact id. Guarded start prevents competing unresolved continuation attempts. |
+| Process restart between checks, before start | Lose all ephemeral results and reload facts. If no attempt began, a fresh authorized attempt may be evaluated; no cached authority survives. |
+| Restart after start, before/after uncertain invocation | STARTED proves an attempt began, not whether a receiver was invoked. Fail closed: no automatic redispatch, resume, failure fabrication or replacement run. Preserve unresolved history for separately authorized reconciliation. |
+| Timeout before actual invocation | Before start: discard assessment, no run. After start with known local non-invocation: owner fails that exact real attempt. Unknown delivery: block/reconcile; timeout is not proof of non-execution. |
+| Retry of admission request | Re-evaluate only; never translate request retry into startRun. Lost response with uncertain start is ambiguous, not permission to create another run. |
+| New execution attempt after prior failure | Separate explicit attempt intent, prior exact outcome known and no unresolved run; TaskManager legally replans and fresh scope/approval checks precede a newly allocated TaskRun.id. Old run/result is never reused. |
+
+**Durable admission state is not required** for these semantics: handoff/binding/work/Task/run/Approval
+facts support fresh checks and historical correlation; missing scope and unknown outcomes fail closed.
+This chooses safety over automatic restart progress. Existing facts cannot reconstruct whether a remote
+invocation happened between start and crash. We explicitly do not promise that reconstruction, durable
+request deduplication, restart resumption or exactly-once delivery. Persisting an “admitted” fact would not
+resolve the invocation/commit ambiguity. If such progress guarantees become a requirement, reconsider the
+specific missing fact under a separate ADR rather than adding generic admission persistence now.
+
+#### Options considered
+
+| Option | Benefits | Costs / decision |
+|---|---|---|
+| A — Pure admission policy | Deterministic, easy to test, no I/O or state; useful for canonical-fact predicates. | Cannot load current facts, prove live ownership or enforce atomic start; insufficient alone. Use only as B's internal helper. |
+| B — Core Application composition | Matches existing orchestrator precedent; composes canonical owners, exact-run reads and explicit authority boundaries without duplicate persistence. | Requires honest point-in-time results, fail-closed ambiguity and existing-owner atomic contract hardening before activation. **Selected within these limits**, not a claim that current reads alone authorize effects. |
+| C — Durable exact-TaskRun admission fact | Could record a separately required decision/audit fact or support a future explicitly designed deduplication protocol. | No present requirement needs that fact; would add table/schema, lifecycle/retention and ownership questions. Does not itself prove dispatch, freshness, approval validity or close the external-effect gap. Not selected. |
+| D — New ExecutionAdmission aggregate/repository/state machine | Could own a genuinely new lifecycle if one were demonstrated. | No such lifecycle is required. Duplicates Task lifecycle, TaskRun attempt/terminal state, Approval authority and ExecutionReceipt provenance; invites reservation/worker/retry machinery. Rejected. |
+
+### Consequences
+
+- Admission policy lives in Core Application, never the storage/Discord/Provider adapter, composition root,
+  SQLite repository or new infrastructure service. Adapters enforce atomic contracts; they do not decide
+  Product policy. `apps → adapters → core` remains intact. Contracts contain Core ids/facts/refs only,
+  with no Discord, SQLite, Claude, Codex, Ollama, HTTP or NestJS concrete types.
+- No new persistence is justified. Exact run identity and fail-closed handling prevent provenance from
+  being promoted to a transferable execution credential. There is no second approval or receipt system.
+- Today's canonical facts are sufficient for assessment and conservative restart behavior; today's
+  unchanged atomic start API is insufficient for concurrent authoritative continuation activation.
+- Follow-up implementation must verify stale snapshots, competing starts, exact identity, repeated reads,
+  approval-scope failures and crash ambiguity against the existing owners. A passing assessment test must
+  not be reported as executed receiving-agent behavior. This Sprint runs documentation validation only.
+
+### V1 / V2
+
+[NOW] M3E-6A produces this **PROPOSED** ADR for Chief Architect review. **M3E-6 implementation NOT STARTED**;
+existing Product code, schema v11 and runtime wiring are unchanged. No self-ratification or activation.
+
+[LATER] A bounded authorized admission implementation may compose read-only existing owners and an optional
+pure policy. Existing-owner concurrency hardening must precede any authoritative continuation start path.
+Actual receiving-agent integration requires a separately authorized execution slice and cannot be smuggled
+into admission evaluation. No production readiness or independent review PASS is claimed here.
+
+**Explicit M3E-6 non-goals:** actual receiving-agent execution; Agent runtime; Provider invocation; Tool
+invocation; Command execution; Workspace mutation; Git mutation; network execution; Discord execution;
+scheduler; queue; worker; lease; heartbeat; retry/fallback engine; Workflow/DAG; standing tool permissions;
+generic execution receipt; Production activation; Live UAT. Quoky development control-plane remains FROZEN.

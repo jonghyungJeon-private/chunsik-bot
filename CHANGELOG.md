@@ -7,6 +7,15 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Architecture — M3E-6A Continuation Execution Admission
+
+- Proposed ADR-0087 for independent Chief Architect review: Core Application composition over existing
+  owners, exact TaskRun.id binding, effect-time revalidation and fail-closed restart/replay; no new
+  aggregate, repository, schema, admission state machine or receipt. M3E-6 implementation is NOT STARTED.
+- Recorded the current atomic-start and Approval limitations, and the existing-owner guard hardening
+  needed before future receiving-agent activation. Admission assessment does not invoke or reserve execution.
+- Clarified the ADR-0086/PR #61 historical checkpoint nesting below without changing its delivery history.
+
 ### Maintenance — Quoky Platform external rename
 
 - Renamed the GitHub repository `chunsik-bot` → `quoky-platform` and the local workspace directory
@@ -38,9 +47,12 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
   `bef459aaf3a77549dd44760a21ea839073b0cb46` (ADR-0085 Ratified, schema v11).
 - ADR-0086 is Ratified following independent PASS_WITH_NON_BLOCKING_FINDINGS (0 blocking findings)
   and Chief Architect approval of implementation `34f911174429385ca3b954df2cc0ddc7888a3230`.
-- Delivered through PR #61 (merge commit `9014a6190a167a1414197faeae2ad21164d930df`).
-  No remediation is required before delivery. Source delivery, external repository rename, runtime activation
-  and Execution Admission implementation have not occurred in this Sprint.
+  At that local implementation/ratification checkpoint, no remediation was required before delivery;
+  source delivery, external repository rename, runtime activation and Execution Admission implementation
+  had not occurred in that Sprint.
+- Subsequent source delivery: PR #61 (merge commit `9014a6190a167a1414197faeae2ad21164d930df`).
+  The separately authorized external rename is recorded above; neither event implements Execution Admission
+  or activates runtime.
 
 ### Added — M3E-5 Atomic TaskRun Start and Attempt Allocation
 

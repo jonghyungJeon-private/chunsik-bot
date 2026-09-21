@@ -19,6 +19,14 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   `jonghyungJeon-private/quoky-platform` with history and PR continuity preserved.
   Execution Admission is the next architecture target, not implemented or approved by ADR-0086.
 
+- **M3E-6A:** ADR-0087 is **PROPOSED**, ready for independent Chief Architect review; **M3E-6
+  implementation NOT STARTED**. Proposes Core Application admission composition (Option B, optional pure
+  policy) over existing owners, exact TaskRun.id correlation, effect-time revalidation and fail-closed
+  restart/replay. No new aggregate/repository/schema. Audit found current atomic start compares only Task;
+  existing-owner atomic guard hardening is required before future continuation execution activation.
+  Admission assessment is ephemeral and cannot authorize redispatch of a persisted STARTED run. Approval
+  expiry is not currently enforced. Actual receiving-agent execution and runtime wiring remain deferred.
+
 - **M3E-3:** Delivered through PR #58 (merge commit `618b5afcc6079be956d3756f9281506907571dde`).
   ADR-0083 is Ratified; independent implementation review PASS and documentation close-out review
   PASS_WITH_NON_BLOCKING_FINDINGS preceded delivery. Consumption remains read-only and grants no authority.
