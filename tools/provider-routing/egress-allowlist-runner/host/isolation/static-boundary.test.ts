@@ -12,8 +12,8 @@ describe('XR-FCI static production boundary', () => {
     assertClosedOperationContract(readFileSync(new URL('./protocol.ts', import.meta.url), 'utf8'));
   });
   it.each([
-    ['CAP-007', "import '@chunsik/command-local';"], ['command runner', "import './generic-command-runner';"],
-    ['Ollama runner', "import '../../../apps/chunsik/src/provider-routing/ollama-preflight/process-runner';"],
+    ['CAP-007', "import '@quoky/command-local';"], ['command runner', "import './generic-command-runner';"],
+    ['Ollama runner', "import '../../../apps/quoky/src/provider-routing/ollama-preflight/process-runner';"],
     ['Provider runner', "import './provider-specific-runner';"],
     ['test support', "import '../../../egress-allowlist-runner-test-support/fake-observer-lifecycle';"],
     ['process API', "import { spawn } from 'node:child_process';"], ['shell', 'const request = { shell: true };'],

@@ -1,5 +1,5 @@
 {
-  "name": "@chunsik/ai-cli",
+  "name": "@quoky/ai-cli",
   "version": "0.1.0",
   "private": true,
   "description": "CLI-backed AiProviders: Claude, Codex, Ollama. No HTTP API.",
@@ -17,6 +17,6 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@chunsik/core": "workspace:*"
+    "@quoky/core": "workspace:*"
   }
 }

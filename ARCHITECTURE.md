@@ -1,6 +1,6 @@
-# Chunsik — Architecture Constitution
+# Quoky Platform — Architecture Constitution
 
-> This document is the **permanent architectural authority** for Chunsik.
+> This document is the **permanent architectural authority** for Quoky.
 > All implementation MUST conform to it. Changing this document requires a
 > recorded decision in `DECISIONS.md` (ADR). Code that violates this document is
 > a defect, regardless of whether it works.
@@ -13,7 +13,7 @@
 
 ## 1. Vision
 
-Chunsik is a **local-first, long-lived personal AI platform** whose first
+Quoky is a **local-first, long-lived personal AI platform** whose first
 interface happens to be Discord. It is not a Discord bot. The user converses
 naturally; the system decides *what capability* is needed and *which AI engine*
 serves it. Models are interchangeable implementation details. The same Core must
@@ -29,12 +29,12 @@ We optimize for **longevity and replaceability over short-term convenience.**
    maps it to a `Capability`; a router picks an available provider. Users never
    choose Claude/Codex/Ollama, and never normally see which answered.
 2. **The Core knows nothing concrete.** No Discord, SQLite, Claude, Codex,
-   Ollama, HTTP, or NestJS type may appear in `@chunsik/core`. Core depends only
+   Ollama, HTTP, or NestJS type may appear in `@quoky/core`. Core depends only
    on its own ports and domain.
 3. **Every infrastructure component is replaceable** behind a port.
 4. **Dependencies point inward:** `apps → adapters → core`. Core depends on
    nothing in the workspace.
-5. **Chunsik Memory is the source of truth** — never a model's internal memory.
+5. **Quoky Memory is the source of truth** — never a model's internal memory.
 6. **Governance is explicit.** External-impact and destructive actions pass a
    risk-based approval gate. Nothing dangerous runs implicitly.
 7. **Personal → Team without Core changes.** Identity, storage, queue, and
@@ -59,7 +59,7 @@ Adapters (one package per concrete provider) implement Ports.
 - **Ports** — the only contracts the outside world implements. `[NOW]`
 - **Application services** — orchestration & policy. Deterministic plumbing is
   implemented; model-driven cognition is explicit and isolated. `[NOW]`
-- **Composition Root (`apps/chunsik`)** — the ONLY place that imports concrete
+- **Composition Root (`apps/quoky`)** — the ONLY place that imports concrete
   classes and binds them to port tokens. Swapping an implementation is a
   one-line change here. `[NOW]`
 - **Adapters** — translate between the outside world and the domain. All
@@ -215,7 +215,7 @@ fixed; the implementations are not.
 
 ## 6. Memory Principles
 
-1. **Chunsik Memory is authoritative.** Never rely on a model's internal memory.
+1. **Quoky Memory is authoritative.** Never rely on a model's internal memory.
 2. Memory reaches stateless CLIs **only** through generated context files.
 3. Memory types are fixed: `SHORT_TERM`, `WORKING`, `LONG_TERM`, `PROJECT`,
    `TOOL`, `CONNECTOR`. Scope includes `sessionId` once Session lands.
@@ -294,7 +294,7 @@ planning. Approval requests and decisions are persisted as governance records.
 2. **Core is pure**: no NestJS decorators, no Node-framework deps; injection is
    explicit (constructor + DI tokens in the composition root).
 3. **One concrete provider concern per adapter package.** Adapter packages depend
-   only on `@chunsik/core`.
+   only on `@quoky/core`.
 4. Cross-boundary types are domain types only — no Discord.js/SQL/CLI types in
    port signatures.
 5. Deterministic plumbing may be implemented; model-driven cognition is isolated
@@ -307,7 +307,7 @@ planning. Approval requests and decisions are persisted as governance records.
 
 ## 12. Forbidden Rules (hard "never")
 
-- ❌ Importing a concrete provider, Discord, SQLite, or a CLI from `@chunsik/core`.
+- ❌ Importing a concrete provider, Discord, SQLite, or a CLI from `@quoky/core`.
 - ❌ Branching on a provider `id` anywhere in Core.
 - ❌ Letting any platform/storage/driver type cross a port boundary.
 - ❌ Pinning an AI provider to a Session/Task/Actor.
@@ -316,7 +316,7 @@ planning. Approval requests and decisions are persisted as governance records.
 - ❌ Merging `Resource` (input) and `Artifact` (output).
 - ❌ Auto-commit / auto-push / auto-delete / force-push / external write without
   an approval decision.
-- ❌ Relying on a model's internal memory as a substitute for Chunsik Memory.
+- ❌ Relying on a model's internal memory as a substitute for Quoky Memory.
 - ❌ Adding a god-interface (`Plugin`, mega-`Session`) instead of narrow ports.
 - ❌ Turning the main execution flow into implicit event choreography.
 

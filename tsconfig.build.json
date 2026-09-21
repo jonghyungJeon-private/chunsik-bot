@@ -18,6 +18,6 @@
     { "path": "packages/connector-confluence" },
     { "path": "packages/connector-github" },
     { "path": "packages/tool-mcp" },
-    { "path": "apps/chunsik" }
+    { "path": "apps/quoky" }
   ]
 }

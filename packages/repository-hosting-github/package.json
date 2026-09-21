@@ -1,5 +1,5 @@
 {
-  "name": "@chunsik/repository-hosting-github",
+  "name": "@quoky/repository-hosting-github",
   "version": "0.1.0",
   "private": true,
   "description": "GitHubRepositoryHostingProvider — GitHub REST adapter for CAP-010 RepositoryHosting (Sprint 3d-C, adapter-only; not wired into runtime).",
@@ -19,6 +19,6 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@chunsik/core": "workspace:*"
+    "@quoky/core": "workspace:*"
   }
 }

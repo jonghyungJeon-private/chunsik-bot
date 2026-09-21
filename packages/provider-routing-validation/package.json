@@ -1,5 +1,5 @@
 {
-  "name": "@chunsik/provider-routing-validation",
+  "name": "@quoky/provider-routing-validation",
   "version": "0.1.0",
   "private": true,
   "description": "Private deterministic validation harness for provider routing contracts.",
@@ -10,6 +10,6 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@chunsik/core": "workspace:*"
+    "@quoky/core": "workspace:*"
   }
 }

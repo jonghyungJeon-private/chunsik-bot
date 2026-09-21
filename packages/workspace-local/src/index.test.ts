@@ -2,14 +2,14 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { WorkspaceRef } from '@chunsik/core';
+import type { WorkspaceRef } from '@quoky/core';
 import { LocalCloneWorkspaceProvider } from './index';
 
 const provider = new LocalCloneWorkspaceProvider({ workspaceRoot: tmpdir() });
 const created: string[] = [];
 
 function tempDir(): string {
-  const d = mkdtempSync(join(tmpdir(), 'chunsik-scan-'));
+  const d = mkdtempSync(join(tmpdir(), 'quoky-scan-'));
   created.push(d);
   return d;
 }
@@ -20,7 +20,7 @@ afterAll(() => {
 
 describe('LocalCloneWorkspaceProvider.scanProject (ADR-0018, read-only)', () => {
   it('returns exists=false for a non-existent path', async () => {
-    const scan = await provider.scanProject('/definitely/not/here/chunsik-xyz');
+    const scan = await provider.scanProject('/definitely/not/here/quoky-xyz');
     expect(scan.exists).toBe(false);
     expect(scan.gitBranch).toBe('unknown');
   });
@@ -88,17 +88,17 @@ describe('LocalCloneWorkspaceProvider.readProjectFiles (ADR-0019, gated read-onl
   it('includes a 2-level tree (root + apps/ + packages/), excluding ignored dirs', async () => {
     const dir = tempDir();
     mkdirSync(join(dir, 'packages', 'core'), { recursive: true });
-    mkdirSync(join(dir, 'apps', 'chunsik'), { recursive: true });
+    mkdirSync(join(dir, 'apps', 'quoky'), { recursive: true });
     mkdirSync(join(dir, 'node_modules'), { recursive: true });
     writeFileSync(join(dir, 'package.json'), '{}');
     const readout = await provider.readProjectFiles(dir);
     expect(readout.tree).toContain('packages/core/');
-    expect(readout.tree).toContain('apps/chunsik/');
+    expect(readout.tree).toContain('apps/quoky/');
     expect(readout.tree).not.toContain('node_modules');
   });
 
   it('returns an empty readout for a non-existent path (no throw)', async () => {
-    const readout = await provider.readProjectFiles('/definitely/not/here/chunsik-xyz');
+    const readout = await provider.readProjectFiles('/definitely/not/here/quoky-xyz');
     expect(readout.files).toEqual([]);
   });
 });

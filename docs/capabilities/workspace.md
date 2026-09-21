@@ -21,7 +21,7 @@ delivers the **Read + Diff** foundation only.
 - Enforce read-only access rules via a `WorkspacePolicy` (ignored dirs, secret
   exclusion, max file size, binary handling).
 
-All filesystem interaction lives in the `workspace-local` adapter; `@chunsik/core`
+All filesystem interaction lives in the `workspace-local` adapter; `@quoky/core`
 stays filesystem-agnostic and dependency-free.
 
 ## Out of Scope

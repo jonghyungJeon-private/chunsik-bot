@@ -31,7 +31,7 @@ import {
   policyId,
   providerId,
   validationProfileId,
-} from '@chunsik/core';
+} from '@quoky/core';
 import { selectionDigest } from './canonical';
 import {
   CanonicalSelectionProjection,

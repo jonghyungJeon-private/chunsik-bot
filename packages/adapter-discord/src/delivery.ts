@@ -4,7 +4,7 @@
  * a live gateway. Discord specifics stay in this adapter; the core never sees them.
  */
 
-import { splitCanonicalDiff, type PreviewArtifact } from '@chunsik/core';
+import { splitCanonicalDiff, type PreviewArtifact } from '@quoky/core';
 
 /** Safe per-message length (Discord hard limit is 2000; headroom for safety). */
 export const DISCORD_SAFE_LIMIT = 1900;

@@ -2,14 +2,14 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { MemoryType, type MemoryRecord, type MemoryScope } from '@chunsik/core';
+import { MemoryType, type MemoryRecord, type MemoryScope } from '@quoky/core';
 import { SqliteStorageProvider } from './index';
 
 const dirs: string[] = [];
 afterAll(() => dirs.forEach((dir) => rmSync(dir, { recursive: true, force: true })));
 
 async function freshStore(): Promise<SqliteStorageProvider> {
-  const dir = mkdtempSync(join(tmpdir(), 'chunsik-memory-repository-'));
+  const dir = mkdtempSync(join(tmpdir(), 'quoky-memory-repository-'));
   dirs.push(dir);
   const store = new SqliteStorageProvider({ dbPath: join(dir, 'chunsik.db') });
   await store.init();

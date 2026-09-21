@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import type Database from 'better-sqlite3';
-import { ContinuationAdmissionError, TaskStatus, WorkItemStatus, now } from '@chunsik/core';
-import type { ContinuationBinding, ContinuationBindingRepository, Id, Task, WorkHandoff, WorkItem } from '@chunsik/core';
+import { ContinuationAdmissionError, TaskStatus, WorkItemStatus, now } from '@quoky/core';
+import type { ContinuationBinding, ContinuationBindingRepository, Id, Task, WorkHandoff, WorkItem } from '@quoky/core';
 
 type BindingRow = { handoff_id: string; task_id: string; recorded_at: string };
 function binding(row: BindingRow): ContinuationBinding {

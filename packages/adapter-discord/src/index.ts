@@ -1,6 +1,6 @@
 import { Client, Events, GatewayIntentBits } from 'discord.js';
 import type { Message } from 'discord.js';
-import { NotImplementedError, now } from '@chunsik/core';
+import { NotImplementedError, now } from '@quoky/core';
 import { deliverPreview, deliverWithNotice, FILE_ATTACHMENT_CHUNK_THRESHOLD } from './delivery';
 
 export {
@@ -21,7 +21,7 @@ import type {
   Logger,
   OutboundMessage,
   PlatformAdapter,
-} from '@chunsik/core';
+} from '@quoky/core';
 
 export interface DiscordConfig {
   token: string;

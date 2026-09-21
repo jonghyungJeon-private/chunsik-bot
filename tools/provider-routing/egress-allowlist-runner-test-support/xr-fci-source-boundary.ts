@@ -3,7 +3,7 @@ import * as ts from 'typescript';
 import { XrError } from '../egress-allowlist-runner/host/read/offline-read';
 import { SourceTreePort } from './source-boundary';
 
-const FORBIDDEN_MODULE = /(?:@chunsik\/command-local|command-local|ollama-preflight|process-runner|command-runner|provider[^/]*runner|egress-allowlist-runner-test-support)/i;
+const FORBIDDEN_MODULE = /(?:@quoky\/command-local|command-local|ollama-preflight|process-runner|command-runner|provider[^/]*runner|egress-allowlist-runner-test-support)/i;
 const FORBIDDEN_HOST = /^(?:node:)?(?:child_process|cluster|worker_threads|net|http|https|http2|dgram|tls|module)$/;
 const FORBIDDEN_SOURCE = /(?:\bREAD_FILE\b|\breadFile(?:Sync)?\s*\(|\bprocess\.(?:env|title)\b|(?<![.\w])exec(?:File|Sync)?\s*\(|(?<![.\w])fork\s*\(|\bshell\s*:\s*true|\.\.\.\s*process\.env|\/usr\/bin\/env)/;
 const EXPECTED_OPERATIONS = ['LSTAT', 'READLINK', 'REALPATH', 'STAT'];

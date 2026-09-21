@@ -1,4 +1,4 @@
-import type { ConnectorItem, ConnectorProvider, ConnectorQuery, ConnectorResult } from '@chunsik/core';
+import type { ConnectorItem, ConnectorProvider, ConnectorQuery, ConnectorResult } from '@quoky/core';
 
 const GITHUB_API_BASE = 'https://api.github.com';
 const GITHUB_API_VERSION = '2022-11-28';
@@ -53,7 +53,7 @@ export class GitHubConnectorProvider implements ConnectorProvider {
       Accept: 'application/vnd.github+json',
       Authorization: `Bearer ${token}`,
       'X-GitHub-Api-Version': GITHUB_API_VERSION,
-      'User-Agent': 'chunsik-bot',
+      'User-Agent': 'quoky-platform',
     };
     const init: RequestInit = { method: 'GET', headers };
     if (this.timeoutMs !== undefined) init.signal = AbortSignal.timeout(this.timeoutMs);

@@ -1,4 +1,4 @@
-# Chunsik — Roadmap
+# Quoky Platform — Roadmap
 
 Lightweight, living roadmap: **direction and sequence only.** Rules live in
 `ARCHITECTURE.md`, decisions in `DECISIONS.md`, present status in
@@ -41,7 +41,9 @@ does not claim Production Runtime readiness.
 | **M3E-1/2** ✅ | Trigger provenance, decisions and idempotent handoff production | ADR-0081/0082 |
 | **M3E-3** ✅ | Read-only handoff consumption eligibility | ADR-0083 Ratified; delivered |
 | **M3E-4** ✅ | Continuation admission and TaskRun correlation | ADR-0084 Ratified; delivered through PR #59; no run creation/execution |
-| **M3E-5** | Atomic TaskRun start and attempt allocation | Locally complete + independently reviewed; ADR-0085 Ratified; not yet delivered; no execution/runtime |
+| **M3E-5** ✅ | Atomic TaskRun start and attempt allocation | Delivered through PR #60 at `bef459aaf3a77549dd44760a21ea839073b0cb46`; ADR-0085 Ratified; schema v11; no continuation execution/runtime |
+| **Product identity** | Quoky Platform source rename | Locally complete; independently reviewed; ADR-0086 Ratified; not yet delivered |
+| **M3E-6** | Execution Admission architecture | Next architecture target; not designed or approved by ADR-0086 |
 | **Future** | Memory improvements · Codex · additional connectors | per ADR sequence |
 
 ## Deferred capabilities (YAGNI)

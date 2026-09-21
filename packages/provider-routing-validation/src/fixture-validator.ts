@@ -7,7 +7,7 @@ import {
   RoutingExecutionState,
   RoutingFailureCode,
   ValidationDisposition,
-} from '@chunsik/core';
+} from '@quoky/core';
 import {
   FIXTURE_SCHEMA_VERSION,
   FixtureManifest,

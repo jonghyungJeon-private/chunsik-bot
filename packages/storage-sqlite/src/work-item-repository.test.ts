@@ -2,15 +2,15 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ResourceRef, WorkItemStatus, WorkManager } from '@chunsik/core';
-import type { Actor, Project } from '@chunsik/core';
+import { ResourceRef, WorkItemStatus, WorkManager } from '@quoky/core';
+import type { Actor, Project } from '@quoky/core';
 import { SqliteStorageProvider } from './index';
 
 const dirs: string[] = [];
 afterAll(() => dirs.forEach((dir) => rmSync(dir, { recursive: true, force: true })));
 
 async function storeAt(path?: string): Promise<SqliteStorageProvider> {
-  const dir = path ?? mkdtempSync(join(tmpdir(), 'chunsik-work-items-'));
+  const dir = path ?? mkdtempSync(join(tmpdir(), 'quoky-work-items-'));
   if (!path) dirs.push(dir);
   const store = new SqliteStorageProvider({ dbPath: join(dir, 'chunsik.db') });
   await store.init();
@@ -19,15 +19,15 @@ async function storeAt(path?: string): Promise<SqliteStorageProvider> {
 
 const actor: Actor = {
   id: 'actor-1',
-  displayName: 'Chunsik',
+  displayName: 'Quoky',
   identities: [{ platform: 'discord', externalId: 'user-1' }],
   createdAt: '2026-09-01T00:00:00.000Z',
 };
 
 const project: Project = {
   id: 'project-1',
-  name: 'Chunsik',
-  rootPath: '/work/chunsik',
+  name: 'Quoky',
+  rootPath: '/work/quoky',
   createdAt: '2026-09-01T00:00:00.000Z',
 };
 
@@ -42,7 +42,7 @@ describe('SqliteWorkItemRepository (CAP-011) — migration v7', () => {
   });
 
   it('survives repository close/reload and rehydrates ResourceRef behavior', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'chunsik-work-items-reload-'));
+    const dir = mkdtempSync(join(tmpdir(), 'quoky-work-items-reload-'));
     dirs.push(dir);
     const first = await storeAt(dir);
     const created = await new WorkManager(first).create({

@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import type { CommandRunOptions, CommandRunResult, CommandRunner } from '@chunsik/core';
+import type { CommandRunOptions, CommandRunResult, CommandRunner } from '@quoky/core';
 
 /** Per-stream cap on captured output (chars). Larger output is truncated. */
 const MAX_OUTPUT_CHARS = 100_000;

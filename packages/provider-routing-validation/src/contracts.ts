@@ -7,7 +7,7 @@ import type {
   RoutingExecutionState,
   RoutingFailureCode,
   ValidationDisposition,
-} from '@chunsik/core';
+} from '@quoky/core';
 
 export const FIXTURE_SCHEMA_VERSION = 'routing-validation-fixture-v1' as const;
 export const HARNESS_DIGEST_VERSION = 'provider-routing-harness-digest-v1' as const;

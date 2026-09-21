@@ -7,6 +7,19 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Changed — Quoky Platform Product Identity (local implementation)
+
+- Migrated active workspace packages to `@quoky/*`, composition root to `apps/quoky`, and root package to
+  `quoky-platform`; renamed current Product symbols without changing domain/execution semantics.
+- Added canonical QUOKY environment names with legacy CHUNSIK aliases and explicit canonical precedence.
+  Existing database, context and temporary-path contracts remain unchanged; no data/schema migration.
+- Modernized README and synchronized M3E-5 delivery through PR #60 at
+  `bef459aaf3a77549dd44760a21ea839073b0cb46` (ADR-0085 Ratified, schema v11).
+- ADR-0086 is Ratified following independent PASS_WITH_NON_BLOCKING_FINDINGS (0 blocking findings)
+  and Chief Architect approval of implementation `34f911174429385ca3b954df2cc0ddc7888a3230`.
+  No remediation is required before delivery. Source delivery, external repository rename, runtime activation
+  and Execution Admission implementation have not occurred in this Sprint.
+
 ### Added — M3E-5 Atomic TaskRun Start and Attempt Allocation
 
 - Made the canonical TaskRun start boundary atomic: a storage-neutral `TaskRunRepository.start()` replaces the

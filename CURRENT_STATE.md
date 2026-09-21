@@ -1,9 +1,21 @@
-# Chunsik — Current State
+# Quoky Platform — Current State
 
 A snapshot of where the repository is **right now**. Updated as part of every
 sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md`
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
+
+- **Product identity migration:** Quoky Platform (`Quoky`), workspace `@quoky/*`, application
+  `apps/quoky`, root package `quoky-platform`. Source rename is **COMPLETE locally** at implementation HEAD
+  `34f911174429385ca3b954df2cc0ddc7888a3230`. Independent exact-HEAD review:
+  **PASS_WITH_NON_BLOCKING_FINDINGS**, **0 blocking findings**. ADR-0086 is **Ratified**;
+  Chief Architect ratification is **APPROVED**, with no remediation required before delivery.
+  Delivery: **NOT YET PUSHED / PR'D / MERGED**. Non-blocking dispositions are recorded in ADR-0086.
+  Historical names and paths in older implementation entries below describe their original Sprint.
+  Current source imports and application paths use the new namespace. Legacy environment aliases,
+  `./data/chunsik.db`, `.chunsik/context.md`, `.chunsik/task.md`, and `.chunsik-tmp` are preserved.
+  The physical repository directory and GitHub repository name are unchanged.
+  Execution Admission is the next architecture target, not implemented or approved by ADR-0086.
 
 - **M3E-3:** Delivered through PR #58 (merge commit `618b5afcc6079be956d3756f9281506907571dde`).
   ADR-0083 is Ratified; independent implementation review PASS and documentation close-out review
@@ -26,8 +38,8 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   enforces `(taskId, attempt)` uniqueness and immutable start identity; a canonical Task must already be
   RUNNING and stale/missing/non-RUNNING Task snapshots fail closed with no partial write. Existing
   `completeRun`/`failRun` update semantics are preserved. Actual continuation execution, receiving-agent
-  dispatch and Agent runtime remain later and gain no authority here. Not yet delivered: no Push/PR/Merge
-  is claimed.
+  dispatch and Agent runtime remain later and gain no authority here. Delivered through PR #60 at merge commit
+  `bef459aaf3a77549dd44760a21ea839073b0cb46`.
 - **Phase:** `M2 = COMPLETE_AND_ACCEPTED / CLOSED`; `QUIRKYBOT_DEV_V1 = MILESTONE_REACHED / CLOSED` with
   `QUIRKYBOT_DEV_V1_ACCEPTANCE_CRITERIA = MET`. Stage 2C Slice 3C was implemented in commit `683297f`, independently
   reviewed `PASS`, and closed the prior delegated offline implementation gap. Bounded Live UAT was `EXECUTED` and
@@ -36,8 +48,8 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   ADR-0075, and the appended ADR-0032 amendment. M3A-1 implements `ResourceRef` plus the first read-only Jira/GitHub
   Personal Work Surface. M3A-1.1 adds app-boundary Actor identity provisioning. M3A-2 implements the bounded
   CAP-011 WorkItem persistence foundation; accepted M3B–M3E-3 foundations are delivered, M3E-4 is delivered
-  through PR #59 with ratified architecture (ADR-0084), and M3E-5 is locally complete/independently reviewed
-  with ADR-0085 Ratified.
+  through PR #59 with ratified architecture (ADR-0084), and M3E-5 is delivered through PR #60
+  with ADR-0085 Ratified (schema v11).
 - **Version 1 source release:** `v1.0.0 = COMPLETE / CLOSED` at
   `80bbc94de0493c24036197dabc2ff00dbcd20cbf` (`origin/main` and `v1.0.0^{}`). Tag creation or push is not an
   outstanding release task. This source-release fact does not claim Production Runtime readiness.

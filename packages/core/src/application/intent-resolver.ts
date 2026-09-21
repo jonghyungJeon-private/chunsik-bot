@@ -5,7 +5,7 @@ import type { ExecutionRequest } from './execution-orchestrator';
 /**
  * Capabilities that mean "this intent is an execution" (it should enter the
  * Execution Orchestrator chain). Everything else is conversational/analysis and
- * stays on the existing `ChunsikCore` fast path.
+ * stays on the existing `QuokyCore` fast path.
  */
 const EXECUTION_CAPABILITIES: ReadonlySet<Capability> = new Set([
   Capability.CODE_IMPLEMENTATION,

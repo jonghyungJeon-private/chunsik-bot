@@ -2,15 +2,15 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Capability, CodeGenerationStatus } from '@chunsik/core';
-import type { CodeGeneration, CodeProposal } from '@chunsik/core';
+import { Capability, CodeGenerationStatus } from '@quoky/core';
+import type { CodeGeneration, CodeProposal } from '@quoky/core';
 import { SqliteStorageProvider } from './index';
 
 const dirs: string[] = [];
 afterAll(() => dirs.forEach((d) => rmSync(d, { recursive: true, force: true })));
 
 async function freshStore(): Promise<SqliteStorageProvider> {
-  const dir = mkdtempSync(join(tmpdir(), 'chunsik-codegen-'));
+  const dir = mkdtempSync(join(tmpdir(), 'quoky-codegen-'));
   dirs.push(dir);
   const store = new SqliteStorageProvider({ dbPath: join(dir, 'chunsik.db') });
   await store.init(); // runs migrations incl. v6 (code_generations + code_proposals)

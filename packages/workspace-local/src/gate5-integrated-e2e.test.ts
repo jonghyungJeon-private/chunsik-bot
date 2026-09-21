@@ -13,7 +13,7 @@ import {
   SessionStatus,
   WorkspaceChangeStatus,
   WorkspaceWriteManager,
-} from '@chunsik/core';
+} from '@quoky/core';
 import type {
   Actor,
   ApplyPreviewAnchor,
@@ -25,7 +25,7 @@ import type {
   StorageProvider,
   WorkspaceChange,
   WorkspaceRef,
-} from '@chunsik/core';
+} from '@quoky/core';
 import { LocalWorkspaceWriter } from './index';
 
 /**

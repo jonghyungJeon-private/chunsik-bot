@@ -6493,3 +6493,80 @@ and M3E-4 regression coverage. No shared/live DB is migrated in this Sprint.
 [NOW] Ratified atomic start foundation, locally complete and independently reviewed at
 `ff12ffa73e68ffc810b4a7d9698c219a378cc382`; no Push/PR/Merge is claimed. [LATER] Run-scoped execution authority,
 continuation execution, idempotent start-request keys and autonomous runtimes require separate decisions.
+
+
+**ADR-0085 delivery update (2026-09-21):** M3E-5 was delivered through PR #60 at main
+`bef459aaf3a77549dd44760a21ea839073b0cb46`. ADR-0085 remains Ratified; schema is v11.
+The local-only V1/V2 statement above records the pre-delivery checkpoint. This update supersedes
+that delivery status only; continuation execution and runtime authority remain deferred.
+
+---
+
+## ADR-0086 — Quoky Platform Product Identity and Namespace Migration
+
+- **Status:** Ratified
+- **Date:** 2026-09-21
+- **Ratified implementation HEAD:** `34f911174429385ca3b954df2cc0ddc7888a3230`
+- **Independent Review:** PASS_WITH_NON_BLOCKING_FINDINGS
+- **Blocking Findings:** 0
+- **Chief Architect Ratification:** APPROVED (confirmed by the Product Owner's close-out instruction)
+- **Remediation required before delivery:** NO
+
+### Context
+
+The Product Owner authorized this bounded local implementation following the architecture/naming audit.
+The Product spans Conversation, Memory, WorkItem, WorkHandoff, Task/TaskRun, Approval, Workspace/Git,
+Command execution, Tool/MCP, Resource/Connectors, Provider routing and execution provenance, with
+receiving-agent execution still deferred. Discord and concrete AI providers are replaceable adapters
+(ARCHITECTURE.md §§1–3), so bot/model-serving branding understates its scope.
+ADR-0061 Q9 already introduced @quoky/github-app-auth and QUOKY configuration while deferring legacy migration.
+Workspace import identities require independent review and Chief Architect acceptance before delivery.
+Implementation authorization does not ratify this ADR.
+
+### Decision
+
+Use **Quoky Platform** as the canonical Product name, **Quoky** as the short name, `@quoky/*` as
+workspace scope, `apps/quoky` as composition root, and `quoky-platform` as the private root package.
+The descriptive tagline is “Local-first Personal AI & Work Automation Platform”. Keep the existing
+@quoky/github-app-auth identity. Rename current Product symbols and active imports/build/test references.
+Do not add package aliases for the old private workspace scope; all in-repository consumers migrate together.
+
+For GITHUB_OWNER/REPO/TOKEN, DB_PATH, VECTOR_PATH, WORKSPACE_ROOT, JIRA_BASE_URL/EMAIL/TOKEN,
+SLACK_TOKEN and CONFLUENCE_BASE_URL/TOKEN, prefer QUOKY_* over the corresponding CHUNSIK_* alias.
+Use nullish precedence: an explicitly empty canonical value wins, and omitting both preserves existing defaults.
+Keep existing QUOKY-only settings. GitHub App versus dev-only PAT selection and production rejection rules
+remain unchanged; resolving an alias grants no authentication or execution authority.
+
+Preserve `./data/chunsik.db`, `.chunsik/context.md`, `.chunsik/task.md`, `.chunsik-tmp`, existing
+persisted identifiers/metadata/receipts, and security-sensitive temporary-path contracts. No schema or data migration.
+Preserve historical ADR Context, Sprint/review/checkpoint/release evidence. Use migration notes for old names
+inside historical inventories. The physical `chunsik-bot-2` directory, GitHub `chunsik-bot` repository, remotes
+and absolute external paths remain unchanged. Historical Quoky development control-plane remains FROZEN;
+it is distinct from Quoky Platform and is not used by this migration.
+
+### Consequences
+
+- One active namespace makes new implementation and the Product entry document consistent.
+- Private workspace imports and the application path change together; external consumers require follow-up.
+- README describes implemented, partial, foundation and deferred capabilities and links canonical authorities.
+- Offline lockfile/link validation, focused alias/wiring tests, typecheck and build are required.
+- Historical references and compatibility paths intentionally retain older names; global replacement is invalid.
+- Governance ACTIVE_MILESTONE=M2 versus current M3 is left for its semantic owner in a separate correction.
+- Local folder/GitHub renames require a separate external-boundary step after source delivery.
+
+### V1 / V2
+
+[NOW] Bounded local source identity migration and README modernization are complete locally at the
+ratified implementation HEAD above, independently reviewed and accepted by the Chief Architect.
+Delivery is NOT YET PUSHED / PR'D / MERGED. Hexagonal dependencies, domain/approval/execution/TaskRun
+semantics, Provider authority and runtime activation are unchanged. M3E-5 delivery is synchronized without changing ADR-0085.
+[LATER] Execution Admission requires a subsequent ADR number (0087 if still next available); this ADR
+neither designs nor approves it. Receiving-agent dispatch, runtime agents and autonomous loops remain deferred.
+
+### Non-blocking review dispositions
+
+- Blank canonical connector variables in `.env.example` can shadow populated legacy aliases under nullish
+  precedence: **SEPARATE_POST_DELIVERY_MAINTENANCE**; no configuration remediation in this close-out.
+- Outbound User-Agent `chunsik-bot` → `quoky-platform`: **ACCEPTED_INTENTIONAL_BRANDING_CHANGE**.
+- User-visible PR/approval copy uses Quoky Platform: **ACCEPTED_INTENTIONAL_BRANDING_CHANGE**.
+- Governance milestone M2 versus current M3: **SEPARATE_GOVERNANCE_FOLLOWUP**; unchanged here.

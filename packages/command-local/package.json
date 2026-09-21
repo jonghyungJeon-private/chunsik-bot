@@ -1,5 +1,5 @@
 {
-  "name": "@chunsik/command-local",
+  "name": "@quoky/command-local",
   "version": "0.1.0",
   "private": true,
   "description": "LocalCommandRunner — argv-array command execution, no shell (CAP-007).",
@@ -19,6 +19,6 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@chunsik/core": "workspace:*"
+    "@quoky/core": "workspace:*"
   }
 }

@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { InvalidTaskTransitionError } from '../errors';
 import type { ConversationContext, InboundMessage, OutboundMessage } from '../domain';
 import type { Logger, LogFields, PlatformAdapter } from '../ports';
-import { ChunsikCore } from './orchestrator';
+import { QuokyCore } from './orchestrator';
 import type { ConversationRuntime, TurnResult } from './conversation-runtime';
 
-// ── Sprint 4c-Follow-up-7 (F7-D) — ChunsikCore backstop ─────────────────────────────────────────────
+// ── Sprint 4c-Follow-up-7 (F7-D) — QuokyCore backstop ─────────────────────────────────────────────
 // Test-only. `ConversationRuntime.handle()` is designed never to throw for an application error, but the
 // facade keeps a backstop: if handle() EVER throws, deliver exactly ONE sanitized error response (never a
 // raw exception / stack) and keep the runtime alive; a delivery failure is logged only (no recursion). No
@@ -56,13 +56,13 @@ function makeRuntime(handle: (m: InboundMessage) => Promise<TurnResult>): Conver
   return { handle } as unknown as ConversationRuntime;
 }
 
-describe('ChunsikCore.handleInboundMessage — F7-D backstop', () => {
+describe('QuokyCore.handleInboundMessage — F7-D backstop', () => {
   it('runtime.handle THROWS → exactly ONE sanitized sendMessage (mapped message + 오류 코드 + conservative MAY_HAVE_APPLIED wording, NEVER a false zero-mutation claim, no raw/stack); method resolves', async () => {
     const { platform, rec } = makePlatform();
     const runtime = makeRuntime(async () => {
       throw new InvalidTaskTransitionError('PENDING', 'RUNNING');
     });
-    const core = new ChunsikCore({ runtime, platform, logger: makeLogger(rec) });
+    const core = new QuokyCore({ runtime, platform, logger: makeLogger(rec) });
 
     // Resolves (does not reject) even though handle() threw.
     await expect(core.handleInboundMessage(messageOf('아무거나'))).resolves.toBeUndefined();
@@ -89,7 +89,7 @@ describe('ChunsikCore.handleInboundMessage — F7-D backstop', () => {
     const runtime = makeRuntime(async () => {
       throw new Error('boom');
     });
-    const core = new ChunsikCore({ runtime, platform, logger: makeLogger(rec) });
+    const core = new QuokyCore({ runtime, platform, logger: makeLogger(rec) });
 
     await expect(core.handleInboundMessage(messageOf('아무거나'))).resolves.toBeUndefined();
 
@@ -105,7 +105,7 @@ describe('ChunsikCore.handleInboundMessage — F7-D backstop', () => {
     const { platform, rec } = makePlatform();
     const reply: OutboundMessage = { context: CTX, text: '정상 응답이에요.' };
     const runtime = makeRuntime(async () => ({ status: 'RESPONDED', reply, sessionId: 'sess-1' }));
-    const core = new ChunsikCore({ runtime, platform, logger: makeLogger(rec) });
+    const core = new QuokyCore({ runtime, platform, logger: makeLogger(rec) });
 
     await core.handleInboundMessage(messageOf('춘식아 안녕?'));
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { RoutingReasonCode } from '@chunsik/core';
+import { RoutingReasonCode } from '@quoky/core';
 import {
   computeSelectionCorpusDigest,
   computeSelectionFixtureDigest,

@@ -1,5 +1,5 @@
 /**
- * @chunsik/core — the framework-agnostic heart of Chunsik.
+ * @quoky/core — the framework-agnostic heart of Quoky.
  *
  * Contains ONLY: domain models, port interfaces, application services, and
  * pure utilities. It has NO runtime dependency on NestJS, Discord, SQLite, or

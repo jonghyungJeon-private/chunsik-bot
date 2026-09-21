@@ -1,4 +1,4 @@
-import { RemoteBranchCleanupBlockedError, RemoteBranchCleanupUnverifiedError, isSafeGitHubPullRequestUrl } from '@chunsik/core';
+import { RemoteBranchCleanupBlockedError, RemoteBranchCleanupUnverifiedError, isSafeGitHubPullRequestUrl } from '@quoky/core';
 import type {
   PullRequestChecksState,
   PullRequestCreationInput,
@@ -13,7 +13,7 @@ import type {
   RemoteBranchCleanupResult,
   RepositoryHostingProvider,
   RepositoryIdentity,
-} from '@chunsik/core';
+} from '@quoky/core';
 
 /**
  * GitHub RepositoryHosting adapter (CAP-010, ADR-0053 — Sprint 3d-C, **adapter-only**).
@@ -31,7 +31,7 @@ import type {
 /** Fixed GitHub API base (github.com only; Enterprise deferred — no override). */
 const GITHUB_API_BASE = 'https://api.github.com';
 const GITHUB_API_VERSION = '2022-11-28';
-const USER_AGENT = 'chunsik-bot';
+const USER_AGENT = 'quoky-platform';
 const SHA_SHAPED = /^[0-9a-f]{7,40}$/i;
 
 /**

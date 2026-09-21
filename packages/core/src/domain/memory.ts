@@ -17,7 +17,7 @@ export interface MemoryScope {
 }
 
 /**
- * A single durable memory. Chunsik Memory is the source of truth; the AI CLIs
+ * A single durable memory. Quoky Memory is the source of truth; the AI CLIs
  * are stateless executors that receive memory ONLY via generated context files.
  */
 export interface MemoryRecord {

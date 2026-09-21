@@ -1,11 +1,11 @@
-import { NotImplementedError } from '@chunsik/core';
-import { Capability } from '@chunsik/core';
+import { NotImplementedError } from '@quoky/core';
+import { Capability } from '@quoky/core';
 import type {
   AiCapabilityDescriptor,
   AiExecutionResult,
   AiProvider,
   AiRequest,
-} from '@chunsik/core';
+} from '@quoky/core';
 
 export { Capability };
 export type { AiCapabilityDescriptor };

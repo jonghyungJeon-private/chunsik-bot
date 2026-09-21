@@ -1,4 +1,4 @@
-import type { ConnectorItem, ConnectorProvider, ConnectorQuery, ConnectorResult } from '@chunsik/core';
+import type { ConnectorItem, ConnectorProvider, ConnectorQuery, ConnectorResult } from '@quoky/core';
 
 const SLACK_API_ORIGIN = 'https://slack.com';
 const PAGE_SIZE = 100;

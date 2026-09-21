@@ -217,7 +217,7 @@ function startRun(config: StartConfig = {}): StartedRun {
     : {
         createTempDir: (): string => {
           if (config.createThrows) throw new Error('temp create failed');
-          const dir = mkdtempSync(join(realpathSync(tmpdir()), 'chunsik-cli-test-'));
+          const dir = mkdtempSync(join(realpathSync(tmpdir()), 'quoky-cli-test-'));
           created.push(dir);
           return dir;
         },

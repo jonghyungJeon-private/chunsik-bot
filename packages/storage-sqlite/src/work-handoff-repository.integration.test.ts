@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
-import { ResourceRef, agentProfileId, createWorkHandoff } from '@chunsik/core';
-import type { WorkHandoff } from '@chunsik/core';
+import { ResourceRef, agentProfileId, createWorkHandoff } from '@quoky/core';
+import type { WorkHandoff } from '@quoky/core';
 import { SqliteWorkHandoffRepository } from './index';
 import { runMigrations } from './migrations';
 

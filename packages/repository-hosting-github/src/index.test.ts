@@ -3,8 +3,8 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { GitHubRepositoryHostingProvider } from './index';
 import type { GitHubHostingAuth, GitHubHostingConfig } from './index';
-import { RemoteBranchCleanupBlockedError, RemoteBranchCleanupUnverifiedError } from '@chunsik/core';
-import type { PullRequestCreationInput, PullRequestRef, RepositoryIdentity } from '@chunsik/core';
+import { RemoteBranchCleanupBlockedError, RemoteBranchCleanupUnverifiedError } from '@quoky/core';
+import type { PullRequestCreationInput, PullRequestRef, RepositoryIdentity } from '@quoky/core';
 
 const IDENTITY: RepositoryIdentity = { provider: 'github', owner: 'acme', repo: 'widgets' };
 const TOKEN = 'ghp_superSecretTokenValue';
@@ -99,7 +99,7 @@ describe('GitHubRepositoryHostingProvider (CAP-010 adapter, ADR-0053, Sprint 3d-
       expect(h.Authorization).toBe(`Bearer ${TOKEN}`);
       expect(h.Accept).toBe('application/vnd.github+json');
       expect(h['X-GitHub-Api-Version']).toBe('2022-11-28');
-      expect(h['User-Agent']).toBe('chunsik-bot');
+      expect(h['User-Agent']).toBe('quoky-platform');
       expect(calls[0]!.url.startsWith('https://api.github.com/')).toBe(true);
     });
     it('ignores any custom apiBaseUrl (no override option) — always api.github.com', async () => {
@@ -350,7 +350,7 @@ function codeOf(text: string): string {
 }
 const adapterSrc = codeOf(src('./index.ts'));
 const pkgJson = src('../package.json');
-const appModuleSrc = src('../../../apps/chunsik/src/app.module.ts');
+const appModuleSrc = src('../../../apps/quoky/src/app.module.ts');
 const runtimeSrc = src('../../core/src/application/conversation-runtime.ts');
 const composerSrc = src('../../core/src/application/response-composer.ts');
 const gitProviderPortSrc = src('../../core/src/ports/git-provider.port.ts');

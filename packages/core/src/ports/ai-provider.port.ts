@@ -35,7 +35,7 @@ export interface AiRequest {
   /** The rendered instruction text (produced by the PromptRenderer). */
   prompt: string;
   /**
-   * Memory injected as files. The core generates these from Chunsik Memory;
+   * Memory injected as files. The core generates these from Quoky Memory;
    * the provider's only job is to ensure the CLI can see them (typically by
    * having them written into the workspace before invocation).
    */

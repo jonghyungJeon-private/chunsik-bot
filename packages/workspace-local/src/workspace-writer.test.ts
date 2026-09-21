@@ -3,14 +3,14 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createTwoFilesPatch } from 'diff';
-import type { PatchOperation, WorkspaceRef } from '@chunsik/core';
+import type { PatchOperation, WorkspaceRef } from '@quoky/core';
 import { LocalWorkspaceWriter } from './index';
 
 const created: string[] = [];
 afterAll(() => created.forEach((d) => rmSync(d, { recursive: true, force: true })));
 
 function ws(): WorkspaceRef {
-  const dir = mkdtempSync(join(tmpdir(), 'chunsik-wswrite-'));
+  const dir = mkdtempSync(join(tmpdir(), 'quoky-wswrite-'));
   created.push(dir);
   return { id: 'w1', rootPath: dir, kind: 'local-clone' };
 }

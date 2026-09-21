@@ -4,7 +4,7 @@ import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
 import { runMigrations } from './migrations';
 import { SqliteContinuationBindingRepository } from './continuation-binding-repository';
-import type { ContinuationBindingRepository } from '@chunsik/core';
+import type { ContinuationBindingRepository } from '@quoky/core';
 import type {
   Actor,
   ActorRepository,
@@ -48,8 +48,8 @@ import type {
   WorkItemRepository,
   WorkHandoff,
   WorkHandoffRepository,
-} from '@chunsik/core';
-import { Capability, TaskStatus, TaskRunStatus, newId, now, ResourceRef as DomainResourceRef, createWorkHandoff } from '@chunsik/core';
+} from '@quoky/core';
+import { Capability, TaskStatus, TaskRunStatus, newId, now, ResourceRef as DomainResourceRef, createWorkHandoff } from '@quoky/core';
 
 export interface SqliteConfig {
   /** Path to the SQLite database file, e.g. ./data/chunsik.db */

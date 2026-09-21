@@ -22,7 +22,7 @@ const composerSrc = src('./response-composer.ts');
 const gitDomainSrc = src('../domain/git.ts');
 const gitProviderPortSrc = src('../ports/git-provider.port.ts');
 const gitManagerSrc = src('./git-manager.ts');
-const appModuleSrc = src('../../../../apps/chunsik/src/app.module.ts');
+const appModuleSrc = src('../../../../apps/quoky/src/app.module.ts');
 
 describe('Sprint 3d-A absence guards (ADR-0051 — config-only; no hosting mutation, no wiring, no secrets)', () => {
   it('the new modules use no process/shell/network/command surface (tests 20/24/25/26/27)', () => {

@@ -10,7 +10,7 @@ import {
   type GitRunner,
   type GitRunResult,
 } from './index';
-import { BranchCleanupBlockedError, GitMainSyncBlockedError } from '@chunsik/core';
+import { BranchCleanupBlockedError, GitMainSyncBlockedError } from '@quoky/core';
 
 const created: string[] = [];
 afterAll(() => {
@@ -25,7 +25,7 @@ function git(cwd: string, ...args: string[]): string {
 
 /** A temp git repo on branch `main` with one optional commit. */
 function makeRepo(withCommit = true): string {
-  const dir = mkdtempSync(join(tmpdir(), 'chunsik-git-'));
+  const dir = mkdtempSync(join(tmpdir(), 'quoky-git-'));
   created.push(dir);
   git(dir, 'init', '-q');
   git(dir, 'symbolic-ref', 'HEAD', 'refs/heads/main'); // deterministic branch name
@@ -41,7 +41,7 @@ function makeRepo(withCommit = true): string {
 }
 
 function tempDir(): string {
-  const d = mkdtempSync(join(tmpdir(), 'chunsik-nogit-'));
+  const d = mkdtempSync(join(tmpdir(), 'quoky-nogit-'));
   created.push(d);
   return d;
 }
@@ -486,7 +486,7 @@ describe('LocalGitProvider — post-merge local main sync (CAP-002, ADR-0058, Sp
   function makeRemoteAndClone(): { remote: string; local: string; A: string } {
     const remote = makeRepo(); // main @ A ("init")
     const A = git(remote, 'rev-parse', 'HEAD').trim();
-    const parent = mkdtempSync(join(tmpdir(), 'chunsik-clone-'));
+    const parent = mkdtempSync(join(tmpdir(), 'quoky-clone-'));
     created.push(parent);
     const local = join(parent, 'local');
     git(parent, 'clone', '-q', remote, 'local');
