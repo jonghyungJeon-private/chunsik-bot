@@ -6504,8 +6504,13 @@ that delivery status only; continuation execution and runtime authority remain d
 
 ## ADR-0086 — Quoky Platform Product Identity and Namespace Migration
 
-- **Status:** Proposed
+- **Status:** Ratified
 - **Date:** 2026-09-21
+- **Ratified implementation HEAD:** `34f911174429385ca3b954df2cc0ddc7888a3230`
+- **Independent Review:** PASS_WITH_NON_BLOCKING_FINDINGS
+- **Blocking Findings:** 0
+- **Chief Architect Ratification:** APPROVED (confirmed by the Product Owner's close-out instruction)
+- **Remediation required before delivery:** NO
 
 ### Context
 
@@ -6551,8 +6556,17 @@ it is distinct from Quoky Platform and is not used by this migration.
 
 ### V1 / V2
 
-[NOW] Bounded local source identity migration and README modernization, pending independent review and
-Chief Architect acceptance. Hexagonal dependencies, domain/approval/execution/TaskRun semantics, Provider
-authority and runtime activation are unchanged. M3E-5 delivery is synchronized without changing ADR-0085.
+[NOW] Bounded local source identity migration and README modernization are complete locally at the
+ratified implementation HEAD above, independently reviewed and accepted by the Chief Architect.
+Delivery is NOT YET PUSHED / PR'D / MERGED. Hexagonal dependencies, domain/approval/execution/TaskRun
+semantics, Provider authority and runtime activation are unchanged. M3E-5 delivery is synchronized without changing ADR-0085.
 [LATER] Execution Admission requires a subsequent ADR number (0087 if still next available); this ADR
 neither designs nor approves it. Receiving-agent dispatch, runtime agents and autonomous loops remain deferred.
+
+### Non-blocking review dispositions
+
+- Blank canonical connector variables in `.env.example` can shadow populated legacy aliases under nullish
+  precedence: **SEPARATE_POST_DELIVERY_MAINTENANCE**; no configuration remediation in this close-out.
+- Outbound User-Agent `chunsik-bot` → `quoky-platform`: **ACCEPTED_INTENTIONAL_BRANDING_CHANGE**.
+- User-visible PR/approval copy uses Quoky Platform: **ACCEPTED_INTENTIONAL_BRANDING_CHANGE**.
+- Governance milestone M2 versus current M3: **SEPARATE_GOVERNANCE_FOLLOWUP**; unchanged here.
