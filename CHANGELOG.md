@@ -9,6 +9,13 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ### Architecture — M3E-6A Continuation Execution Admission
 
+- Ratified ADR-0087 by Chief Architect decision following independent exact-HEAD Architecture Review
+  PASS_WITH_NON_BLOCKING_FINDINGS at `90a67de840df71db2872b2a15e49c0efd117e93f`;
+  ADR_0087_READY_FOR_CA_RATIFICATION = YES. The substantive architecture remains unchanged.
+- Carried forward the exact canonical unresolved STARTED predicate and guarded-start bypass closure across
+  generic taskRuns.save(), legacy callers and other insertion paths as implementation requirements, not
+  ADR blockers. Existing TaskManager / TaskRun ownership remains; M3E-6 implementation is NOT STARTED.
+
 - Proposed ADR-0087 for independent Chief Architect review: Core Application composition over existing
   owners, exact TaskRun.id binding, effect-time revalidation and fail-closed restart/replay; no new
   aggregate, repository, schema, admission state machine or receipt. M3E-6 implementation is NOT STARTED.

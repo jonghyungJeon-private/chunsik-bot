@@ -6576,7 +6576,12 @@ neither designs nor approves it. Receiving-agent dispatch, runtime agents and au
 
 ## ADR-0087 — Continuation Execution Admission
 
-- **Status:** PROPOSED — ready for independent Chief Architect review; not Ratified
+- **Status:** Ratified
+- **Reviewed architecture HEAD:** `90a67de840df71db2872b2a15e49c0efd117e93f`
+- **Independent exact-HEAD Architecture Review:** PASS_WITH_NON_BLOCKING_FINDINGS
+- **ADR_0087_READY_FOR_CA_RATIFICATION:** YES
+- **Chief Architect Ratification:** APPROVED, as confirmed by the Product Owner's ratification closeout
+  instruction. The substantive architecture contract is unchanged.
 - **Date:** 2026-09-21
 - **Audit base:** `8dd6251da676bf33032a273d9044284d98bf1489`
 - **Sprint:** M3E-6A, architecture/ADR only. M3E-6 implementation: **NOT STARTED**.
@@ -6586,7 +6591,7 @@ neither designs nor approves it. Receiving-agent dispatch, runtime agents and au
 ADR-0083 separates continuation eligibility from authority; ADR-0084 records immutable handoff/Task
 correlation; ADR-0085 makes TaskRun start and ordinal allocation atomic. None authorizes a receiving agent.
 ARCHITECTURE.md §§2–4, 10–12 require inward dependencies, existing capability ownership and approval at
-external-effect boundaries. ADR-0086 changes identity only. This proposal does not amend those invariants.
+external-effect boundaries. ADR-0086 changes identity only. This decision does not amend those invariants.
 
 #### Codebase audit and provenance versus authority
 
@@ -6612,7 +6617,7 @@ Paths below are relative to the repository; these are implementation observation
 ### Decision
 
 Select **Option B — Core Application Admission Service**, with **Option A — a small pure policy** where
-useful. Proposed owner: `ContinuationExecutionAdmissionService` in `packages/core/src/application`
+useful. Admission owner: `ContinuationExecutionAdmissionService` in `packages/core/src/application`
 (name is a proposal, not an existing class). Compose narrow views of existing repositories/managers;
 retain WorkManager, TaskManager, ApprovalManager and CAP-013 ownership. Add **no aggregate, repository,
 schema, durable admission state machine or receipt**.
@@ -6721,7 +6726,7 @@ storage-neutral expected canonical facts for the exact handoff, binding, work, R
 approval/plan reference when required. Atomically compare the full persisted values, require the Core
 eligibility predicates, reject any unresolved STARTED run for this bound Task, and insert the new run with
 ADR-0085's allocation in the same transaction. A mismatch returns a bounded stale/conflict failure with no
-partial run. This is a proposed extension of an existing contract, not a new repository or implemented API.
+partial run. This is a required extension of an existing contract, not a new repository or implemented API.
 Registry configuration is immutable within the process; it is resolved in Core, not stored in that transaction.
 Plan facts must be validated by their owner; storage cannot manufacture a lost plan or interpret policy.
 
@@ -6733,7 +6738,7 @@ A historical assessment needs no write transaction; it must advertise that it is
 The start commit is the linearization point for attempt admission. Work/approval changes ordered before
 it reject the start; changes after it do not erase history, but must block subsequent entry/effects when
 observed by their respective gates. No local transaction can atomically commit a remote invocation. This
-proposal makes no exactly-once external-effect or instantaneous distributed revocation claim. Any future
+decision makes no exactly-once external-effect or instantaneous distributed revocation claim. Any future
 requirement for stronger delivery guarantees needs its own architecture before activation.
 
 Another start detected before entry invalidates the continuation assessment; no winner is inferred from
@@ -6741,8 +6746,31 @@ attempt order. All participating continuation writers must use the guarded owner
 legacy start callers must not be able to bypass that activation contract for bound Tasks. Until that is
 proved, concurrent receiving-agent execution remains disabled. No lease, heartbeat, worker claim, global
 stateVersion, distributed lock, reservation repository or retry engine is required for this bounded design.
-The proposed existing-owner contract hardening requires later authorized implementation and concurrency
+The ratified existing-owner contract hardening requires later authorized implementation and concurrency
 verification; it is not part of this documentation-only Sprint.
+
+#### Implementation carry-forward — non-blocking review findings
+
+These are M3E-6 implementation requirements, not ADR ratification blockers. Implementation remains
+**NOT STARTED**; this closeout neither defines new Product behavior nor activates continuation execution.
+
+1. **Unresolved STARTED predicate:** before activating continuation execution, the implementation slice
+   must define the exact canonical predicate for an `unresolved STARTED TaskRun`. It must not remain a
+   fuzzy runtime convention; the guarded start conflict check must use that explicit predicate.
+2. **Start-contract bypass closure:** bound continuation Tasks must not bypass the guarded activation
+   contract through generic `taskRuns.save()`, legacy start callers or another insertion path. Keep the
+   existing canonical TaskManager / TaskRun start owner; do not add a second TaskRun repository or an
+   Admission state machine.
+
+Preserve the effect-time sequence: ephemeral pre-admission → canonical persisted validation → guarded
+atomic TaskRun start → exact TaskRun.id returned → exact-run revalidation/authority within the same owning
+invocation → one downstream execution entry. The existing start boundary must close the known race across
+exact WorkHandoff, ContinuationBinding, WorkItem lifecycle, canonical Task state, selected Approval /
+ExecutionPlan authority and unresolved STARTED conflicts, with no new Admission persistence.
+
+Where approval is required, authority remains exact `ApprovalRequest.id` → APPROVED → matching
+`ExecutionPlanRef` → `ExecutionPlanIntegrityRef` where required. If canonical facts cannot prove authority,
+**DENY / FAIL CLOSED**; never reconstruct an in-memory ExecutionPlan from its id alone.
 
 #### Stale, replay, timeout and restart behavior
 
@@ -6801,13 +6829,15 @@ specific missing fact under a separate ADR rather than adding generic admission 
 
 ### V1 / V2
 
-[NOW] M3E-6A produces this **PROPOSED** ADR for Chief Architect review. **M3E-6 implementation NOT STARTED**;
-existing Product code, schema v11 and runtime wiring are unchanged. No self-ratification or activation.
+[NOW] ADR-0087 is **Ratified** by the Chief Architect following independent exact-HEAD Architecture Review
+**PASS_WITH_NON_BLOCKING_FINDINGS** at the reviewed architecture HEAD above. **M3E-6 implementation NOT
+STARTED**; existing Product code, schema v11 and runtime wiring are unchanged. This documentation closeout
+records the supplied decision and awaits independent review; it does not activate runtime or claim delivery.
 
 [LATER] A bounded authorized admission implementation may compose read-only existing owners and an optional
 pure policy. Existing-owner concurrency hardening must precede any authoritative continuation start path.
 Actual receiving-agent integration requires a separately authorized execution slice and cannot be smuggled
-into admission evaluation. No production readiness or independent review PASS is claimed here.
+into admission evaluation. No production readiness or implementation review PASS is claimed here.
 
 **Explicit M3E-6 non-goals:** actual receiving-agent execution; Agent runtime; Provider invocation; Tool
 invocation; Command execution; Workspace mutation; Git mutation; network execution; Discord execution;

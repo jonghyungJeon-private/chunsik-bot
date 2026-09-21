@@ -43,8 +43,8 @@ does not claim Production Runtime readiness.
 | **M3E-4** ✅ | Continuation admission and TaskRun correlation | ADR-0084 Ratified; delivered through PR #59; no run creation/execution |
 | **M3E-5** ✅ | Atomic TaskRun start and attempt allocation | Delivered through PR #60 at `bef459aaf3a77549dd44760a21ea839073b0cb46`; ADR-0085 Ratified; schema v11; no continuation execution/runtime |
 | **Product identity** | Quoky Platform source rename | Locally complete; independently reviewed; ADR-0086 Ratified; not yet delivered |
-| **M3E-6A** | Continuation Execution Admission architecture | ADR-0087 PROPOSED; ready for Chief Architect review; Option B over existing owners, exact TaskRun.id and effect-time revalidation; no new aggregate/repository/schema |
-| **M3E-6** | Admission implementation | NOT STARTED; ADR-0087 not Ratified; existing-owner atomic guard hardening required before future execution activation; actual receiving-agent execution remains deferred |
+| **M3E-6A** | Continuation Execution Admission architecture | ADR-0087 Ratified by Chief Architect; independent exact-HEAD review PASS_WITH_NON_BLOCKING_FINDINGS; Option B over existing owners, exact TaskRun.id and effect-time revalidation; no new aggregate/repository/schema |
+| **M3E-6** | Admission implementation | NOT STARTED; ADR-0087 Ratified; carry forward exact unresolved STARTED predicate and all insertion/start bypass closure in existing TaskRun owner before activation; actual receiving-agent execution remains deferred |
 | **Future** | Memory improvements · Codex · additional connectors | per ADR sequence |
 
 ## Deferred capabilities (YAGNI)
