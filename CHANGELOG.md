@@ -7,6 +7,13 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Maintenance — Pre-M3E6 housekeeping
+
+- Commented out six optional canonical connector variables in `.env.example` so omitted QUOKY keys do not
+  shadow legacy CHUNSIK aliases. Runtime nullish precedence and configuration code are unchanged.
+- Aligned the current ACTIVE_MILESTONE pointer in AGENTS.md and Development Mode from M2 to M3, as confirmed
+  by Current State, Roadmap and the ratified M3 rebaseline. Historical M2 records and approval boundaries remain unchanged.
+
 ### Changed — Quoky Platform Product Identity (local implementation)
 
 - Migrated active workspace packages to `@quoky/*`, composition root to `apps/quoky`, and root package to
