@@ -6895,3 +6895,197 @@ M3E-6B introduces no continuation start caller. Neither TaskManager nor a write/
 to the evaluator. Focused tests exercise bounded denials, exact approval scope, terminal/STARTED history,
 recreated evaluator behavior, deterministic concurrent reads and zero mutation. Existing consumption,
 binding and TaskManager regression tests remain required. No full start-time TOCTOU closure is claimed.
+
+
+## ADR-0088 — Effect-Time Guarded Continuation Start and Execution Entry
+
+- **Status:** Ratified
+- **Reviewed architecture HEAD:** `d43c0b51fc5f869aa70a516c61df1d6ff017f330`
+- **Independent Architecture Review:** PASS_WITH_NON_BLOCKING_FINDINGS
+- **ADR_0088_READY_FOR_CA_RATIFICATION:** YES
+- **Chief Architect Ratification:** APPROVED, as confirmed by the Product Owner's ratification closeout
+  instruction. The architecture decision is preserved; activation prerequisites remain outstanding.
+- **Date:** 2026-09-21
+- **Audit base:** `c0c91f341cb5f300628b86506c84e329d4f14eac`
+- **Sprint:** M3E-6C, architecture/ADR only. Guarded start implementation: **NOT STARTED**.
+- **Authority:** Chief Architect ratification recorded; guarded-start implementation is not authorized by this closeout.
+
+### Context
+
+ADR-0085 made TaskRun start atomic for ordinal allocation. ADR-0087 is Ratified and M3E-6B delivered the
+read-only `ContinuationExecutionAdmissionService`, which deliberately returns a non-authoritative
+point-in-time result and does not close the start-time race. ADR-0087 recorded effect-time atomic start and
+start-contract bypass closure as deferred activation prerequisites. This decision defines exactly where
+creating a STARTED TaskRun becomes truthful as "a real execution attempt has begun", and nothing further:
+receiver invocation is not designed, exposed or wired here.
+
+#### Codebase audit at the audit base
+
+| Inspected source | Observation |
+|---|---|
+| `packages/core/src/application/task-manager.ts` | `startRun(task, capability)` delegates unchanged to `storage.taskRuns.start`. `completeRun`/`failRun` build a terminal run and call `taskRuns.save`. `TRANSITIONS` forbids PENDING → RUNNING directly; RUNNING is reachable only via PLANNING or WAITING_APPROVAL. `transition` validates its supplied Task then saves; it is not a canonical compare-and-set. |
+| `packages/storage-sqlite/src/index.ts` (`SqliteTaskRunRepository`) | `start` opens an `IMMEDIATE` transaction, deep-compares the persisted Task against the supplied snapshot, requires RUNNING, allocates `MAX(attempt) + 1` and inserts STARTED. **It does not examine WorkHandoff, ContinuationBinding, WorkItem, Approval or existing unresolved STARTED runs.** Two concurrent starts on the same Task therefore both commit, as attempts N+1 and N+2. `save` is `INSERT … ON CONFLICT(id) DO UPDATE`, so it can also insert a brand-new row. |
+| `packages/storage-sqlite/src/migrations.ts` v11 | Enforces `UNIQUE(task_id, attempt)` and immutability of `id`/`taskId`/`attempt`/`startedAt`/`capability` on update. Uniqueness is per ordinal, so it does **not** constrain how many runs may be STARTED for one Task. |
+| `packages/storage-sqlite/src/continuation-binding-repository.ts`, `packages/core/src/ports/continuation-binding.port.ts` | `admit(expected: Readonly<{ handoff; workItem; task }>)` is the ratified expected-facts guard shape: Core supplies bounded canonical snapshots, the adapter deep-compares each against its persisted row inside one `IMMEDIATE` transaction, re-checks cross-aggregate consistency and uniqueness, and fails closed with the bounded `ContinuationAdmissionError` (`STALE_STATE`, `INCONSISTENT_STATE`, `CONFLICT`). It requires Task PENDING and zero runs, so this boundary cannot be reused to start a RUNNING Task. |
+| `packages/core/src/application/continuation-execution-admission-service.ts` | Read-only evaluator; dependency type exposes only `get` on handoffs/work items/tasks/approvals and `listByTask` on runs, so writes are excluded at the type level. Requires canonical RUNNING Task. Unresolved conflict predicate is exactly `run.taskId === boundTaskId && run.status === STARTED`. `ELIGIBLE_TO_START_ATTEMPT` carries only `handoffId` and `taskId` — no `TaskRun.id`. |
+| `packages/core/src/ports/storage-provider.port.ts` | Repositories exist for tasks, taskRuns, workItems, workHandoffs, approvals and receipts. **There is no ExecutionPlan repository**: `ExecutionPlan` is caller-owned in-memory data, while `ApprovalRequest` is persisted and carries `executionPlanRef` including optional `integrity`. |
+| `packages/core/src/application/agent-profile-registry.ts` | `AgentProfileRegistry` freezes composition-time configuration. Profiles are not persisted storage rows and cannot participate in a persistence transaction. |
+| Production callers | The only production callers of `startRun` are `TaskManager.startRun` and `ConversationRuntime.handleWorkTurn`; the only `taskRuns.save` callers are `completeRun`/`failRun`. **No production caller of either continuation service exists, and neither is wired in `apps/quoky/src/app.module.ts`.** |
+
+#### Load-bearing lifecycle gap surfaced, not invented
+
+`WorkHandoffContinuationService.admit` binds at Task **PENDING** with zero runs. The M3E-6B evaluator requires
+Task **RUNNING**. `TRANSITIONS` requires an intermediate PLANNING (or WAITING_APPROVAL) step, and **no
+production owner currently moves a continuation-bound Task from PENDING to RUNNING**. `ConversationRuntime`
+performs that walk only for ordinary conversation work turns, not for continuations. This ADR does not invent
+that transition. `CONTINUATION_TASK_RUNNING_OWNER = UNSPECIFIED` is recorded as a named activation
+prerequisite that must be decided by its own slice before any guarded start can be reached in production.
+
+### Decision
+
+Select **Option B — a sibling guarded-start operation on the existing `TaskRunRepository` port**.
+
+`TaskManager` and `TaskRunRepository` remain the canonical TaskRun lifecycle and start owners. A narrow Core
+Application continuation execution-entry service composes policy around that owner; it owns no aggregate and
+no lifecycle. Add **no aggregate, no repository, no schema, no table, no durable state, no queue, no worker,
+no lease, no heartbeat and no distributed lock**.
+
+Options A, C and D are rejected on ownership correctness, not diff size. **Option A** (optional guard
+arguments on `start`) leaves the guard opt-in, so a continuation-bound Task remains startable through the
+ordinary two-argument call and the bypass stays open; it also overloads one method with two contracts.
+**Option C** (application read-check then ordinary start) cannot close the race at all, because the check and
+the insert are not in one transaction — exactly the gap M3E-6B left open. **Option D** (new
+aggregate/repository/state machine) is unnecessary: ContinuationBinding, Task, TaskRun and ApprovalRequest
+already carry every fact the guard needs, so no evidence compels it.
+
+#### Execution entry and linearization
+
+```text
+fresh admission evaluation
+  → guarded start with bounded expected canonical facts
+  → single transaction commit                      ← LINEARIZATION POINT
+  → exact TaskRun STARTED, exact TaskRun.id returned in-memory
+  → same owning invocation proceeds toward future receiver invocation
+```
+
+`LINEARIZATION_POINT` is the single commit of the guarded start transaction inside the TaskRun repository.
+Before that commit no valid attempt exists; after it, exactly one STARTED TaskRun exists and STARTED is
+truthful. The prior read-only evaluation is a necessary precondition and never authority: its result is not
+re-supplied to the guard as proof.
+
+The invocation that successfully commits the guarded start **is** the invocation that must proceed toward
+receiver invocation. Persisting the returned `TaskRun.id` into a queue or table for a later unrelated worker
+to claim is prohibited unless a future ADR explicitly introduces that architecture.
+
+#### Effect-time fact classification
+
+| Class | Facts | Why |
+|---|---|---|
+| **A — must participate in the atomic persisted guard** | exact `WorkHandoff`, exact `ContinuationBinding`, `WorkItem` lifecycle, `Task` lifecycle and Actor/Project relationship, exact `ApprovalRequest` id/status/`executionPlanRef`/integrity, absence of an unresolved STARTED run for the bound Task | All are persisted rows readable in the same transaction, and each can change between evaluation and start. Snapshot equality plus the STARTED-absence check must be verified at the linearization point. |
+| **B — may be freshly read immediately before start** | `AgentProfile` existence and configuration for both handoff endpoints | Composition-time configuration, not storage rows; it cannot join a persistence transaction. A fresh registry read immediately before the guard is sufficient, and profiles remain configuration rather than authority. |
+| **C — immutable provenance where identity comparison suffices** | `WorkHandoff` identity fields and `ContinuationBinding` `{handoffId, taskId, recordedAt}` | Both are insert-once and never mutated, so comparing identity is equivalent to comparing content. They are still verified in class A because their *presence* must hold at commit time. |
+| **D — caller-owned non-persisted facts that must be supplied and compared** | live `ExecutionPlan` and its derived `ExecutionPlanRef`/`ExecutionPlanIntegrityRef` | There is no ExecutionPlan repository, so the plan cannot be re-read canonically. The caller must supply the original live plan and derive the expected refs; the guard compares those refs against the persisted `ApprovalRequest.executionPlanRef` including integrity. The live plan itself is neither persisted nor transactionally reread. |
+
+Not every fact can or should live in one persistence transaction: AgentProfile is configuration and
+ExecutionPlan is non-persisted. Claiming "revalidate everything atomically" would be false, so the guard
+covers class A atomically and states the class B/D boundary explicitly.
+
+#### Concurrency, unresolved STARTED and failure taxonomy
+
+Inside the guard's `IMMEDIATE` transaction, the adapter rejects the start when any run for the bound Task has
+persisted status STARTED. `IMMEDIATE` acquires the write lock at transaction start, so concurrent guarded
+starts serialize and the later one observes the committed STARTED row. Therefore
+`CONCURRENT_START_WINNERS = at most 1`, with all others failing closed on a bounded conflict result. This
+needs no new table, column, lease or `stateVersion`; a partial unique index on STARTED runs would be a
+stronger belt-and-braces backstop but requires a migration and is deliberately **not** adopted, so
+`NEW_SCHEMA = NO` holds.
+
+Bounded failure reasons follow existing convention (a typed error with a closed reason set, as with
+`ContinuationAdmissionError`) and must not become a second domain lifecycle: `STALE_HANDOFF`,
+`BINDING_MISMATCH`, `WORK_ITEM_NOT_CONTINUABLE`, `TASK_NOT_EXECUTABLE`, `APPROVAL_STALE`,
+`UNRESOLVED_STARTED_RUN`, `CONCURRENT_START_CONFLICT`. They describe why one start attempt failed; they carry
+no state and no authority.
+
+#### Bypass closure
+
+A continuation-bound Task must not reach STARTED except through the guarded path. Closure distinguishes
+*creating a new STARTED run* from *updating an existing run to a terminal state*:
+
+- ordinary `start(task, capability)` must refuse when a `ContinuationBinding` exists for that Task — a read of
+  the existing `continuation_bindings.task_id` inside its current transaction, requiring no schema change.
+  This decision is based on canonical persistence, never an optional caller flag;
+- `save` must remain available for terminal updates and must refuse to **insert a new row** for a
+  continuation-bound Task, while continuing to update an existing row. `completeRun`/`failRun` always update
+  an existing run, so they are unaffected;
+- `save` is not globally prohibited, and the v11 immutability trigger already prevents rewriting a committed
+  start identity.
+
+Test fixtures and helpers that insert runs directly are acknowledged: closure is enforced at the adapter
+contract, so direct raw-SQL fixtures remain outside it. That residual is recorded honestly rather than
+claimed closed.
+
+#### Approval and the STARTED failure window
+
+Approval requirements are unchanged and not weakened: the exact `ApprovalRequest.id`, `APPROVED` status,
+matching `ExecutionPlanRef` and matching integrity where present. No `isApproved(planId)` fallback, no
+reconstruction from `Task.planId`, no cached `ApprovalRef`, no handoff receipt, no new expiry semantics and no
+new Approval model. Because the plan is caller-owned, the approval comparison is a class A persisted check
+against a class D supplied value.
+
+If the guarded start commits and the local process then fails before receiver invocation, the committed
+STARTED TaskRun records a real attempt with an ambiguous outcome — never a reservation, lease, claim or future intent. Automatic redispatch, automatic
+replacement runs and fabricated success or failure are all prohibited, and this slice adds no recovery
+semantics.
+
+#### Task RUNNING versus TaskRun STARTED
+
+`Task.status = RUNNING` is a Task-level lifecycle assertion, owned solely by `TaskManager.transition`, that
+the Task is admitted to execute. `TaskRun.status = STARTED` asserts that one concrete execution attempt has
+begun, identified by exactly one `TaskRun.id`. They are not duplicate representations: a RUNNING Task with
+zero TaskRuns **is valid** and is precisely the legitimate pre-first-attempt window — M3E-4 admission itself
+requires zero runs — and a RUNNING Task may accumulate several terminal runs across attempts.
+
+The exact returned `TaskRun.id` is the only execution-attempt identity and must be propagated in-memory to
+the future receiver execution path. Rediscovery by latest run, highest attempt, `MAX(attempt)` or most-recent
+STARTED is prohibited.
+
+#### Ratification carry-forward — Task RUNNING owner and approval ordering
+
+`CONTINUATION_TASK_RUNNING_OWNER = UNSPECIFIED` at the caller/wiring level; Task lifecycle remains owned by
+`TaskManager.transition`. The legal initial path is PENDING → PLANNING → RUNNING, or, where approval policy
+requires it, PENDING → PLANNING → WAITING_APPROVAL → RUNNING. No new Task state or lifecycle owner is added.
+`CONTINUATION_TASK_RUNNING_OWNER_WIRING = REQUIRED_ACTIVATION_PREREQUISITE`; until that wiring is implemented
+and reviewed, `CONTINUATION_EXECUTION_ACTIVATION = DISABLED`.
+
+The independent review's approval-ordering finding is carried forward explicitly: **approval acquisition
+and guarded-start Approval revalidation are distinct gates**. Where required, acquire approval before the
+Task may become RUNNING; guarded start later revalidates the exact persisted Approval authority against the
+expected plan refs. Future lifecycle wiring must not collapse these gates. This closeout implements neither.
+
+The expanded repository read surface across handoffs, bindings, work items, tasks, approvals and runs is an
+accepted persistence-level CAS/expected-facts comparison, not Application policy inside SQLite. Direct SQL
+and test fixture insertion remain outside adapter-contract bypass closure; no stronger protection is claimed.
+No new aggregate, repository, schema, table, durable state or migration is introduced.
+
+### Consequences
+
+The public `TaskRunRepository` port gains one narrowly named guarded-start method; Core supplies bounded
+expected canonical facts and remains storage-neutral, with no SQLite type, SQL or transaction mechanic
+imported. Personal Edition SQLite implements the guard concretely, mirroring the ratified `admit` shape, so
+Team Edition replaceability is preserved. Ordinary `start` keeps its ADR-0085 semantics for non-continuation
+Tasks and additionally refuses continuation-bound Tasks.
+
+Activation remains blocked on prerequisites that this ADR names rather than solves: the unspecified owner of
+the continuation Task's PENDING → RUNNING transition, and receiver invocation itself. No receiving-agent
+dispatch, Provider, Tool or command execution, runtime wiring, scheduler, autonomous loop, CAP-013 producer
+change or Approval model change is introduced. Schema stays at v11.
+
+### V1 / V2
+
+[NOW] ADR-0088 is **Ratified** following independent Architecture Review **PASS_WITH_NON_BLOCKING_FINDINGS**
+at the reviewed architecture HEAD above. M3E-6C guarded-start architecture is **decided**: a single
+linearization point, bypass closure and at-most-one concurrent winner. Guarded-start implementation is
+**NOT STARTED**; continuation Task RUNNING wiring and receiving-agent invocation are **NOT IMPLEMENTED**.
+This local documentation closeout awaits independent review and does not claim delivery or activation.
+[LATER] Receiver invocation, the continuation Task RUNNING transition owner, attempt recovery/redispatch
+semantics, and any queue, worker, lease or heartbeat architecture each require separate decisions.

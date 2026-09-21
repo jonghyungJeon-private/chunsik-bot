@@ -7,6 +7,34 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — M3E-6C Effect-Time Guarded Continuation Start Architecture
+
+- Ratified ADR-0088 by Chief Architect decision following independent Architecture Review
+  PASS_WITH_NON_BLOCKING_FINDINGS at `d43c0b51fc5f869aa70a516c61df1d6ff017f330`;
+  ADR_0088_READY_FOR_CA_RATIFICATION = YES. Option B and existing TaskRun ownership are preserved.
+- Carried forward continuation Task RUNNING owner wiring as a required activation prerequisite, and
+  clarified that approval acquisition and guarded-start Approval revalidation are distinct gates. Accepted
+  the persistence-level expected-facts read surface and explicitly retained the direct-SQL/fixture limitation.
+  Guarded-start implementation is NOT STARTED; lifecycle wiring and receiver invocation are NOT IMPLEMENTED;
+  continuation execution activation remains DISABLED. This closeout is documentation-only and local.
+
+- Proposed ADR-0088 defining where a STARTED TaskRun becomes truthful as a real execution attempt: the single
+  commit of a guarded start transaction is the linearization point. Architecture and documentation only; no
+  Product code, schema or migration change, and no receiver invocation.
+- Selected Option B — a sibling guarded-start operation on the existing `TaskRunRepository` port — keeping
+  `TaskManager`/`TaskRunRepository` as the canonical TaskRun start owner, with Core supplying bounded expected
+  canonical facts that the adapter verifies atomically. No new aggregate, repository, schema, durable state,
+  queue, worker, lease or lock.
+- Classified effect-time facts as atomically guarded, freshly read, immutable provenance, or caller-owned
+  non-persisted, and specified at-most-one concurrent start winner, bounded failure reasons, and bypass
+  closure that refuses new STARTED runs for continuation-bound Tasks while preserving terminal
+  complete/fail updates.
+- Recorded the audited lifecycle gap: continuation binding admits at Task PENDING, admission requires RUNNING,
+  and no production owner performs that transition. Surfaced as an activation prerequisite rather than
+  invented. Approval proof requirements are unchanged.
+- Synchronized M3E-6B delivery state: delivered through PR #67 at merge commit
+  `c0c91f341cb5f300628b86506c84e329d4f14eac`, replacing the stale "awaiting review and delivery" wording.
+
 ### Added — M3E-6B Read-only Continuation Execution Admission Evaluation
 
 - Implemented an unwired Core Application evaluator over canonical read ports, returning frozen ephemeral
