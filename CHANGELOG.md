@@ -7,6 +7,17 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — M3E-6B Read-only Continuation Execution Admission Evaluation
+
+- Implemented an unwired Core Application evaluator over canonical read ports, returning frozen ephemeral
+  eligibility or bounded denial. It never creates/starts/saves a TaskRun, changes lifecycle, or invokes execution.
+- Defined unresolved STARTED as the bound Task's persisted run status STARTED, without timestamp heuristics
+  or latest-run authority. Checks binding/work/task/profile relationships and exact conditional approval scope.
+- Added focused eligibility, denial, approval-integrity, run-history, restart/repeated-read and zero-mutation
+  tests. Atomic guarded start and insertion bypass closure remain future activation prerequisites.
+- ADR-0087 remains Ratified and was delivered through PR #66. This evaluation implementation is local only;
+  receiving-agent execution, continuation attempt start, schema changes and runtime wiring are not included.
+
 ### Architecture — M3E-6A Continuation Execution Admission
 
 - Ratified ADR-0087 by Chief Architect decision following independent exact-HEAD Architecture Review

@@ -21,7 +21,8 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 
 - **M3E-6A:** ADR-0087 is **Ratified** by the Chief Architect following independent exact-HEAD Architecture
   Review **PASS_WITH_NON_BLOCKING_FINDINGS** at `90a67de840df71db2872b2a15e49c0efd117e93f`;
-  **ADR_0087_READY_FOR_CA_RATIFICATION = YES**. **M3E-6 implementation NOT STARTED**.
+  **ADR_0087_READY_FOR_CA_RATIFICATION = YES**. Delivered through PR #66 at
+  `51c28940357dbf792fdc8a287e54910abab9db3c`; M3E-6B evaluation status follows below.
   Selects Core Application admission composition (Option B, optional pure
   policy) over existing owners, exact TaskRun.id correlation, effect-time revalidation and fail-closed
   restart/replay. No new aggregate/repository/schema. Audit found current atomic start compares only Task;
@@ -29,8 +30,18 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   Admission assessment is ephemeral and cannot authorize redispatch of a persisted STARTED run. Approval
   expiry is not currently enforced. Non-blocking implementation carry-forward: define the exact canonical
   unresolved STARTED predicate and close guarded-start bypass through generic taskRuns.save(), legacy start
-  callers and any other insertion path, using the existing TaskRun owner. These are not ADR blockers.
+  callers and any other insertion path, using the existing TaskRun owner. These are not ADR blockers;
+  the predicate is implemented in M3E-6B below, while bypass closure remains deferred until activation.
   Actual receiving-agent execution and runtime wiring remain deferred.
+
+- **M3E-6B:** Read-only `ContinuationExecutionAdmissionService` implemented **locally**, awaiting independent
+  review and delivery. It returns ephemeral eligibility or bounded denial using canonical facts; zero Task,
+  TaskRun, Approval, WorkItem or binding writes and no runtime wiring. Requires canonical RUNNING Task;
+  unresolved conflict is exactly a run for the bound Task with persisted status STARTED, regardless of age
+  or finishedAt. Terminal history grants no authority. Required approval uses the exact persisted request
+  and original live plan/ref/integrity, never a reconstructed plan or cached approval. Effect-time atomic
+  start and insertion/start bypass closure remain **DEFERRED ACTIVATION PREREQUISITES**. Continuation
+  TaskRun start and actual receiving-agent execution remain **NOT IMPLEMENTED**; schema v11 is unchanged.
 
 - **M3E-3:** Delivered through PR #58 (merge commit `618b5afcc6079be956d3756f9281506907571dde`).
   ADR-0083 is Ratified; independent implementation review PASS and documentation close-out review

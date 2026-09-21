@@ -6618,7 +6618,7 @@ Paths below are relative to the repository; these are implementation observation
 
 Select **Option B — Core Application Admission Service**, with **Option A — a small pure policy** where
 useful. Admission owner: `ContinuationExecutionAdmissionService` in `packages/core/src/application`
-(name is a proposal, not an existing class). Compose narrow views of existing repositories/managers;
+(implemented as the read-only evaluator described in the M3E-6B update below). Compose narrow views of existing repositories/managers;
 retain WorkManager, TaskManager, ApprovalManager and CAP-013 ownership. Add **no aggregate, repository,
 schema, durable admission state machine or receipt**.
 
@@ -6843,3 +6843,55 @@ into admission evaluation. No production readiness or implementation review PASS
 invocation; Command execution; Workspace mutation; Git mutation; network execution; Discord execution;
 scheduler; queue; worker; lease; heartbeat; retry/fallback engine; Workflow/DAG; standing tool permissions;
 generic execution receipt; Production activation; Live UAT. Quoky development control-plane remains FROZEN.
+
+
+### ADR-0087 implementation update — M3E-6B corrected read-only scope
+
+The Chief Architect narrowed M3E-6B to **Continuation Execution Admission Evaluation**, consistent with
+this ratified ADR. The ratification-checkpoint NOT STARTED statements above describe that earlier checkpoint.
+M3E-6B evaluation is now **implemented locally, awaiting independent review and delivery**. Continuation
+attempt start and receiving-agent activation remain **NOT IMPLEMENTED**. ADR-0087 remains Ratified.
+
+`ContinuationExecutionAdmissionService` in Core Application composes only existing read operations:
+WorkHandoff/WorkItem/Task/Approval `get`, ContinuationBinding `get` and TaskRun `listByTask`, plus the immutable
+AgentProfileRegistry. It returns frozen `ELIGIBLE_TO_START_ATTEMPT` or bounded `DENY(reason)` values. Success
+contains handoffId/taskId only, no run identity or executable authority. No admission aggregate, repository,
+schema, durable state, receipt, manager ownership or runtime wiring is added.
+
+- The evaluator requires the exact bound canonical Task already **RUNNING**, matching Actor/Project and
+  valid conversation context; it does not plan or perform a lifecycle transition. A non-RUNNING Task is
+  denied at this immediate-start prerequisite evaluation, without declaring its future lifecycle terminal.
+- **Unresolved STARTED predicate:** a canonical persisted run for the bound Task whose `status` equals
+  `TaskRunStatus.STARTED`. SUCCEEDED, FAILED and CANCELED are terminal and do not conflict. Age, startedAt,
+  finishedAt and attempt ordering never resolve STARTED. Invalid run history fails closed. Listing detects
+  conflicts only; no run is selected as authority, including when a higher terminal attempt exists.
+- For unplanned, low-risk Tasks, canonical Task risk and RiskPolicy capability baseline determine whether
+  approval can be omitted. A planned Task, selected approval or approval-requiring risk needs the original
+  live ExecutionPlan from its trusted Application owner; Task.planId alone cannot reconstruct it. The plan
+  must correlate with Task.planId, Project and capability. ApprovalPolicy, Task risk and capability baseline
+  are composed conservatively; the exact persisted ApprovalRequest must be APPROVED and match the plan's
+  id, goal and integrity fields when present. Cached refs and any-approved-for-plan searches are not used.
+  This API is an internal fact evaluator, not an untrusted plan-submission or scope-authentication endpoint.
+  Required integrity must be retained by the original plan owner. No expiry enforcement or broader authority
+  is claimed; any execution class requiring currently unsupported expiry remains outside activation scope.
+- Canonical reads are point-in-time and not an atomic snapshot. Success is ephemeral, must not be persisted
+  or reused as effect-time proof, and grants no reservation, TaskRun authority or standing permission.
+  Restart simply constructs a new evaluator and rereads facts; an existing STARTED run denies without
+  redispatch, replacement, automatic completion/failure or other writes.
+
+**Activation prerequisites remain deferred:** effect-time atomic guarded start and single-winner concurrent
+activation through the existing TaskManager / TaskRunRepository owner; exact-run revalidation in the same
+owning invocation; and closure of every bound-Task insertion/start bypass. Current caller audit found:
+
+- `TaskManager.startRun` delegates to `TaskRunRepository.start`; the current Product caller is
+  `ConversationRuntime.handleWorkTurn`, not a continuation caller.
+- `SqliteTaskRunRepository.start` and `save` are the two adapter TaskRun insertion paths. `save` also serves
+  TaskManager.completeRun/failRun, so globally blocking it would break existing terminal updates.
+- TaskRun repository/start and continuation-binding tests use direct saves or raw SQL for historical/test
+  fixtures. Such insertion paths must be considered by activation hardening; no fixture or trusted existing
+  insertion/start semantics is changed by this read-only slice.
+
+M3E-6B introduces no continuation start caller. Neither TaskManager nor a write/start/save port is available
+to the evaluator. Focused tests exercise bounded denials, exact approval scope, terminal/STARTED history,
+recreated evaluator behavior, deterministic concurrent reads and zero mutation. Existing consumption,
+binding and TaskManager regression tests remain required. No full start-time TOCTOU closure is claimed.

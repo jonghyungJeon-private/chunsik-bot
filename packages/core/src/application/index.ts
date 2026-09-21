@@ -65,3 +65,4 @@ export * from './proactive-work-service';
 export * from './proactive-delegation-service';
 export * from './work-handoff-consumption-service';
 export * from './work-handoff-continuation-service';
+export * from './continuation-execution-admission-service';
