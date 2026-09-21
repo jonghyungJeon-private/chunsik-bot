@@ -74,17 +74,7 @@ export class TaskManager {
   }
 
   async startRun(task: Task, capability: Capability): Promise<TaskRun> {
-    const existing = await this.storage.taskRuns.listByTask(task.id);
-    const run: TaskRun = {
-      id: newId(),
-      taskId: task.id,
-      attempt: existing.length + 1,
-      status: TaskRunStatus.STARTED,
-      capability,
-      artifactIds: [],
-      startedAt: now(),
-    };
-    return this.storage.taskRuns.save(run);
+    return this.storage.taskRuns.start(task, capability);
   }
 
   async completeRun(

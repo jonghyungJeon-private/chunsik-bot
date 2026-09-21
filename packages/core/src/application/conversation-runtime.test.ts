@@ -58,6 +58,8 @@ import type {
   WorkspaceRef,
 } from '../domain';
 import type { AiRequest, Logger, LogFields, StorageProvider } from '../ports';
+import { newId } from '../util/id';
+import { now } from '../util/clock';
 import { InvalidTaskTransitionError } from '../errors';
 import { TaskManager } from './task-manager';
 import { PromptComposer } from './prompt-composer';
@@ -7027,6 +7029,31 @@ function makeTaskStorage(): { storage: StorageProvider; taskSaves: Task[]; runSa
       },
     },
     taskRuns: {
+      // Mirrors the M3E-5 atomic start contract (canonical revalidation + attempt allocation + STARTED)
+      // in memory so the REAL TaskManager.startRun exercises the same boundary the SQLite adapter enforces.
+      async start(task: Task, capability: Capability) {
+        const canonical = tasks.get(task.id);
+        if (!canonical || task.status !== TaskStatus.RUNNING
+          || !Object.values(Capability).includes(capability)
+          || JSON.stringify(canonical) !== JSON.stringify(task)) {
+          throw new Error('TASK_RUN_START_INVALID_OR_STALE_TASK');
+        }
+        const attempt =
+          [...runs.values()].filter((r) => r.taskId === task.id)
+            .reduce((max, r) => Math.max(max, r.attempt), 0) + 1;
+        const run: TaskRun = {
+          id: newId(),
+          taskId: task.id,
+          attempt,
+          status: TaskRunStatus.STARTED,
+          capability,
+          artifactIds: [],
+          startedAt: now(),
+        };
+        runs.set(run.id, run);
+        runSaves.push(run);
+        return run;
+      },
       async listByTask(taskId: string) {
         return [...runs.values()].filter((r) => r.taskId === taskId);
       },

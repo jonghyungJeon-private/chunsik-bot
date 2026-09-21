@@ -1,4 +1,5 @@
 import type {
+  Capability,
   Actor,
   AgentProfileId,
   Artifact,
@@ -40,6 +41,8 @@ export interface TaskRepository extends Repository<Task> {
 }
 
 export interface TaskRunRepository extends Repository<TaskRun> {
+  /** Atomically revalidate the canonical RUNNING Task, allocate a distinct ordinal and insert STARTED. */
+  start(task: Task, capability: Capability): Promise<TaskRun>;
   listByTask(taskId: Id): Promise<TaskRun[]>;
 }
 
