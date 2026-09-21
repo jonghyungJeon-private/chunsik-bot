@@ -34,14 +34,35 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   the predicate is implemented in M3E-6B below, while bypass closure remains deferred until activation.
   Actual receiving-agent execution and runtime wiring remain deferred.
 
-- **M3E-6B:** Read-only `ContinuationExecutionAdmissionService` implemented **locally**, awaiting independent
-  review and delivery. It returns ephemeral eligibility or bounded denial using canonical facts; zero Task,
+- **M3E-6B:** Read-only `ContinuationExecutionAdmissionService` **delivered** through **PR #67** (merge commit
+  `c0c91f341cb5f300628b86506c84e329d4f14eac`), following independent exact-HEAD review
+  **PASS_WITH_NON_BLOCKING_FINDINGS** (0 blocking findings) at `df9a899083486f8051e4a4b73b55472b6ba41b42`.
+  It returns ephemeral eligibility or bounded denial using canonical facts; zero Task,
   TaskRun, Approval, WorkItem or binding writes and no runtime wiring. Requires canonical RUNNING Task;
   unresolved conflict is exactly a run for the bound Task with persisted status STARTED, regardless of age
   or finishedAt. Terminal history grants no authority. Required approval uses the exact persisted request
   and original live plan/ref/integrity, never a reconstructed plan or cached approval. Effect-time atomic
-  start and insertion/start bypass closure remain **DEFERRED ACTIVATION PREREQUISITES**. Continuation
+  start and insertion/start bypass closure remain **DEFERRED ACTIVATION PREREQUISITES**, now architected in
+  M3E-6C below. Continuation
   TaskRun start and actual receiving-agent execution remain **NOT IMPLEMENTED**; schema v11 is unchanged.
+
+- **M3E-6C:** Effect-time guarded continuation start **architecture only**; ADR-0088 is **Proposed** and
+  awaits independent review and Chief Architect ratification. No Product code, schema or migration change.
+  Selects **Option B** — a sibling guarded-start operation on the existing `TaskRunRepository` port — so
+  `TaskManager`/`TaskRunRepository` remain the canonical TaskRun start owner while a narrow Core Application
+  execution-entry service composes policy. The **linearization point** is the single commit of that guarded
+  start transaction: before it no valid attempt exists, after it exactly one STARTED TaskRun exists and
+  STARTED is truthful. Core supplies bounded expected canonical facts and the adapter verifies them
+  atomically, mirroring the ratified `ContinuationBindingRepository.admit` shape; no SQLite policy enters
+  Core. Effect-time facts are classified as atomically guarded, freshly read (AgentProfile configuration),
+  immutable provenance, or caller-owned non-persisted (`ExecutionPlan`, which has no repository).
+  `CONCURRENT_START_WINNERS = at most 1` via the existing `IMMEDIATE` write lock plus an unresolved-STARTED
+  check — no lease, heartbeat, worker claim, distributed lock or `stateVersion`. Bypass closure refuses
+  ordinary start and new-row insertion for continuation-bound Tasks while preserving `save` for terminal
+  complete/fail updates. Audit surfaced a load-bearing gap: binding admits at PENDING, the evaluator requires
+  RUNNING, and **no production owner transitions a continuation-bound Task to RUNNING**
+  (`CONTINUATION_TASK_RUNNING_OWNER = UNSPECIFIED`) — recorded as an activation prerequisite, not invented
+  here. Receiver invocation, redispatch/recovery and queue/worker architectures remain **NOT IMPLEMENTED**.
 
 - **M3E-3:** Delivered through PR #58 (merge commit `618b5afcc6079be956d3756f9281506907571dde`).
   ADR-0083 is Ratified; independent implementation review PASS and documentation close-out review

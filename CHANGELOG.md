@@ -7,6 +7,25 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — M3E-6C Effect-Time Guarded Continuation Start Architecture
+
+- Proposed ADR-0088 defining where a STARTED TaskRun becomes truthful as a real execution attempt: the single
+  commit of a guarded start transaction is the linearization point. Architecture and documentation only; no
+  Product code, schema or migration change, and no receiver invocation.
+- Selected Option B — a sibling guarded-start operation on the existing `TaskRunRepository` port — keeping
+  `TaskManager`/`TaskRunRepository` as the canonical TaskRun start owner, with Core supplying bounded expected
+  canonical facts that the adapter verifies atomically. No new aggregate, repository, schema, durable state,
+  queue, worker, lease or lock.
+- Classified effect-time facts as atomically guarded, freshly read, immutable provenance, or caller-owned
+  non-persisted, and specified at-most-one concurrent start winner, bounded failure reasons, and bypass
+  closure that refuses new STARTED runs for continuation-bound Tasks while preserving terminal
+  complete/fail updates.
+- Recorded the audited lifecycle gap: continuation binding admits at Task PENDING, admission requires RUNNING,
+  and no production owner performs that transition. Surfaced as an activation prerequisite rather than
+  invented. Approval proof requirements are unchanged.
+- Synchronized M3E-6B delivery state: delivered through PR #67 at merge commit
+  `c0c91f341cb5f300628b86506c84e329d4f14eac`, replacing the stale "awaiting review and delivery" wording.
+
 ### Added — M3E-6B Read-only Continuation Execution Admission Evaluation
 
 - Implemented an unwired Core Application evaluator over canonical read ports, returning frozen ephemeral
