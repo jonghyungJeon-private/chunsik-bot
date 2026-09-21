@@ -9,6 +9,8 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ### Maintenance — Pre-M3E6 housekeeping
 
+- Commented out GitHub owner/repo canonical examples to preserve legacy alias fallback without changing runtime precedence.
+
 - Commented out six optional canonical connector variables in `.env.example` so omitted QUOKY keys do not
   shadow legacy CHUNSIK aliases. Runtime nullish precedence and configuration code are unchanged.
 - Aligned the current ACTIVE_MILESTONE pointer in AGENTS.md and Development Mode from M2 to M3, as confirmed
