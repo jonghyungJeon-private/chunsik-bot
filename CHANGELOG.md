@@ -9,6 +9,15 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ### Added — M3E-6C Effect-Time Guarded Continuation Start Architecture
 
+- Ratified ADR-0088 by Chief Architect decision following independent Architecture Review
+  PASS_WITH_NON_BLOCKING_FINDINGS at `d43c0b51fc5f869aa70a516c61df1d6ff017f330`;
+  ADR_0088_READY_FOR_CA_RATIFICATION = YES. Option B and existing TaskRun ownership are preserved.
+- Carried forward continuation Task RUNNING owner wiring as a required activation prerequisite, and
+  clarified that approval acquisition and guarded-start Approval revalidation are distinct gates. Accepted
+  the persistence-level expected-facts read surface and explicitly retained the direct-SQL/fixture limitation.
+  Guarded-start implementation is NOT STARTED; lifecycle wiring and receiver invocation are NOT IMPLEMENTED;
+  continuation execution activation remains DISABLED. This closeout is documentation-only and local.
+
 - Proposed ADR-0088 defining where a STARTED TaskRun becomes truthful as a real execution attempt: the single
   commit of a guarded start transaction is the linearization point. Architecture and documentation only; no
   Product code, schema or migration change, and no receiver invocation.

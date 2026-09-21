@@ -6899,11 +6899,16 @@ binding and TaskManager regression tests remain required. No full start-time TOC
 
 ## ADR-0088 — Effect-Time Guarded Continuation Start and Execution Entry
 
-- **Status:** Proposed
+- **Status:** Ratified
+- **Reviewed architecture HEAD:** `d43c0b51fc5f869aa70a516c61df1d6ff017f330`
+- **Independent Architecture Review:** PASS_WITH_NON_BLOCKING_FINDINGS
+- **ADR_0088_READY_FOR_CA_RATIFICATION:** YES
+- **Chief Architect Ratification:** APPROVED, as confirmed by the Product Owner's ratification closeout
+  instruction. The architecture decision is preserved; activation prerequisites remain outstanding.
 - **Date:** 2026-09-21
 - **Audit base:** `c0c91f341cb5f300628b86506c84e329d4f14eac`
 - **Sprint:** M3E-6C, architecture/ADR only. Guarded start implementation: **NOT STARTED**.
-- **Authority:** Builder proposes only; independent architecture review and Chief Architect ratification pending.
+- **Authority:** Chief Architect ratification recorded; guarded-start implementation is not authorized by this closeout.
 
 ### Context
 
@@ -6979,7 +6984,7 @@ to claim is prohibited unless a future ADR explicitly introduces that architectu
 | **A — must participate in the atomic persisted guard** | exact `WorkHandoff`, exact `ContinuationBinding`, `WorkItem` lifecycle, `Task` lifecycle and Actor/Project relationship, exact `ApprovalRequest` id/status/`executionPlanRef`/integrity, absence of an unresolved STARTED run for the bound Task | All are persisted rows readable in the same transaction, and each can change between evaluation and start. Snapshot equality plus the STARTED-absence check must be verified at the linearization point. |
 | **B — may be freshly read immediately before start** | `AgentProfile` existence and configuration for both handoff endpoints | Composition-time configuration, not storage rows; it cannot join a persistence transaction. A fresh registry read immediately before the guard is sufficient, and profiles remain configuration rather than authority. |
 | **C — immutable provenance where identity comparison suffices** | `WorkHandoff` identity fields and `ContinuationBinding` `{handoffId, taskId, recordedAt}` | Both are insert-once and never mutated, so comparing identity is equivalent to comparing content. They are still verified in class A because their *presence* must hold at commit time. |
-| **D — caller-owned non-persisted facts that must be supplied and compared** | live `ExecutionPlan` and its derived `ExecutionPlanRef`/`ExecutionPlanIntegrityRef` | There is no ExecutionPlan repository, so the plan cannot be re-read canonically. The caller must supply the original live plan; the guard compares it against the persisted `ApprovalRequest.executionPlanRef` including integrity. |
+| **D — caller-owned non-persisted facts that must be supplied and compared** | live `ExecutionPlan` and its derived `ExecutionPlanRef`/`ExecutionPlanIntegrityRef` | There is no ExecutionPlan repository, so the plan cannot be re-read canonically. The caller must supply the original live plan and derive the expected refs; the guard compares those refs against the persisted `ApprovalRequest.executionPlanRef` including integrity. The live plan itself is neither persisted nor transactionally reread. |
 
 Not every fact can or should live in one persistence transaction: AgentProfile is configuration and
 ExecutionPlan is non-persisted. Claiming "revalidate everything atomically" would be false, so the guard
@@ -7007,7 +7012,8 @@ A continuation-bound Task must not reach STARTED except through the guarded path
 *creating a new STARTED run* from *updating an existing run to a terminal state*:
 
 - ordinary `start(task, capability)` must refuse when a `ContinuationBinding` exists for that Task — a read of
-  the existing `continuation_bindings.task_id` inside its current transaction, requiring no schema change;
+  the existing `continuation_bindings.task_id` inside its current transaction, requiring no schema change.
+  This decision is based on canonical persistence, never an optional caller flag;
 - `save` must remain available for terminal updates and must refuse to **insert a new row** for a
   continuation-bound Task, while continuing to update an existing row. `completeRun`/`failRun` always update
   an existing run, so they are unaffected;
@@ -7027,7 +7033,7 @@ new Approval model. Because the plan is caller-owned, the approval comparison is
 against a class D supplied value.
 
 If the guarded start commits and the local process then fails before receiver invocation, the committed
-STARTED TaskRun is a real failed or ambiguous attempt — never a reservation. Automatic redispatch, automatic
+STARTED TaskRun records a real attempt with an ambiguous outcome — never a reservation, lease, claim or future intent. Automatic redispatch, automatic
 replacement runs and fabricated success or failure are all prohibited, and this slice adds no recovery
 semantics.
 
@@ -7042,6 +7048,24 @@ requires zero runs — and a RUNNING Task may accumulate several terminal runs a
 The exact returned `TaskRun.id` is the only execution-attempt identity and must be propagated in-memory to
 the future receiver execution path. Rediscovery by latest run, highest attempt, `MAX(attempt)` or most-recent
 STARTED is prohibited.
+
+#### Ratification carry-forward — Task RUNNING owner and approval ordering
+
+`CONTINUATION_TASK_RUNNING_OWNER = UNSPECIFIED` at the caller/wiring level; Task lifecycle remains owned by
+`TaskManager.transition`. The legal initial path is PENDING → PLANNING → RUNNING, or, where approval policy
+requires it, PENDING → PLANNING → WAITING_APPROVAL → RUNNING. No new Task state or lifecycle owner is added.
+`CONTINUATION_TASK_RUNNING_OWNER_WIRING = REQUIRED_ACTIVATION_PREREQUISITE`; until that wiring is implemented
+and reviewed, `CONTINUATION_EXECUTION_ACTIVATION = DISABLED`.
+
+The independent review's approval-ordering finding is carried forward explicitly: **approval acquisition
+and guarded-start Approval revalidation are distinct gates**. Where required, acquire approval before the
+Task may become RUNNING; guarded start later revalidates the exact persisted Approval authority against the
+expected plan refs. Future lifecycle wiring must not collapse these gates. This closeout implements neither.
+
+The expanded repository read surface across handoffs, bindings, work items, tasks, approvals and runs is an
+accepted persistence-level CAS/expected-facts comparison, not Application policy inside SQLite. Direct SQL
+and test fixture insertion remain outside adapter-contract bypass closure; no stronger protection is claimed.
+No new aggregate, repository, schema, table, durable state or migration is introduced.
 
 ### Consequences
 
@@ -7058,7 +7082,10 @@ change or Approval model change is introduced. Schema stays at v11.
 
 ### V1 / V2
 
-[NOW] Proposed architecture for an effect-time guarded continuation start that makes STARTED truthful at a
-single linearization point, with bypass closure and at-most-one concurrent winner. No implementation.
+[NOW] ADR-0088 is **Ratified** following independent Architecture Review **PASS_WITH_NON_BLOCKING_FINDINGS**
+at the reviewed architecture HEAD above. M3E-6C guarded-start architecture is **decided**: a single
+linearization point, bypass closure and at-most-one concurrent winner. Guarded-start implementation is
+**NOT STARTED**; continuation Task RUNNING wiring and receiving-agent invocation are **NOT IMPLEMENTED**.
+This local documentation closeout awaits independent review and does not claim delivery or activation.
 [LATER] Receiver invocation, the continuation Task RUNNING transition owner, attempt recovery/redispatch
 semantics, and any queue, worker, lease or heartbeat architecture each require separate decisions.

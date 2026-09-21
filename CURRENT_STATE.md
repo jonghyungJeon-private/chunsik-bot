@@ -46,8 +46,10 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   M3E-6C below. Continuation
   TaskRun start and actual receiving-agent execution remain **NOT IMPLEMENTED**; schema v11 is unchanged.
 
-- **M3E-6C:** Effect-time guarded continuation start **architecture only**; ADR-0088 is **Proposed** and
-  awaits independent review and Chief Architect ratification. No Product code, schema or migration change.
+- **M3E-6C:** Effect-time guarded continuation start **architecture decided**; ADR-0088 is **Ratified** by
+  the Chief Architect following independent Architecture Review **PASS_WITH_NON_BLOCKING_FINDINGS** at
+  `d43c0b51fc5f869aa70a516c61df1d6ff017f330`; **ADR_0088_READY_FOR_CA_RATIFICATION = YES**.
+  Guarded-start implementation is **NOT STARTED**. No Product code, schema or migration change.
   Selects **Option B** — a sibling guarded-start operation on the existing `TaskRunRepository` port — so
   `TaskManager`/`TaskRunRepository` remain the canonical TaskRun start owner while a narrow Core Application
   execution-entry service composes policy. The **linearization point** is the single commit of that guarded
@@ -62,7 +64,11 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   complete/fail updates. Audit surfaced a load-bearing gap: binding admits at PENDING, the evaluator requires
   RUNNING, and **no production owner transitions a continuation-bound Task to RUNNING**
   (`CONTINUATION_TASK_RUNNING_OWNER = UNSPECIFIED`) — recorded as an activation prerequisite, not invented
-  here. Receiver invocation, redispatch/recovery and queue/worker architectures remain **NOT IMPLEMENTED**.
+  here. **CONTINUATION_TASK_RUNNING_OWNER_WIRING = REQUIRED_ACTIVATION_PREREQUISITE**;
+  **CONTINUATION_EXECUTION_ACTIVATION = DISABLED** until wiring is implemented and reviewed. Approval
+  acquisition before RUNNING (where required) and exact Approval revalidation at guarded start are distinct
+  gates; future lifecycle wiring must preserve both. Continuation Task RUNNING wiring, receiver invocation,
+  redispatch/recovery and queue/worker architectures remain **NOT IMPLEMENTED**.
 
 - **M3E-3:** Delivered through PR #58 (merge commit `618b5afcc6079be956d3756f9281506907571dde`).
   ADR-0083 is Ratified; independent implementation review PASS and documentation close-out review
