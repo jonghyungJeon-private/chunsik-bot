@@ -1,5 +1,5 @@
 {
-  "name": "@chunsik/core",
+  "name": "@quoky/core",
   "version": "0.1.0",
   "private": true,
   "description": "Framework-agnostic domain, ports and application services. Depends on nothing.",

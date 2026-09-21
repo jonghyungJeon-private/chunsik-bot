@@ -4,8 +4,8 @@ import {
   ExecutionKind,
   ExecutionReceiptFailureClass,
   ExecutionReceiptOutcome,
-} from '@chunsik/core';
-import type { ExecutionReceipt } from '@chunsik/core';
+} from '@quoky/core';
+import type { ExecutionReceipt } from '@quoky/core';
 import { SqliteExecutionReceiptRepository } from './index';
 import { LATEST_SCHEMA_VERSION, runMigrations } from './migrations';
 

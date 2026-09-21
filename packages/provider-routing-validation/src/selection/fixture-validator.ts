@@ -19,7 +19,7 @@ import {
   SortDirection,
   SupportLevel,
   TerminalDecision,
-} from '@chunsik/core';
+} from '@quoky/core';
 import {
   SELECTION_FIXTURE_COMPILER_VERSION,
   SELECTION_FIXTURE_SCHEMA_VERSION,

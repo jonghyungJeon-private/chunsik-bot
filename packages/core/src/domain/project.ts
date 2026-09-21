@@ -1,7 +1,7 @@
 import type { Id, IsoTimestamp, Metadata } from './common';
 
 /**
- * A known codebase Chunsik can operate on. Project memory (rules, stack,
+ * A known codebase Quoky can operate on. Project memory (rules, stack,
  * commands, conventions) is derived from and attached to this entity.
  */
 export interface Project {

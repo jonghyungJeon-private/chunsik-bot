@@ -6,12 +6,12 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   resolve: {
     alias: {
-      '@chunsik/core': fileURLToPath(new URL('./packages/core/src/index.ts', import.meta.url)),
-      '@chunsik/tool-mcp': fileURLToPath(new URL('./packages/tool-mcp/src/index.ts', import.meta.url)),
+      '@quoky/core': fileURLToPath(new URL('./packages/core/src/index.ts', import.meta.url)),
+      '@quoky/tool-mcp': fileURLToPath(new URL('./packages/tool-mcp/src/index.ts', import.meta.url)),
     },
   },
   test: {
-    // apps/** added (Sprint 3d-A, ADR-0051) so the single env-reading path `apps/chunsik/src/config.ts`
+    // apps/** added (Sprint 3d-A, ADR-0051) so the single env-reading path `apps/quoky/src/config.ts`
     // can be tested directly (CA change 8) — the narrowest enabling change, no broad refactor.
     include: ['packages/**/src/**/*.test.ts', 'apps/**/src/**/*.test.ts', 'tools/provider-routing/egress-allowlist-runner/**/*.test.ts'],
     environment: 'node',

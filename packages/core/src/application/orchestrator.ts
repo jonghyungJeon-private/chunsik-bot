@@ -5,24 +5,24 @@ import type { ConversationRuntime, TurnResult } from './conversation-runtime';
 import { formatSafeErrorText, safeRequestId, toSafeError } from './safe-error';
 
 /** Everything the facade needs, injected by the composition root. */
-export interface ChunsikCoreDeps {
+export interface QuokyCoreDeps {
   runtime: ConversationRuntime;
   platform: PlatformAdapter;
   logger: Logger;
 }
 
 /**
- * ChunsikCore is the **thin platform-entry facade** (ADR-0032). The full per-message conversation
- * flow lives in {@link ConversationRuntime}; ChunsikCore only delegates to it and performs platform
+ * QuokyCore is the **thin platform-entry facade** (ADR-0032). The full per-message conversation
+ * flow lives in {@link ConversationRuntime}; QuokyCore only delegates to it and performs platform
  * delivery:
  *
- *   Platform Adapter → ChunsikCore (facade) → ConversationRuntime.handle() → OutboundMessage → deliver
+ *   Platform Adapter → QuokyCore (facade) → ConversationRuntime.handle() → OutboundMessage → deliver
  *
- * There is exactly ONE conversation entry — ChunsikCore and ConversationRuntime are never parallel
+ * There is exactly ONE conversation entry — QuokyCore and ConversationRuntime are never parallel
  * paths. Boundary note: this file imports NOTHING concrete — only ports + the runtime service.
  */
-export class ChunsikCore {
-  constructor(private readonly deps: ChunsikCoreDeps) {}
+export class QuokyCore {
+  constructor(private readonly deps: QuokyCoreDeps) {}
 
   /** Drive one inbound message: typing → runtime turn → deliver the runtime's OutboundMessage. */
   async handleInboundMessage(message: InboundMessage): Promise<void> {
@@ -68,7 +68,7 @@ export class ChunsikCore {
    */
   async handleApprovalDecision(_decision: ApprovalDecision): Promise<void> {
     throw new NotImplementedError(
-      'ChunsikCore.handleApprovalDecision — approvals are handled as conversation turns (ADR-0032)',
+      'QuokyCore.handleApprovalDecision — approvals are handled as conversation turns (ADR-0032)',
     );
   }
 }

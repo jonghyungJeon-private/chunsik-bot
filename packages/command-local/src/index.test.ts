@@ -7,7 +7,7 @@ import {
   type RawCommandRunner,
   type RawRunResult,
 } from './index';
-import type { CommandRunOptions } from '@chunsik/core';
+import type { CommandRunOptions } from '@quoky/core';
 
 const opts: CommandRunOptions = { cwd: tmpdir(), timeoutMs: 10_000 };
 

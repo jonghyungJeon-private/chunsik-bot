@@ -10,7 +10,7 @@ import {
   wrapDiffPart,
   type PreviewSenders,
 } from './delivery';
-import { buildCanonicalDiff, type PreviewArtifact } from '@chunsik/core';
+import { buildCanonicalDiff, type PreviewArtifact } from '@quoky/core';
 
 describe('chunkText', () => {
   it('returns [] for empty and a single chunk for short text', () => {

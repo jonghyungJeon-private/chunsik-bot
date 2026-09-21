@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
-import type { GitBranchCleanupResult, GitCommitResult, GitDiff, GitMainSyncResult, GitProvider, GitPushResult, GitStatus, RepositoryInfo } from '@chunsik/core';
+import type { GitBranchCleanupResult, GitCommitResult, GitDiff, GitMainSyncResult, GitProvider, GitPushResult, GitStatus, RepositoryInfo } from '@quoky/core';
 import {
   BranchCleanupBlockedError,
   BranchCleanupUnverifiedError,
@@ -8,7 +8,7 @@ import {
   GitMainSyncUnverifiedError,
   isSafePushBranch,
   isSafePushRemote,
-} from '@chunsik/core';
+} from '@quoky/core';
 
 /** SHA-shape guard for the sync commits. */
 const SYNC_SHA_SHAPED = /^[0-9a-f]{7,40}$/i;

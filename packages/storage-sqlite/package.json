@@ -1,5 +1,5 @@
 {
-  "name": "@chunsik/storage-sqlite",
+  "name": "@quoky/storage-sqlite",
   "version": "0.1.0",
   "private": true,
   "description": "SQLiteStorageProvider — persistence behind StorageProvider. No SQL leaks out.",
@@ -17,7 +17,7 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@chunsik/core": "workspace:*",
+    "@quoky/core": "workspace:*",
     "better-sqlite3": "^11.8.1"
   },
   "devDependencies": {

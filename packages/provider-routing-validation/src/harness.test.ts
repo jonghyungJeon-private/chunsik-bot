@@ -5,7 +5,7 @@ import {
   ROUTING_FAILURE_MATRIX,
   RoutingFailureCode,
   RoutingFailureProducerStatus,
-} from '@chunsik/core';
+} from '@quoky/core';
 import { computeCorpusDigest, computeFixtureDigest, harnessDigest } from './canonical';
 import { GOLDEN_FIXTURE_MANIFEST, GOLDEN_FIXTURES } from './fixtures';
 import { replayFixtureTwice } from './harness';

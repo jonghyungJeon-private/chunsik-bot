@@ -61,7 +61,7 @@ describe('RepositoryIdentityResolver (CAP-010 config subset, ADR-0051, Sprint 3d
       'github_pat_abcdef',
       'my-token',
       'secret-repo',
-      'chunsik-bot.git',
+      'quoky-bot.git',
       '.repo',
     ]) {
       expect(resolver.resolve({ provider: 'github', owner: 'acme', repo })).toEqual({

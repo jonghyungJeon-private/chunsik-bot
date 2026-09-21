@@ -1,217 +1,202 @@
-# Chunsik Local v1
+# Quoky Platform
 
-A **local-first, modular personal AI platform** whose first interface is Discord.
-Discord is just an adapter; the AI models (Claude / Codex / Ollama CLIs) are
-implementation details behind interfaces. The user talks naturally and never
-picks a model — **capabilities are above models**.
+**Local-first Personal AI & Work Automation Platform**
 
-> This repository is the **v1 scaffold**: clean architecture boundaries, all
-> core interfaces, domain models, and a runnable wiring skeleton. Business logic
-> (intent classification, planning, CLI execution, the concrete providers) is
-> deliberately **not implemented yet** — see [§5](#5-what-is-not-implemented-yet).
+## What is Quoky?
 
----
+Quoky is a personal AI and work platform with conversation, memory, bounded execution,
+and explicit approval. Its first interface is Discord. AI models and providers are
+replaceable implementations; users request outcomes rather than selecting engines.
 
-## 1. Project structure
+## Product Vision
 
-A **pnpm workspace** monorepo. The dependency rule points strictly inward:
-`apps → adapters → core`, and **core depends on nothing**.
+Keep personal context and work locally, connect useful external systems through narrow
+interfaces, and preserve a reusable Core as the Product evolves from Personal to Team
+and eventually Hosted editions. Those later editions are roadmap direction, not current
+multi-user or hosted functionality.
 
+## Current Capabilities
+
+These categories describe source implementation, not Production readiness or authorization
+to activate a runtime.
+
+| Maturity | Capabilities |
+|---|---|
+| Implemented | Conversation runtime; memory and bounded context construction; intent and bounded planning; Task/TaskRun lifecycle; plan-scoped Approval; bounded Workspace and Git/repository-hosting flows; policy-gated Command execution; command ExecutionReceipt; atomic TaskRun start |
+| Partial | Provider abstraction/routing; Resource references and read-only connectors |
+| Foundation | Tool/MCP adapter; durable WorkItem; AgentProfile registry; WorkHandoff; trigger/proactive decisions; ContinuationBinding |
+| Deferred | Receiving-agent execution, runtime agents, autonomous multi-agent execution |
+
+Claude and Ollama have concrete CLI implementations. Codex execution remains incomplete.
+The legacy capability/availability/priority path remains available; advanced Stage 2B routing
+has separate configuration and activation gates. Enabled routing admission requires a future
+concrete verifier and must not be treated as ready merely because policy code exists.
+
+Jira, Slack, Confluence and GitHub provide bounded read-only connector surfaces. Connector
+writes and general resource resolution are not implied. Git repository-hosting operations
+are a separate capability with their own approval and authentication boundaries.
+
+## Development Status
+
+M3 Personal Work OS foundations are active. M3E-5 Atomic TaskRun Start was delivered through
+PR #60 at `bef459aaf3a77549dd44760a21ea839073b0cb46`, with Ratified ADR-0085 and schema v11.
+It provides atomic attempt allocation, not receiving-agent dispatch or execution authority.
+
+This source identity migration implements the Product Owner's bounded Sprint under
+**Proposed ADR-0086**, pending independent review and Chief Architect acceptance. The
+historical Quoky development control-plane is distinct from this Product and remains FROZEN.
+See [Current State](CURRENT_STATE.md) for exact implementation and delivery status.
+
+## Architecture
+
+```text
+External Interface → Inbound Adapter → Core Application → Domain + Ports
+                                                            ↑
+                                               Infrastructure Adapters
 ```
-chunsik-bot-2/
-├─ package.json                 # workspace root, scripts
-├─ pnpm-workspace.yaml
-├─ tsconfig.base.json           # shared strict compiler options
-├─ tsconfig.build.json          # project-reference build graph
-├─ .env.example
-│
+
+Compile-time dependencies point inward: **apps → adapters → core**. Core owns domain
+models, policies and port contracts. Infrastructure adapters implement those contracts.
+`apps/quoky` is the NestJS composition root that binds concrete implementations to ports.
+Core has no concrete Discord, SQLite, NestJS or AI-provider dependencies.
+
+## Why Ports & Adapters?
+
+Controller–Service–Repository describes useful responsibilities, but Quoky also needs
+separate boundaries for AI CLIs, Git, commands, workspace files, MCP/tools and connectors.
+Discord and SQLite can be replaced independently. Keeping these details outside Core
+supports Personal → Team evolution without tying business rules to one transport or store.
+See the [Architecture Constitution](ARCHITECTURE.md) for invariants and
+[Decisions](DECISIONS.md) for their rationale.
+
+## Core Concepts
+
+| Concept | Responsibility |
+|---|---|
+| Actor | Platform-independent identity and ownership |
+| Session | Conversation lifecycle and pointers; no memory/context snapshot |
+| WorkItem | Durable Actor-owned work and high-level lifecycle; distinct from an execution Task |
+| WorkHandoff | Immutable profile-to-profile context/provenance; grants no execution authority |
+| ContinuationBinding | Immutable handoff↔Task correlation; does not execute work |
+| Task | A unit of work tied to conversation context |
+| TaskRun | Exact identity of one execution attempt; not an approval |
+| AgentProfile | Immutable persona configuration; not a runtime agent or permission grant |
+| Approval | Governance state for a specific ExecutionPlan |
+| ExecutionReceipt | Current COMMAND terminal provenance; not a generic TaskRun receipt |
+
+## Repository Structure
+
+The tree uses the canonical source identity. Existing local checkout and GitHub repository
+names may still be historical; this Sprint does not rename either external boundary.
+
+```text
+quoky-platform/
+├─ apps/quoky/                 # @quoky/app — composition root
 ├─ packages/
-│  ├─ core/                     # @chunsik/core — PURE TS, zero deps (the hexagon)
-│  │  └─ src/
-│  │     ├─ domain/             #   entities, value objects, enums
-│  │     ├─ ports/              #   the 7 provider interfaces + DI tokens
-│  │     ├─ application/        #   orchestrator + 11 application services
-│  │     └─ util/               #   id/clock helpers
-│  │
-│  ├─ adapter-discord/          # @chunsik/adapter-discord  → PlatformAdapter
-│  ├─ storage-sqlite/           # @chunsik/storage-sqlite   → StorageProvider
-│  ├─ queue-local/              # @chunsik/queue-local      → QueueProvider
-│  ├─ vector-local/             # @chunsik/vector-local     → VectorProvider
-│  ├─ workspace-local/          # @chunsik/workspace-local  → WorkspaceProvider
-│  ├─ ai-cli/                   # @chunsik/ai-cli           → AiProvider ×3 (Claude/Codex/Ollama)
-│  ├─ connectors/               # @chunsik/connectors       → ConnectorProvider registry
-│  ├─ connector-jira/           # @chunsik/connector-jira   → wired read-only Jira adapter
-│  ├─ connector-slack/          # @chunsik/connector-slack  → wired read-only Slack adapter
-│  └─ connector-confluence/     # @chunsik/connector-confluence → wired read-only Confluence adapter
-│
-└─ apps/
-   └─ chunsik/                  # @chunsik/app — NestJS composition root (wiring + bootstrap)
+│  ├─ core/                   # @quoky/core — domain, application, ports
+│  ├─ adapter-discord/
+│  ├─ storage-sqlite/
+│  ├─ ai-cli/
+│  ├─ command-local/
+│  ├─ git-local/
+│  ├─ repository-hosting-github/
+│  ├─ github-app-auth/
+│  ├─ workspace-local/
+│  ├─ tool-mcp/
+│  ├─ connector-*/
+│  ├─ connectors/             # legacy extension placeholder
+│  ├─ queue-local/            # reserved implementation seam
+│  ├─ vector-local/           # reserved implementation seam
+│  └─ provider-routing-validation/ # private offline validation harness
+├─ prompts/                   # runtime prompt assets
+├─ tools/                     # bounded development/validation tooling
+└─ docs/
 ```
 
-**Why this shape**
+## Work & Execution Model
 
-- **pnpm workspaces** enforce the boundary *mechanically*: `core` declares no
-  adapter as a dependency, so pnpm never links one into its `node_modules` and
-  an accidental `core → adapter` import fails to resolve. (Verified — see
-  [Verification](#verification).)
-- **`core` is framework-agnostic pure TypeScript.** No NestJS, no Discord, no
-  SQLite. This is what lets v2 evolve (team/server mode, Postgres, worktrees,
-  Telegram) without rewriting the core.
-- **NestJS lives only in `apps/chunsik`.** It is the *composition root*: it binds
-  each port token to a concrete implementation. Swapping an implementation is a
-  one-line change there.
+WorkItem is referenced by WorkHandoff. ContinuationBinding connects a handoff to an existing
+Task, and TaskRun references its Task. These relations are provenance and correlation,
+not an automatic sequential workflow.
 
----
+Eligibility decisions are transient evaluations, not durable workflow states. Binding
+admission validates canonical state but grants no execution permission. Atomic TaskRun
+start requires the canonical Task to be RUNNING and allocates a distinct attempt per call;
+it does not provide start-request idempotency, automatic retry or dispatch. Receiving-agent
+execution remains deferred. Command receipts independently identify terminal command results.
 
-## 2. Core interfaces (ports)
+## Safety & Approval
 
-Defined in `packages/core/src/ports/`. The core depends only on these — never on
-a concrete class. Interfaces are bound at runtime via **injection tokens**
-(`ports/tokens.ts`) because TS interfaces don't exist at runtime.
+Planning and execution authority remain separate. Plan-scoped approval guards operations
+that require it; each capability enforces its bounded checks. Provider selection, a handoff,
+a profile or a TaskRun does not grant additional authority. Secrets stay at infrastructure
+boundaries and must not enter Core objects, responses or logs.
 
-| Port | File | v1 implementation |
-|------|------|-------------------|
-| `PlatformAdapter` | `platform-adapter.port.ts` | `DiscordPlatformAdapter` |
-| `StorageProvider` | `storage-provider.port.ts` | `SqliteStorageProvider` |
-| `QueueProvider` | `queue-provider.port.ts` | `LocalQueueProvider` |
-| `VectorProvider` | `vector-provider.port.ts` | `LocalVectorProvider` |
-| `WorkspaceProvider` | `workspace-provider.port.ts` | `LocalCloneWorkspaceProvider` |
-| `AiProvider` | `ai-provider.port.ts` | `Claude/Codex/OllamaCliProvider` |
-| `ConnectorProvider` | `connector-provider.port.ts` | *(none — extension point)* |
+Development authorization and runtime/external-operation gates are defined in
+[Development Mode](docs/governance/DEVELOPMENT-MODE.md). That document's M2 standing-delegation
+wording and Current State's active M3 require a separate governance correction; this rename
+does not broaden standing authority.
 
-The key one is **`AiProvider`**: it exposes `capabilities` (an
-`AiCapabilityDescriptor[]` of `{capability, priority}`) and `isAvailable()`. The
-core selects a provider by **capability + availability + priority** — it never
-names a CLI. See [§3](#3-provider-selection--fallback).
+## Current Limitations
 
----
+- No autonomous agent loops, scheduler, workflow engine or dynamic plugin loader.
+- Tool/MCP and handoff foundations do not imply live autonomous execution.
+- Codex execution, local queue enqueue and local vector operations remain incomplete.
+- Some legacy facade/workspace/Discord approval methods remain explicit stubs; current
+  bounded flows use the implemented application paths.
+- Advanced routing activation, runtime/UAT and external actions require their own gates.
+- No AI HTTP API, current Team tenancy, Postgres or Redis implementation.
 
-## 3. Provider selection & fallback
+## What's Next
 
-The fallback policy is **data-driven**, encoded as priorities each provider
-*advertises* (in `packages/ai-cli/`), not as `if (claude) …` branches in core.
+**Next architecture target: Execution Admission.** Expected responsibility is Core Application
+composition using existing canonical objects; no new aggregate/repository is currently justified.
+Detailed architecture belongs to the next Sprint and is not approved by ADR-0086 or this README.
 
-| Capability | Ollama | Claude | Codex | Result |
-|---|---|---|---|---|
-| GENERAL_CHAT / SUMMARIZATION | **100** | 50 | — | Ollama, else Claude |
-| CODE_IMPLEMENTATION | — | 50 | **100** | Codex, else Claude |
-| ARCHITECTURE_PLANNING | — | **100** | — | Claude |
-| CODE_REVIEW | — | **90** | 60 | Claude, else Codex |
-| EMBEDDING | **100** | — | — | Ollama |
+Further roadmap directions include receiving-agent/runtime work, Codex, additional connectors,
+memory improvements and later networked infrastructure for Team/Hosted editions. See
+[Roadmap](ROADMAP.md); these are not current capability claims.
 
-`AiProviderManager` filters to *available* providers that support the capability;
-`CapabilityRouter` sorts them by priority and picks the top. Ollama being optional
-"just works": if it's down, the next-highest (Claude) wins automatically. The
-selected provider id is recorded on the `TaskRun` for audit but **never surfaced
-to the user**.
+## Development
 
----
+The workspace declares Node **≥18.18** and **pnpm 10.32.1**. From the repository root:
 
-## 4. Task flow skeleton
-
-Encoded in `packages/core/src/application/orchestrator.ts` (`ChunsikCore`):
-
-```
-inbound Discord message
-  └─ DiscordPlatformAdapter ── normalizes → InboundMessage
-       └─ ChunsikCore.handleInboundMessage
-            1. MemoryManager.recordShortTerm           (short-term memory)
-            2. IntentClassifier.classify               → Intent  [stub]
-            3. if !requiresWork → CapabilityRouter.route → AiProvider.execute → ResponseComposer → reply   (fast path)
-            4. else TaskManager.createTask → PENDING → PLANNING
-            5. Planner.plan → Plan(+overallRisk)        [stub]
-            6. RiskPolicy.requiresApproval?
-                 HIGH/CRITICAL → WAITING_APPROVAL → PlatformAdapter.requestApproval → (resume on decision)
-                 LOW/MEDIUM    → executeTask:
-                     WorkspaceManager.prepare (+ git-status safety)
-                     MemoryManager.buildContextFiles → .chunsik/context.md, .chunsik/task.md
-                     WorkspaceManager.injectContext
-                     CapabilityRouter.route → AiProvider.execute(prompt + contextFiles + workspace)
-                     ArtifactManager.persistAll
-                     TaskManager.completeRun → COMPLETED
-                     ResponseComposer.compose → PlatformAdapter.sendMessage
+```sh
+pnpm install --frozen-lockfile
+pnpm typecheck
+pnpm build
 ```
 
-Memory reaches the stateless CLIs **only** through generated context files —
-Chunsik Memory is the source of truth, never the CLI's internal memory.
+Use `pnpm install --offline --frozen-lockfile --ignore-scripts` only with a populated local
+store and required native dependencies already available. Tests can be selected with
+`pnpm exec vitest run <test-path>`; some suites use disposable files, Git or SQLite, so
+select tests appropriate to the authorized scope.
 
-**Implemented now (deterministic plumbing):** risk policy, provider selection,
-task status state machine, memory context-file rendering, artifact persistence,
-workspace safety guard, response composition, the orchestration sequence itself.
+For a separately authorized local runtime, prepare `.env.local` using `.env.example` without
+overwriting an existing configuration. The loader reads repository-root `.env.local` with
+`override: false`; inherited process values win. `.env` is not loaded. Before startup,
+compare variable **names** and remove inherited runtime-owned duplicates in that invocation
+with `env -u NAME`, including DISCORD_BOT_TOKEN and DISCORD_GUILD_ID. Never display secret values.
+`pnpm start` runs `apps/quoky/dist/main.js` and is a runtime action, not a build check.
+After startup, verify bot/guild/channel identity before readiness or Discord actions, as required
+by [AGENTS.md](AGENTS.md).
 
-**Stubbed (model-driven cognition):** `IntentClassifier.classify`,
-`Planner.plan`, every `AiProvider.execute/isAvailable`, all concrete
-providers, and `handleApprovalDecision`. They throw `NotImplementedError`.
+For the migrated settings in `.env.example`, QUOKY_* takes precedence over CHUNSIK_* aliases,
+including empty canonical values. Omit the canonical variable to use its legacy alias.
+GitHub App versus dev-only PAT authentication rules are unchanged. No configuration step should
+silently redirect existing local state: the default remains `./data/chunsik.db`, generated
+contexts remain `.chunsik/context.md` and `.chunsik/task.md`, and `.chunsik-tmp` remains unchanged.
 
----
+## Canonical Documentation
 
-## 5. What is NOT implemented yet
+| Document | Authority |
+|---|---|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Architecture constitution and invariants |
+| [DECISIONS.md](DECISIONS.md) | ADRs and decision rationale |
+| [CURRENT_STATE.md](CURRENT_STATE.md) | Exact current implementation status |
+| [ROADMAP.md](ROADMAP.md) | Future sequence and edition direction |
+| [AGENTS.md](AGENTS.md) | Implementation-agent rules |
+| [Development Mode](docs/governance/DEVELOPMENT-MODE.md) | Development authorization and execution gates |
 
-By design, this is a boundaries-first scaffold:
-
-- ❌ **No business logic** in intent classification, planning, or CLI execution.
-- ❌ **No concrete provider internals** — Discord (no `discord.js`), SQLite (no
-  `better-sqlite3`), local queue/vector, and workspace fs/git are all skeletons.
-- ✅ **Jira / Slack / Confluence are read-only** — concrete adapters implement the `ConnectorProvider` seam and are
-  registered by the composition root when their required environment configuration is complete. Write operations
-  are not implemented.
-- ❌ **No Telegram** — but `PlatformAdapter` already allows it.
-- ❌ **No git worktree** — `LocalCloneWorkspaceProvider` only; `kind: 'git-worktree'`
-  is reserved for a future `GitWorktreeWorkspaceProvider` on the same port.
-- ❌ **No AI HTTP API** — v1 is CLI-only.
-- ❌ **No Postgres / Redis** — local SQLite + in-process queue + local vectors.
-
-Extension points left open: the 7 ports, the `Capability`/`ArtifactKind` enums,
-the connector seam, and the composition root (swap a `useFactory` line).
-
----
-
-## 6. Architecture warnings
-
-1. **The boundary is enforced by dependency direction, not by a linter.** It
-   holds today because `core` declares no adapter deps. Add `eslint-plugin-boundaries`
-   (or `import/no-restricted-paths`) before the team grows, so a stray
-   `core → adapter` import is caught in CI, not review.
-2. **Don't leak provider identity into UX.** The selected CLI is audit-only.
-   Resist adding "answered by Claude" to responses — it breaks the "models are
-   implementation details" contract and couples UX to the provider set.
-3. **Keep platform/storage types inside their adapter.** The mapping
-   Discord.js↔domain and rows↔entities must stay in `adapter-discord` /
-   `storage-sqlite`. The moment a `Message` or a SQL row type appears in a port
-   signature, the boundary is broken.
-4. **Memory context-file generation belongs to `MemoryManager`, not providers.**
-   Providers only *pass through* `contextFiles`. If a provider starts composing
-   memory, the source-of-truth guarantee is lost.
-5. **The approval gate must wrap the *external write*, not the planning.** Local
-   edits can run automatically (MEDIUM); commit/push/PR/deploy are HIGH/CRITICAL
-   and require a decision. `RiskPolicy.assessCommand` already classifies
-   dangerous shell patterns — wire it into `WorkspaceProvider.runCommand` before
-   enabling any command execution.
-6. **`exactOptionalPropertyTypes` is currently `false`.** Turning it on later
-   will surface a few optional-field assignments; cheaper to tighten early.
-
----
-
-## Setup
-
-```bash
-pnpm install
-cp .env.example .env     # fill in DISCORD_BOT_TOKEN, CHUNSIK_WORKSPACE_ROOT, …
-pnpm typecheck           # tsc -b across all packages — must be clean
-pnpm build               # emit dist/ for every package
-pnpm start               # boots the Nest context (providers throw until implemented)
-```
-
-Requires Node ≥ 18.18 and the `claude`, `codex`, and (optionally) `ollama` CLIs
-on `PATH`, authenticated.
-
-## Verification
-
-```bash
-# 1. Whole graph type-checks
-pnpm typecheck                       # exit 0, no errors
-
-# 2. Boundary holds — core cannot even resolve an adapter
-node -e "try{require.resolve('@chunsik/adapter-discord',{paths:['packages/core']});console.log('BROKEN')}catch{console.log('ENFORCED')}"
-# → ENFORCED
-```
+README is the Product introduction and navigation layer; it does not supersede these authorities.
+Historical records retain the names used when they were written.

@@ -1,6 +1,6 @@
-# ChunsikBot V2 — Limited Internal UAT Operator Guide
+# Quoky Platform — Limited Internal UAT Operator Guide
 
-> Operator-facing guide for running **limited internal UAT** of ChunsikBot V2 (**v1 RC ACCEPTED**) safely against a
+> Operator-facing guide for running **limited internal UAT** of Quoky Platform (**v1 RC ACCEPTED**) safely against a
 > **throwaway sandbox** GitHub repository. Authored in Sprint 3m (docs-only). Canonical behavior references:
 > `docs/lifecycle-state-machine.md`, `docs/capabilities/git.md`, `docs/capabilities/repository-hosting.md`,
 > `DECISIONS.md`. You do **not** need to read the architecture history to run UAT — this guide is self-contained.
@@ -12,7 +12,7 @@
 
 ## 1. UAT purpose and scope
 
-**Purpose:** confirm that a trusted internal operator can drive ChunsikBot V2 through the real conversation lifecycle
+**Purpose:** confirm that a trusted internal operator can drive Quoky Platform through the real conversation lifecycle
 against a sandbox repo, verifying at every gate that the bot (a) requires the correct approval, (b) transitions to the
 correct state, (c) never over-claims, and (d) never leaks a token. Every remote effect is confirmed **manually in
 GitHub**.

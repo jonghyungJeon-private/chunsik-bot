@@ -6,11 +6,11 @@ Repository 문서가 source of truth이며 prompt나 이전 Agent의 self-report
 
 ## Project Invariants
 
-- Chunsik은 local-first, provider-independent AI platform이다. Discord와 model은 교체 가능한 구현이다.
+- Quoky은 local-first, provider-independent AI platform이다. Discord와 model은 교체 가능한 구현이다.
 - 의존 방향은 `apps -> adapters -> core`뿐이다. Core는 workspace package에 의존하지 않는다.
 - Core는 concrete provider, NestJS, Discord, SQLite, CLI, adapter를 import하지 않는다.
-- Adapter는 `@chunsik/core`와 자기 구현 library만 사용하며 다른 adapter에 의존하지 않는다.
-- `apps/chunsik`만 concrete class와 port token을 연결하는 composition root다.
+- Adapter는 `@quoky/core`와 자기 구현 library만 사용하며 다른 adapter에 의존하지 않는다.
+- `apps/quoky`만 concrete class와 port token을 연결하는 composition root다.
 - 새 provider는 기존 port를 구현하는 별도 adapter package로 추가하고 composition root에서 wiring한다.
 - 새 port의 interface와 DI token은 `packages/core/src/ports`에 둔다.
 - Platform/storage/driver type은 port signature나 Core type을 통과할 수 없다.
@@ -22,7 +22,7 @@ Repository 문서가 source of truth이며 prompt나 이전 Agent의 self-report
 - Provider 선택은 `capabilities`, `priority`, `isAvailable()` 데이터로 결정한다.
 - 선택된 provider는 `TaskRun.providerId`의 audit 정보이며 사용자에게 기본 노출하지 않는다.
 - Provider별 prompt shaping과 CLI rendering은 adapter가 담당한다. v1에 AI HTTP API를 추가하지 않는다.
-- Chunsik Memory가 source of truth이며 stateless CLI에는 generated context file로만 전달한다.
+- Quoky Memory가 source of truth이며 stateless CLI에는 generated context file로만 전달한다.
 - `MemoryManager`는 CRUD/scope, `ContextBuilder`는 retrieve/rank/compress/budget,
   `PromptComposer`는 prompt layering, workspace는 context-file materialization을 소유한다.
 - `Session`에 context/memory snapshot을 저장하지 않는다. Prompt template은 `prompts/` runtime asset이다.
@@ -56,7 +56,7 @@ Architecture 또는 settled decision과 충돌할 가능성이 있으면 반드�
 - Architecture 경계 변경은 구현·검증 후 merge 전에 독립 Chief Architect Review를 받는다.
 - Ratified architecture 안에서 active milestone에 필요한 LOW/MEDIUM-risk 구현은 Architect AI가 승인할 수 있다.
   구현 미착수, human-authored Sprint 부재, 추가 one-off approval 부재만으로 `HUMAN_REQUIRED`를 반환하지 않는다.
-- Push, PR, Merge, Runtime start/stop/restart, Discord action, Chunsik application AI Provider/network 실행,
+- Push, PR, Merge, Runtime start/stop/restart, Discord action, Quoky application AI Provider/network 실행,
   non-DB runtime data mutation, Workspace Apply, Live UAT, release/production gate,
   Production/shared DB mutation·migration apply, destructive filesystem 작업, secret 접근은 `STRICT GOVERNANCE MODE`로
   Human의 별도 승인을 받는다.
@@ -84,13 +84,13 @@ external/destructive action을 감싼다.
 ## Temporary Local/UAT Runtime Environment
 
 - 이 section은 local test와 attended Live UAT를 위한 임시 안전장치이며 production/deployment 실행 계약이 아니다.
-- 해당 local Chunsik application runtime의 configuration source는 repository root의 `.env.local`이다.
-- `apps/chunsik`의 dotenv loader는 `override: false`이므로 inherited process environment가 `.env.local`보다
+- 해당 local Quoky application runtime의 configuration source는 repository root의 `.env.local`이다.
+- `apps/quoky`의 dotenv loader는 `override: false`이므로 inherited process environment가 `.env.local`보다
   우선한다. Runtime Start 전에 `.env.local`에 선언된 variable 이름과 현재 process environment의 이름을
   비교하고, 중복된 runtime-owned variable이 있으면 그대로 시작하지 않는다. Secret 값은 출력하지 않는다.
 - 중복 variable은 해당 실행 명령에서 `env -u <NAME>`으로 제거해 `.env.local` loader가 값을 설정하도록 한다.
   특히 `DISCORD_BOT_TOKEN`과 `DISCORD_GUILD_ID`는 반드시 제거하거나 부재를 직접 확인한다.
-- `.env`를 source하거나 기존 login-shell Discord configuration에 의존해 Chunsik을 시작하지 않는다.
+- `.env`를 source하거나 기존 login-shell Discord configuration에 의존해 Quoky을 시작하지 않는다.
 - Discord Runtime Start 후 readiness를 선언하기 전에 실제 bot identity, guild, channel이 `.env.local`의
   대상과 일치하는지 read-only로 검증한다. 불일치하거나 검증할 수 없으면 Discord Action/Live UAT 없이
   Runtime을 중지하고 blocker를 보고한다.

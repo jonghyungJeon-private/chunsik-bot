@@ -75,7 +75,7 @@ export enum IntentType {
   UNKNOWN = 'UNKNOWN',
 }
 
-/** Chunsik Memory is the source of truth — never the CLI's internal memory. */
+/** Quoky Memory is the source of truth — never the CLI's internal memory. */
 export enum MemoryType {
   SHORT_TERM = 'SHORT_TERM',
   WORKING = 'WORKING',

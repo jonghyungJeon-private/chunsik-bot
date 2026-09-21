@@ -1,6 +1,6 @@
 import type { Id, IsoTimestamp, Metadata } from './common';
 
-/** A platform-native identity that maps to a Chunsik Actor. */
+/** A platform-native identity that maps to a Quoky Actor. */
 export interface ExternalIdentity {
   /** e.g. "discord". */
   platform: string;

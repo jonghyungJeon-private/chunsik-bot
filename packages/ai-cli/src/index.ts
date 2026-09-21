@@ -1,12 +1,12 @@
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { AiFailureKind, AiProviderError, ArtifactKind, newId, now } from '@chunsik/core';
+import { AiFailureKind, AiProviderError, ArtifactKind, newId, now } from '@quoky/core';
 import type {
   AiCapabilityDescriptor,
   AiExecutionResult,
   AiRequest,
   Artifact,
-} from '@chunsik/core';
+} from '@quoky/core';
 import { BaseCliAiProvider, Capability } from './base-cli-provider';
 import { defaultCliRunner, maskSecrets } from './cli-runner';
 import type { CliRunner } from './cli-runner';

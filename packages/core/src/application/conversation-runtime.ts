@@ -117,7 +117,7 @@ import type {
  * Invariants (ADR-0032): the runtime persists NO runtime state; approval-awaiting state is DERIVED
  * from existing Session/Task/ExecutionPlan/ApprovalRequest state (via the injected `approvalFlow`);
  * Session stores NO runtime snapshot. The runtime's essential output is an `OutboundMessage` — the
- * `ChunsikCore` facade performs platform delivery. Reply text is built only by `ResponseComposer`.
+ * `QuokyCore` facade performs platform delivery. Reply text is built only by `ResponseComposer`.
  */
 
 /** Transient per-turn status — an Application-layer concept, never persisted. */
@@ -407,7 +407,7 @@ export interface ApplyPreviewAnchor {
   /** Deterministic bounded PR title (Sprint 3b) — sanitized `instruction`, fallback "Apply approved changes".
    *  NOT a raw diff / file content. */
   prTitle?: string;
-  /** Deterministic bounded PR body preview (Sprint 3b) — generated-by-ChunsikBot + short hash + head→base +
+  /** Deterministic bounded PR body preview (Sprint 3b) — generated-by-Quoky Platform + short hash + head→base +
    *  committed-file COUNT only (NO file paths / diff / content). Audit-stored; NOT sent anywhere in 3b. */
   prBodyPreview?: string;
   /** The approved target repository identity (Sprint 3d-D, ADR-0054) — resolved from reviewed config at PR
@@ -439,7 +439,7 @@ export interface ApplyPreviewAnchor {
   /** The actor who decided the merge approval (Sprint 3f) — REQUIRED at MERGE_APPROVED (CA change 2); cleared
    *  on deny/cancel. */
   mergeApprovalDecisionBy?: Id;
-  /** The RUNTIME record timestamp (Sprint 3g, ADR-0057) — REQUIRED at PR_MERGED: when ChunsikBot recorded or
+  /** The RUNTIME record timestamp (Sprint 3g, ADR-0057) — REQUIRED at PR_MERGED: when Quoky Platform recorded or
    *  OBSERVED the merge result during this run (now()), NOT the provider's original merge time (which, on the
    *  already-merged path, may have happened earlier). */
   mergedAt?: IsoTimestamp;
@@ -869,7 +869,7 @@ const PR_CREATION_WORDS =
 const PR_FORBIDDEN_COMPANION =
   /(배포|deploy|auto\s*-?\s*merge|자동\s*머지|\bmerge\b(?!\s*request)|머지|병합|릴리즈|release|--?force|강제|\bforce\b|(^|\s)-f(\s|$)|리셋|\breset\b|checkout|체크아웃|stash|스태시|rebase|리베이스|\btag\b|태그|브랜치\s*생성|create\s+branch)/i;
 
-/** Fixed PR base-branch product policy for ChunsikBot V2 (Sprint 3b, Q6/CA #6/#11 — CA option C). RepositoryInfo
+/** Fixed PR base-branch product policy for Quoky Platform V2 (Sprint 3b, Q6/CA #6/#11 — CA option C). RepositoryInfo
  *  exposes NO default branch and no config default-branch source exists, so the base branch is a STATED PRODUCT
  *  POLICY, not an inferred/user-provided value. Revisit if a safer configured default-branch source is added. */
 const PR_BASE_BRANCH_POLICY = 'main';
@@ -1004,7 +1004,7 @@ function derivePrTitle(instruction?: string): string {
 }
 
 /**
- * Deterministic bounded PR body preview (Sprint 3b, ADR-0049, CA #5). Generated-by-ChunsikBot + pushed short
+ * Deterministic bounded PR body preview (Sprint 3b, ADR-0049, CA #5). Generated-by-Quoky Platform + pushed short
  * hash + head→base + committed-file COUNT ONLY (never file paths / diff / content) + explicit no-deployment /
  * approval-only. Bounded by clampToMessageBudget.
  */
@@ -1017,7 +1017,7 @@ function buildPrBodyPreview(input: {
   // All parts are inherently bounded (short hash + boundGitRef-capped branches + a count); a defensive
   // MAX_PR_BODY cap keeps it deterministic and bounded (CA #5).
   return [
-    'ChunsikBot이 생성한 PR 초안입니다.',
+    'Quoky Platform이 생성한 PR 초안입니다.',
     `커밋: ${input.pushedCommitHash.slice(0, 7)}`,
     `대상: ${boundGitRef(input.headBranch)} → ${boundGitRef(input.baseBranch)}`,
     `변경 파일 수: ${input.committedFileCount}개`,
@@ -1057,13 +1057,13 @@ function buildPrApprovalReason(input: {
     'actual PR creation is NOT performed in Sprint 3b',
     'future execution requires a separate repository-hosting step',
     'creating a PR mutates shared collaboration state (CI, notifications, reviews, branch protections, automations)',
-    'approval is based on the pushed context currently recorded by ChunsikBot; it does not verify the branch on the hosting provider and does not guarantee a PR can be created',
+    'approval is based on the pushed context currently recorded by Quoky Platform; it does not verify the branch on the hosting provider and does not guarantee a PR can be created',
   ].join('\n');
 }
 
 /**
  * Deterministic bounded PR BODY for the actual creation call (Sprint 3d-D, ADR-0054, CA change 11) — the text
- * sent to the hosting provider. Generated-by-ChunsikBot + bounded title + pushed short hash + head→base +
+ * sent to the hosting provider. Generated-by-Quoky Platform + bounded title + pushed short hash + head→base +
  * committed-file COUNT ONLY (never file paths / diff / content / token / remoteUrl) + explicit no
  * merge/deploy/release. Bounded by MAX_PR_BODY. Re-derived from approved context — the stored `prBodyPreview`
  * is not trusted verbatim.
@@ -1076,7 +1076,7 @@ function buildPrBody(input: {
   committedFileCount: number;
 }): string {
   return [
-    'ChunsikBot이 생성한 PR입니다.',
+    'Quoky Platform이 생성한 PR입니다.',
     `제목: ${input.title.slice(0, MAX_PR_TITLE)}`,
     `커밋: ${input.pushedCommitHash.slice(0, 7)}`,
     `대상: ${boundGitRef(input.headBranch)} → ${boundGitRef(input.baseBranch)}`,
@@ -4852,7 +4852,7 @@ export class ConversationRuntime {
    *   - EVERY OTHER capability (`TEST_EXECUTION`, command execution, any other shared execution capability)
    *     — a side effect may already have happened, so the verdict stays conservative → `MAY_HAVE_APPLIED`.
    * Never rethrows (so this specific verdict wins over the generic backstop) and never leaks raw/stack. The
-   * generic `handle()` and `ChunsikCore` backstops stay conservative (`MAY_HAVE_APPLIED`) for everything else.
+   * generic `handle()` and `QuokyCore` backstops stay conservative (`MAY_HAVE_APPLIED`) for everything else.
    */
   private async runResolvedExecution(
     message: InboundMessage,
@@ -5098,7 +5098,7 @@ export class ConversationRuntime {
     return { status, reply, sessionId: session.id, executionOutcome: outcome };
   }
 
-  /** (F) Existing single-capability work path (relocated from ChunsikCore), returning a reply. */
+  /** (F) Existing single-capability work path (relocated from QuokyCore), returning a reply. */
   private async handleWorkTurn(
     message: InboundMessage,
     session: Session,

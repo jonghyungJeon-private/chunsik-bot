@@ -53,7 +53,7 @@ Planning → Approval → Patch → Workspace Write → [Command Execution: run 
   Allow-list is injectable (`DEFAULT_ALLOWED_COMMANDS`); timeout defaults to
   `DEFAULT_COMMAND_TIMEOUT_MS`.
 - Port `CommandRunner` (`run(command, args, { cwd, timeoutMs, env? }) → CommandRunResult`;
-  token `COMMAND_RUNNER`; adapter `LocalCommandRunner` in `@chunsik/command-local`,
+  token `COMMAND_RUNNER`; adapter `LocalCommandRunner` in `@quoky/command-local`,
   `node:child_process` argv-array `spawnSync`, `shell:false`, **minimal env by default
   (PATH/HOME — never the full parent `process.env`)**, masked + size-capped output).
 - **Execution-safety boundary (4 controls):** command allow-list · dangerous-arg blocking ·

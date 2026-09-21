@@ -1,7 +1,7 @@
 import type { CallToolResult, Client, Tool } from '@modelcontextprotocol/client';
 import type {
   ToolDescriptor, ToolFailureCode, ToolInvocation, ToolJsonValue, ToolProvider, ToolResult, ToolSchema,
-} from '@chunsik/core';
+} from '@quoky/core';
 
 const SERVER_ID = /^[a-z0-9](?:[a-z0-9._-]{0,62})$/;
 const MAX_TEXT_BLOCKS = 16;

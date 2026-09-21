@@ -1,5 +1,5 @@
 {
-  "name": "@chunsik/vector-local",
+  "name": "@quoky/vector-local",
   "version": "0.1.0",
   "private": true,
   "description": "LocalVectorProvider — local vector store behind VectorProvider.",
@@ -17,6 +17,6 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@chunsik/core": "workspace:*"
+    "@quoky/core": "workspace:*"
   }
 }

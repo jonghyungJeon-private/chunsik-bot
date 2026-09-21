@@ -1,5 +1,5 @@
-import { NotImplementedError } from '@chunsik/core';
-import type { EnqueueOptions, Id, JobHandler, QueueProvider } from '@chunsik/core';
+import { NotImplementedError } from '@quoky/core';
+import type { EnqueueOptions, Id, JobHandler, QueueProvider } from '@quoky/core';
 
 /**
  * SKELETON. Implements QueueProvider as a single-process queue.

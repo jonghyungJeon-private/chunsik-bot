@@ -18,7 +18,7 @@ export const MAX_SESSION_SHORT_TERM = 30;
 import type { StorageProvider, VectorProvider } from '../ports';
 
 /**
- * Owns Chunsik Memory — the source of truth. The AI CLIs are stateless; the
+ * Owns Quoky Memory — the source of truth. The AI CLIs are stateless; the
  * ONLY way memory reaches them is the context files this manager materializes.
  *
  * v1: storage + a deterministic renderer are implemented (plumbing). Semantic
@@ -214,7 +214,7 @@ export class MemoryManager {
         .map((r) => `- ${r.content}`)
         .join('\n');
     return [
-      '# Chunsik Context',
+      '# Quoky Context',
       '',
       '## Project memory',
       byType(MemoryType.PROJECT) || '_none_',

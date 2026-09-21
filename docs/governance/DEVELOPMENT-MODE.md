@@ -2,7 +2,7 @@
 
 ## 목적
 
-이 문서는 Chunsik의 개발 실행과 승인 방식을 정의하는 canonical source다.
+이 문서는 Quoky의 개발 실행과 승인 방식을 정의하는 canonical source다.
 일반 제품 개발의 절차 비용을 줄이면서 Architecture invariant, mutation safety,
 검증 사실성, 외부·비가역 작업의 독립 승인 경계를 유지한다.
 
@@ -67,9 +67,9 @@ Standing delegation은 다음을 함께 허용한다.
 - 같은 범위의 Builder/Reviewer remediation 최대 2회
 - 위 workflow를 수행하는 trusted development control-plane의 Kiro/Codex/Claude turn
 
-이 delegation은 Chunsik 제품 안에 agent runtime을 추가하지 않으며 `ARCHITECTURE.md`의 제품 runtime 규칙을
+이 delegation은 Quoky 제품 안에 agent runtime을 추가하지 않으며 `ARCHITECTURE.md`의 제품 runtime 규칙을
 변경하지 않는다. Development control-plane agent transport는 delegated workflow 수행에만 사용할 수 있다.
-Chunsik application Runtime, application AI Provider, network/Discord 실행은 여전히 Strict Human gate다.
+Quoky application Runtime, application AI Provider, network/Discord 실행은 여전히 Strict Human gate다.
 DB 작업은 아래 `AUTONOMOUS_DEV_DB` 조건을 만족하는 local/development target만 standing delegation에 포함된다.
 
 Architecture-sensitive implementation은 architecture decision이 ratified되었고, 구현이 그 경계 안에 있으며,
@@ -132,8 +132,8 @@ mutation, irreversible data loss, shared/live backup·restore, DB credential/sec
 - Merge
 - Runtime Start, Stop, Restart
 - Discord Connection 또는 Action
-- Chunsik application AI Provider의 실제 외부 실행
-- task-under-test 또는 Chunsik application의 Network 실행
+- Quoky application AI Provider의 실제 외부 실행
+- task-under-test 또는 Quoky application의 Network 실행
 - delegated development DB 밖의 Runtime Data Mutation
 - Workspace Apply
 - Production/shared/live DB mutation 또는 migration apply

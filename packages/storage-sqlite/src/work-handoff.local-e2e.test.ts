@@ -17,8 +17,8 @@ import {
   WorkItemStatus,
   WorkManager,
   agentProfileId,
-} from '@chunsik/core';
-import type { AgentProfile, ExecutionReceipt } from '@chunsik/core';
+} from '@quoky/core';
+import type { AgentProfile, ExecutionReceipt } from '@quoky/core';
 import { SqliteStorageProvider } from './index';
 import Database from 'better-sqlite3';
 
@@ -36,7 +36,7 @@ function profile(id: string): AgentProfile {
 }
 
 function databasePath(): string {
-  const directory = mkdtempSync(join(tmpdir(), 'chunsik-work-handoff-e2e-'));
+  const directory = mkdtempSync(join(tmpdir(), 'quoky-work-handoff-e2e-'));
   directories.push(directory);
   return join(directory, 'ephemeral.db');
 }

@@ -5,7 +5,7 @@ import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import { AgentProfileRegistry, agentProfileId, Capability, IntentType, TaskManager,
   WorkHandoffManager, WorkHandoffConsumptionService, WorkHandoffContinuationService,
-  WorkItemStatus, WorkManager, TaskRunStatus } from '@chunsik/core';
+  WorkItemStatus, WorkManager, TaskRunStatus } from '@quoky/core';
 import { SqliteStorageProvider } from './index';
 import { MIGRATIONS, runMigrations } from './migrations';
 

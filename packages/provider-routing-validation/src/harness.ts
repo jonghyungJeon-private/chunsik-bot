@@ -34,7 +34,7 @@ import {
   createDefaultValidationProfileRegistry,
   policyId,
   providerId,
-} from '@chunsik/core';
+} from '@quoky/core';
 import { harnessDigest } from './canonical';
 import {
   CanonicalAuditProjection,

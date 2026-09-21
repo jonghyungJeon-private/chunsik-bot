@@ -1,5 +1,5 @@
 {
-  "name": "@chunsik/adapter-discord",
+  "name": "@quoky/adapter-discord",
   "version": "0.1.0",
   "private": true,
   "description": "DiscordPlatformAdapter — translates Discord events to/from domain messages.",
@@ -17,7 +17,7 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@chunsik/core": "workspace:*",
+    "@quoky/core": "workspace:*",
     "discord.js": "14.16.3"
   }
 }

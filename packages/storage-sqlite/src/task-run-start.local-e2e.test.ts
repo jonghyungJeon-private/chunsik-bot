@@ -9,8 +9,8 @@ import {
   RiskLevel,
   TaskRunStatus,
   TaskStatus,
-} from '@chunsik/core';
-import type { Task } from '@chunsik/core';
+} from '@quoky/core';
+import type { Task } from '@quoky/core';
 import { SqliteStorageProvider } from './index';
 import { MIGRATIONS, runMigrations } from './migrations';
 
@@ -18,7 +18,7 @@ const dirs: string[] = [];
 afterAll(() => dirs.forEach((dir) => rmSync(dir, { recursive: true, force: true })));
 
 function tempDbPath(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'chunsik-taskrun-start-'));
+  const dir = mkdtempSync(join(tmpdir(), 'quoky-taskrun-start-'));
   dirs.push(dir);
   return join(dir, 'chunsik.db');
 }

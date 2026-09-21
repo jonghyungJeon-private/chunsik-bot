@@ -1,5 +1,5 @@
 {
-  "name": "@chunsik/git-local",
+  "name": "@quoky/git-local",
   "version": "0.1.0",
   "private": true,
   "description": "LocalGitProvider — read-only git repository inspection (CAP-002).",
@@ -19,6 +19,6 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@chunsik/core": "workspace:*"
+    "@quoky/core": "workspace:*"
   }
 }

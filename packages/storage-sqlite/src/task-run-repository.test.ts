@@ -13,15 +13,15 @@ import {
   RiskLevel,
   TaskRunStatus,
   TaskStatus,
-} from '@chunsik/core';
-import type { MemoryRecord, Task, TaskRun, VectorProvider } from '@chunsik/core';
+} from '@quoky/core';
+import type { MemoryRecord, Task, TaskRun, VectorProvider } from '@quoky/core';
 import { SqliteStorageProvider } from './index';
 
 const dirs: string[] = [];
 afterAll(() => dirs.forEach((dir) => rmSync(dir, { recursive: true, force: true })));
 
 async function freshStore(): Promise<SqliteStorageProvider> {
-  const dir = mkdtempSync(join(tmpdir(), 'chunsik-taskrun-'));
+  const dir = mkdtempSync(join(tmpdir(), 'quoky-taskrun-'));
   dirs.push(dir);
   const store = new SqliteStorageProvider({ dbPath: join(dir, 'chunsik.db') });
   await store.init();

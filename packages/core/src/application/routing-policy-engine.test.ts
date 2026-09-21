@@ -438,7 +438,7 @@ describe('Slice 1 boundaries', () => {
       'routing-policy-engine.ts',
     ].map((file) => readFileSync(join(__dirname, file), 'utf8'));
     const source = files.join('\n');
-    expect(source).not.toMatch(/ollama|llama3|granite|mistral|@chunsik\/ai-cli/i);
+    expect(source).not.toMatch(/ollama|llama3|granite|mistral|@quoky\/ai-cli/i);
     expect(source).not.toMatch(/provider-semantic|golden.corpus|benchmark.*evidence/i);
     expect(source).not.toContain('.execute(');
     expect(source).not.toMatch(/conversation-runtime|code-generation-manager/i);

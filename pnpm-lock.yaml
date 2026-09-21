@@ -18,51 +18,51 @@ importers:
         specifier: ^2.1.9
         version: 2.1.9(@types/node@20.19.43)
 
-  apps/chunsik:
+  apps/quoky:
     dependencies:
-      '@chunsik/adapter-discord':
+      '@quoky/adapter-discord':
         specifier: workspace:*
         version: link:../../packages/adapter-discord
-      '@chunsik/ai-cli':
+      '@quoky/ai-cli':
         specifier: workspace:*
         version: link:../../packages/ai-cli
-      '@chunsik/command-local':
+      '@quoky/command-local':
         specifier: workspace:*
         version: link:../../packages/command-local
-      '@chunsik/connector-confluence':
+      '@quoky/connector-confluence':
         specifier: workspace:*
         version: link:../../packages/connector-confluence
-      '@chunsik/connector-github':
+      '@quoky/connector-github':
         specifier: workspace:*
         version: link:../../packages/connector-github
-      '@chunsik/connector-jira':
+      '@quoky/connector-jira':
         specifier: workspace:*
         version: link:../../packages/connector-jira
-      '@chunsik/connector-slack':
+      '@quoky/connector-slack':
         specifier: workspace:*
         version: link:../../packages/connector-slack
-      '@chunsik/core':
+      '@quoky/core':
         specifier: workspace:*
         version: link:../../packages/core
-      '@chunsik/git-local':
+      '@quoky/git-local':
         specifier: workspace:*
         version: link:../../packages/git-local
-      '@chunsik/queue-local':
+      '@quoky/queue-local':
         specifier: workspace:*
         version: link:../../packages/queue-local
-      '@chunsik/repository-hosting-github':
+      '@quoky/repository-hosting-github':
         specifier: workspace:*
         version: link:../../packages/repository-hosting-github
-      '@chunsik/storage-sqlite':
+      '@quoky/storage-sqlite':
         specifier: workspace:*
         version: link:../../packages/storage-sqlite
-      '@chunsik/tool-mcp':
+      '@quoky/tool-mcp':
         specifier: workspace:*
         version: link:../../packages/tool-mcp
-      '@chunsik/vector-local':
+      '@quoky/vector-local':
         specifier: workspace:*
         version: link:../../packages/vector-local
-      '@chunsik/workspace-local':
+      '@quoky/workspace-local':
         specifier: workspace:*
         version: link:../../packages/workspace-local
       '@nestjs/common':
@@ -86,7 +86,7 @@ importers:
 
   packages/adapter-discord:
     dependencies:
-      '@chunsik/core':
+      '@quoky/core':
         specifier: workspace:*
         version: link:../core
       discord.js:
@@ -95,43 +95,43 @@ importers:
 
   packages/ai-cli:
     dependencies:
-      '@chunsik/core':
+      '@quoky/core':
         specifier: workspace:*
         version: link:../core
 
   packages/command-local:
     dependencies:
-      '@chunsik/core':
+      '@quoky/core':
         specifier: workspace:*
         version: link:../core
 
   packages/connector-confluence:
     dependencies:
-      '@chunsik/core':
+      '@quoky/core':
         specifier: workspace:*
         version: link:../core
 
   packages/connector-github:
     dependencies:
-      '@chunsik/core':
+      '@quoky/core':
         specifier: workspace:*
         version: link:../core
 
   packages/connector-jira:
     dependencies:
-      '@chunsik/core':
+      '@quoky/core':
         specifier: workspace:*
         version: link:../core
 
   packages/connector-slack:
     dependencies:
-      '@chunsik/core':
+      '@quoky/core':
         specifier: workspace:*
         version: link:../core
 
   packages/connectors:
     dependencies:
-      '@chunsik/core':
+      '@quoky/core':
         specifier: workspace:*
         version: link:../core
 
@@ -139,7 +139,7 @@ importers:
 
   packages/git-local:
     dependencies:
-      '@chunsik/core':
+      '@quoky/core':
         specifier: workspace:*
         version: link:../core
 
@@ -147,25 +147,25 @@ importers:
 
   packages/provider-routing-validation:
     dependencies:
-      '@chunsik/core':
+      '@quoky/core':
         specifier: workspace:*
         version: link:../core
 
   packages/queue-local:
     dependencies:
-      '@chunsik/core':
+      '@quoky/core':
         specifier: workspace:*
         version: link:../core
 
   packages/repository-hosting-github:
     dependencies:
-      '@chunsik/core':
+      '@quoky/core':
         specifier: workspace:*
         version: link:../core
 
   packages/storage-sqlite:
     dependencies:
-      '@chunsik/core':
+      '@quoky/core':
         specifier: workspace:*
         version: link:../core
       better-sqlite3:
@@ -178,7 +178,7 @@ importers:
 
   packages/tool-mcp:
     dependencies:
-      '@chunsik/core':
+      '@quoky/core':
         specifier: workspace:*
         version: link:../core
       '@modelcontextprotocol/client':
@@ -187,13 +187,13 @@ importers:
 
   packages/vector-local:
     dependencies:
-      '@chunsik/core':
+      '@quoky/core':
         specifier: workspace:*
         version: link:../core
 
   packages/workspace-local:
     dependencies:
-      '@chunsik/core':
+      '@quoky/core':
         specifier: workspace:*
         version: link:../core
       diff:

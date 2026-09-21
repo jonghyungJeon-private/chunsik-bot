@@ -85,7 +85,7 @@ None shells out; none touches a remote URL.
 
 `GitProvider` (port) — reads (`isRepository`/`info`/`status`/`diff`/`getLocalRefCommit`/`getRemoteRefCommit`/
 `isAncestor`) + the four gated mutations (`commitFiles`/`pushApprovedCommit`/`syncMainFastForward`/
-`deleteMergedLocalBranch`). Token: `GIT_PROVIDER`. Adapter: `@chunsik/git-local` (`LocalGitProvider`, injectable
+`deleteMergedLocalBranch`). Token: `GIT_PROVIDER`. Adapter: `@quoky/git-local` (`LocalGitProvider`, injectable
 `GitRunner`; argv `spawnSync`). Core service: `GitManager` (orchestrates preflight + a single mutating call; owns the
 `ApprovalRef` where applicable + the phase-aware error taxonomy). Domain: `RepositoryInfo`, `GitStatus`, `GitDiff`,
 `GitCommitResult`, `GitPushResult`, `GitMainSyncResult`, `GitBranchCleanupResult` + `GitMainSync{Blocked,Unverified}

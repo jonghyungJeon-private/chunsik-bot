@@ -12,21 +12,21 @@ import {
   ExecutionReceiptOutcome,
   ExecutionReceiptRecordingError,
   RiskPolicy,
-} from '@chunsik/core';
+} from '@quoky/core';
 import type {
   CommandRunResult,
   CommandRunner,
   ExecutionReceiptRepository,
   RunCommandInput,
   StorageProvider,
-} from '@chunsik/core';
+} from '@quoky/core';
 import { SqliteStorageProvider } from './index';
 
 const dirs: string[] = [];
 afterEach(() => dirs.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true })));
 
 function dbPath(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'chunsik-receipt-e2e-'));
+  const dir = mkdtempSync(join(tmpdir(), 'quoky-receipt-e2e-'));
   dirs.push(dir);
   return join(dir, 'ephemeral.db');
 }

@@ -1,5 +1,5 @@
-import { NotImplementedError } from '@chunsik/core';
-import type { Id, VectorProvider, VectorQueryResult, VectorRecord } from '@chunsik/core';
+import { NotImplementedError } from '@quoky/core';
+import type { Id, VectorProvider, VectorQueryResult, VectorRecord } from '@quoky/core';
 
 /**
  * SKELETON. Implements VectorProvider as a local store.

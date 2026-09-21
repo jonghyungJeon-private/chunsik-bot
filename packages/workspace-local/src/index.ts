@@ -12,7 +12,7 @@ import {
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { applyPatch, createTwoFilesPatch } from 'diff';
-import { NotImplementedError } from '@chunsik/core';
+import { NotImplementedError } from '@quoky/core';
 import type {
   ContextFile,
   DiffChangeKind,
@@ -27,7 +27,7 @@ import type {
   WorkspaceProvider,
   WorkspaceRef,
   WorkspaceWriter,
-} from '@chunsik/core';
+} from '@quoky/core';
 
 /** Directories excluded from file-tree summaries / reads (ADR-0018/0019). */
 const TREE_EXCLUDE = new Set(['node_modules', 'dist', 'build', '.git', 'coverage']);
@@ -154,12 +154,12 @@ export interface LocalCloneConfig {
 /**
  * Implements WorkspaceProvider against an existing local clone — the **filesystem**
  * abstraction only (CAP-001). Workspace ≠ Git: git inspection lives in
- * `@chunsik/git-local` (CAP-002), never here.
+ * `@quoky/git-local` (CAP-002), never here.
  *
  * Read-only methods are implemented (`resolve`/`readFile`/`listFiles`/`diff`).
  * `writeFile`/`writeContextFiles` remain stubs until their approval-gated
  * capabilities land. Command execution is NOT here — it lives in the
- * `CommandRunner` port / `@chunsik/command-local` adapter (CAP-007).
+ * `CommandRunner` port / `@quoky/command-local` adapter (CAP-007).
  *
  * Safety: NEVER auto-commit, auto-push, or auto-delete. Those are HIGH/CRITICAL
  * and only run via approval-gated capabilities later.
@@ -390,8 +390,8 @@ export class LocalCloneWorkspaceProvider implements WorkspaceProvider {
   }
 
   // --- NOT part of the v2 Workspace capability. Workspace ≠ Git (ADR-0022/0023):
-  //     git lives in @chunsik/git-local (CAP-002); command execution lives in
-  //     @chunsik/command-local (CAP-007), never here. Writes are gated behind
+  //     git lives in @quoky/git-local (CAP-002); command execution lives in
+  //     @quoky/command-local (CAP-007), never here. Writes are gated behind
   //     future approval slices. Stubs for now. ---
 
   async writeFile(_ref: WorkspaceRef, _relPath: string, _content: string): Promise<void> {

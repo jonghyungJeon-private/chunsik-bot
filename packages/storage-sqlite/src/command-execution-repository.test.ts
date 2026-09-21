@@ -2,15 +2,15 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CommandExecutionStatus, RiskLevel, WorkspaceChangeStatus } from '@chunsik/core';
-import type { CommandExecution } from '@chunsik/core';
+import { CommandExecutionStatus, RiskLevel, WorkspaceChangeStatus } from '@quoky/core';
+import type { CommandExecution } from '@quoky/core';
 import { SqliteStorageProvider } from './index';
 
 const dirs: string[] = [];
 afterAll(() => dirs.forEach((d) => rmSync(d, { recursive: true, force: true })));
 
 async function freshStore(): Promise<SqliteStorageProvider> {
-  const dir = mkdtempSync(join(tmpdir(), 'chunsik-cmdexec-'));
+  const dir = mkdtempSync(join(tmpdir(), 'quoky-cmdexec-'));
   dirs.push(dir);
   const store = new SqliteStorageProvider({ dbPath: join(dir, 'chunsik.db') });
   await store.init(); // runs migrations incl. v5 (command_executions table)

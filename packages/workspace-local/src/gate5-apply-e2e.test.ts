@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createTwoFilesPatch } from 'diff';
-import type { PatchOperation, WorkspaceRef } from '@chunsik/core';
+import type { PatchOperation, WorkspaceRef } from '@quoky/core';
 import { LocalWorkspaceWriter } from './index';
 
 /**

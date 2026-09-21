@@ -5,7 +5,7 @@ import { WorkSurfaceQuery } from './work-surface-query';
 
 const actor: Actor = {
   id: 'actor-1',
-  displayName: 'Chunsik',
+  displayName: 'Quoky',
   identities: [
     { platform: 'discord', externalId: 'discord-1' },
     { platform: 'jira', externalId: 'jira-user' },

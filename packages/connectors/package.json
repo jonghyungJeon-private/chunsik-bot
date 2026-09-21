@@ -1,5 +1,5 @@
 {
-  "name": "@chunsik/connectors",
+  "name": "@quoky/connectors",
   "version": "0.1.0",
   "private": true,
   "description": "Extension point for Jira/Slack/Confluence connectors. EMPTY in v1.",
@@ -17,6 +17,6 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@chunsik/core": "workspace:*"
+    "@quoky/core": "workspace:*"
   }
 }

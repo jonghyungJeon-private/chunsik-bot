@@ -2,7 +2,7 @@ import type {
   ProviderSelectionDecision,
   RankingDimension,
   SortDirection,
-} from '@chunsik/core';
+} from '@quoky/core';
 
 export const SELECTION_FIXTURE_SCHEMA_VERSION = 'routing-selection-fixture-v1' as const;
 export const SELECTION_HARNESS_DIGEST_VERSION = 'routing-selection-harness-digest-v1' as const;

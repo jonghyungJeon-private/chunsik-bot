@@ -17,8 +17,8 @@ import {
   ResponseComposer,
   RiskLevel,
   TaskStatus,
-} from '@chunsik/core';
-import type { MemoryManager, MemoryRecord, Task } from '@chunsik/core';
+} from '@quoky/core';
+import type { MemoryManager, MemoryRecord, Task } from '@quoky/core';
 import { ClaudeCliProvider, CodexCliProvider, OllamaCliProvider, maskSecrets } from './index';
 import { INHERITED_ENV_ALLOWLIST, createContainedCliRunner } from './cli-runner';
 import type { CliRunOptions, CliRunner, CliRunResult } from './cli-runner';

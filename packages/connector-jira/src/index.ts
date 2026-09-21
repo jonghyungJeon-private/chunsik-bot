@@ -1,4 +1,4 @@
-import type { ConnectorItem, ConnectorProvider, ConnectorQuery, ConnectorResult, Metadata } from '@chunsik/core';
+import type { ConnectorItem, ConnectorProvider, ConnectorQuery, ConnectorResult, Metadata } from '@quoky/core';
 
 const DESCRIPTION_LIMIT = 500;
 const RAW_JSON_LIMIT = 20_000;

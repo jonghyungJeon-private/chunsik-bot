@@ -36,7 +36,7 @@ mutation must not be smuggled behind a "local" capability that is forbidden from
 ## 3. Provider / manager / runtime layering
 
 ```text
-GitHubRepositoryHostingProvider (adapter, @chunsik/repository-hosting-github)
+GitHubRepositoryHostingProvider (adapter, @quoky/repository-hosting-github)
    — bounded GitHub REST via built-in fetch; adapter-local token; maps raw payloads → normalized core types
         ▲ implements
 RepositoryHostingProvider (port, core/ports)      — core depends only on this interface, never an SDK/HTTP type

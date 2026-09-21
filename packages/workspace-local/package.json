@@ -1,5 +1,5 @@
 {
-  "name": "@chunsik/workspace-local",
+  "name": "@quoky/workspace-local",
   "version": "0.1.0",
   "private": true,
   "description": "LocalCloneWorkspaceProvider — operates on an existing local clone.",
@@ -19,7 +19,7 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@chunsik/core": "workspace:*",
+    "@quoky/core": "workspace:*",
     "diff": "^9.0.0"
   }
 }

@@ -1,5 +1,5 @@
 import type { CallToolResult, Tool } from '@modelcontextprotocol/client';
-import { ToolManager, type ToolInvocation } from '@chunsik/core';
+import { ToolManager, type ToolInvocation } from '@quoky/core';
 import { describe, expect, it } from 'vitest';
 import { McpToolProvider, type McpClientSession } from './index';
 

@@ -1,5 +1,5 @@
 {
-  "name": "@chunsik/queue-local",
+  "name": "@quoky/queue-local",
   "version": "0.1.0",
   "private": true,
   "description": "LocalQueueProvider — in-process queue behind QueueProvider.",
@@ -17,6 +17,6 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@chunsik/core": "workspace:*"
+    "@quoky/core": "workspace:*"
   }
 }
