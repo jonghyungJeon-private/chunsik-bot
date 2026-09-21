@@ -14,7 +14,9 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   Historical names and paths in older implementation entries below describe their original Sprint.
   Current source imports and application paths use the new namespace. Legacy environment aliases,
   `./data/chunsik.db`, `.chunsik/context.md`, `.chunsik/task.md`, and `.chunsik-tmp` are preserved.
-  The physical repository directory and GitHub repository name are unchanged.
+  The physical repository directory and GitHub repository are now both named `quoky-platform`,
+  completing the external identity migration under separate strict approval; `origin` points at
+  `jonghyungJeon-private/quoky-platform` with history and PR continuity preserved.
   Execution Admission is the next architecture target, not implemented or approved by ADR-0086.
 
 - **M3E-3:** Delivered through PR #58 (merge commit `618b5afcc6079be956d3756f9281506907571dde`).

@@ -104,7 +104,7 @@ describe('Gate 5 — real-fs workspace-apply boundary E2E (corrected update fixt
     const ref = disposableGate5Repo();
     expect(ref.rootPath.startsWith(tmpdir())).toBe(true);
     expect(ref.rootPath).toContain('quoky-gate5-');
-    expect(ref.rootPath).not.toContain('chunsik-bot-2');
+    expect(ref.rootPath).not.toContain('quoky-platform');
     expect(ref.rootPath).not.toContain('quoky-uat-sandbox');
   });
 });

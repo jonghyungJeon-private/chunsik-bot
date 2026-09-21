@@ -7,6 +7,18 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Maintenance — Quoky Platform external rename
+
+- Renamed the GitHub repository `chunsik-bot` → `quoky-platform` and the local workspace directory
+  `chunsik-bot-2` → `quoky-platform`, aligning external identity with the already-delivered source identity.
+  The rename preserved history, issues and pull requests; no repository was recreated and no Git history was
+  rewritten. `origin` now points at `jonghyungJeon-private/quoky-platform`.
+- Updated the only active tracked absolute-path reference, the egress allowlist runner working directory, and
+  the two disposable-workspace guards that assert a test repo is not the physical product repository.
+  Historical ADR, plan, review and checkpoint records keep their original names and paths.
+- No Product behavior, domain, execution, approval or schema change; persisted `data/chunsik.db`,
+  `.chunsik/context.md`, `.chunsik/task.md` and `.chunsik-tmp` compatibility paths are untouched.
+
 ### Maintenance — Pre-M3E6 housekeeping
 
 - Commented out GitHub owner/repo canonical examples to preserve legacy alias fallback without changing runtime precedence.

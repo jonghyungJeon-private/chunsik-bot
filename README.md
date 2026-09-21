@@ -86,8 +86,8 @@ See the [Architecture Constitution](ARCHITECTURE.md) for invariants and
 
 ## Repository Structure
 
-The tree uses the canonical source identity. Existing local checkout and GitHub repository
-names may still be historical; this Sprint does not rename either external boundary.
+The tree uses the canonical source identity. The local checkout and the GitHub repository are
+now named `quoky-platform` as well, so source and external identity are aligned.
 
 ```text
 quoky-platform/
