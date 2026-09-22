@@ -90,8 +90,8 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   graph/status changes, new aggregate/repository/schema or runtime execution in M3E-6D. Guarded-start status
   is superseded by M3E-6E below.
 
-- **M3E-6E:** ADR-0088 guarded atomic start **IMPLEMENTED LOCALLY / AWAITING REVIEW** on base
-  `bab2e197151f9682298697be0cf5b18cb8f1e79b`; not delivered. The narrow Core
+- **M3E-6E:** ADR-0088 guarded atomic start **DELIVERED** through **PR #70**, merge commit
+  `c603f0923d20b463907b471f127f5f870225a4ac` (implementation `7197cee89e25ba9c8d1e943152aa12f95f6b60de`). The narrow Core
   `ContinuationExecutionEntryService.start` performs fresh read-only admission, retains the exact evaluated
   domain snapshots, freshly reads profile configuration, and calls `TaskManager.guardedStartRun` → existing
   `TaskRunRepository.guardedStart`. No Task transition or Approval acquisition occurs here. Core derives
@@ -112,6 +112,24 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   failure leaves the exact STARTED run ambiguous; no automatic fail/success/replacement.
   Carry-forward: duplicated live-plan predicates **TRACKED**, duplicate pending Approval acquisition
   window **TRACKED / NON_BLOCKING** (M3E-6D acquisition semantics unchanged). ADR-0088 remains **Ratified**.
+
+- **M3E-6F:** Activation-readiness architecture **PROPOSED / LOCAL / AWAITING REVIEW** in ADR-0089;
+  **CONTINUATION_ACTIVATION_READY_TODAY = NO**. M3E-6D/6E are delivered, but insertion safety alone is
+  insufficient: generic TaskRun deletion can erase an in-flight bound STARTED run. Proposed blockers:
+  deny deletion of all bound runs, explicit SQLite busy wait plus typed infrastructure contention,
+  static AgentProfile input through existing app config, shared structural live-plan proof, operation-scoped
+  Approval proof, a Product-selected trigger and exact live-plan supply, and one same-invocation receiver
+  coordinator with settled/ambiguous result handling and exact TaskManager terminalization.
+  ApprovalRequest has no kind field; existing mutation approvals use application anchors and may share
+  a plan ref. No new kind/model is invented: receiver scope must be proven or activation stays blocked.
+  The proposed ContinuationExecutionService composes existing owners; ConversationRuntime and
+  ExecutionOrchestrator do not become handoff runtimes. The actual Product trigger is **UNSELECTED**.
+  CANCELED/revival regression is a pre-activation requirement; duplicate pending approvals remain
+  **TRACKED / NON_BLOCKING** subject to exact request selection. Raw SQL remains outside port guarantees.
+  ADR-0089 contains the audit, alternatives, activation matrix and proposed M3E-6G–6L sequence;
+  it is **not ratified** and grants no implementation or strict execution authority. AgentProfile config,
+  Product caller and receiver invocation remain NOT IMPLEMENTED; activation DISABLED; automatic retry NO;
+  exactly-once external effects NO CLAIM. Documentation only; no Product/DB/runtime mutation.
 
 - **M3E-3:** Delivered through PR #58 (merge commit `618b5afcc6079be956d3756f9281506907571dde`).
   ADR-0083 is Ratified; independent implementation review PASS and documentation close-out review

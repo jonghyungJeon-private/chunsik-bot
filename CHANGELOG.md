@@ -7,7 +7,22 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
-### Added — M3E-6E Guarded Atomic TaskRun Start (local, awaiting review)
+### Added — M3E-6F Continuation Activation Readiness Architecture (local, awaiting review)
+
+- Proposed ADR-0089 from a code-first audit. Activation readiness is NO. Select bound-run deletion
+  prohibition, explicit SQLite wait plus typed infrastructure contention, static profiles through existing
+  application config, and one narrow same-invocation coordinator over existing lifecycle/start owners.
+- Defined exact receiver identity, capability resolution, settled/ambiguous outcomes and existing
+  TaskManager terminalization. No executable AgentProfile, worker, automatic retry, new aggregate or
+  exactly-once external-effect claim. Actual Product trigger remains unselected and activation-blocking.
+- Required shared structural plan proof, operation-specific approval evidence (ApprovalRequest has no kind),
+  and canceled/revival coverage before activation. Duplicate pending acquisition remains tracked/non-blocking
+  with exact request selection. Added activation matrix and proposed independent follow-up slices.
+- Corrected M3E-6E delivery state: PR #70 merged at `c603f0923d20b463907b471f127f5f870225a4ac`.
+  ADR-0088 remains Ratified. ADR-0089 is Proposed, not self-ratified. Docs-only: no Product code, DB,
+  configuration, receiver, runtime, Provider, network or cleanup execution; strict approvals remain separate.
+
+### Added — M3E-6E Guarded Atomic TaskRun Start (delivered, PR #70)
 
 - Implemented ADR-0088's sibling `TaskRunRepository.guardedStart` and TaskManager delegation. Core
   `ContinuationExecutionEntryService` retains exactly the snapshots read by fresh admission, derives
@@ -22,8 +37,9 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
   remain outside adapter-contract protection; one historical fixture now explicitly uses raw SQL.
 - Verified 33 focused tests (including six real child processes: one winner/five bounded conflicts),
   646 relevant regressions and typecheck under Node 18.20.5. No Product Runtime or external execution.
-- M3E-6D is delivered through PR #69 at `bab2e197151f9682298697be0cf5b18cb8f1e79b`. M3E-6E awaits
-  independent review; production continuation trigger, AgentProfile configuration surface and receiver
+- M3E-6D is delivered through PR #69 at `bab2e197151f9682298697be0cf5b18cb8f1e79b`. M3E-6E is delivered
+  through PR #70 at `c603f0923d20b463907b471f127f5f870225a4ac`; production continuation trigger,
+  AgentProfile configuration surface and receiver
   invocation remain NOT IMPLEMENTED, activation DISABLED. No automatic post-start recovery is added.
   Duplicated live-plan predicates and the non-atomic pending-Approval acquisition window remain tracked.
 

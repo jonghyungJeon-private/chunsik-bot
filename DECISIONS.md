@@ -7109,12 +7109,13 @@ work. Guarded start **NOT IMPLEMENTED**, receiver invocation **NOT IMPLEMENTED**
 activation **DISABLED**. ADR-0088's ratified decision is unchanged. Independent implementation review pending.
 
 
-#### M3E-6E local implementation follow-through (2026-09-22)
+#### M3E-6E delivered implementation follow-through (2026-09-22)
 
 M3E-6D lifecycle wiring was delivered through PR #69 at
 `bab2e197151f9682298697be0cf5b18cb8f1e79b`. The historical local status above is superseded.
-M3E-6E guarded start is now **IMPLEMENTED LOCALLY / AWAITING REVIEW**, not delivered; the ADR remains
-**Ratified**. `ContinuationExecutionEntryService.start` composes fresh admission over canonical reads
+M3E-6E guarded start is **DELIVERED** through **PR #70**, merge commit
+`c603f0923d20b463907b471f127f5f870225a4ac` (implementation
+`7197cee89e25ba9c8d1e943152aa12f95f6b60de`); the ADR remains **Ratified**. `ContinuationExecutionEntryService.start` composes fresh admission over canonical reads
 and retains those exact evaluated snapshots for `TaskManager.guardedStartRun` → `TaskRunRepository.guardedStart`.
 The expected-facts contract includes a Core policy assertion of no approval required, or the exact
 ApprovalRequest plus live-plan-derived ref/integrity. SQLite does not evaluate ApprovalPolicy: it mechanically
@@ -7137,3 +7138,314 @@ Production continuation caller/trigger **NOT IMPLEMENTED**; AgentProfile configu
 The Application execution-entry service is callable in composition/tests but is not production-activated.
 Live-plan predicate deduplication remains **TRACKED**; the duplicate pending-Approval acquisition window
 remains **TRACKED / NON_BLOCKING** and independent of effect-time Approval revalidation.
+
+## ADR-0089 — Continuation Activation Readiness and Same-Invocation Ownership
+
+- **Status:** Proposed
+- **Date:** 2026-09-22
+- **Sprint:** M3E-6F, architecture/documentation only; no implementation or activation authorization.
+- **Audit / review base:** `c603f0923d20b463907b471f127f5f870225a4ac`
+- **Authority:** Requires independent Chief Architect review and ratification. All selections below are
+  proposals, not self-ratified decisions. ADR-0087/0088 remain Ratified and are not reopened.
+
+### Context
+
+M3E-6D lifecycle preparation was delivered in PR #69. M3E-6E guarded atomic start was delivered in
+**PR #70**, merge commit **`c603f0923d20b463907b471f127f5f870225a4ac`**, implementation
+`7197cee89e25ba9c8d1e943152aa12f95f6b60de`. Its earlier local/awaiting-review statements are historical.
+The guard compares expected persisted facts and exact Approval authority in one IMMEDIATE transaction,
+returns the inserted STARTED run, and closes ordinary-start and save insertion bypasses. None of that
+provides a production trigger, executable AgentProfile, receiver invocation or remote atomicity.
+
+**CONTINUATION_ACTIVATION_READY_TODAY = NO.** This ADR defines minimum remaining boundaries under
+ARCHITECTURE.md §§3, 7–10 and ADR-0079/0080/0083/0084/0087/0088. No worker runtime is necessary for the
+proposed single-call design. The actual Product trigger is unselected and remains an explicit activation
+blocker; this proposal does not invent a user intent or treat handoff creation as permission to execute.
+
+#### Code-first audit at the review base
+
+| Source | Observed fact and consequence |
+|---|---|
+| `packages/core/src/ports/storage-provider.port.ts` | TaskRunRepository extends generic Repository, including delete. GuardedTaskRunStartFacts.approval.kind is an expectation discriminator, **not an ApprovalRequest kind**. |
+| `packages/storage-sqlite/src/index.ts`, JsonRepository / SqliteTaskRunRepository | TaskRun inherits unconditional DELETE by id. No TaskRun delete override. Removing STARTED removes the guard's conflict evidence. The repository guards start/save but not deletion. Production taskRuns.delete callers: **0**; the M3E-5 test deletes an ordinary run to test ordinal gaps. |
+| Same file, SqliteConfig / init | Config contains dbPath only; `new Database(dbPath)` supplies no timeout. Installed better-sqlite3 `lib/database.js` uses 5000 ms when timeout is absent. No busy translation exists. This is a local dependency-source observation, not a live DB probe. |
+| `application/continuation-execution-entry-service.ts` | Retains fresh evaluated snapshots, rechecks configured profiles and delegates to TaskManager.guardedStartRun. Returns exact TaskRun; no receiver seam. |
+| `application/continuation-execution-admission-service.ts` | Read-only point-in-time checks; RUNNING, exact plan/ref/approval and unresolved STARTED. No acquisition or execution. |
+| `application/work-handoff-continuation-service.ts` | Exact binding and canonical relationships, lifecycle preparation via TaskManager. Original live plan required. Approval acquisition precedes WAITING transition, leaving a duplicate-request window. Structural plan checks overlap admission; lifecycle also requires requestedBy and rejects inconsistent policy/risk facts. |
+| `domain/agent-profile.ts`, `application/agent-profile-registry.ts` | Five fields: id, displayName, role, purpose, instructions. Branded id, bounded text, duplicate rejection, frozen composition-time registry. No executable/capability/provider/credential/authority binding. |
+| `apps/quoky/src/agent-profile-registry-provider.ts`, `app.module.ts`, `continuation-lifecycle-provider.ts` | Registry is hardcoded empty. Lifecycle service is DI-registered; no Product caller invokes preparation or execution entry. DI availability is not activation. |
+| `apps/quoky/src/config.ts` | Single environment-reading boundary returns typed config; non-secret JSON actorIdentityMappings is a precedent. No AgentProfile config field. Credential resolution is separate. No secret/environment value was read for this audit. |
+| `domain/work-item.ts`, `domain/work-handoff.ts`, `domain/continuation-binding.ts`, `application/work-handoff-manager.ts` | WorkItem owns ACTIVE/COMPLETED/CANCELED work, handoff is immutable provenance, binding exact correlation. Manager validates and records handoffs; none is an execution driver or authority. |
+| `domain/trigger-source.ts`, `application/proactive-delegation-service.ts` | INTERNAL_CONTINUATION describes provenance. Evaluation and idempotent recording do not authorize execution or install a scheduler. |
+| `application/orchestrator.ts` (QuokyCore), `application/conversation-runtime.ts` | Existing inbound path is platform → thin facade → ConversationRuntime. Ordinary handleWorkTurn creates its own Task/run and invokes a capability Provider. It is not a safe way to resume a bound Task, and invoking it would create an unrelated attempt. |
+| `application/execution-orchestrator.ts` | Stateless intra-task Planning/Approval/CodeGeneration/Patch/Write/Command composition. It creates plans and may halt for approval; it has no handoff/receiver/exact TaskRun ownership contract. |
+| `domain/approval.ts`, `application/approval-manager.ts`, ConversationRuntime apply/commit flows | ApprovalRequest has **no kind/purpose/operation field**. requestFor and requestForRisk create the same aggregate shape. Apply and commit may reuse the same executionPlanRef/requester; separate application anchors carry exact approval IDs and operation scope. Reason text is descriptive, not enforceable scope. |
+| `application/task-manager.ts`, `application/ai-failure.ts`, `domain/enums.ts` | completeRun/failRun update the supplied exact run to SUCCEEDED/FAILED. CANCELED exists, but TaskManager has no cancelRun. AiFailureKind classifies UNAVAILABLE/AUTH_REQUIRED/TIMEOUT/EXECUTION_FAILED/EMPTY_OUTPUT; it does not prove external effects stopped. |
+
+### Decision (proposed)
+
+#### 1. TaskRun deletion and execution history
+
+**TASKRUN_DELETE_ACTIVATION_PREREQUISITE = YES. SELECTED_DELETE_POLICY = Option A: forbid repository
+ deletion of every continuation-bound TaskRun, including terminal history.** The future adapter must
+resolve the stored run's taskId and check persisted binding in the same transaction as the attempted delete;
+checking a caller-supplied flag or hiding a method in one TypeScript dependency is insufficient.
+Missing-id deletion can retain existing no-op semantics. A bounded refusal must be part of the Core port
+contract and implemented by every adapter, including a future Team Edition adapter.
+
+| Option | Assessment |
+|---|---|
+| A — forbid all bound-run deletion | Selected: protects ambiguous STARTED evidence and exact historical identity, while preserving ordinary repository compatibility. |
+| B — forbid all STARTED deletion | Protects live evidence more broadly, but changes ordinary Task cleanup behavior and still permits loss of bound terminal history. Not the smallest continuation slice. |
+| C — hide generic delete from Application surfaces | Useful least-privilege typing, not enforcement: base Repository/storage access can bypass it. Insufficient alone. |
+| D — accept unchanged deletion | Rejected: absence of current callers cannot protect a future in-flight attempt from deletion/replacement. |
+
+TaskRun is execution history with immutable start identity and owner-controlled terminalization, not
+arbitrary disposable Product state. Current save permits some other updates; do not falsely describe all
+JSON fields or terminal records as already immutable. This proposal closes deletion, not every historical
+mutation. For bound runs, arbitrary deletion has no Product use case and must be prohibited even if the
+inherited signature is retained for compatibility. Removing generic deletion from **all** TaskRun types
+or designing retention/export/purge is a separate future contract decision. Disposable test DB teardown
+remains test-owned infrastructure; ordinary ordinal-gap fixtures can remain, and raw fixture SQL is not a
+Product cleanup API. No cleanup or data removal occurs in M3E-6F.
+
+#### 2. SQLite contention contract
+
+**SQLITE_BUSY_ACTIVATION_PREREQUISITE = YES. SELECTED_BUSY_POLICY = Option A: explicit timeout plus
+ typed infrastructure-contention mapping.** Make the existing 5000 ms wait explicit as the adapter default;
+if configurable, validate a bounded nonnegative integer at the application configuration boundary.
+SQLite-specific settings stay in the SQLite adapter/composition root, never Core policy.
+
+Map recognized lock/busy failures of the guarded transaction to a bounded storage-contention error
+(proposed code `TASK_RUN_STORAGE_BUSY`), distinct from `UNRESOLVED_STARTED_RUN`, stale-fact denial and
+unknown infrastructure failure. No winner is inferred from SQLITE_BUSY. Transaction failure returns no
+new run/attempt identity. Preserve causes in sanitized adapter diagnostics, not driver types in Core.
+A Team adapter maps its equivalent contention only when it can make the same rollback/no-new-attempt
+claim; unknown commit outcomes are infrastructure ambiguity, never a safe-to-retry result.
+
+Option B (explicit timeout, raw infra error) is fail-closed but leaves the activation caller contract
+adapter-specific. Option C (implicit default) is also fail-closed today but leaves wait behavior dependent
+on dependency defaults. Both are acceptable descriptions of today's disabled baseline, not the selected
+activation contract. **Automatic retry = NO**: bounded driver lock waiting within one transaction call
+is not an Application reinvocation. No retry-on-busy, queue, rescheduling, replacement or new TaskRun ID.
+A future explicit invocation must revalidate everything; it is not authorized by the busy result.
+
+#### 3. AgentProfile configuration
+
+**AGENT_PROFILE_CONFIG_SELECTED_OPTION = B: extend existing typed application config with static
+composition-time AgentProfiles. NEW_AGENT_PROFILE_REPOSITORY_REQUIRED = NO.** Proposed input:
+non-secret `QUOKY_AGENT_PROFILES` JSON array parsed only in config.ts, following its existing JSON config
+convention, passed through AppModule to AgentProfileRegistry. Missing/empty array keeps the registry empty
+and continuation disabled. Malformed JSON, unknown fields, invalid/duplicate IDs or invalid bounded text
+fail configuration; no invented fallback agent. Use existing field limits and bound collection size in the
+config slice. Freeze once; a change requires a new composition, not runtime registration/hot reload.
+
+A separate static file/module (A) preserves immutability but creates a second configuration path without
+an established need. Persistence (C) would invent an aggregate/repository. Dynamic registration (D) would
+change freshness/lifetime semantics and require runtime management. Neither is justified.
+
+Only id, displayName, role, purpose and instructions belong in this config. Instructions are non-secret
+persona data subordinate to platform governance, not permission grants. No Provider id pin, API key,
+credential payload/reference, executable path, Tool allowlist or standing execution authority is accepted
+as a profile field. Any future routing reference belongs to a separately validated composition concern;
+none is required in v1. Provider credentials stay in existing adapter-owned config. Unknown-field rejection
+cannot detect arbitrary secrets pasted into prose; operators must keep prose non-secret and config errors
+must not echo raw instruction text. No secret read is needed for this design or this Sprint.
+
+#### 4. Production caller and trigger
+
+**PRODUCTION_CONTINUATION_CALLER_OWNER = Option A: a narrow Core Application coordinator**, proposed
+name `ContinuationExecutionService`. It composes existing owners for one explicit handoff-bound operation;
+it owns no aggregate and no durable progression state. An eventual chosen inbound flow may delegate to it,
+without relocating continuation ownership into ConversationRuntime or creating a second conversation entry.
+
+| Option | Assessment |
+|---|---|
+| A — explicit Application coordinator | Selected: exact context and one invocation, reusable without platform coupling. |
+| B — ConversationRuntime as owner | Rejected: ordinary turn execution creates another Task/run and conflates session routing with continuation identity. A thin future delegate is possible only after trigger selection. |
+| C — WorkHandoffContinuationService as driver | Retain admission/provenance/preparation responsibility; do not grow it into receiver execution and outcome handling. |
+| D — scheduler/worker/queue | Rejected: no Product requirement, and violates same-invocation scope without a separate architecture. |
+
+**CONTINUATION_TRIGGER = UNSELECTED / PRODUCT_DECISION_REQUIRED.** Existing requirements do not select
+an authenticated user turn, operator action or another explicit Product/Application call. Handoff creation,
+acceptance-by-inference, TriggerSource, WorkItem ACTIVE, DI registration and approval alone are **not**
+triggers. No polling or autonomous scheduling is proposed. Product must select the actual event, actor
+permission check, capability scope, exact handoff/task input and error/approval presentation before wiring.
+Architecture work can finish while activation remains blocked on that Product decision.
+
+The coordinator must receive an exact admitted handoff/task binding, never infer latest Task. If the chosen
+flow needs Task creation, use TaskManager.createTask followed by existing admit while PENDING; define that
+explicit entry contract in the caller slice rather than auto-creating another Task on reentry. Revalidate
+Actor/Project and selected receiver scope; prepare lifecycle; return a bounded wait/denial before start.
+Approval-pending return carries the exact request ID. Reentry requires the original caller-owned live plan
+and exact request ID: define how the selected caller can supply them without persisting/reconstructing a
+lost plan. A normal later user turn cannot presently prove this. Lost plan or missing scope proof blocks
+start; no Task.planId reconstruction, indefinite background continuation or new plan repository.
+
+#### 5. Receiver resolution and same-invocation owner
+
+**RECEIVER_RESOLUTION = exact WorkHandoff.toAgentProfileId → immutable configured persona, combined with
+exact bound Task capability → supported capability execution path.** AgentProfile is not executable.
+Resolve supported capability and persona-aware prompt/context mapping before guarded start; reject an
+unsupported combination before creating an attempt. Existing PromptComposer has no AgentProfile input:
+its bounded integration is required, not an already-supported feature. Persona never selects a Provider
+by id or authorizes a Tool/command. Capability routing and existing Provider ports remain authoritative.
+The initial allowed receiver capabilities must be explicitly selected with the Product trigger; arbitrary
+capability dispatch is not implied by this ADR.
+
+**RECEIVER_INVOCATION_OWNER = Option B: the same new narrow ContinuationExecutionService** that owns
+one coordinator invocation. This is one component, not an additional workflow layer. It composes
+existing entry.start, one bounded receiver call and existing TaskManager terminalization:
+
+```text
+selected explicit trigger (not yet defined)
+  → exact binding + lifecycle prepare (or return WAITING / DENY)
+  → receiver/capability/prompt and operation-scope preflight with original live plan
+  → ContinuationExecutionEntryService.start
+      → fresh admission → guardedStart commit → exact TaskRun returned
+  → invoke resolved receiver once with that exact run identity
+  → persist resulting artifacts through existing owner
+  → TaskManager.completeRun / failRun on that exact returned run
+```
+
+Option A (expand execution-entry) would mix its fresh-proof/start responsibility with receiver and result
+handling. Option C (generic ExecutionOrchestrator) is not selected: it is stateless intra-task capability
+composition, creates its own plan and may request Approval, and cannot be treated as an approved receiver
+runner by forwarding an existing ref. If a later receiver capability reuses it, its stage-specific authority
+must remain intact and it must not become the handoff driver. Option D adds an unneeded worker runtime.
+The proposed receiver seam is an Application dependency, not a new aggregate, repository or agent runtime.
+
+Guarded start and receiver invocation stay in the same owning call. Pass the returned run object/id directly;
+no latest/MAX/timestamp lookup, run-id queue, receipt substitute, lease or worker claim. An operator cannot
+resume an already persisted STARTED row merely by presenting its ID. No automatic retry, fallback invocation
+or redispatch is granted; an existing routing mechanism with extra attempts cannot be enabled implicitly.
+
+**TERMINALIZATION_OWNER = TaskManager.completeRun / TaskManager.failRun.** Known receiver success with
+persisted artifacts completes the exact run; a settled classified failure fails that run. Task-level status
+changes, if the capability contract requires them, go only through TaskManager.transition and existing
+edges; never infer WorkItem completion from one run. The coordinator must not catch a completeRun/persistence
+failure and fabricate a different receiver outcome via failRun. A process death after commit, lost result,
+unknown persistence outcome or possibly still-running receiver leaves ambiguous STARTED. No synthetic
+FAILED/SUCCEEDED, replacement or restart recovery. Terminal write failure is surfaced as such.
+
+Existing AiFailureKind/describeAiFailure is sufficient for naming known Provider failures; keep Provider
+semantics unchanged. It is **not** sufficient to prove remote execution has stopped: TIMEOUT, cancellation
+or an unknown thrown error can be ambiguous. Before activation, the receiver seam must distinguish a
+settled result from an unconfirmed in-flight outcome and map non-Provider ExecutionOutcome values
+explicitly; AWAITING_APPROVAL/DENIED/CANCELLED are not successes. Such preflight halts should occur before
+start. Never blindly apply ConversationRuntime's catch-all failure terminalization to a possibly live
+receiver. This is a receiver result-contract gap, not a request to redesign Provider error enums.
+
+**EXACTLY_ONCE_EXTERNAL_EFFECT = NO CLAIM.** The local guard serializes start admission. It cannot commit
+an external receiver action atomically with SQLite; a returned result or FAILED attempt does not prove
+absence of partial external effects. Strict execution approval and capability-specific effect guards remain.
+
+#### 6. Plan, Approval and cancellation prerequisites
+
+**LIVE_PLAN_PREDICATE_DEDUP_BEFORE_ACTIVATION = YES.** Extract only the shared pure structural
+plan/ref/integrity proof into an internal helper. Gate-specific semantics stay separate: lifecycle
+acquisition/policy-consistency/requester checks versus start-time exact authority. Add paired tests proving
+both gates reject malformed/mismatched plans without weakening stricter checks. Current duplication is
+not a demonstrated bypass, but extending a third caller/receiver interpretation makes drift safety-relevant.
+No new public Approval model, persisted plan or generic policy framework is required for this refactor.
+
+**DUPLICATE_PENDING_APPROVAL_ACTIVATION_PREREQUISITE = NO**, conditional on the explicit caller retaining
+and presenting the selected exact approval ID, never choosing latest/any approved request or silently
+creating a replacement on resume. Each duplicate is independently decided and cannot bypass the exact
+start guard. Operator confusion and stale outstanding requests remain TRACKED / NON_BLOCKING; show exact
+identity and scope, fail closed when selection/live plan is lost. No automatic cancellation, merge or
+idempotent acquisition claim is made. If the chosen Product interaction cannot maintain exact selection,
+that caller is blocked; this does not justify changing acquisition ownership casually.
+
+**APPROVAL_KIND_ACTIVATION_PREREQUISITE = YES (operation-scope proof, not a nonexistent kind field).**
+The audit disproves a typed ApprovalRequest kind today. Same requester + plan ref may describe preview,
+apply, commit or other requestForRisk approvals. Exact ID/ref checks alone cannot distinguish those
+purposes if an arbitrary ID is supplied. The receiver boundary must prove the selected request is for the
+exact receiver operation, using trusted acquisition/caller context and a scope-specific live plan/ref or
+existing operation-specific anchor contract. Unrelated apply/commit/preview requests must be rejected;
+reason-text parsing and guarded expectation.kind are not scope evidence. If the selected flow cannot
+prove this with existing contracts, keep it disabled and seek a separately reviewed Approval-scope
+contract amendment; do not invent ApprovalRequest.kind, persist a new authority flag or assume all
+plan-scoped approvals are interchangeable in this docs Sprint. This prerequisite is independent of the
+existing ADR-0088 mechanical revalidation guarantee, which remains unchanged.
+
+Explicit **STARTED → CANCELED** persistence and **CANCELED → STARTED denied** tests are a pre-activation
+quality requirement, not optional hygiene: CANCELED is terminal for the unresolved predicate, so misuse
+can permit a later run while an old receiver is still active. No cancellation API is added here. Existing
+TaskManager has no cancelRun; until an owner can prove receiver termination, do not expose receiver
+cancellation or directly save CANCELED from the coordinator. Schema/enum presence is not cancellation
+semantics. Repository coverage must protect the status already accepted at its public boundary.
+
+#### 7. Activation precondition matrix
+
+All next-slice labels below are proposals contingent on ratification; they grant no execution approval.
+
+| Item | Current status | Required before activation? | Owner | Next slice |
+|---|---|---|---|---|
+| Task lifecycle wiring | M3E-6D delivered; DI service, no trigger | Yes; existing + integration regression | TaskManager / preparation service | Caller slice |
+| Guarded atomic start | M3E-6E delivered, insertion bypasses closed | Yes; preserve | TaskManager / TaskRunRepository | Safety + receiver regression |
+| TaskRun delete safety | Generic delete can erase unresolved bound run | **Yes** | TaskRun port + adapter | M3E-6G |
+| SQLITE_BUSY contract | Implicit 5000 ms default, raw infra failure | **Yes**, explicit wait + typed contention | SQLite adapter / config | M3E-6G |
+| AgentProfile config surface | Empty hardcoded registry | **Yes** | apps config / registry | M3E-6H |
+| Production continuation caller | None | **Yes** | Proposed ContinuationExecutionService | M3E-6J after trigger decision |
+| Product trigger / actor scope | Not specified | **Yes; Product decision** | Product Owner / inbound boundary | Before M3E-6J |
+| Receiver resolution | Persona/config exists, executable mapping absent | **Yes**, explicit capability set | Application capability/prompt composition | M3E-6K |
+| Receiver invocation | None | **Yes**, one same-call invocation | Proposed ContinuationExecutionService | M3E-6K |
+| Terminalization | completeRun/failRun exist, receiver result mapping absent | **Yes**, settled/ambiguous handling | Same caller + TaskManager | M3E-6K |
+| Live-plan predicate dedup | Similar structural checks in two gates | **Yes**, preserve distinct semantics | Core pure validation | M3E-6I |
+| Live plan across Approval wait | No continuation Product supply contract | **Yes**, no reconstruction | Selected caller / plan owner | M3E-6I + M3E-6J |
+| Duplicate ApprovalRequest window | Non-atomic acquisition | No, exact selection prerequisite applies | ApprovalManager / caller UX | Tracked follow-up |
+| Approval kind / operation scope | No kind field; scopes in existing anchors | **Yes**, prove scope or fail closed | Approval + receiver/caller owners | M3E-6I |
+| CANCELED coverage | No explicit guarded-path test pair / cancelRun | **Yes**, no unconfirmed cancellation | TaskRun adapter tests / receiver contract | M3E-6G + M3E-6K |
+| Raw SQL carve-out | Outside port protection | Yes, preserve explicit trusted-admin boundary; no raw-SQL immunity claim | Storage operations / governance | M3E-6L audit |
+| Strict execution authorization | Not granted by delivery | **Yes**, separately approved exact scope | Product Owner | After offline M3E-6L |
+
+#### 8. Smallest ordered follow-up slices
+
+1. **M3E-6G — TaskRun persistence safety:** deletion enforcement across the existing port/adapter,
+   explicit busy wait and typed contention, deletion-vs-start concurrency and canceled/revival tests.
+   These share the existing persistence boundary; no schema or recovery behavior.
+2. **M3E-6H — static AgentProfile config:** typed config parsing and frozen registry composition,
+   malformed/empty/unknown-field tests, non-secret diagnostics. No activation. Independent of 6G.
+3. **M3E-6I — plan and operation-authority readiness:** pure shared structural proof, gate-specific
+   regressions, and concrete receiver-operation approval scope/live-plan supply contract. If existing
+   contracts cannot prove scope, propose/ratify the necessary amendment before implementation. No
+   duplicate-acquisition redesign. This cannot be marked complete with only a dedup refactor.
+4. **Product decision before M3E-6J:** select actual event, authorized Actor/Project scope, supported
+   receiver capability set and exact plan/approval handoff. No trigger is inferred from the slice label.
+   **M3E-6J — explicit caller preparation:** implement the narrow coordinator's exact admission/lifecycle/
+   wait/reentry path, ending before guarded start until the receiver seam is ready. No dead-end Product
+   STARTED creation, scheduler or second conversation facade.
+5. **M3E-6K — receiver seam and exact-run completion:** complete that same coordinator with existing
+   entry.start + capability receiver + TaskManager terminalization, fake/offline tests of known versus
+   ambiguous outcomes, exact run identity and zero retries. Production activation remains off.
+6. **M3E-6L — offline activation acceptance:** integrate selected trigger/config and fake receiver in
+   isolated test composition; verify all matrix gates, ordinary conversation regression, denied paths,
+   lost plan, wrong operation approval, contention, deletion, process-death ambiguity, raw-SQL boundary.
+   Review the exact activation revision. Do not start Runtime or perform Live UAT in this slice.
+
+Runtime start, Provider invocation, network execution, Live UAT and Production activation each remain
+separate strict approval boundaries with exact target/scope/revision. A ratification, implementation
+merge, configured profile or offline acceptance result grants none of those permissions. Development
+control-plane remains FROZEN. M3E-6F changes only the four canonical docs; no Product code, DB or cleanup.
+
+### Consequences
+
+- **+** Preserves existing aggregate, TaskRun and Approval ownership and Team Edition replaceability;
+  fills the deletion/operational-contract gaps without reopening ADR-0088's start design.
+- **+** Defines one bounded same-invocation receiver owner without introducing a workflow, scheduler,
+  queue, durable claim or agent runtime, and makes unknown Product choices visible rather than guessed.
+- **−** Activation waits for operation-scope proof, live-plan supply, a Product trigger and receiver outcome
+  semantics in addition to configuration and persistence hardening. No end-to-end readiness is claimed.
+- **−** Terminal bound-run retention is intentional; storage-retention tooling requires its own decision.
+- **NEW_ADR_REQUIRED = YES:** ADR-0087/0088 deliberately deferred caller/receiver ownership and did not
+  define profile input, trigger selection, delete policy or contention mapping. **ADR_NUMBER = ADR-0089;
+  ADR_STATUS = Proposed.** Independent review/ratification must precede dependent implementation.
+
+### V1 / V2
+
+[NOW] M3E-6D and M3E-6E are delivered; continuation activation remains DISABLED. This readiness proposal
+is docs-only and locally awaiting independent architecture review. Trigger selection is unresolved.
+[LATER] Ratified bounded slices may implement the matrix prerequisites; live activation needs separate
+strict authorization. Dynamic AgentProfiles, persistent profile repository, workers/queues, automatic
+retry/recovery, generalized workflow orchestration and exactly-once external effects remain out of scope.
