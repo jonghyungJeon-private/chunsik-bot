@@ -75,8 +75,12 @@ describe('M3E-4 disposable SQLite admission', () => {
     expect(await reopened.workHandoffs.get(f.handoff.id)).toEqual(f.handoff);
     expect(await reopened.workItems.get(f.work.id)).toEqual(f.work);
     // Simulated pre-existing canonical execution evidence, not a Provider or runtime invocation.
-    await reopened.taskRuns.save({ id: 'run', taskId: f.task.id, attempt: 1, status: TaskRunStatus.SUCCEEDED,
-      capability: Capability.GENERAL_CHAT, artifactIds: [], startedAt: '2026-09-21T00:00:00.000Z' });
+    const history = new Database(f.path);
+    try {
+      const run = { id: 'run', taskId: f.task.id, attempt: 1, status: TaskRunStatus.SUCCEEDED,
+        capability: Capability.GENERAL_CHAT, artifactIds: [], startedAt: '2026-09-21T00:00:00.000Z' };
+      history.prepare('INSERT INTO task_runs (id, task_id, data) VALUES (?, ?, ?)').run(run.id, run.taskId, JSON.stringify(run));
+    } finally { history.close(); }
     expect(await service.resolveRun(f.handoff.id, 'run')).toEqual({ handoffId: f.handoff.id,
       workItemId: f.work.id, destinationAgentProfileId: 'destination', taskId: f.task.id, taskRunId: 'run' });
     await expect(service.resolveRun(f.handoff.id, 'missing')).rejects.toThrow();

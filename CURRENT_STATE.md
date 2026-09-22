@@ -70,8 +70,8 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   gates; future lifecycle wiring must preserve both. Continuation Task RUNNING wiring, receiver invocation,
   redispatch/recovery and queue/worker architectures remain **NOT IMPLEMENTED**.
 
-- **M3E-6D:** Continuation Task lifecycle wiring **IMPLEMENTED LOCALLY / AWAITING REVIEW** on base
-  `29c54f6ec5922488fd8c6ed5304498974557700f`; not delivered. This supersedes M3E-6C's historical
+- **M3E-6D:** Continuation Task lifecycle wiring **DELIVERED** through PR #69 at
+  `bab2e197151f9682298697be0cf5b18cb8f1e79b` (implementation `5a6b0c4de69127ed73390ca205f03a8b98495bb1`). This supersedes M3E-6C's historical
   unspecified-caller status above. Production composition now provides `WorkHandoffContinuationService`
   through the existing binding port token and existing Task/Approval owners. Its explicit `prepare` entry
   takes exact handoff/task IDs after `admit`, revalidates binding, ACTIVE work, profiles and Actor/Project
@@ -87,7 +87,31 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   required. No transport trigger, automatic dispatch or receiver invocation is added.
   ADR-0088 remains **Ratified**. Guarded start/bypass closure **NOT IMPLEMENTED**, continuation execution
   activation **DISABLED**, receiver invocation **NOT IMPLEMENTED**. No TaskRun start/create/save calls,
-  graph/status changes, new aggregate/repository/schema or runtime execution. Independent review pending.
+  graph/status changes, new aggregate/repository/schema or runtime execution in M3E-6D. Guarded-start status
+  is superseded by M3E-6E below.
+
+- **M3E-6E:** ADR-0088 guarded atomic start **IMPLEMENTED LOCALLY / AWAITING REVIEW** on base
+  `bab2e197151f9682298697be0cf5b18cb8f1e79b`; not delivered. The narrow Core
+  `ContinuationExecutionEntryService.start` performs fresh read-only admission, retains the exact evaluated
+  domain snapshots, freshly reads profile configuration, and calls `TaskManager.guardedStartRun` → existing
+  `TaskRunRepository.guardedStart`. No Task transition or Approval acquisition occurs here. Core derives
+  plan refs from the original live plan, never from Task.planId; Approval policy remains in Core.
+  The adapter mechanically compares expected handoff/binding/work/task/Actor/Project/Approval facts inside
+  one SQLite IMMEDIATE transaction, checks absence of any bound-task STARTED run, allocates the ordinal,
+  and inserts exactly one STARTED run. That single commit is the linearization point and begins a real
+  attempt; the exact returned TaskRun/id is neither a reservation nor a redispatch token.
+  Ordinary start refuses persisted continuation bindings. save refuses all new bound rows and terminal
+  → STARTED revival, preserving existing completeRun/failRun terminal updates. Application/port insertion
+  bypasses are closed; arbitrary raw SQL is outside this claim. v11 schema is unchanged; no new partial
+  index, aggregate, repository, durable state, queue, worker, lease or recovery behavior.
+  Validation: 33 focused tests including six simultaneously released child processes over real SQLite
+  (one STARTED winner, five UNRESOLVED_STARTED_RUN losers), plus 646 related regression tests and typecheck.
+  Production continuation caller/trigger **NOT IMPLEMENTED**, AgentProfile configuration surface
+  **NOT IMPLEMENTED**, receiver invocation **NOT IMPLEMENTED**, continuation execution activation **DISABLED**.
+  The execution-entry service is not added to production DI/transport activation. A post-commit caller
+  failure leaves the exact STARTED run ambiguous; no automatic fail/success/replacement.
+  Carry-forward: duplicated live-plan predicates **TRACKED**, duplicate pending Approval acquisition
+  window **TRACKED / NON_BLOCKING** (M3E-6D acquisition semantics unchanged). ADR-0088 remains **Ratified**.
 
 - **M3E-3:** Delivered through PR #58 (merge commit `618b5afcc6079be956d3756f9281506907571dde`).
   ADR-0083 is Ratified; independent implementation review PASS and documentation close-out review

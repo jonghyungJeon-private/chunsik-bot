@@ -1,5 +1,7 @@
 import type {
   Capability,
+  ContinuationBinding,
+  ExecutionPlanRef,
   Actor,
   AgentProfileId,
   Artifact,
@@ -40,9 +42,29 @@ export interface TaskRepository extends Repository<Task> {
   listByContext(channelId: string, threadId?: string): Promise<Task[]>;
 }
 
+/** Core policy supplies this expectation; persistence mechanically compares canonical facts atomically. */
+export interface GuardedTaskRunStartFacts {
+  readonly handoff: WorkHandoff;
+  readonly binding: ContinuationBinding;
+  readonly workItem: WorkItem;
+  readonly task: Task;
+  readonly approval:
+    | Readonly<{ kind: 'NOT_REQUIRED'; planRef?: ExecutionPlanRef }>
+    | Readonly<{ kind: 'APPROVED'; request: ApprovalRequest; planRef: ExecutionPlanRef }>;
+}
+
 export interface TaskRunRepository extends Repository<TaskRun> {
-  /** Atomically revalidate the canonical RUNNING Task, allocate a distinct ordinal and insert STARTED. */
+  /** For non-continuation Tasks only: revalidate RUNNING, allocate an ordinal and insert STARTED.
+   * Must reject a canonical persisted continuation binding, independently of caller flags. */
   start(task: Task, capability: Capability): Promise<TaskRun>;
+  /** ADR-0088: commit begins the exact continuation attempt; never a reservation or claim.
+   * Core supplies fresh, policy-validated facts. Independently compare them and reject any unresolved
+   * STARTED run in the same transaction as insertion. Ordinary start must reject bound Tasks.
+   */
+  guardedStart(expected: GuardedTaskRunStartFacts, capability: Capability): Promise<TaskRun>;
+  /** Bound Tasks: update existing runs only; reject novel insertion and terminal → STARTED revival.
+   * Existing complete/fail terminal updates remain supported. */
+  save(run: TaskRun): Promise<TaskRun>;
   listByTask(taskId: Id): Promise<TaskRun[]>;
 }
 

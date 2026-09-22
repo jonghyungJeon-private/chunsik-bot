@@ -3,7 +3,7 @@ import { newId } from '../util/id';
 import { now } from '../util/clock';
 import { Capability, RiskLevel, TaskRunStatus, TaskStatus } from '../domain';
 import type { ConversationContext, Id, Intent, Metadata, Task, TaskRun } from '../domain';
-import type { StorageProvider } from '../ports';
+import type { GuardedTaskRunStartFacts, StorageProvider } from '../ports';
 
 /**
  * Owns Task / TaskRun lifecycle and persistence. The status state machine is
@@ -75,6 +75,11 @@ export class TaskManager {
 
   async startRun(task: Task, capability: Capability): Promise<TaskRun> {
     return this.storage.taskRuns.start(task, capability);
+  }
+
+  /** Canonical continuation attempt start owner; no lifecycle transition or receiver invocation. */
+  async guardedStartRun(expected: GuardedTaskRunStartFacts, capability: Capability): Promise<TaskRun> {
+    return this.storage.taskRuns.guardedStart(expected, capability);
   }
 
   async completeRun(

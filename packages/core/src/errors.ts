@@ -46,3 +46,13 @@ export class WorkspaceNotSafeError extends Error {
     this.name = 'WorkspaceNotSafeError';
   }
 }
+
+/** Ephemeral ADR-0088 guard/bypass failure; no durable lifecycle. */
+export class GuardedTaskRunStartError extends Error {
+  constructor(readonly code: 'STALE_HANDOFF' | 'BINDING_MISMATCH' | 'WORK_ITEM_NOT_CONTINUABLE'
+    | 'TASK_NOT_EXECUTABLE' | 'APPROVAL_STALE' | 'UNRESOLVED_STARTED_RUN'
+    | 'CONTINUATION_GUARD_REQUIRED') {
+    super(code);
+    this.name = 'GuardedTaskRunStartError';
+  }
+}

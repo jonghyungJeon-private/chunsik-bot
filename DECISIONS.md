@@ -7107,3 +7107,33 @@ only lifecycle preparation. These reads and TaskManager transitions are not an a
 convey no effect-time authority; the existing TaskRun start and save bypasses remain outstanding ADR-0088
 work. Guarded start **NOT IMPLEMENTED**, receiver invocation **NOT IMPLEMENTED**, continuation execution
 activation **DISABLED**. ADR-0088's ratified decision is unchanged. Independent implementation review pending.
+
+
+#### M3E-6E local implementation follow-through (2026-09-22)
+
+M3E-6D lifecycle wiring was delivered through PR #69 at
+`bab2e197151f9682298697be0cf5b18cb8f1e79b`. The historical local status above is superseded.
+M3E-6E guarded start is now **IMPLEMENTED LOCALLY / AWAITING REVIEW**, not delivered; the ADR remains
+**Ratified**. `ContinuationExecutionEntryService.start` composes fresh admission over canonical reads
+and retains those exact evaluated snapshots for `TaskManager.guardedStartRun` → `TaskRunRepository.guardedStart`.
+The expected-facts contract includes a Core policy assertion of no approval required, or the exact
+ApprovalRequest plus live-plan-derived ref/integrity. SQLite does not evaluate ApprovalPolicy: it mechanically
+compares Core expectations to persisted facts, their required lifecycle/relationships and approved authority.
+No prior eligibility result is accepted as authority and no second reads substitute unevaluated snapshots.
+
+SQLite's single IMMEDIATE transaction commit is the linearization point. It compares all class-A facts,
+checks bound-task STARTED absence, allocates the next ordinal and inserts the exact returned run. Six
+simultaneously released child processes yielded one winner and five UNRESOLVED_STARTED_RUN failures,
+without a new index/schema. Ordinary start rejects bound Tasks; save rejects all novel bound rows and
+terminal → STARTED revival, while existing terminal updates remain valid. Arbitrary raw SQL is not covered.
+
+No Task lifecycle transitions or Approval acquisition occur at start. AgentProfile configuration is read
+freshly in Core, not within SQLite. The live plan is neither persisted nor reconstructed. The committed
+STARTED run is a real attempt and a post-commit caller failure leaves an ambiguous outcome; no automatic
+replacement, success, failure, receiver invocation, queue or recovery semantics are added.
+
+Production continuation caller/trigger **NOT IMPLEMENTED**; AgentProfile configuration surface
+**NOT IMPLEMENTED**; receiver invocation **NOT IMPLEMENTED**; continuation execution activation **DISABLED**.
+The Application execution-entry service is callable in composition/tests but is not production-activated.
+Live-plan predicate deduplication remains **TRACKED**; the duplicate pending-Approval acquisition window
+remains **TRACKED / NON_BLOCKING** and independent of effect-time Approval revalidation.
