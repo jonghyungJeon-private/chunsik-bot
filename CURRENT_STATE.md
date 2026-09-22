@@ -113,23 +113,37 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   Carry-forward: duplicated live-plan predicates **TRACKED**, duplicate pending Approval acquisition
   window **TRACKED / NON_BLOCKING** (M3E-6D acquisition semantics unchanged). ADR-0088 remains **Ratified**.
 
-- **M3E-6F:** Activation-readiness architecture **PROPOSED / LOCAL / AWAITING REVIEW** in ADR-0089;
+- **M3E-6F:** Activation-readiness architecture **DECIDED**; **ADR-0089 is Ratified** by Chief Architect
+  decision after independent Architecture Review **PASS_WITH_NON_BLOCKING_FINDINGS**;
   **CONTINUATION_ACTIVATION_READY_TODAY = NO**. M3E-6D/6E are delivered, but insertion safety alone is
-  insufficient: generic TaskRun deletion can erase an in-flight bound STARTED run. Proposed blockers:
-  deny deletion of all bound runs, explicit SQLite busy wait plus typed infrastructure contention,
-  static AgentProfile input through existing app config, shared structural live-plan proof, operation-scoped
-  Approval proof, a Product-selected trigger and exact live-plan supply, and one same-invocation receiver
-  coordinator with settled/ambiguous result handling and exact TaskManager terminalization.
-  ApprovalRequest has no kind field; existing mutation approvals use application anchors and may share
-  a plan ref. No new kind/model is invented: receiver scope must be proven or activation stays blocked.
-  The proposed ContinuationExecutionService composes existing owners; ConversationRuntime and
-  ExecutionOrchestrator do not become handoff runtimes. The actual Product trigger is **UNSELECTED**.
-  CANCELED/revival regression is a pre-activation requirement; duplicate pending approvals remain
-  **TRACKED / NON_BLOCKING** subject to exact request selection. Raw SQL remains outside port guarantees.
-  ADR-0089 contains the audit, alternatives, activation matrix and proposed M3E-6G–6L sequence;
-  it is **not ratified** and grants no implementation or strict execution authority. AgentProfile config,
-  Product caller and receiver invocation remain NOT IMPLEMENTED; activation DISABLED; automatic retry NO;
-  exactly-once external effects NO CLAIM. Documentation only; no Product/DB/runtime mutation.
+  insufficient: generic inherited TaskRun deletion can erase a bound run, and retention is additionally
+  load-bearing because `WorkHandoffContinuationService.resolveRun` returns exact historical bound-run
+  provenance and ordinal identity is `MAX(attempt)+1`, so deleting the highest attempt permits ordinal
+  reuse. Ratified prerequisites: deny deletion of all bound runs including terminal history; explicit
+  bounded SQLite lock wait plus typed storage contention (distinct from `UNRESOLVED_STARTED_RUN`, adapter
+  owns driver translation, automatic Application retry NO); static AgentProfile input through existing typed
+  app config (composition-time, immutable, non-secret, non-authoritative; not an Actor/Provider/Tool
+  authority); shared pure structural live-plan proof; operation-scoped Approval proof; CANCELED coverage
+  with revival denial and no unproven cancellation write. Ratified owner is the narrow Core
+  `ContinuationExecutionService` for both coordination and receiver invocation, same invocation on the exact
+  returned TaskRun, terminalized only by `TaskManager.completeRun`/`failRun`; ambiguous STARTED is left
+  ambiguous and no `cancelRun` is invented. `ConversationRuntime` and `ExecutionOrchestrator` do not become
+  handoff runtimes; `WorkHandoffContinuationService` stays preparation.
+  Unresolved activation gates: **CONTINUATION_TRIGGER = UNSELECTED / PRODUCT_DECISION_REQUIRED**
+  (`ACTIVATION_BLOCKED_UNTIL_TRIGGER_SELECTED = YES`; ratifiable unselected because every acceptable trigger
+  invokes the same coordinator contract), **AUTHORIZED_ACTOR_PROJECT_SCOPE = PRODUCT_DECISION_REQUIRED**
+  (relational consistency is not authorization), supported receiver capability set, and the shared post-wait
+  caller-context problem — `AUTHORITATIVE_POST_WAIT_PLAN_SOURCE = NONE TODAY`, no supply contract defined,
+  persistence NOT PROVEN, with reconstruction from `Task.planId`/`ExecutionPlanRef`/`ApprovalRequest`
+  prohibited and three unselected resolution families recorded. `ApprovalRequest` has no kind field and none
+  is invented: receiver scope must be proven or activation stays disabled pending a separately reviewed
+  amendment. Duplicate pending approvals remain **TRACKED / NON_BLOCKING** conditional on exact
+  `approvalId` retention. Raw SQL remains an explicit carve-out with **no immunity claim**. Ratified slice
+  order: M3E-6G, M3E-6H, M3E-6I-a (independently actionable) → Product Decision gate → M3E-6I-b → M3E-6J →
+  M3E-6K → M3E-6L. Activation DISABLED; automatic retry NO; exactly-once external effects NO CLAIM. Runtime,
+  Provider, network, Live UAT and Production activation remain separate strict approvals not granted by
+  ratification, merge, configured profiles or offline acceptance. Documentation only; no Product/DB/runtime
+  mutation.
 
 - **M3E-3:** Delivered through PR #58 (merge commit `618b5afcc6079be956d3756f9281506907571dde`).
   ADR-0083 is Ratified; independent implementation review PASS and documentation close-out review

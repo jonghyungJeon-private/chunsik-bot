@@ -7141,12 +7141,15 @@ remains **TRACKED / NON_BLOCKING** and independent of effect-time Approval reval
 
 ## ADR-0089 — Continuation Activation Readiness and Same-Invocation Ownership
 
-- **Status:** Proposed
+- **Status:** Ratified
 - **Date:** 2026-09-22
 - **Sprint:** M3E-6F, architecture/documentation only; no implementation or activation authorization.
 - **Audit / review base:** `c603f0923d20b463907b471f127f5f870225a4ac`
-- **Authority:** Requires independent Chief Architect review and ratification. All selections below are
-  proposals, not self-ratified decisions. ADR-0087/0088 remain Ratified and are not reopened.
+- **Authority:** Ratified by Chief Architect decision following independent Architecture Review
+  **PASS_WITH_NON_BLOCKING_FINDINGS** at `1e2b25bc8c20d70ffc0dc2c28f5d0b3d15cce5b3`. The selections below
+  are decided architecture; they authorize no implementation, activation or execution by themselves.
+  ADR-0087/0088 remain Ratified and are not reopened. See the ratification closeout section below for
+  strengthened delete rationale, the corrected slice order and the unresolved post-wait context contract.
 
 ### Context
 
@@ -7378,56 +7381,65 @@ semantics. Repository coverage must protect the status already accepted at its p
 
 #### 7. Activation precondition matrix
 
-All next-slice labels below are proposals contingent on ratification; they grant no execution approval.
+All next-slice labels below are ratified sequencing, not execution approval. Rows depending on the Product
+Decision gate are marked; none of them may be pulled into pre-gate work.
 
 | Item | Current status | Required before activation? | Owner | Next slice |
 |---|---|---|---|---|
-| Task lifecycle wiring | M3E-6D delivered; DI service, no trigger | Yes; existing + integration regression | TaskManager / preparation service | Caller slice |
+| Task lifecycle wiring | M3E-6D delivered; DI service, no trigger | Yes; existing + integration regression | TaskManager / preparation service | M3E-6J caller slice |
 | Guarded atomic start | M3E-6E delivered, insertion bypasses closed | Yes; preserve | TaskManager / TaskRunRepository | Safety + receiver regression |
-| TaskRun delete safety | Generic delete can erase unresolved bound run | **Yes** | TaskRun port + adapter | M3E-6G |
-| SQLITE_BUSY contract | Implicit 5000 ms default, raw infra failure | **Yes**, explicit wait + typed contention | SQLite adapter / config | M3E-6G |
+| TaskRun delete safety | Generic inherited delete can erase a bound run; `resolveRun` provenance and `MAX(attempt)+1` ordinal identity both depend on retention | **Yes** | TaskRun port + adapter | M3E-6G |
+| SQLITE_BUSY contract | Implicit 5000 ms driver default, raw infra failure | **Yes**, explicit bounded wait + typed contention | SQLite adapter / config | M3E-6G |
 | AgentProfile config surface | Empty hardcoded registry | **Yes** | apps config / registry | M3E-6H |
-| Production continuation caller | None | **Yes** | Proposed ContinuationExecutionService | M3E-6J after trigger decision |
-| Product trigger / actor scope | Not specified | **Yes; Product decision** | Product Owner / inbound boundary | Before M3E-6J |
-| Receiver resolution | Persona/config exists, executable mapping absent | **Yes**, explicit capability set | Application capability/prompt composition | M3E-6K |
-| Receiver invocation | None | **Yes**, one same-call invocation | Proposed ContinuationExecutionService | M3E-6K |
-| Terminalization | completeRun/failRun exist, receiver result mapping absent | **Yes**, settled/ambiguous handling | Same caller + TaskManager | M3E-6K |
-| Live-plan predicate dedup | Similar structural checks in two gates | **Yes**, preserve distinct semantics | Core pure validation | M3E-6I |
-| Live plan across Approval wait | No continuation Product supply contract | **Yes**, no reconstruction | Selected caller / plan owner | M3E-6I + M3E-6J |
-| Duplicate ApprovalRequest window | Non-atomic acquisition | No, exact selection prerequisite applies | ApprovalManager / caller UX | Tracked follow-up |
-| Approval kind / operation scope | No kind field; scopes in existing anchors | **Yes**, prove scope or fail closed | Approval + receiver/caller owners | M3E-6I |
-| CANCELED coverage | No explicit guarded-path test pair / cancelRun | **Yes**, no unconfirmed cancellation | TaskRun adapter tests / receiver contract | M3E-6G + M3E-6K |
-| Raw SQL carve-out | Outside port protection | Yes, preserve explicit trusted-admin boundary; no raw-SQL immunity claim | Storage operations / governance | M3E-6L audit |
-| Strict execution authorization | Not granted by delivery | **Yes**, separately approved exact scope | Product Owner | After offline M3E-6L |
+| Live-plan structural predicate | Similar structural checks in two gates | **Yes**, extract pure proof only; keep gate semantics distinct | Core pure validation | M3E-6I-a (pre-gate) |
+| Product trigger | Not specified | **Yes; Product decision** | Product Owner / inbound boundary | Product Decision gate |
+| Authorized Actor/Project scope | Only relational consistency exists; that is not authorization | **Yes; Product decision** | Product Owner | Product Decision gate |
+| Supported receiver capability set | Unselected | **Yes; Product decision** | Product Owner | Product Decision gate |
+| Live plan across Approval wait | No supply contract; no authoritative post-wait source today | **Yes**, no reconstruction | Selected caller / plan owner | M3E-6I-b (**post-gate**) |
+| Approval operation-scope proof | No kind/purpose field; scopes live in existing anchors | **Yes**, prove scope or stay disabled | Approval + receiver/caller owners | M3E-6I-b (**post-gate**) |
+| Production continuation caller | None | **Yes** | ContinuationExecutionService | M3E-6J (after 6I-b) |
+| Receiver resolution | Persona/config exists, executable mapping absent; PromptComposer has no AgentProfile input | **Yes**, within selected capability set | Application capability/prompt composition | M3E-6K |
+| Receiver invocation | None | **Yes**, one same-call invocation | ContinuationExecutionService | M3E-6K |
+| Terminalization | completeRun/failRun exist, receiver result mapping absent | **Yes**, settled vs ambiguous handling | Same coordinator + TaskManager | M3E-6K |
+| Duplicate ApprovalRequest window | Non-atomic acquisition | No, conditional on exact selected approvalId retention | ApprovalManager / caller UX | Tracked follow-up |
+| CANCELED semantics + revival denial | No explicit guarded-path coverage; no cancelRun | **Yes**, and no CANCELED write without proven receiver termination | TaskRun adapter tests / receiver contract | M3E-6G + M3E-6K |
+| Raw SQL carve-out | Outside port protection | Yes, preserve explicit trusted-admin boundary; **raw-SQL immunity NOT claimed** | Storage operations / governance | M3E-6L audit |
+| Strict execution authorization | Not granted by ratification, merge, config or offline acceptance | **Yes**, separately approved exact scope | Product Owner | After offline M3E-6L |
 
-#### 8. Smallest ordered follow-up slices
+#### 8. Ratified ordered follow-up slices
 
-1. **M3E-6G — TaskRun persistence safety:** deletion enforcement across the existing port/adapter,
-   explicit busy wait and typed contention, deletion-vs-start concurrency and canceled/revival tests.
-   These share the existing persistence boundary; no schema or recovery behavior.
-2. **M3E-6H — static AgentProfile config:** typed config parsing and frozen registry composition,
-   malformed/empty/unknown-field tests, non-secret diagnostics. No activation. Independent of 6G.
-3. **M3E-6I — plan and operation-authority readiness:** pure shared structural proof, gate-specific
-   regressions, and concrete receiver-operation approval scope/live-plan supply contract. If existing
-   contracts cannot prove scope, propose/ratify the necessary amendment before implementation. No
-   duplicate-acquisition redesign. This cannot be marked complete with only a dedup refactor.
-4. **Product decision before M3E-6J:** select actual event, authorized Actor/Project scope, supported
-   receiver capability set and exact plan/approval handoff. No trigger is inferred from the slice label.
-   **M3E-6J — explicit caller preparation:** implement the narrow coordinator's exact admission/lifecycle/
-   wait/reentry path, ending before guarded start until the receiver seam is ready. No dead-end Product
-   STARTED creation, scheduler or second conversation facade.
-5. **M3E-6K — receiver seam and exact-run completion:** complete that same coordinator with existing
-   entry.start + capability receiver + TaskManager terminalization, fake/offline tests of known versus
-   ambiguous outcomes, exact run identity and zero retries. Production activation remains off.
-6. **M3E-6L — offline activation acceptance:** integrate selected trigger/config and fake receiver in
-   isolated test composition; verify all matrix gates, ordinary conversation regression, denied paths,
-   lost plan, wrong operation approval, contention, deletion, process-death ambiguity, raw-SQL boundary.
-   Review the exact activation revision. Do not start Runtime or perform Live UAT in this slice.
+1. **M3E-6G — TaskRun persistence safety:** bound-run deletion protection across the existing
+   port/adapter, explicit bounded busy wait, typed storage contention, and CANCELED/revival coverage.
+   One persistence boundary; no schema, no recovery behavior. **Independently actionable.**
+2. **M3E-6H — static AgentProfile configuration:** typed config parsing and frozen registry composition,
+   malformed/empty/unknown-field tests, non-secret diagnostics. No activation. **Independently actionable.**
+3. **M3E-6I-a — shared pure structural live-plan predicate:** extract only the shared structural
+   plan/ref/integrity proof plus paired tests proving both existing gates still reject malformed and
+   mismatched plans. Gate-specific semantics are not collapsed. **Independently actionable.**
 
-Runtime start, Provider invocation, network execution, Live UAT and Production activation each remain
-separate strict approval boundaries with exact target/scope/revision. A ratification, implementation
-merge, configured profile or offline acceptance result grants none of those permissions. Development
-control-plane remains FROZEN. M3E-6F changes only the four canonical docs; no Product code, DB or cleanup.
+   ────────────────── PRODUCT DECISION GATE ──────────────────
+   Product must select the continuation trigger, the authorized Actor/Project scope, and the initial
+   supported receiver capability set. Nothing below may begin before this gate.
+
+4. **M3E-6I-b — post-wait context contract (post-gate):** define the exact live-plan supply and the
+   operation-scoped Approval proof as one shared caller-context problem. If existing contracts cannot
+   establish a safe source, obtain a separately reviewed amendment; activation stays disabled meanwhile.
+5. **M3E-6J — explicit continuation caller preparation:** implement the narrow coordinator's exact
+   admission/lifecycle/wait/reentry path, ending before guarded start until the receiver seam exists.
+   **MUST NOT precede M3E-6I-b.** No dead-end Product STARTED creation, scheduler or second facade.
+6. **M3E-6K — receiver seam and exact-run terminalization:** complete the same coordinator with existing
+   entry.start + capability receiver + TaskManager terminalization, using offline fakes to test settled
+   versus ambiguous outcomes, exact run identity and zero retries. Production activation remains off.
+7. **M3E-6L — offline activation acceptance:** integrate the selected trigger/config and a fake receiver
+   in isolated test composition; verify every matrix gate, ordinary conversation regression, denied paths,
+   lost plan, wrong-operation approval, contention, deletion, process-death ambiguity and the raw-SQL
+   boundary. Review the exact activation revision. No Runtime start and no Live UAT in this slice.
+
+Runtime Start/Stop/Restart, Provider invocation, Product network execution, Live UAT and Production
+activation each remain separate strict approval boundaries with exact target/scope/revision. ADR
+ratification does not authorize them; neither does an implementation merge, a configured AgentProfile, nor
+an offline acceptance result. Development control-plane remains FROZEN. M3E-6F changes only the four
+canonical docs; no Product code, DB, configuration or cleanup.
 
 ### Consequences
 
@@ -7440,12 +7452,124 @@ control-plane remains FROZEN. M3E-6F changes only the four canonical docs; no Pr
 - **−** Terminal bound-run retention is intentional; storage-retention tooling requires its own decision.
 - **NEW_ADR_REQUIRED = YES:** ADR-0087/0088 deliberately deferred caller/receiver ownership and did not
   define profile input, trigger selection, delete policy or contention mapping. **ADR_NUMBER = ADR-0089;
-  ADR_STATUS = Proposed.** Independent review/ratification must precede dependent implementation.
+  ADR_STATUS = Ratified** (Chief Architect decision after independent review
+  PASS_WITH_NON_BLOCKING_FINDINGS). Dependent implementation is now sequenced, not authorized to activate.
 
 ### V1 / V2
 
-[NOW] M3E-6D and M3E-6E are delivered; continuation activation remains DISABLED. This readiness proposal
-is docs-only and locally awaiting independent architecture review. Trigger selection is unresolved.
-[LATER] Ratified bounded slices may implement the matrix prerequisites; live activation needs separate
-strict authorization. Dynamic AgentProfiles, persistent profile repository, workers/queues, automatic
-retry/recovery, generalized workflow orchestration and exactly-once external effects remain out of scope.
+[NOW] M3E-6D and M3E-6E are delivered; ADR-0089 is **Ratified** and continuation activation remains
+**DISABLED**. **CONTINUATION_ACTIVATION_READY_TODAY = NO.** The trigger, authorized Actor/Project scope,
+supported receiver capability set, post-wait live-plan source and operation-scoped Approval proof are all
+unresolved. No prerequisite is implemented.
+[LATER] The ratified bounded slices M3E-6G → M3E-6L may implement the matrix prerequisites in order; live
+activation needs separate strict authorization. Dynamic AgentProfiles, persistent profile repository,
+workers/queues, automatic retry/recovery, generalized workflow orchestration and exactly-once external
+effects remain out of scope.
+
+
+#### ADR-0089 ratification closeout (2026-09-22)
+
+ADR-0089 is **Ratified** by Chief Architect decision following independent Architecture Review
+**PASS_WITH_NON_BLOCKING_FINDINGS** at `1e2b25bc8c20d70ffc0dc2c28f5d0b3d15cce5b3` over review base
+`c603f0923d20b463907b471f127f5f870225a4ac`. The status header, activation matrix and slice order above are
+updated in place. ADR-0087/0088 are not reopened. This closeout is documentation only: no Product code, no
+prerequisite implementation, no Product trigger selection, no Approval field, no ExecutionPlan persistence.
+
+**Ratified with the trigger unselected.** `CAN_ADR_0089_BE_RATIFIED_WITH_TRIGGER_UNSELECTED = YES`, because
+every remaining acceptable trigger choice invokes the same coordinator contract. Trigger selection decides
+who invokes, when and under what Product authority; it does not change coordinator ownership.
+`CONTINUATION_TRIGGER = UNSELECTED / PRODUCT_DECISION_REQUIRED` and
+`ACTIVATION_BLOCKED_UNTIL_TRIGGER_SELECTED = YES`. Execution permission must never be inferred from handoff
+creation, binding existence, WorkItem ACTIVE, TriggerSource, approval existence or DI registration.
+
+**Actor/Project.** Canonical relational consistency is **not** authorization; the existing relationship
+checks do not satisfy the future Product authorization requirement.
+`AUTHORIZED_ACTOR_PROJECT_SCOPE = PRODUCT_DECISION_REQUIRED`. No new authorization model is created here.
+
+**Delete policy — strengthened rationale.** `TASKRUN_DELETE_ACTIVATION_PREREQUISITE = YES` and the ratified
+policy forbids repository deletion of every continuation-bound TaskRun, including terminal history. Beyond
+protecting unresolved STARTED evidence, two independently verified dependencies require retention:
+
+1. `WorkHandoffContinuationService.resolveRun(handoffId, taskRunId)` loads the exact historical bound run by
+   id and revalidates `run.taskId` against the canonical binding; deleting that row destroys the provenance
+   it returns and degrades to `INCONSISTENT_STATE`.
+2. Ordinal allocation is `MAX(json_extract(data, '$.attempt')) + 1` over `task_runs` for the Task. Deleting
+   the highest historical attempt lets the next guarded start reuse that ordinal, breaking monotonic
+   execution identity.
+
+`arbitrary raw SQL immunity = NOT CLAIMED`; the carve-out stays an explicit trusted-admin boundary.
+Test-owned cleanup for **unbound** Tasks is not prohibited by this Product invariant.
+
+**Contention.** `SQLITE_BUSY_ACTIVATION_PREREQUISITE = YES`. Ratified policy is an explicit bounded lock
+wait plus a typed storage-contention outcome, with `automatic Application retry = NO`. Storage contention
+is **not** `UNRESOLVED_STARTED_RUN`: one is infrastructure, the other a policy conflict. The SQLite adapter
+owns driver-error translation; Core must not depend on `SQLITE_BUSY` strings or driver types.
+
+**AgentProfile configuration.** Extend existing typed application configuration;
+`NEW_AGENT_PROFILE_REPOSITORY_REQUIRED = NO`. Configuration stays composition-time, immutable, non-secret
+and non-authoritative. AgentProfile is not an Actor, not a Provider, not Tool authority and not standing
+execution permission. No Provider pinning, credentials, executable paths or Tool allowlists.
+
+**Coordinator and receiver.** `ContinuationExecutionService` is the ratified narrow Core Application
+coordinator and the ratified `RECEIVER_INVOCATION_OWNER`: preparation → admission → guarded start → one
+receiver invocation → exact TaskRun terminalization, with no aggregate, durable progression state, worker,
+queue or lease/claim. `WorkHandoffContinuationService` remains preparation; `ExecutionOrchestrator` remains
+stateless intra-task capability composition; `ConversationRuntime` is not the continuation execution owner.
+Receiver identity stays exact `WorkHandoff.toAgentProfileId` → configured immutable persona, combined with
+the exact bound Task capability → a Product-supported executable capability path; the initial supported
+receiver capability set is `PRODUCT_DECISION_REQUIRED`. Guarded start and the receiver call stay in one
+invocation on the exact returned TaskRun: no latest-run lookup, queue, worker, lease, claim or dispatch table.
+
+**Terminalization.** `TaskManager.completeRun` / `TaskManager.failRun` remain the owners. Settled success →
+SUCCEEDED; settled classified failure → FAILED; process death or unknown remote outcome leaves the exact
+TaskRun STARTED and ambiguous. No fabricated terminal outcome, automatic replacement run or restart
+recovery. `cancelRun` is not invented. **EXACTLY_ONCE_EXTERNAL_EFFECT = NO CLAIM:** local guarded-start
+serialization cannot atomically commit a remote receiver side effect, and a terminal failure does not prove
+absence of partial external effects.
+
+**Post-wait context — the shared root cause.** Both the live `ExecutionPlan` and the exact
+operation-scoped Approval provenance must survive or reappear after a human wait. That is **one shared
+caller-context problem**, owned by M3E-6I-b; solving one does not automatically solve the other.
+
+```text
+WHO_OWNS_LIVE_PLAN_BEFORE_WAIT       = invoking caller / in-memory
+WHO_SUPPLIES_LIVE_PLAN_AFTER_WAIT    = UNRESOLVED
+PLAN_SUPPLY_CONTRACT_CURRENTLY_DEFINED = NO
+EXECUTION_PLAN_PERSISTENCE_REQUIRED  = NOT PROVEN
+AUTHORITATIVE_POST_WAIT_PLAN_SOURCE  = NONE TODAY
+```
+
+Prohibited: reconstructing a plan from `Task.planId`, reconstructing from `ExecutionPlanRef`, or pretending
+an `ApprovalRequest` contains the full plan. Three accepted future resolution families, none selected here:
+**A.** initial activation only where no human wait must be spanned because the exact approved plan context
+is already present; **B.** a separately reviewed scoped persistence amendment; **C.** re-plan and re-approve,
+producing a fresh exact live plan. If a future slice cannot establish a safe source, activation remains
+disabled.
+
+**Plan predicate.** `LIVE_PLAN_PREDICATE_DEDUP_BEFORE_ACTIVATION = YES`, extracting only the shared pure
+structural proof. Gate-specific semantics must not be collapsed between
+`WorkHandoffContinuationService.prepare`, `ContinuationExecutionAdmissionService.evaluate` and the future
+receiver boundary.
+
+**Approval operation scope.** `ApprovalRequest` currently has no kind/purpose/operation field, and none is
+invented here. Ratified requirement: receiver activation must prove the exact selected `ApprovalRequest`
+authorizes the exact continuation receiver operation. Architecture preference is to reuse existing Approval
+authority plus caller-held acquisition provenance / anchor-style exact `approvalId`. `NEW_APPROVAL_MODEL =
+NO`, `NEW_APPROVAL_FIELD = NOT SELECTED`, `NEW_SCHEMA = NOT SELECTED`. If existing contracts cannot prove
+scope, activation remains disabled pending a separately reviewed Approval-scope amendment; such an
+amendment must not be hidden inside an implementation slice.
+`DUPLICATE_PENDING_APPROVAL_ACTIVATION_PREREQUISITE = NO`, conditional on the exact selected `approvalId`
+being retained and presented; exactly-once Approval acquisition is not claimed and operator ambiguity is
+tracked separately.
+
+**CANCELED.** Before activation: `STARTED → CANCELED` semantics must be explicitly covered,
+`CANCELED → STARTED` revival explicitly denied, and no receiver cancellation path may write CANCELED unless
+receiver termination is actually proven. This is an activation requirement, not mere test hygiene. No
+`cancelRun` is implemented in this closeout.
+
+Implementation state after this closeout: ADR-0089 **Ratified**; M3E-6F architecture **DECIDED**; TaskRun
+delete protection **NOT IMPLEMENTED**; explicit busy contract **NOT IMPLEMENTED**; AgentProfile config
+surface **NOT IMPLEMENTED**; production trigger **UNSELECTED**; post-wait live-plan contract
+**UNRESOLVED**; operation-scoped Approval proof **UNRESOLVED**; receiver invocation **NOT IMPLEMENTED**;
+continuation execution activation **DISABLED**. M3E-6G, M3E-6H and M3E-6I-a are independently actionable;
+M3E-6I-b must follow the Product Decision gate; M3E-6J must not precede the post-wait context contract.
