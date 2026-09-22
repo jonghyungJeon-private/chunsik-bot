@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
-import type { ContextBuilderConfig, RepositoryIdentityConfig } from '@quoky/core';
+import { AgentProfileRegistry, agentProfileId, isAgentProfileId } from '@quoky/core';
+import type { AgentProfile, ContextBuilderConfig, RepositoryIdentityConfig } from '@quoky/core';
 import { parseProviderRoutingMode } from './provider-routing/provider-routing-activation';
 import type { ProviderRoutingMode } from './provider-routing/provider-routing-activation';
 
@@ -56,6 +57,14 @@ export interface QuokyConfig {
    * Parsed and validated at the application boundary; credentials and connector tenancy do not belong here.
    */
   actorIdentityMappings: ActorIdentityMapping[];
+  /**
+   * ADR-0089 static AgentProfile configuration (`QUOKY_AGENT_PROFILES`). Non-secret, composition-time,
+   * immutable persona configuration only: it is not an Actor, Provider, aggregate, capability grant, Tool
+   * authority or standing execution permission, and it selects no Provider. Absent or blank yields an empty
+   * list, so continuation stays fail-closed exactly as before. Validated here against canonical domain rules;
+   * the composition root freezes it into the single `AgentProfileRegistry` snapshot.
+   */
+  agentProfiles: AgentProfile[];
 }
 
 export interface ActorIdentityMapping {
@@ -106,6 +115,65 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): QuokyConfig {
       compressionConfig: { minimumCharactersPerEntry: 80 },
     },
     actorIdentityMappings: parseActorIdentityMappings(env.QUOKY_ACTOR_IDENTITY_MAPPINGS),
+    agentProfiles: parseAgentProfiles(env.QUOKY_AGENT_PROFILES),
+  };
+}
+
+/** Bounded so a malformed or pasted payload cannot become an unbounded startup cost. */
+const MAX_AGENT_PROFILE_ENTRIES = 64;
+const MAX_AGENT_PROFILES_PAYLOAD_CHARACTERS = 1_048_576;
+const AGENT_PROFILE_FIELDS = ['id', 'displayName', 'role', 'purpose', 'instructions'] as const;
+
+/**
+ * ADR-0089 static AgentProfile configuration. Fails closed on any malformed input and never echoes the raw
+ * payload, `instructions` text or pasted content. Absent/blank is exactly today's empty registry.
+ */
+function parseAgentProfiles(raw: string | undefined): AgentProfile[] {
+  if (raw === undefined || raw.trim().length === 0) return [];
+  if (raw.length > MAX_AGENT_PROFILES_PAYLOAD_CHARACTERS) throw new Error('AGENT_PROFILES_PAYLOAD_TOO_LARGE');
+
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    throw new Error('AGENT_PROFILES_INVALID_JSON');
+  }
+  if (!Array.isArray(value)) throw new Error('AGENT_PROFILES_MUST_BE_ARRAY');
+  if (value.length > MAX_AGENT_PROFILE_ENTRIES) throw new Error('AGENT_PROFILES_TOO_MANY_ENTRIES');
+
+  const candidates = value.map((entry, index) => parseAgentProfile(entry, index));
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    // Deterministic identity: no last-wins, first-wins or silent dedupe.
+    if (seen.has(candidate.id)) throw new Error(`AGENT_PROFILES_DUPLICATE_ID_${candidate.id}`);
+    seen.add(candidate.id);
+  }
+  // Canonical domain rules (bounded text, control characters, duplicate identity, freezing) stay owned by
+  // AgentProfileRegistry; this validating pass keeps the failure at the configuration boundary.
+  try {
+    return [...new AgentProfileRegistry(candidates).list()];
+  } catch (error) {
+    throw new Error('AGENT_PROFILES_INVALID', { cause: error });
+  }
+}
+
+/** Structural validation only: exactly the five existing domain fields, no authority-bearing field. */
+function parseAgentProfile(value: unknown, index: number): AgentProfile {
+  const entry = requireRecord(value, `AGENT_PROFILE_${index}_INVALID`);
+  requireOnlyKeys(entry, AGENT_PROFILE_FIELDS, `AGENT_PROFILE_${index}_UNKNOWN_FIELD`);
+  for (const field of AGENT_PROFILE_FIELDS) {
+    if (typeof entry[field] !== 'string') {
+      throw new Error(`AGENT_PROFILE_${index}_${field.toUpperCase()}_INVALID`);
+    }
+  }
+  // Identity is never trimmed, lowercased or case-folded here; the domain rule decides.
+  if (!isAgentProfileId(entry.id)) throw new Error(`AGENT_PROFILE_${index}_ID_INVALID`);
+  return {
+    id: agentProfileId(entry.id),
+    displayName: entry.displayName as string,
+    role: entry.role as string,
+    purpose: entry.purpose as string,
+    instructions: entry.instructions as string,
   };
 }
 

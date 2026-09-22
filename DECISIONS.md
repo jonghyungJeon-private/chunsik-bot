@@ -7622,3 +7622,73 @@ TaskRun repository ownership are preserved. AgentProfile configuration **NOT IMP
 gate **NOT REACHED**; post-wait live-plan contract and operation-scoped Approval proof **UNRESOLVED**;
 production continuation caller and receiver invocation **NOT IMPLEMENTED**; continuation execution
 activation **DISABLED**. Independent implementation review pending.
+
+
+#### M3E-6H local implementation follow-through (2026-09-22)
+
+M3E-6G was delivered through **PR #72**, merge commit `80b28ea8fa9746cd970d37f982510ba5be4ada37`
+(implementation `9cbe1b1eab39b55a93b582f668698a8c463bc904`), after independent implementation review
+**PASS_WITH_NON_BLOCKING_FINDINGS** with 0 blocking findings; the local status above is superseded. Its
+carry-forward items — `GuardedTaskRunStartError` naming debt, SQLite timeout upper-bound validation,
+`SQLITE_LOCKED` typed mapping and delete/start concurrency-test robustness — remain **TRACKED /
+NON_BLOCKING** and were deliberately not remediated here.
+
+ADR-0089's AgentProfile configuration decision is now **IMPLEMENTED LOCALLY / AWAITING REVIEW** on base
+`80b28ea8fa9746cd970d37f982510ba5be4ada37`, not delivered. The ratified selection is unchanged: existing typed
+application configuration, `NEW_AGENT_PROFILE_REPOSITORY_REQUIRED = NO`.
+
+The hardcoded production `new AgentProfileRegistry([])` is gone. `QUOKY_AGENT_PROFILES` is parsed **only** in
+`apps/quoky/src/config.ts`, reusing the established `QUOKY_ACTOR_IDENTITY_MAPPINGS` JSON convention
+(`requireRecord`, `requireOnlyKeys`, bounded indexed error codes, no payload echo), and
+`createAgentProfileRegistryProvider(config.agentProfiles)` freezes the validated list into one immutable
+composition-time `AgentProfileRegistry`. No environment variable is read in Core, the SQLite adapter,
+`WorkHandoffContinuationService` or `ContinuationExecutionEntryService`, and no second configuration system
+was introduced.
+
+Source truth confirmed the profile as exactly five fields — `id`, `displayName`, `role`, `purpose`,
+`instructions` — matching the ADR-0089 review; none was added. Parsing fails closed on invalid JSON, a
+non-array root, a non-object or null entry, a missing or non-string field, an invalid id shape, a duplicate id,
+any unknown key, blank or oversized text, more than 64 entries and a payload above 1 MiB. Strict unknown-key
+rejection is the mechanism that keeps authority out of configuration: `providerId`, `apiKey`, credential and
+secret references, `executablePath`, `command`, `tools`, `capabilities`, `permissions` and approval flags are
+refused rather than ignored, so a configuration typo cannot silently become policy-looking data. Canonical
+bounded-text, control-character, identity and duplicate rules stay owned by `AgentProfileRegistry`; the config
+layer contributes structure, ordering-independent duplicate detection and size bounds and then surfaces the
+canonical failure at the configuration boundary. `CONFIG_ERROR_ECHOES_RAW_INSTRUCTIONS = NO`: errors report a
+bounded code with the entry index, and a sentinel test proves that neither `instructions` text, secret-shaped
+values nor the raw payload appears in the message or stack. No secret store, Provider credential, API key or
+runtime token is read.
+
+Identity is not silently normalized: ids are never trimmed, lowercased or case-folded, so `Receiver` does not
+resolve `receiver`. `WorkHandoff.toAgentProfileId` still resolves through the single existing
+`AgentProfileRegistry.get` path — no secondary alias, no fuzzy matching.
+
+Startup compatibility is preserved exactly: absent or blank configuration yields `AgentProfileRegistry([])`,
+an explicit `[]` is valid, and an unknown profile lookup still fails closed, so continuation remains
+fail-closed and empty configuration is not activation. No default or fallback executable profile was invented.
+The registry already copied and froze its input, and that is now asserted rather than changed: mutating the
+source array or its member objects after composition cannot alter the active snapshot, resolved profiles and
+the registry itself are frozen, and no register/replace/remove/reload/add/set/clear API exists.
+`DYNAMIC_PROFILE_REGISTRATION = NO`; no durable persistence was created.
+
+The public contract is documented in `.env.example` with a non-secret example using domain fields only and no
+internal implementation class names. Configuration availability is the only behavior change:
+`PROFILE_IS_RUNTIME_AUTHORITY = NO`, `PROFILE_SELECTS_PROVIDER = NO`, `PROFILE_GRANTS_CAPABILITY = NO`,
+`PROFILE_GRANTS_TOOL_AUTHORITY = NO`, and a structural test proves a resolved profile carries exactly the five
+persona keys. A configured profile is neither an execution request nor an execution authorization; the
+supported receiver capability set remains Product Decision work and is not encoded in profile configuration.
+
+Coverage: focused configuration parsing cases (absent, blank, explicit empty, one profile, multiple profiles,
+invalid JSON, non-array root, entry type, missing field, wrong field type, blank field, invalid id, duplicate
+id, six authority-shaped unknown fields, oversized instructions, entry-count and payload bounds, error-echo
+sentinel, indexed failure code) plus composition-level tests that resolve the registry through a real Nest
+application context offline — empty-configuration fail-closed, configured lookup, snapshot immutability, frozen
+structures with no mutation API, and the no-authority structural assertion. No Runtime start, Provider or
+network use. M3E-6D/6E/6G continuation regression, ordinary TaskRun behavior and the activation-disabled state
+were re-verified.
+
+No new aggregate, repository, schema, durable state or runtime registration API; dependency direction is
+preserved and AgentProfile remains configuration-only. Product trigger **UNSELECTED**; Product Decision gate
+**NOT REACHED**; post-wait live-plan contract and operation-scoped Approval proof **UNRESOLVED**; production
+continuation caller and receiver invocation **NOT IMPLEMENTED**; continuation execution activation
+**DISABLED**. Independent implementation review pending.
