@@ -7,6 +7,22 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — M3E-6I-b Initial No-Wait Continuation Policy (local, awaiting review)
+
+- Recorded Product-approved explicit trigger, exact request actor/project authorization and seven-capability
+  allowlist; selected ratified ADR-0089 Family A (no human wait).
+- Added caller-owned immutable context factory and pure Product policy using the shared live-plan proof,
+  RiskPolicy and ApprovalPolicy. Fail closed on absent live plans, capability escalation and human approval
+  requirements, regardless of an existing approved request. No approval acquisition or execution effects.
+- Preserved general post-wait plan supply and operation-scoped Approval proof as unresolved/deferred.
+  No schema/persistence changes; M3E-6J not started; receiver invocation unimplemented; activation disabled.
+- Added direct Product Decision, actor/project, capability, human-wait, approval-bypass, live-plan and
+  immutability/purity tests. Existing lifecycle, admission, entry and guarded-start ownership are unchanged.
+- Validation on Node 18.20.5: focused/regression 14 files / 384 tests passed; typecheck and direct new-test
+  typecheck passed. Full suite passed 156 files / 3,194 tests after removing inherited `GIT_ASKPASS` only
+  from the test process (initial run: one unrelated environment-presence assertion failed). One revalidation.
+
+
 ### Changed — M3E-6I-a Shared Structural Live-Plan Predicate (local, awaiting review)
 
 - Extracted the duplicated pure structural live-plan proof into one Core module,
