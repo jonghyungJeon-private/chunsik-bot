@@ -100,6 +100,7 @@ import { GitHubAppGitProvider } from './github-app-git-provider';
 import { createProductionRuntimeProviderRoutingActivation } from './provider-routing/provider-routing-activation';
 import { toolManagerProvider } from './tool-manager-provider';
 import { continuationLifecycleProvider } from './continuation-lifecycle-provider';
+import { continuationExecutionEntryProvider, continuationExecutionProvider } from './continuation-execution-provider';
 import { createAgentProfileRegistryProvider } from './agent-profile-registry-provider';
 
 const config = loadConfig();
@@ -258,6 +259,8 @@ const application: Provider[] = [
   // ADR-0089: validated static configuration becomes one immutable composition-time snapshot.
   createAgentProfileRegistryProvider(config.agentProfiles),
   continuationLifecycleProvider,
+  continuationExecutionEntryProvider,
+  continuationExecutionProvider,
   toolManagerProvider,
   {
     provide: ActorIdentityProvisioner,

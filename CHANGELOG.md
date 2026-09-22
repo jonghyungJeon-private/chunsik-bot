@@ -7,6 +7,23 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — M3E-6J Explicit Continuation Caller (local, awaiting review)
+
+- Added ContinuationExecutionService using the existing immutable context contract/factory, canonical
+  handoff consumption, exact binding/work/task reads, Product policy, lifecycle preparation and entry.
+  Product denial precedes mutations; approval wait fails closed; entry runs at most once and returns its
+  exact TaskRun with typed race/contended-storage failures preserved. No retry or run rediscovery.
+- Wired the service and existing entry through explicit production factories. No external trigger transport,
+  receiver, Provider or terminalization; activation remains disabled and M3E-6K is not started.
+- Closed the 6I-b canonical relationship resolution and context-factory carry-forwards. Preserved the
+  no-wait defense-in-depth checks, supported-and-declared step rule and deferred general post-wait questions.
+- Added focused canonical-chain, caller-injection, async snapshot, policy-before-mutation, approval-wait,
+  exact-run and no-retry tests, plus offline production-factory composition with real Core owners and SQLite.
+- Validation on Node 18.20.5: focused 2 files / 48 tests passed; full suite 158 files / 3,242 tests passed
+  with inherited GIT_ASKPASS removed from the test process only. Typecheck, build, direct typechecks of
+  both new test files and diff checks passed. No remediation/revalidation rounds were needed.
+
+
 ### Added — M3E-6I-b Initial No-Wait Continuation Policy (local, awaiting review)
 
 - Recorded Product-approved explicit trigger, exact request actor/project authorization and seven-capability

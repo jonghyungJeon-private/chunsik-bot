@@ -7827,3 +7827,64 @@ repository, runtime state or workflow engine. No approval acquisition/decision/l
 post-wait cache, re-plan or re-approve path. AgentProfile configuration and WorkHandoff domain are unchanged.
 This selects an already-ratified ADR-0089 resolution family; it does not solve general operation-scoped
 Approval proof or post-wait plan supply, and does not reopen ADR-0087/0088.
+
+#### ADR-0089 implementation follow-through / M3E-6J — Explicit continuation execution caller (2026-09-22)
+
+**IMPLEMENTED LOCALLY / AWAITING REVIEW** on delivered main
+`56f20c9f24d3700f572f0882ea6accbfca228518`. M3E-6I-b is **CLOSED + DELIVERED** through PR #75
+(reviewed HEAD `c8b93291b787bf2a92c79028498b35229da0f03a`, independent review
+PASS_WITH_NON_BLOCKING_FINDINGS / zero blocking findings). ADR-0089 Family A remains ratified.
+Older slice entries below describe their implementation-time state.
+
+`ContinuationExecutionService.startExplicitContinuation(ContinuationExecutionRequestContext)` now composes:
+
+```text
+explicit request → canonical immutable context factory (before first await)
+→ WorkHandoffConsumptionService.CONTINUE (canonical handoff/work/profile provenance)
+→ exact handoff binding → handoff-derived ACTIVE WorkItem → exact bound Task
+→ existing Family-A Product policy → existing lifecycle prepare
+→ existing entry (fresh admission + guarded atomic start) → exact returned TaskRun → STOP
+```
+
+The service accepts identities and a live plan only; unknown request fields, including caller WorkItem,
+Task, binding, handoff, approvalId or Provider, fail closed. Consumption already verifies handoff shape,
+work identity/lifecycle and both profiles. Its canonical workItemId is reused for the additional WorkItem
+value read needed by Product policy; binding is loaded only by the exact handoff and must match the
+requested Task. No current/latest fallback, binding admission/rebinding or duplicated consumption policy.
+
+Product policy runs before any lifecycle mutation. Only RUNNING_READY or ALREADY_RUNNING preparation
+can reach entry; prepare denial stops, and WAITING_FOR_APPROVAL becomes bounded HUMAN_WAIT_REQUIRED
+without an approval token or resume path. Prepare and entry receive the same snapshotted plan and exact
+ids, without approvalId. Entry runs at most once per invocation; its typed admission/guarded-start errors
+(including unresolved STARTED, expectation mismatch and storage busy) propagate unchanged, without retry.
+The returned TaskRun is the exact entry return, with no post-start lookup or ordinal rediscovery.
+
+```text
+CONTINUATION_EXECUTION_SERVICE = IMPLEMENTED LOCALLY
+CANONICAL_RELATIONSHIP_RESOLUTION = IMPLEMENTED LOCALLY
+CONTEXT_FACTORY_USAGE = ENFORCED BY CALLER
+M3E6J_CANONICAL_RELATIONSHIP_RESOLUTION = CLOSED
+M3E6J_CONTEXT_FACTORY_USAGE = CLOSED
+PRODUCTION_COMPOSITION = WIRED
+EXTERNAL_TRIGGER_TRANSPORT = NOT IMPLEMENTED
+RECEIVER_INVOCATION = NOT IMPLEMENTED
+TASKRUN_COMPLETION_BY_RECEIVER = NOT IMPLEMENTED
+PROVIDER_INVOCATION = NO
+M3E-6K = NOT STARTED
+CONTINUATION_EXECUTION_ACTIVATION = DISABLED
+GENERAL_POST_WAIT_PLAN_SOURCE = UNRESOLVED / DEFERRED
+GENERAL_OPERATION_SCOPED_APPROVAL_PROOF = UNRESOLVED / DEFERRED
+NO_WAIT_DEFENSE_IN_DEPTH_TERMS = INTENTIONAL
+STEP_CAPABILITY_DECLARATION_RULE = SUPPORTED_AND_DECLARED_REQUIRED
+```
+
+Production composition uses explicit factories for both ContinuationExecutionService and the existing
+ContinuationExecutionEntryService. DI availability is not activation: no ConversationRuntime, Discord,
+Connector, HTTP, queue or scheduler caller. The offline Nest test uses these production factories with
+real Core owners and test-only in-memory SQLite, never AppModule/runtime bootstrap or external Providers.
+
+Policy, prepare, admission and the ephemeral service result are not execution authority; guardedStart
+remains the effect-time persisted authority. M3E-6J leaves the concrete run STARTED and does not fabricate
+receiver outcomes. M3E-6K must own same-invocation receiver execution and exact-run terminalization.
+No new aggregate, repository, schema, migration, durable state, Approval model/field, ExecutionPlan
+repository or workflow engine. Existing M3E-6G/6H/6I-a carry-forwards remain unchanged.
