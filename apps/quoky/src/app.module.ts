@@ -5,6 +5,7 @@ import {
   // Injection tokens (ports)
   PLATFORM_ADAPTER,
   STORAGE_PROVIDER,
+  CONTINUATION_BINDING_REPOSITORY,
   QUEUE_PROVIDER,
   VECTOR_PROVIDER,
   WORKSPACE_PROVIDER,
@@ -61,6 +62,7 @@ import {
   RepositoryHostingManager,
 } from '@quoky/core';
 import type {
+  ContinuationBindingRepository,
   AiProvider,
   CommandRunner,
   ConnectorProvider,
@@ -97,6 +99,7 @@ import { createProductionConversationRuntime } from './conversation-runtime-prov
 import { GitHubAppGitProvider } from './github-app-git-provider';
 import { createProductionRuntimeProviderRoutingActivation } from './provider-routing/provider-routing-activation';
 import { toolManagerProvider } from './tool-manager-provider';
+import { continuationLifecycleProvider } from './continuation-lifecycle-provider';
 import { agentProfileRegistryProvider } from './agent-profile-registry-provider';
 
 const config = loadConfig();
@@ -203,6 +206,15 @@ const repositoryHosting = { identity: repositoryIdentity, manager: repositoryHos
  */
 const infrastructure: Provider[] = [
   { provide: STORAGE_PROVIDER, useFactory: () => new SqliteStorageProvider({ dbPath: config.storage.dbPath }) },
+  {
+    provide: CONTINUATION_BINDING_REPOSITORY,
+    // Storage repositories become available at init, after DI construction. Resolve at call time.
+    useFactory: (storage: SqliteStorageProvider): ContinuationBindingRepository => ({
+      get: id => storage.continuationBindings.get(id),
+      admit: expected => storage.continuationBindings.admit(expected),
+    }),
+    inject: [STORAGE_PROVIDER],
+  },
   { provide: QUEUE_PROVIDER, useFactory: () => new LocalQueueProvider() },
   { provide: VECTOR_PROVIDER, useFactory: () => new LocalVectorProvider(config.vector.storePath) },
   {
@@ -244,6 +256,7 @@ const infrastructure: Provider[] = [
  */
 const application: Provider[] = [
   agentProfileRegistryProvider,
+  continuationLifecycleProvider,
   toolManagerProvider,
   {
     provide: ActorIdentityProvisioner,

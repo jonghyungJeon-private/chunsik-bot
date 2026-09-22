@@ -7089,3 +7089,21 @@ linearization point, bypass closure and at-most-one concurrent winner. Guarded-s
 This local documentation closeout awaits independent review and does not claim delivery or activation.
 [LATER] Receiver invocation, the continuation Task RUNNING transition owner, attempt recovery/redispatch
 semantics, and any queue, worker, lease or heartbeat architecture each require separate decisions.
+
+
+#### M3E-6D local implementation follow-through (2026-09-22)
+
+The lifecycle caller prerequisite described above is now **IMPLEMENTED LOCALLY / AWAITING REVIEW**,
+not delivered: `WorkHandoffContinuationService.prepare` orchestrates the existing TaskManager legal
+transitions after exact binding admission, with ApprovalManager owning request acquisition/decisions.
+The composition root wires this explicit Application entry using the existing binding repository token;
+no new aggregate, repository, persistence owner, Task status, edge, Approval model or schema is added.
+Configured AgentProfile endpoints are required; the empty default registry remains fail-closed.
+The caller supplies the original live plan and exact approval ID on reentry; no plan reconstruction or
+`isApproved(planId)` fallback. Inconsistent plan policy/risk facts are denied, not repaired by synthetic plans.
+
+Approval acquisition and guarded-start revalidation remain distinct. Task RUNNING with zero TaskRuns is
+only lifecycle preparation. These reads and TaskManager transitions are not an atomic snapshot/CAS and
+convey no effect-time authority; the existing TaskRun start and save bypasses remain outstanding ADR-0088
+work. Guarded start **NOT IMPLEMENTED**, receiver invocation **NOT IMPLEMENTED**, continuation execution
+activation **DISABLED**. ADR-0088's ratified decision is unchanged. Independent implementation review pending.

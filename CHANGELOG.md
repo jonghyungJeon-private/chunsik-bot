@@ -7,6 +7,26 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — M3E-6D Continuation Task Lifecycle Wiring (local, awaiting review)
+
+- Added `WorkHandoffContinuationService.prepare` as the production Application lifecycle caller over
+  exact admitted handoff/task identity. Existing `TaskManager.transition` alone walks PLANNING and,
+  where required, WAITING_APPROVAL before RUNNING. No transition graph or lifecycle ownership change.
+- Composed existing binding, Task and Approval owners in `apps/quoky`; lazy binding-port delegation
+  respects storage initialization order. Explicit preparation is reachable through the DI entry with valid
+  configured profiles; no new transport trigger or automatic dispatch, and no default agent invented.
+- Reused ApprovalManager acquisition and exact decision reads with the original caller-owned live plan.
+  Approval-pending reentry waits, missing live plan fails closed, and incompatible risk facts cannot
+  silently auto-approve. Running reentry is a no-op; terminal, mismatched binding, inactive work and
+  Actor/Project mismatch deny without Task mutation. No persisted/reconstructed plan or new Approval model.
+- Added real-owner lifecycle tests, production Nest composition coverage and disposable SQLite persistence
+  checks, including zero run side effects and separate admission revalidation after RUNNING. Relevant
+  ConversationRuntime, TaskManager, Approval and continuation regressions remain covered.
+- ADR-0088 remains Ratified. Guarded start is NOT IMPLEMENTED, receiver invocation NOT IMPLEMENTED,
+  continuation execution activation DISABLED. No TaskRun creation/start, schema change or product runtime
+  execution. Lifecycle reads/transitions remain non-atomic; future guarded start must independently
+  revalidate effect-time authority. Local implementation awaits independent review; no delivery claim.
+
 ### Added — M3E-6C Effect-Time Guarded Continuation Start Architecture
 
 - Ratified ADR-0088 by Chief Architect decision following independent Architecture Review
