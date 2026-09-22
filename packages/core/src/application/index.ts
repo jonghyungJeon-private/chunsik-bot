@@ -69,3 +69,4 @@ export * from './continuation-live-plan-proof';
 export * from './continuation-execution-admission-service';
 export * from './continuation-execution-entry-service';
 export * from './continuation-execution-product-policy';
+export * from './continuation-execution-service';
