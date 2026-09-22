@@ -145,6 +145,43 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   ratification, merge, configured profiles or offline acceptance. Documentation only; no Product/DB/runtime
   mutation.
 
+- **M3E-6G:** TaskRun persistence safety **IMPLEMENTED LOCALLY / AWAITING REVIEW** on base
+  `cf32815234608d9a46972e2186f35b3d5bcf48eb`; not delivered. Implements the first ADR-0089 activation
+  prerequisites and nothing else. `SqliteTaskRunRepository.delete` now overrides the inherited generic
+  delete: it loads the persisted row, derives the decision from that row's own `task_id` and the canonical
+  `continuation_bindings` entry inside one `IMMEDIATE` transaction, and refuses every continuation-bound
+  run — STARTED, SUCCEEDED, FAILED, CANCELED and historical terminal rows — with the bounded
+  `GuardedTaskRunStartError` code `CONTINUATION_RUN_DELETE_FORBIDDEN`. No caller flag, argument, convention
+  or run status participates. Retention is load-bearing because `WorkHandoffContinuationService.resolveRun`
+  returns exact historical bound-run provenance and ordinal allocation is `MAX(attempt)+1`, so removing the
+  highest attempt would permit ordinal reuse. Re-parenting a bound run to an unbound Task cannot evade the
+  guard: the existing v11 `task_runs_immutable_start` trigger already rejects `task_id`/`attempt`/
+  `startedAt`/`capability` changes, and that invariant is asserted rather than duplicated.
+  `UNBOUND_TASKRUN_DELETE = PRESERVED` and missing-id deletion remains a no-op.
+  `REPOSITORY_PORT_DELETE_BYPASS = CLOSED`; `RAW_SQL_DELETE_IMMUNITY_CLAIMED = NO` — direct SQL remains an
+  explicit trusted-admin carve-out and is asserted as such in tests.
+  The SQLite lock wait is now explicit adapter configuration: `DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 5000`
+  preserves the previously implicit better-sqlite3 default, optional `SqliteConfig.busyTimeoutMs` is
+  validated as a bounded non-negative safe integer, and the timeout stays storage-owned with no
+  SQLite-specific type reaching Core. Recognized driver lock contention before any successful commit is
+  translated by the adapter into the typed `TASK_RUN_STORAGE_BUSY` outcome, deliberately distinct from the
+  canonical `UNRESOLVED_STARTED_RUN` live-attempt conflict; unknown infrastructure failures keep existing
+  repository conventions and are never swallowed. Core inspects no driver code, class or string.
+  `AUTOMATIC_APPLICATION_RETRY = NO`: the driver's bounded wait inside one call is not Application retry,
+  and no retry loop, sleep, replacement `guardedStart` or fabricated attempt identity was added — a typed
+  busy outcome commits zero TaskRuns and yields no `TaskRun.id`.
+  Coverage added in `task-run-persistence-safety.local-e2e.test.ts` (18 focused real-SQLite tests): bound
+  delete refusal per status, unbound and missing-id preservation, re-parenting evasion, ordinal
+  monotonicity across bound terminal history, the raw-SQL carve-out, a six-child-process delete-versus-
+  guardedStart race in which every delete is refused and no replacement attempt starts, real lock
+  contention mapped to the typed outcome with zero rows, contention-versus-live-attempt distinction, and
+  `STARTED → CANCELED` persistence with `CANCELED → STARTED` revival denied. No `cancelRun` was invented and
+  no production receiver cancellation path exists. No new aggregate, repository, schema, migration, durable
+  state or TaskRun status; dependency direction and TaskRun repository ownership are unchanged.
+  AgentProfile configuration **NOT IMPLEMENTED**; Product Decision gate **NOT REACHED**; production
+  continuation caller and receiver invocation **NOT IMPLEMENTED**; continuation execution activation
+  **DISABLED**. Independent implementation review pending; delivery is not claimed.
+
 - **M3E-3:** Delivered through PR #58 (merge commit `618b5afcc6079be956d3756f9281506907571dde`).
   ADR-0083 is Ratified; independent implementation review PASS and documentation close-out review
   PASS_WITH_NON_BLOCKING_FINDINGS preceded delivery. Consumption remains read-only and grants no authority.

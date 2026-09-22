@@ -19,7 +19,9 @@ let store;
 process.on('message', async message => {
   try {
     if (message.type === 'init') {
-      store = new SqliteStorageProvider({ dbPath: message.dbPath });
+      store = new SqliteStorageProvider(message.busyTimeoutMs === undefined
+        ? { dbPath: message.dbPath }
+        : { dbPath: message.dbPath, busyTimeoutMs: message.busyTimeoutMs });
       await store.init();
       process.send({ type: 'ready' });
     } else if (message.type === 'start') {
@@ -27,6 +29,17 @@ process.on('message', async message => {
       try {
         const run = await store.taskRuns.guardedStart(message.expected, message.capability);
         result = { type: 'result', run };
+      } catch (error) {
+        result = { type: 'result', code: error.code, error: error.message };
+      }
+      await store.close();
+      process.send(result, () => process.disconnect());
+    } else if (message.type === 'delete') {
+      // ADR-0089 delete-vs-guarded-start safety boundary, exercised through the real repository port.
+      let result;
+      try {
+        await store.taskRuns.delete(message.runId);
+        result = { type: 'result', deleted: true };
       } catch (error) {
         result = { type: 'result', code: error.code, error: error.message };
       }

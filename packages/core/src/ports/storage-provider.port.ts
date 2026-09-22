@@ -65,6 +65,13 @@ export interface TaskRunRepository extends Repository<TaskRun> {
   /** Bound Tasks: update existing runs only; reject novel insertion and terminal → STARTED revival.
    * Existing complete/fail terminal updates remain supported. */
   save(run: TaskRun): Promise<TaskRun>;
+  /** ADR-0089: refuse deletion of every continuation-bound TaskRun, including terminal history, because
+   * bound-run provenance and `MAX(attempt)+1` ordinal identity both depend on retention. The decision must
+   * come from the persisted run's own taskId and the canonical binding — never a caller flag, argument or
+   * status — and must be atomic with the delete where persistence semantics require it. Unbound TaskRun
+   * deletion and missing-id no-op semantics are unchanged. This closes the repository-port delete bypass;
+   * it claims no immunity against arbitrary direct SQL. */
+  delete(id: Id): Promise<void>;
   listByTask(taskId: Id): Promise<TaskRun[]>;
 }
 

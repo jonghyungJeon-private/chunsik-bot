@@ -7,6 +7,36 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — M3E-6G TaskRun Persistence Safety (local, awaiting review)
+
+- Overrode the inherited generic delete on the SQLite TaskRun repository to refuse deletion of every
+  continuation-bound TaskRun, including SUCCEEDED/FAILED/CANCELED terminal history. The refusal derives from
+  the persisted row's own `task_id` and the canonical `continuation_bindings` entry inside one `IMMEDIATE`
+  transaction, never from a caller flag, argument, convention or run status. Bound-run retention is
+  load-bearing: `WorkHandoffContinuationService.resolveRun` returns exact historical provenance and ordinal
+  allocation is `MAX(attempt)+1`.
+- Preserved unbound TaskRun deletion and missing-id no-op semantics. Closed the repository-port delete
+  bypass while explicitly claiming no immunity against arbitrary direct SQL. Asserted, rather than
+  duplicated, the existing v11 `task_runs_immutable_start` protection against re-parenting a bound run.
+- Made the SQLite lock wait explicit adapter configuration: `DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 5000` preserves
+  the previously implicit driver default and optional `SqliteConfig.busyTimeoutMs` is validated as a bounded
+  non-negative safe integer. The timeout stays storage-owned; no SQLite type reaches Core.
+- Translated recognized driver lock contention before any successful commit into the typed
+  `TASK_RUN_STORAGE_BUSY` outcome, kept distinct from the canonical `UNRESOLVED_STARTED_RUN` live-attempt
+  conflict. Unknown infrastructure failures keep existing conventions and are not swallowed. Automatic
+  Application retry is NO: the bounded driver wait inside one call is not retry, and a busy outcome commits
+  zero TaskRuns and fabricates no attempt identity.
+- Added 18 focused real-SQLite tests covering bound delete refusal per status, unbound/missing-id
+  preservation, re-parenting evasion, ordinal monotonicity, the raw-SQL carve-out, a six-child-process
+  delete-versus-guardedStart race with zero successful deletes and zero replacement attempts, real lock
+  contention mapping, contention-versus-live-attempt distinction, and `STARTED → CANCELED` with
+  `CANCELED → STARTED` revival denied. No `cancelRun` and no receiver cancellation path were added.
+- No new aggregate, repository, schema, migration, durable state or TaskRun status; dependency direction and
+  TaskRun repository ownership unchanged. AgentProfile configuration, Product trigger, post-wait live-plan
+  contract, operation-scoped Approval changes, production caller and receiver invocation remain out of scope
+  and NOT IMPLEMENTED; continuation execution activation remains DISABLED. Local only: no Push/PR/Merge, no
+  Runtime, Provider, network, Discord or shared-DB action.
+
 ### Added — M3E-6F Continuation Activation Readiness Architecture (ADR-0089 Ratified, local)
 
 - Ratified ADR-0089 by Chief Architect decision after independent Architecture Review
@@ -35,7 +65,7 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
   `AUTHORIZED_ACTOR_PROJECT_SCOPE = PRODUCT_DECISION_REQUIRED` (relational consistency is not
   authorization); ratification with the trigger unselected is sound because every acceptable trigger invokes
   the same coordinator contract. CANCELED coverage and revival denial are activation requirements.
-- Corrected the recommended slice order to M3E-6G, M3E-6H, M3E-6I-a (independently actionable) → Product
+- Corrected the ratified slice order to M3E-6G, M3E-6H, M3E-6I-a (independently actionable) → Product
   Decision gate → M3E-6I-b → M3E-6J → M3E-6K → M3E-6L, and updated the activation matrix so live-plan
   supply and operation-scope proof are post-gate only. M3E-6E delivery remains recorded as PR #70 at
   `c603f0923d20b463907b471f127f5f870225a4ac`.

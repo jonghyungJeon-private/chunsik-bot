@@ -52,9 +52,23 @@ import type {
 } from '@quoky/core';
 import { ApprovalStatus, GuardedTaskRunStartError, WorkItemStatus, Capability, TaskStatus, TaskRunStatus, newId, now, ResourceRef as DomainResourceRef, createWorkHandoff } from '@quoky/core';
 
+/** ADR-0089: the SQLite lock wait is explicit adapter configuration, not an implicit driver default.
+ * This preserves the previously effective better-sqlite3 default. It is a bounded wait inside a single
+ * database call and is NOT Application retry. */
+export const DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 5000;
+
 export interface SqliteConfig {
   /** Path to the SQLite database file, e.g. ./data/chunsik.db */
   dbPath: string;
+  /** Explicit bounded lock wait in milliseconds; defaults to DEFAULT_SQLITE_BUSY_TIMEOUT_MS.
+   * Storage-owned: no Core policy, no Application retry, no rescheduling. */
+  busyTimeoutMs?: number;
+}
+
+/** Adapter-owned driver translation. Core never inspects driver codes, classes or messages. */
+function isLockContention(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null | undefined)?.code;
+  return typeof code === 'string' && code.startsWith('SQLITE_BUSY');
 }
 
 type Db = Database.Database;
@@ -225,8 +239,20 @@ class SqliteTaskRunRepository extends JsonRepository<TaskRun> implements TaskRun
     return !!this.db.prepare('SELECT 1 FROM continuation_bindings WHERE task_id = ?').get(taskId);
   }
 
+  /** Translate only recognized lock contention, before any successful commit, into the bounded typed
+   * outcome. Unknown infrastructure failures keep existing repository conventions and are never swallowed.
+   * The driver's bounded wait already elapsed inside the one call; nothing is retried here. */
+  private noContention<T>(operation: () => T): T {
+    try {
+      return operation();
+    } catch (error) {
+      if (isLockContention(error)) throw new GuardedTaskRunStartError('TASK_RUN_STORAGE_BUSY');
+      throw error;
+    }
+  }
+
   async start(task: Task, capability: Capability): Promise<TaskRun> {
-    return this.db.transaction(() => {
+    return this.noContention(() => this.db.transaction(() => {
       if (this.isBound(task.id)) throw new GuardedTaskRunStartError('CONTINUATION_GUARD_REQUIRED');
       const row = this.db.prepare('SELECT data FROM tasks WHERE id = ?').get(task.id) as Row | undefined;
       if (!row || task.status !== TaskStatus.RUNNING || !Object.values(Capability).includes(capability)
@@ -234,11 +260,11 @@ class SqliteTaskRunRepository extends JsonRepository<TaskRun> implements TaskRun
         throw new Error('TASK_RUN_START_INVALID_OR_STALE_TASK');
       }
       return this.insertStarted(task.id, capability);
-    }).immediate();
+    }).immediate());
   }
 
   async guardedStart(expected: GuardedTaskRunStartFacts, capability: Capability): Promise<TaskRun> {
-    return this.db.transaction(() => {
+    return this.noContention(() => this.db.transaction(() => {
       const { handoff, binding, workItem, task, approval } = expected;
       // Fixed tables, bounded domain snapshots. No Approval/RiskPolicy or plan reconstruction in SQLite.
       for (const [table, value, code] of [
@@ -277,7 +303,7 @@ class SqliteTaskRunRepository extends JsonRepository<TaskRun> implements TaskRun
       if (this.db.prepare("SELECT 1 FROM task_runs WHERE task_id = ? AND json_extract(data, '$.status') = ? LIMIT 1")
         .get(task.id, TaskRunStatus.STARTED)) throw new GuardedTaskRunStartError('UNRESOLVED_STARTED_RUN');
       return this.insertStarted(task.id, capability);
-    }).immediate(); // The single commit is the linearization point; return only after it succeeds.
+    }).immediate()); // The single commit is the linearization point; return only after it succeeds.
   }
 
   private insertStarted(taskId: Id, capability: Capability): TaskRun {
@@ -294,7 +320,7 @@ class SqliteTaskRunRepository extends JsonRepository<TaskRun> implements TaskRun
   }
 
   override async save(run: TaskRun): Promise<TaskRun> {
-    return this.db.transaction(() => {
+    return this.noContention(() => this.db.transaction(() => {
       const existing = this.db.prepare('SELECT data FROM task_runs WHERE id = ?').get(run.id) as Row | undefined;
       if (this.isBound(run.taskId)) {
         // Block ALL novel rows (including terminal-shaped insertion), and terminal → STARTED revival.
@@ -308,7 +334,24 @@ class SqliteTaskRunRepository extends JsonRepository<TaskRun> implements TaskRun
          ON CONFLICT(id) DO UPDATE SET task_id = excluded.task_id, data = excluded.data`,
       ).run(run.id, run.taskId, JSON.stringify(run));
       return run;
-    }).immediate();
+    }).immediate());
+  }
+
+  /** ADR-0089 bound-run retention. The refusal is derived from the persisted run's own task_id and the
+   * canonical binding inside one IMMEDIATE transaction; no caller flag, argument or status participates.
+   * Re-parenting a persisted run to an unbound Task cannot evade this: the v11 `task_runs_immutable_start`
+   * trigger rejects any task_id/attempt/startedAt/capability change on update. */
+  override async delete(id: Id): Promise<void> {
+    this.noContention(() => this.db.transaction(() => {
+      const row = this.db.prepare('SELECT task_id FROM task_runs WHERE id = ?').get(id) as
+        | { task_id: string }
+        | undefined;
+      if (!row) return; // Missing-id no-op semantics preserved.
+      if (this.isBound(row.task_id)) {
+        throw new GuardedTaskRunStartError('CONTINUATION_RUN_DELETE_FORBIDDEN');
+      }
+      this.db.prepare('DELETE FROM task_runs WHERE id = ?').run(id);
+    }).immediate());
   }
 
   async listByTask(taskId: Id): Promise<TaskRun[]> {
@@ -806,7 +849,12 @@ export class SqliteStorageProvider implements StorageProvider {
 
   async init(): Promise<void> {
     mkdirSync(dirname(this.config.dbPath), { recursive: true });
-    const db = new Database(this.config.dbPath);
+    // ADR-0089: the bounded lock wait is explicit adapter configuration, not an implicit driver default.
+    const busyTimeoutMs = this.config.busyTimeoutMs ?? DEFAULT_SQLITE_BUSY_TIMEOUT_MS;
+    if (!Number.isSafeInteger(busyTimeoutMs) || busyTimeoutMs < 0) {
+      throw new Error('SQLITE_BUSY_TIMEOUT_INVALID');
+    }
+    const db = new Database(this.config.dbPath, { timeout: busyTimeoutMs });
     db.pragma('journal_mode = WAL');
     // Schema is applied by a versioned, forward-only migration runner (ADR-0020).
     // Backward compatible: a legacy DB (user_version = 0) re-runs the idempotent

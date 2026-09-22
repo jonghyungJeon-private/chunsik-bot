@@ -7387,9 +7387,9 @@ Decision gate are marked; none of them may be pulled into pre-gate work.
 | Item | Current status | Required before activation? | Owner | Next slice |
 |---|---|---|---|---|
 | Task lifecycle wiring | M3E-6D delivered; DI service, no trigger | Yes; existing + integration regression | TaskManager / preparation service | M3E-6J caller slice |
-| Guarded atomic start | M3E-6E delivered, insertion bypasses closed | Yes; preserve | TaskManager / TaskRunRepository | Safety + receiver regression |
-| TaskRun delete safety | Generic inherited delete can erase a bound run; `resolveRun` provenance and `MAX(attempt)+1` ordinal identity both depend on retention | **Yes** | TaskRun port + adapter | M3E-6G |
-| SQLITE_BUSY contract | Implicit 5000 ms driver default, raw infra failure | **Yes**, explicit bounded wait + typed contention | SQLite adapter / config | M3E-6G |
+| Guarded atomic start | M3E-6E delivered, insertion bypasses closed | Yes; preserve | TaskManager / TaskRunRepository | M3E-6G (regression only) |
+| TaskRun delete safety | Generic inherited delete can erase a bound run; `resolveRun` provenance and `MAX(attempt)+1` ordinal identity both depend on retention | **Yes** | TaskRun port + adapter | M3E-6G (implemented locally) |
+| SQLITE_BUSY contract | Implicit 5000 ms driver default, raw infra failure | **Yes**, explicit bounded wait + typed contention | SQLite adapter / config | M3E-6G (implemented locally) |
 | AgentProfile config surface | Empty hardcoded registry | **Yes** | apps config / registry | M3E-6H |
 | Live-plan structural predicate | Similar structural checks in two gates | **Yes**, extract pure proof only; keep gate semantics distinct | Core pure validation | M3E-6I-a (pre-gate) |
 | Product trigger | Not specified | **Yes; Product decision** | Product Owner / inbound boundary | Product Decision gate |
@@ -7573,3 +7573,52 @@ surface **NOT IMPLEMENTED**; production trigger **UNSELECTED**; post-wait live-p
 **UNRESOLVED**; operation-scoped Approval proof **UNRESOLVED**; receiver invocation **NOT IMPLEMENTED**;
 continuation execution activation **DISABLED**. M3E-6G, M3E-6H and M3E-6I-a are independently actionable;
 M3E-6I-b must follow the Product Decision gate; M3E-6J must not precede the post-wait context contract.
+
+
+#### M3E-6G local implementation follow-through (2026-09-22)
+
+ADR-0089's first two persistence prerequisites are now **IMPLEMENTED LOCALLY / AWAITING REVIEW** on base
+`cf32815234608d9a46972e2186f35b3d5bcf48eb`, not delivered. The ratified decisions above are unchanged; this
+record only reports what exists in code.
+
+`SqliteTaskRunRepository` overrides the inherited generic `delete`. It loads the persisted row, derives the
+decision from that row's own `task_id` and the canonical `continuation_bindings` entry inside one
+`IMMEDIATE` transaction, and refuses every continuation-bound run — STARTED, SUCCEEDED, FAILED, CANCELED and
+historical terminal rows — with the bounded `GuardedTaskRunStartError` code
+`CONTINUATION_RUN_DELETE_FORBIDDEN`. No caller flag, argument, convention or run status participates. The
+`TaskRunRepository` port documents the invariant so every adapter, including a future Team Edition adapter,
+must implement it; the generic `Repository<T>` contract for unrelated aggregates is untouched, so no
+public-contract amendment beyond ADR-0089 was required. Unbound TaskRun deletion and missing-id no-op
+semantics are preserved. `REPOSITORY_PORT_DELETE_BYPASS = CLOSED`; `RAW_SQL_DELETE_IMMUNITY_CLAIMED = NO`.
+Re-parenting a bound run to an unbound Task cannot evade the guard because the existing v11
+`task_runs_immutable_start` trigger rejects `task_id`/`attempt`/`startedAt`/`capability` changes; that
+database invariant is asserted, not duplicated in application code.
+
+The lock wait is explicit adapter configuration: `DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 5000` preserves the
+previously implicit better-sqlite3 default, and optional `SqliteConfig.busyTimeoutMs` is validated as a
+bounded non-negative safe integer at `init()`. Ownership stays in the SQLite adapter/storage configuration;
+no SQLite-specific type reaches Core, Core policy, `ContinuationExecutionService` or `TaskManager`.
+Recognized driver lock contention before any successful commit is translated by the adapter into the typed
+`TASK_RUN_STORAGE_BUSY` outcome, deliberately distinct from the canonical `UNRESOLVED_STARTED_RUN`
+live-attempt conflict. Unknown infrastructure failures keep existing repository conventions and are not
+swallowed. `AUTOMATIC_APPLICATION_RETRY = NO`: the driver's bounded wait inside one call is not Application
+retry, and no retry loop, sleep, replacement `guardedStart` or fabricated attempt identity was added. A
+typed busy outcome commits zero TaskRuns and yields no `TaskRun.id`, which future receiver orchestration
+depends on.
+
+Eighteen focused real-SQLite tests cover bound delete refusal per status, unbound and missing-id
+preservation, re-parenting evasion, ordinal monotonicity across bound terminal history, the explicit
+raw-SQL carve-out, a six-child-process delete-versus-`guardedStart` race in which every delete is refused
+and no replacement attempt starts, real lock contention mapped to the typed outcome with zero rows, the
+contention-versus-live-attempt distinction, and `STARTED → CANCELED` persistence with `CANCELED → STARTED`
+revival denied. No `cancelRun` was invented and no production receiver cancellation path exists; the ratified
+requirement that a receiver may write CANCELED only when termination is actually proven still stands
+unimplemented. M3E-6E guarded-start properties (one winner across six processes, ordinary-start and novel
+save rejection, exact inserted run) and ordinary unbound TaskRun start/terminal-update/delete behavior were
+re-verified.
+
+No new aggregate, repository, schema, migration, durable state or TaskRun status; dependency direction and
+TaskRun repository ownership are preserved. AgentProfile configuration **NOT IMPLEMENTED**; Product Decision
+gate **NOT REACHED**; post-wait live-plan contract and operation-scoped Approval proof **UNRESOLVED**;
+production continuation caller and receiver invocation **NOT IMPLEMENTED**; continuation execution
+activation **DISABLED**. Independent implementation review pending.
