@@ -90,8 +90,8 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   graph/status changes, new aggregate/repository/schema or runtime execution in M3E-6D. Guarded-start status
   is superseded by M3E-6E below.
 
-- **M3E-6E:** ADR-0088 guarded atomic start **IMPLEMENTED LOCALLY / AWAITING REVIEW** on base
-  `bab2e197151f9682298697be0cf5b18cb8f1e79b`; not delivered. The narrow Core
+- **M3E-6E:** ADR-0088 guarded atomic start **DELIVERED** through **PR #70**, merge commit
+  `c603f0923d20b463907b471f127f5f870225a4ac` (implementation `7197cee89e25ba9c8d1e943152aa12f95f6b60de`). The narrow Core
   `ContinuationExecutionEntryService.start` performs fresh read-only admission, retains the exact evaluated
   domain snapshots, freshly reads profile configuration, and calls `TaskManager.guardedStartRun` → existing
   `TaskRunRepository.guardedStart`. No Task transition or Approval acquisition occurs here. Core derives
@@ -112,6 +112,38 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   failure leaves the exact STARTED run ambiguous; no automatic fail/success/replacement.
   Carry-forward: duplicated live-plan predicates **TRACKED**, duplicate pending Approval acquisition
   window **TRACKED / NON_BLOCKING** (M3E-6D acquisition semantics unchanged). ADR-0088 remains **Ratified**.
+
+- **M3E-6F:** Activation-readiness architecture **DECIDED**; **ADR-0089 is Ratified** by Chief Architect
+  decision after independent Architecture Review **PASS_WITH_NON_BLOCKING_FINDINGS**;
+  **CONTINUATION_ACTIVATION_READY_TODAY = NO**. M3E-6D/6E are delivered, but insertion safety alone is
+  insufficient: generic inherited TaskRun deletion can erase a bound run, and retention is additionally
+  load-bearing because `WorkHandoffContinuationService.resolveRun` returns exact historical bound-run
+  provenance and ordinal identity is `MAX(attempt)+1`, so deleting the highest attempt permits ordinal
+  reuse. Ratified prerequisites: deny deletion of all bound runs including terminal history; explicit
+  bounded SQLite lock wait plus typed storage contention (distinct from `UNRESOLVED_STARTED_RUN`, adapter
+  owns driver translation, automatic Application retry NO); static AgentProfile input through existing typed
+  app config (composition-time, immutable, non-secret, non-authoritative; not an Actor/Provider/Tool
+  authority); shared pure structural live-plan proof; operation-scoped Approval proof; CANCELED coverage
+  with revival denial and no unproven cancellation write. Ratified owner is the narrow Core
+  `ContinuationExecutionService` for both coordination and receiver invocation, same invocation on the exact
+  returned TaskRun, terminalized only by `TaskManager.completeRun`/`failRun`; ambiguous STARTED is left
+  ambiguous and no `cancelRun` is invented. `ConversationRuntime` and `ExecutionOrchestrator` do not become
+  handoff runtimes; `WorkHandoffContinuationService` stays preparation.
+  Unresolved activation gates: **CONTINUATION_TRIGGER = UNSELECTED / PRODUCT_DECISION_REQUIRED**
+  (`ACTIVATION_BLOCKED_UNTIL_TRIGGER_SELECTED = YES`; ratifiable unselected because every acceptable trigger
+  invokes the same coordinator contract), **AUTHORIZED_ACTOR_PROJECT_SCOPE = PRODUCT_DECISION_REQUIRED**
+  (relational consistency is not authorization), supported receiver capability set, and the shared post-wait
+  caller-context problem — `AUTHORITATIVE_POST_WAIT_PLAN_SOURCE = NONE TODAY`, no supply contract defined,
+  persistence NOT PROVEN, with reconstruction from `Task.planId`/`ExecutionPlanRef`/`ApprovalRequest`
+  prohibited and three unselected resolution families recorded. `ApprovalRequest` has no kind field and none
+  is invented: receiver scope must be proven or activation stays disabled pending a separately reviewed
+  amendment. Duplicate pending approvals remain **TRACKED / NON_BLOCKING** conditional on exact
+  `approvalId` retention. Raw SQL remains an explicit carve-out with **no immunity claim**. Ratified slice
+  order: M3E-6G, M3E-6H, M3E-6I-a (independently actionable) → Product Decision gate → M3E-6I-b → M3E-6J →
+  M3E-6K → M3E-6L. Activation DISABLED; automatic retry NO; exactly-once external effects NO CLAIM. Runtime,
+  Provider, network, Live UAT and Production activation remain separate strict approvals not granted by
+  ratification, merge, configured profiles or offline acceptance. Documentation only; no Product/DB/runtime
+  mutation.
 
 - **M3E-3:** Delivered through PR #58 (merge commit `618b5afcc6079be956d3756f9281506907571dde`).
   ADR-0083 is Ratified; independent implementation review PASS and documentation close-out review

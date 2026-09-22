@@ -7,7 +7,45 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
-### Added — M3E-6E Guarded Atomic TaskRun Start (local, awaiting review)
+### Added — M3E-6F Continuation Activation Readiness Architecture (ADR-0089 Ratified, local)
+
+- Ratified ADR-0089 by Chief Architect decision after independent Architecture Review
+  PASS_WITH_NON_BLOCKING_FINDINGS. Activation readiness remains NO. ADR-0087/0088 are not reopened.
+- Ratified prohibition of repository deletion for every continuation-bound TaskRun including terminal
+  history, strengthened with verified evidence: `WorkHandoffContinuationService.resolveRun` returns exact
+  historical bound-run provenance, and ordinal identity is `MAX(attempt)+1`, so deleting the highest
+  attempt permits ordinal reuse. Raw-SQL immunity is NOT claimed; unbound-Task test cleanup is unaffected.
+- Ratified explicit bounded lock wait plus typed storage-contention outcome, kept distinct from
+  `UNRESOLVED_STARTED_RUN`; the SQLite adapter owns driver translation and Core depends on no driver types.
+  Automatic Application retry is NO.
+- Ratified static AgentProfile input through existing typed application configuration with no new
+  repository: composition-time, immutable, non-secret, non-authoritative; not an Actor, Provider, Tool
+  authority or standing execution permission. No Provider pinning, credentials, paths or Tool allowlists.
+- Ratified the narrow Core `ContinuationExecutionService` as both continuation coordinator and receiver
+  invocation owner, one invocation on the exact returned TaskRun with `TaskManager.completeRun`/`failRun`
+  terminalization. Ambiguous outcomes stay ambiguous STARTED; no fabricated outcome, replacement run,
+  restart recovery or invented `cancelRun`. `WorkHandoffContinuationService` stays preparation;
+  `ExecutionOrchestrator` stays stateless intra-task composition; `ConversationRuntime` is not the owner.
+- Recorded the shared post-wait caller-context problem as one M3E-6I-b concern: no authoritative post-wait
+  live-plan source exists today, no supply contract is defined, persistence is NOT PROVEN, reconstruction
+  from `Task.planId`/`ExecutionPlanRef`/`ApprovalRequest` is prohibited, and three resolution families are
+  recorded without selection. Operation-scoped Approval proof is required with no new Approval model, field
+  or schema; if existing contracts cannot prove scope, activation stays disabled pending a reviewed amendment.
+- Carried `CONTINUATION_TRIGGER = UNSELECTED / PRODUCT_DECISION_REQUIRED` and
+  `AUTHORIZED_ACTOR_PROJECT_SCOPE = PRODUCT_DECISION_REQUIRED` (relational consistency is not
+  authorization); ratification with the trigger unselected is sound because every acceptable trigger invokes
+  the same coordinator contract. CANCELED coverage and revival denial are activation requirements.
+- Corrected the recommended slice order to M3E-6G, M3E-6H, M3E-6I-a (independently actionable) → Product
+  Decision gate → M3E-6I-b → M3E-6J → M3E-6K → M3E-6L, and updated the activation matrix so live-plan
+  supply and operation-scope proof are post-gate only. M3E-6E delivery remains recorded as PR #70 at
+  `c603f0923d20b463907b471f127f5f870225a4ac`.
+- No prerequisite is implemented: delete protection, busy contract, profile configuration surface and
+  receiver invocation remain NOT IMPLEMENTED and activation DISABLED. Docs-only: no Product code, DB,
+  configuration, receiver, runtime, Provider, network or cleanup execution. Runtime start, Provider
+  invocation, network execution, Live UAT and Production activation remain separate strict approvals not
+  granted by ratification, merge, configured profiles or offline acceptance.
+
+### Added — M3E-6E Guarded Atomic TaskRun Start (delivered, PR #70)
 
 - Implemented ADR-0088's sibling `TaskRunRepository.guardedStart` and TaskManager delegation. Core
   `ContinuationExecutionEntryService` retains exactly the snapshots read by fresh admission, derives
@@ -22,8 +60,9 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
   remain outside adapter-contract protection; one historical fixture now explicitly uses raw SQL.
 - Verified 33 focused tests (including six real child processes: one winner/five bounded conflicts),
   646 relevant regressions and typecheck under Node 18.20.5. No Product Runtime or external execution.
-- M3E-6D is delivered through PR #69 at `bab2e197151f9682298697be0cf5b18cb8f1e79b`. M3E-6E awaits
-  independent review; production continuation trigger, AgentProfile configuration surface and receiver
+- M3E-6D is delivered through PR #69 at `bab2e197151f9682298697be0cf5b18cb8f1e79b`. M3E-6E is delivered
+  through PR #70 at `c603f0923d20b463907b471f127f5f870225a4ac`; production continuation trigger,
+  AgentProfile configuration surface and receiver
   invocation remain NOT IMPLEMENTED, activation DISABLED. No automatic post-start recovery is added.
   Duplicated live-plan predicates and the non-atomic pending-Approval acquisition window remain tracked.
 
