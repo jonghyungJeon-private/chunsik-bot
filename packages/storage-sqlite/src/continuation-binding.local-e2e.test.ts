@@ -3,9 +3,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
-import { AgentProfileRegistry, agentProfileId, Capability, IntentType, TaskManager,
+import { ApprovalManager, ApprovalPolicy, RiskPolicy, AgentProfileRegistry, agentProfileId, Capability, IntentType, TaskManager,
   WorkHandoffManager, WorkHandoffConsumptionService, WorkHandoffContinuationService,
-  WorkItemStatus, WorkManager, TaskRunStatus } from '@quoky/core';
+  WorkItemStatus, WorkManager, TaskRunStatus, TaskStatus, RiskLevel, ExecutionStatus } from '@quoky/core';
 import { SqliteStorageProvider } from './index';
 import { MIGRATIONS, runMigrations } from './migrations';
 
@@ -14,6 +14,9 @@ const stores: SqliteStorageProvider[] = [];
 afterEach(async () => { for (const s of stores.splice(0)) await s.close(); dirs.splice(0).forEach(d => rmSync(d, { recursive: true, force: true })); });
 async function open(path: string) {
   const s = new SqliteStorageProvider({ dbPath: path }); await s.init(); stores.push(s); return s;
+}
+function owners(storage: SqliteStorageProvider) {
+  return { tasks: new TaskManager(storage), approvals: new ApprovalManager(storage, new ApprovalPolicy(new RiskPolicy())) };
 }
 async function fixture() {
   const dir = mkdtempSync(join(tmpdir(), 'm3e4-binding-')); dirs.push(dir);
@@ -26,11 +29,39 @@ async function fixture() {
   const task = await tasks.createTask({ type: IntentType.CHAT, capability: Capability.GENERAL_CHAT,
     confidence: 1, requiresWork: true, summary: 'continue' }, { platform: 'test', channelId: 'channel', userId: 'user' },
     { requestText: 'continue', actorId: 'actor' });
-  const service = new WorkHandoffContinuationService(storage, registry, storage.continuationBindings);
+  const service = new WorkHandoffContinuationService(storage, registry, storage.continuationBindings, owners(storage));
   return { path, storage, registry, work, handoff, tasks, task, service };
 }
 
 describe('M3E-4 disposable SQLite admission', () => {
+  it('prepares the exact bound Task with real persistence and zero TaskRuns', async () => {
+    const f = await fixture();
+    const unrelated = await f.storage.tasks.save({ ...f.task, id: 'unrelated' });
+    await f.service.admit(f.handoff.id, f.task.id);
+    expect((await f.service.prepare({ handoffId: f.handoff.id, taskId: f.task.id })).disposition).toBe('RUNNING_READY');
+    expect((await f.storage.tasks.get(f.task.id))?.status).toBe(TaskStatus.RUNNING);
+    expect(await f.storage.tasks.get(unrelated.id)).toEqual(unrelated);
+    expect(await f.storage.taskRuns.list()).toEqual([]);
+    expect((await f.service.prepare({ handoffId: f.handoff.id, taskId: f.task.id })).disposition).toBe('ALREADY_RUNNING');
+  });
+  it('persists WAITING_APPROVAL, then resumes through the existing exact Approval owner', async () => {
+    const f = await fixture();
+    await f.storage.tasks.save({ ...f.task, planId: 'live-plan', riskLevel: RiskLevel.HIGH });
+    const plan = { id: 'live-plan', goal: 'continue', summary: 'continue', steps: [],
+      requiredCapabilities: [Capability.GENERAL_CHAT], requiredResources: [], estimatedChanges: { fileCount: 1, scope: 'local' as const },
+      approvalRequired: true, overallRisk: RiskLevel.HIGH, expectedArtifacts: [], status: ExecutionStatus.PENDING, createdAt: f.task.createdAt };
+    await f.service.admit(f.handoff.id, f.task.id);
+    const input = { handoffId: f.handoff.id, taskId: f.task.id, plan };
+    const waiting = await f.service.prepare(input);
+    if (waiting.disposition !== 'WAITING_FOR_APPROVAL' || !waiting.approvalId) throw new Error('expected approval');
+    expect((await f.storage.tasks.get(f.task.id))?.status).toBe(TaskStatus.WAITING_APPROVAL);
+    expect(await f.storage.taskRuns.list()).toEqual([]);
+    await owners(f.storage).approvals.decide(waiting.approvalId, { approvalId: waiting.approvalId,
+      approved: true, decidedBy: 'human', decidedAt: f.task.createdAt });
+    expect((await f.service.prepare({ ...input, approvalId: waiting.approvalId })).disposition).toBe('RUNNING_READY');
+    expect((await f.storage.tasks.get(f.task.id))?.status).toBe(TaskStatus.RUNNING);
+    expect(await f.storage.taskRuns.list()).toEqual([]);
+  });
   it('evaluates, admits, reopens and replays without creating a TaskRun', async () => {
     const f = await fixture();
     expect((await new WorkHandoffConsumptionService(f.storage, f.registry).evaluate(f.handoff.id)).disposition).toBe('CONTINUE');
@@ -39,7 +70,7 @@ describe('M3E-4 disposable SQLite admission', () => {
     expect(await f.storage.taskRuns.list()).toEqual([]);
     await f.storage.close();
     const reopened = await open(f.path);
-    const service = new WorkHandoffContinuationService(reopened, f.registry, reopened.continuationBindings);
+    const service = new WorkHandoffContinuationService(reopened, f.registry, reopened.continuationBindings, owners(reopened));
     expect(await service.admit(f.handoff.id, f.task.id)).toEqual(first);
     expect(await reopened.workHandoffs.get(f.handoff.id)).toEqual(f.handoff);
     expect(await reopened.workItems.get(f.work.id)).toEqual(f.work);
@@ -63,13 +94,13 @@ describe('M3E-4 disposable SQLite admission', () => {
     await expect(f.service.admit('unknown', f.task.id)).rejects.toThrow();
     await expect(f.service.admit(f.handoff.id, 'unknown')).rejects.toThrow();
     const registry = new AgentProfileRegistry([f.registry.get(agentProfileId('source'))]);
-    await expect(new WorkHandoffContinuationService(f.storage, registry, f.storage.continuationBindings)
+    await expect(new WorkHandoffContinuationService(f.storage, registry, f.storage.continuationBindings, owners(f.storage))
       .admit(f.handoff.id, f.task.id)).rejects.toThrow();
     expect(await f.storage.continuationBindings.get(f.handoff.id)).toBeNull();
   });
   it('serializes replay across independent connections and rejects both directions of conflict', async () => {
     const f = await fixture(); const other = await open(f.path);
-    const otherService = new WorkHandoffContinuationService(other, f.registry, other.continuationBindings);
+    const otherService = new WorkHandoffContinuationService(other, f.registry, other.continuationBindings, owners(other));
     const [a, b] = await Promise.all([f.service.admit(f.handoff.id, f.task.id), otherService.admit(f.handoff.id, f.task.id)]);
     expect(a).toEqual(b);
     const task2 = { ...f.task, id: 'other-task' }; await f.storage.tasks.save(task2);
@@ -87,7 +118,7 @@ describe('M3E-4 disposable SQLite admission', () => {
         await other.tasks.save({ ...f.task, description: 'changed without timestamp' });
         return original(expected);
       },
-    });
+    }, owners(f.storage));
     await expect(service.admit(f.handoff.id, f.task.id)).rejects.toMatchObject({ code: 'STALE_STATE' });
     expect(await f.storage.continuationBindings.get(f.handoff.id)).toBeNull();
   });
@@ -100,7 +131,7 @@ describe('M3E-4 disposable SQLite admission', () => {
           capability: Capability.GENERAL_CHAT, artifactIds: [], startedAt: '2026-09-21T00:00:00.000Z' });
         return original(expected);
       },
-    });
+    }, owners(f.storage));
     await expect(service.admit(f.handoff.id, f.task.id)).rejects.toMatchObject({ code: 'STALE_STATE' });
     expect(await f.storage.continuationBindings.get(f.handoff.id)).toBeNull();
   });

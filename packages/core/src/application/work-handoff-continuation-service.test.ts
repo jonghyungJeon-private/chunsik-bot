@@ -19,8 +19,9 @@ function fixture() {
   const binding = Object.freeze({ handoffId: 'h', taskId: 't', recordedAt: ts });
   const bindings = { get: vi.fn(async () => binding), admit: vi.fn(async () => binding) };
   const registry = new AgentProfileRegistry(['source', 'destination'].map(id => ({ id: agentProfileId(id), displayName: id, role: id, purpose: id, instructions: id })));
-  return { handoff, workItem, task, storage, bindings, registry,
-    service: new WorkHandoffContinuationService(storage, registry, bindings) };
+  const lifecycle = { tasks: { transition: vi.fn() }, approvals: { get: vi.fn(), requestFor: vi.fn() } };
+  return { lifecycle, handoff, workItem, task, storage, bindings, registry,
+    service: new WorkHandoffContinuationService(storage, registry, bindings, lifecycle) };
 }
 
 describe('WorkHandoffContinuationService admission', () => {
@@ -60,7 +61,7 @@ describe('WorkHandoffContinuationService admission', () => {
   });
   it('rejects unknown destination configuration', async () => {
     const f = fixture();
-    const service = new WorkHandoffContinuationService(f.storage, new AgentProfileRegistry(), f.bindings);
+    const service = new WorkHandoffContinuationService(f.storage, new AgentProfileRegistry(), f.bindings, f.lifecycle);
     await expect(service.admit('h', 't')).rejects.toThrow();
     expect(f.bindings.admit).not.toHaveBeenCalled();
   });

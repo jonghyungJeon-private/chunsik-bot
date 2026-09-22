@@ -46,6 +46,7 @@ does not claim Production Runtime readiness.
 | **M3E-6A** | Continuation Execution Admission architecture | ADR-0087 Ratified by Chief Architect; independent exact-HEAD review PASS_WITH_NON_BLOCKING_FINDINGS; Option B over existing owners, exact TaskRun.id and effect-time revalidation; no new aggregate/repository/schema |
 | **M3E-6B** ✅ | Read-only admission evaluation | Delivered through PR #67 at `c0c91f341cb5f300628b86506c84e329d4f14eac`; ADR-0087 Ratified; canonical STARTED conflict predicate; zero run mutation; guarded atomic start and bypass closure architected in M3E-6C |
 | **M3E-6C** | Effect-time guarded continuation start architecture | ADR-0088 Ratified; independent review PASS_WITH_NON_BLOCKING_FINDINGS; guarded-start implementation NOT STARTED; Option B guarded start on existing TaskRun port; commit is the linearization point; at-most-one concurrent winner; bypass closure preserves terminal updates; no new aggregate/repository/schema; continuation Task RUNNING wiring required before activation; approval acquisition and start-time revalidation are distinct gates; receiver invocation not implemented; activation disabled |
+| **M3E-6D** | Continuation Task lifecycle wiring | IMPLEMENTED LOCALLY / AWAITING REVIEW; exact-bound Application preparation via existing TaskManager and ApprovalManager; production DI entry; no TaskRun; guarded start NOT IMPLEMENTED; receiver invocation NOT IMPLEMENTED; activation DISABLED |
 | **Future** | Memory improvements · Codex · additional connectors | per ADR sequence |
 
 ## Deferred capabilities (YAGNI)

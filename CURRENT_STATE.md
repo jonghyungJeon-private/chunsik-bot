@@ -70,6 +70,25 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   gates; future lifecycle wiring must preserve both. Continuation Task RUNNING wiring, receiver invocation,
   redispatch/recovery and queue/worker architectures remain **NOT IMPLEMENTED**.
 
+- **M3E-6D:** Continuation Task lifecycle wiring **IMPLEMENTED LOCALLY / AWAITING REVIEW** on base
+  `29c54f6ec5922488fd8c6ed5304498974557700f`; not delivered. This supersedes M3E-6C's historical
+  unspecified-caller status above. Production composition now provides `WorkHandoffContinuationService`
+  through the existing binding port token and existing Task/Approval owners. Its explicit `prepare` entry
+  takes exact handoff/task IDs after `admit`, revalidates binding, ACTIVE work, profiles and Actor/Project
+  relationships, and calls only `TaskManager.transition`: PENDING → PLANNING → RUNNING, or
+  PLANNING → WAITING_APPROVAL → RUNNING through `ApprovalManager` acquisition/decision reads.
+  A caller-owned live plan and exact approval ID are required where applicable; lost plan fails closed,
+  waiting without the exact request ID cannot create a replacement, and no latest lookup is used.
+  Already RUNNING is a no-op; terminal/incompatible state is denied. Inconsistent task/capability risk versus
+  plan policy fails closed instead of changing ApprovalPolicy or manufacturing a higher-risk plan.
+  Readiness is ephemeral, not execution authority; lifecycle reads/transitions are not atomic/CAS.
+  The explicit Application entry is production-wired and tested through Nest composition and disposable
+  SQLite. The default profile registry remains empty (no invented agents); valid configured endpoints are
+  required. No transport trigger, automatic dispatch or receiver invocation is added.
+  ADR-0088 remains **Ratified**. Guarded start/bypass closure **NOT IMPLEMENTED**, continuation execution
+  activation **DISABLED**, receiver invocation **NOT IMPLEMENTED**. No TaskRun start/create/save calls,
+  graph/status changes, new aggregate/repository/schema or runtime execution. Independent review pending.
+
 - **M3E-3:** Delivered through PR #58 (merge commit `618b5afcc6079be956d3756f9281506907571dde`).
   ADR-0083 is Ratified; independent implementation review PASS and documentation close-out review
   PASS_WITH_NON_BLOCKING_FINDINGS preceded delivery. Consumption remains read-only and grants no authority.
