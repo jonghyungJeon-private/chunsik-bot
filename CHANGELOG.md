@@ -7,7 +7,37 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
-### Added — M3E-6G TaskRun Persistence Safety (local, awaiting review)
+### Added — M3E-6H Static AgentProfile Configuration (local, awaiting review)
+
+- Removed the hardcoded production `new AgentProfileRegistry([])` and replaced it with the ratified typed
+  configuration surface. `QUOKY_AGENT_PROFILES` is parsed only in `apps/quoky/src/config.ts`, following the
+  existing `QUOKY_ACTOR_IDENTITY_MAPPINGS` JSON convention, and the composition root freezes the validated
+  list into one immutable `AgentProfileRegistry` snapshot. No env var is read in Core or any adapter.
+- Accepted exactly the five existing domain fields (`id`, `displayName`, `role`, `purpose`, `instructions`)
+  with no new Product semantics. Strict parsing fails closed on invalid JSON, non-array root, non-object or
+  null entry, missing or non-string field, invalid id shape, duplicate id, any unknown key, blank or oversized
+  text, more than 64 entries and a payload above 1 MiB. Unknown-key rejection refuses authority-shaped
+  configuration — provider pins, API keys, credential or secret references, executable paths, commands, Tool
+  allowlists, capabilities, permissions and approval flags — instead of silently ignoring it.
+- Kept canonical bounded-text, control-character, identity and duplicate rules owned by
+  `AgentProfileRegistry`; the config layer adds structure, duplicate detection and size bounds and reports the
+  failing key with a bounded indexed code. Configuration errors never echo raw `instructions`, secret-shaped
+  values or the payload, which a sentinel test asserts. Profile ids are never trimmed, lowercased or
+  case-folded, and lookup still uses the single existing registry path with no alias or fuzzy matching.
+- Preserved today's fail-closed startup: absent, blank or `[]` configuration yields an empty registry and an
+  unknown profile lookup still throws. Asserted that the registry is one immutable startup snapshot —
+  mutating the source array or objects afterwards cannot change it, resolved profiles and the registry are
+  frozen, and no register/replace/remove/reload API exists.
+- Documented the public `QUOKY_AGENT_PROFILES` contract in `.env.example` using domain fields only, with no
+  secrets and no internal class names.
+- Configuration availability is the only change: a configured profile selects no Provider and grants no
+  capability, Tool authority, approval state or execution trigger, proven structurally. No new aggregate,
+  repository, schema, durable state or runtime registration API; dependency direction preserved and
+  AgentProfile remains configuration-only. Product trigger remains UNSELECTED, the Product Decision gate
+  NOT REACHED, receiver invocation NOT IMPLEMENTED and continuation execution activation DISABLED.
+  Local only: no Push/PR/Merge, no Runtime, Provider, network, Discord, secret read or shared-DB action.
+
+### Added — M3E-6G TaskRun Persistence Safety (delivered, PR #72)
 
 - Overrode the inherited generic delete on the SQLite TaskRun repository to refuse deletion of every
   continuation-bound TaskRun, including SUCCEEDED/FAILED/CANCELED terminal history. The refusal derives from

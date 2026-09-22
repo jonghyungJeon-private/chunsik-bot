@@ -215,6 +215,86 @@ describe('loadConfig — Actor identity mappings (M3A-1.1)', () => {
   });
 });
 
+describe('loadConfig — static AgentProfile configuration (M3E-6H, ADR-0089)', () => {
+  const profile = {
+    id: 'receiver', displayName: 'Receiver', role: 'implementer',
+    purpose: 'continue delegated work', instructions: 'Follow the handoff objective.',
+  };
+
+  it('defaults to no profiles when the variable is absent or blank, keeping continuation fail-closed', () => {
+    expect(loadConfig(env({})).agentProfiles).toEqual([]);
+    expect(loadConfig(env({ QUOKY_AGENT_PROFILES: '   ' })).agentProfiles).toEqual([]);
+  });
+
+  it('accepts an explicit empty array without activating anything', () => {
+    expect(loadConfig(env({ QUOKY_AGENT_PROFILES: '[]' })).agentProfiles).toEqual([]);
+  });
+
+  it('parses one profile using exactly the five existing domain fields', () => {
+    expect(loadConfig(env({ QUOKY_AGENT_PROFILES: JSON.stringify([profile]) })).agentProfiles).toEqual([profile]);
+  });
+
+  it('parses multiple profiles deterministically and preserves exact ids', () => {
+    const second = { ...profile, id: 'source', displayName: 'Source' };
+    const parsed = loadConfig(env({ QUOKY_AGENT_PROFILES: JSON.stringify([second, profile]) })).agentProfiles;
+    expect(parsed.map((entry) => entry.id)).toEqual(['receiver', 'source']);
+    expect(parsed).toEqual([profile, second]);
+  });
+
+  it('freezes each parsed profile so no caller can mutate configuration', () => {
+    const [parsed] = loadConfig(env({ QUOKY_AGENT_PROFILES: JSON.stringify([profile]) })).agentProfiles;
+    expect(Object.isFrozen(parsed)).toBe(true);
+  });
+
+  it.each([
+    ['invalid JSON', '{'],
+    ['non-array root', '{}'],
+    ['entry wrong type', JSON.stringify(['receiver'])],
+    ['null entry', JSON.stringify([null])],
+    ['missing required field', JSON.stringify([{ ...profile, instructions: undefined }])],
+    ['wrong field type', JSON.stringify([{ ...profile, role: 7 }])],
+    ['blank required field', JSON.stringify([{ ...profile, purpose: '   ' }])],
+    ['invalid id shape', JSON.stringify([{ ...profile, id: 'not a valid id' }])],
+    ['duplicate id', JSON.stringify([profile, { ...profile, displayName: 'Other' }])],
+    ['provider pin unknown field', JSON.stringify([{ ...profile, providerId: 'claude' }])],
+    ['credential-shaped unknown field', JSON.stringify([{ ...profile, apiKey: 'shhh' }])],
+    ['tool allowlist unknown field', JSON.stringify([{ ...profile, tools: ['shell'] }])],
+    ['capability grant unknown field', JSON.stringify([{ ...profile, capabilities: ['CODE_GENERATION'] }])],
+    ['approval grant unknown field', JSON.stringify([{ ...profile, approved: true }])],
+    ['executable path unknown field', JSON.stringify([{ ...profile, executablePath: '/bin/sh' }])],
+    ['oversized instructions', JSON.stringify([{ ...profile, instructions: 'x'.repeat(16_385) }])],
+    ['too many entries', JSON.stringify(Array.from({ length: 65 }, (_unused, index) => ({ ...profile, id: `p${index}` })))],
+  ])('fails closed for %s', (_case, value) => {
+    expect(() => loadConfig(env({ QUOKY_AGENT_PROFILES: value }))).toThrow(/AGENT_PROFILE/);
+  });
+
+  it('fails closed on an oversized payload without parsing it', () => {
+    expect(() => loadConfig(env({ QUOKY_AGENT_PROFILES: `"${'x'.repeat(1_048_576)}"` })))
+      .toThrow('AGENT_PROFILES_PAYLOAD_TOO_LARGE');
+  });
+
+  it('never echoes raw instructions, secret-like content or the payload in configuration errors', () => {
+    const leaky = JSON.stringify([{
+      ...profile, instructions: 'SENTINEL-INSTRUCTIONS-DO-NOT-ECHO', apiKey: 'SENTINEL-SECRET-VALUE',
+    }]);
+    try {
+      loadConfig(env({ QUOKY_AGENT_PROFILES: leaky }));
+      throw new Error('expected configuration to fail closed');
+    } catch (error) {
+      const text = `${(error as Error).message}${(error as Error).stack ?? ''}`;
+      expect(text).toContain('AGENT_PROFILE_0_UNKNOWN_FIELD');
+      expect(text).not.toContain('SENTINEL-INSTRUCTIONS-DO-NOT-ECHO');
+      expect(text).not.toContain('SENTINEL-SECRET-VALUE');
+      expect(text).not.toContain(leaky);
+    }
+  });
+
+  it('reports the failing configuration key with a bounded index and reason', () => {
+    const value = JSON.stringify([profile, { ...profile, id: 'second', role: 5 }]);
+    expect(() => loadConfig(env({ QUOKY_AGENT_PROFILES: value }))).toThrow('AGENT_PROFILE_1_ROLE_INVALID');
+  });
+});
+
 describe('Product namespace environment compatibility', () => {
   const values = {
     DB_PATH: '/fixture/data.db', VECTOR_PATH: '/fixture/vectors', WORKSPACE_ROOT: '/fixture/work',

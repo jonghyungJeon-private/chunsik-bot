@@ -100,7 +100,7 @@ import { GitHubAppGitProvider } from './github-app-git-provider';
 import { createProductionRuntimeProviderRoutingActivation } from './provider-routing/provider-routing-activation';
 import { toolManagerProvider } from './tool-manager-provider';
 import { continuationLifecycleProvider } from './continuation-lifecycle-provider';
-import { agentProfileRegistryProvider } from './agent-profile-registry-provider';
+import { createAgentProfileRegistryProvider } from './agent-profile-registry-provider';
 
 const config = loadConfig();
 const coreLogger = new ConsoleLogger('quoky');
@@ -255,7 +255,8 @@ const infrastructure: Provider[] = [
  * metadata — keeping it framework-agnostic.
  */
 const application: Provider[] = [
-  agentProfileRegistryProvider,
+  // ADR-0089: validated static configuration becomes one immutable composition-time snapshot.
+  createAgentProfileRegistryProvider(config.agentProfiles),
   continuationLifecycleProvider,
   toolManagerProvider,
   {

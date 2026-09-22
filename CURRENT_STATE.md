@@ -145,8 +145,9 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   ratification, merge, configured profiles or offline acceptance. Documentation only; no Product/DB/runtime
   mutation.
 
-- **M3E-6G:** TaskRun persistence safety **IMPLEMENTED LOCALLY / AWAITING REVIEW** on base
-  `cf32815234608d9a46972e2186f35b3d5bcf48eb`; not delivered. Implements the first ADR-0089 activation
+- **M3E-6G:** TaskRun persistence safety **DELIVERED** through **PR #72**, merge commit
+  `80b28ea8fa9746cd970d37f982510ba5be4ada37` (implementation `9cbe1b1eab39b55a93b582f668698a8c463bc904`); on base
+  `cf32815234608d9a46972e2186f35b3d5bcf48eb`. Implements the first ADR-0089 activation
   prerequisites and nothing else. `SqliteTaskRunRepository.delete` now overrides the inherited generic
   delete: it loads the persisted row, derives the decision from that row's own `task_id` and the canonical
   `continuation_bindings` entry inside one `IMMEDIATE` transaction, and refuses every continuation-bound
@@ -180,7 +181,49 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   state or TaskRun status; dependency direction and TaskRun repository ownership are unchanged.
   AgentProfile configuration **NOT IMPLEMENTED**; Product Decision gate **NOT REACHED**; production
   continuation caller and receiver invocation **NOT IMPLEMENTED**; continuation execution activation
-  **DISABLED**. Independent implementation review pending; delivery is not claimed.
+  **DISABLED**. Independent implementation review **PASS_WITH_NON_BLOCKING_FINDINGS** (0 blocking) preceded
+  delivery. Carry-forward: `GuardedTaskRunStartError` naming debt, SQLite timeout upper-bound validation,
+  `SQLITE_LOCKED` typed mapping and delete/start concurrency-test robustness all remain **TRACKED /
+  NON_BLOCKING**.
+
+- **M3E-6H:** Static AgentProfile configuration **IMPLEMENTED LOCALLY / AWAITING REVIEW** on base
+  `80b28ea8fa9746cd970d37f982510ba5be4ada37`; not delivered. The hardcoded production
+  `new AgentProfileRegistry([])` is removed. `QUOKY_AGENT_PROFILES` is parsed **only** in
+  `apps/quoky/src/config.ts`, following the existing `QUOKY_ACTOR_IDENTITY_MAPPINGS` JSON convention
+  (`requireRecord`/`requireOnlyKeys`, bounded indexed error codes, no payload echo), and the composition root
+  freezes the validated list into one immutable `AgentProfileRegistry` snapshot through
+  `createAgentProfileRegistryProvider(config.agentProfiles)`. No env var is read in Core, the SQLite adapter,
+  `WorkHandoffContinuationService` or `ContinuationExecutionEntryService`.
+  The surface accepts exactly the five existing domain fields — `id`, `displayName`, `role`, `purpose`,
+  `instructions` — matching source truth in `domain/agent-profile.ts`; no field was added. Parsing is strict
+  and fails closed on invalid JSON, a non-array root, a non-object or null entry, a missing or non-string
+  field, an invalid id shape, a duplicate id, any unknown key, blank or oversized text, more than 64 entries
+  and a payload above 1 MiB. Unknown-key rejection is what blocks authority-shaped configuration:
+  `providerId`, `apiKey`, credential or secret references, `executablePath`, `command`, `tools`,
+  `capabilities`, `permissions` and approval flags are all refused rather than ignored, so a typo cannot
+  silently become policy-looking data. Canonical bounded-text, control-character, identity and duplicate
+  rules stay owned by `AgentProfileRegistry`; the config layer adds structure, ordering-independent duplicate
+  detection and size bounds, then surfaces failures at the configuration boundary.
+  `CONFIG_ERROR_ECHOES_RAW_INSTRUCTIONS = NO`: errors carry a bounded code with the entry index, and a
+  sentinel test proves neither `instructions` text, secret-shaped values nor the raw payload appear in the
+  message or stack. Identity is never trimmed, lowercased or case-folded, so `Receiver` does not resolve
+  `receiver`; lookup still goes through the single existing `AgentProfileRegistry.get` path with no alias and
+  no fuzzy matching.
+  Absent or blank configuration yields `AgentProfileRegistry([])`, and an explicit `[]` is valid, so
+  continuation remains fail-closed exactly as before — an unknown profile lookup still throws. The registry
+  copies and freezes its input, which is asserted: mutating the source array or its objects after composition
+  cannot change the active snapshot, resolved profiles and the registry itself are frozen, and no
+  register/replace/remove/reload/add/set/clear API exists. `DYNAMIC_PROFILE_REGISTRATION = NO`.
+  The public contract is documented in `.env.example` with a non-secret example using domain fields only and
+  no internal class names. Configuration availability is the only change: `PROFILE_SELECTS_PROVIDER = NO`,
+  `PROFILE_GRANTS_CAPABILITY = NO`, `PROFILE_GRANTS_TOOL_AUTHORITY = NO`, and a structural test proves a
+  resolved profile carries exactly the five persona keys. A configured profile is not an execution request and
+  not an execution authorization. No new aggregate, repository, schema, durable state or runtime registration
+  API; dependency direction is preserved and AgentProfile remains configuration-only.
+  Product trigger **UNSELECTED**; Product Decision gate **NOT REACHED**; post-wait live-plan contract and
+  operation-scoped Approval proof **UNRESOLVED**; production continuation caller and receiver invocation
+  **NOT IMPLEMENTED**; continuation execution activation **DISABLED**. Independent implementation review
+  pending; delivery is not claimed.
 
 - **M3E-3:** Delivered through PR #58 (merge commit `618b5afcc6079be956d3756f9281506907571dde`).
   ADR-0083 is Ratified; independent implementation review PASS and documentation close-out review
