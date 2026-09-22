@@ -1,9 +1,11 @@
-import { ApprovalStatus, Capability, createWorkHandoff, executionPlanRef, ExecutionStatus, IntentType, RiskLevel,
+import { ApprovalStatus, Capability, createWorkHandoff, executionPlanRef, IntentType, RiskLevel,
   TaskRunStatus, TaskStatus, WorkItemStatus } from '../domain';
-import type { ExecutionPlan, ExecutionPlanRef, Id, TaskRun } from '../domain';
+import type { ExecutionPlan, Id, TaskRun } from '../domain';
 import type { ContinuationBindingRepository, StorageProvider } from '../ports';
 import { AgentProfileConfigurationError, type AgentProfileRegistry } from './agent-profile-registry';
 import { ApprovalPolicy } from './approval-policy';
+import { isCanonicalText as text, isTimestampText as timestamp, matchesExecutionPlanRef,
+  matchesLiveExecutionPlanStructure } from './continuation-live-plan-proof';
 import { RiskPolicy } from './risk-policy';
 
 type Reads = {
@@ -35,19 +37,6 @@ export function isUnresolvedStartedTaskRun(run: TaskRun, taskId: Id): boolean {
   return run.taskId === taskId && run.status === TaskRunStatus.STARTED;
 }
 
-function text(value: unknown): value is string {
-  return typeof value === 'string' && value.length > 0 && value.trim() === value;
-}
-function timestamp(value: unknown): boolean {
-  return typeof value === 'string' && Number.isFinite(Date.parse(value));
-}
-function samePlanRef(a: ExecutionPlanRef, b: ExecutionPlanRef): boolean {
-  if (!a || a.id !== b.id || a.goal !== b.goal) return false;
-  const x = a.integrity; const y = b.integrity;
-  return x === undefined && y === undefined || !!x && !!y
-    && text(x.kind) && text(x.contractVersion) && text(x.digest)
-    && x.kind === y.kind && x.contractVersion === y.contractVersion && x.digest === y.digest;
-}
 const deny = (reason: ContinuationExecutionAdmissionReason): ContinuationExecutionAdmissionDecision =>
   Object.freeze({ disposition: 'DENY', reason });
 
@@ -111,22 +100,16 @@ export class ContinuationExecutionAdmissionService {
       return deny('APPROVAL_UNPROVABLE');
     }
     if (plan) {
-      if (!text(plan.id) || !text(plan.goal) || task.planId !== plan.id || plan.projectId !== task.projectId
-        || !Object.values(RiskLevel).includes(plan.overallRisk) || typeof plan.approvalRequired !== 'boolean'
-        || !Object.values(ExecutionStatus).includes(plan.status)
-        || !Array.isArray(plan.requiredCapabilities) || !plan.requiredCapabilities.includes(task.intent.capability)
-        || plan.requiredCapabilities.some(c => !Object.values(Capability).includes(c))
-        || !Array.isArray(plan.steps) || !Array.isArray(plan.requiredResources)
-        || !plan.estimatedChanges || !Array.isArray(plan.expectedArtifacts) || !timestamp(plan.createdAt)
-        || plan.integrity !== undefined && (!text(plan.integrity.kind)
-          || !text(plan.integrity.contractVersion) || !text(plan.integrity.digest))) return deny('APPROVAL_UNPROVABLE');
+      // Shared pure structural proof (ADR-0089 / M3E-6I-a); gate policy below stays owned here.
+      if (!matchesLiveExecutionPlanStructure(plan, task)) return deny('APPROVAL_UNPROVABLE');
       const policy = new ApprovalPolicy(risk).evaluate(plan, work.actorId);
       const requiresApproval = taskRequiresApproval || plan.approvalRequired || policy.requiresApproval
         || plan.requiredCapabilities.some(c => risk.requiresApproval(risk.assessCapability(c)));
       if (requiresApproval && !approvalId) return deny('APPROVAL_UNPROVABLE');
       if (approvalId) {
         const approval = await this.storage.approvals.get(approvalId);
-        if (!approval || approval.id !== approvalId || !samePlanRef(approval.executionPlanRef, executionPlanRef(plan))) {
+        if (!approval || approval.id !== approvalId
+          || !matchesExecutionPlanRef(approval.executionPlanRef, executionPlanRef(plan))) {
           return deny('APPROVAL_UNPROVABLE');
         }
         if (approval.status !== ApprovalStatus.APPROVED) return deny('APPROVAL_NOT_APPROVED');
