@@ -7,7 +7,38 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
-### Added — M3E-6H Static AgentProfile Configuration (local, awaiting review)
+### Changed — M3E-6I-a Shared Structural Live-Plan Predicate (local, awaiting review)
+
+- Extracted the duplicated pure structural live-plan proof into one Core module,
+  `application/continuation-live-plan-proof.ts`, now used by both `WorkHandoffContinuationService.prepare`
+  and `ContinuationExecutionAdmissionService.evaluate`. A source audit confirmed three genuine duplications:
+  the live-plan structural validation block, the plan-reference/integrity comparison nested in two
+  differently-scoped approval checks, and the `text`/`timestamp` micro-helpers.
+- Kept the shared proof pure and boolean-returning: no storage, ApprovalManager, TaskManager,
+  AgentProfileRegistry, Provider, environment, configuration or mutable state, and no new failure taxonomy,
+  decision object or authority value. Each caller maps a rejection into its existing bounded reason, so
+  public error codes are unchanged.
+- Did not flatten gate semantics. Approval-policy consistency derivation stays per-caller; `prepare` still
+  owns the `requestedBy` requester requirement and the exact `ApprovalRequest.id` check; admission still does
+  not require `requestedBy`; and the differing lifecycle expectations (admission requires RUNNING, preparation
+  accepts PENDING/PLANNING/WAITING_APPROVAL) are preserved. No TaskRun creation, guarded start, receiver call
+  or broadening of `ContinuationExecutionEntryService`.
+- Preserved caller-owned live plans: nothing is persisted, cached or reconstructed from `Task.planId`, an
+  `ExecutionPlanRef` or an `ApprovalRequest`. `Task.planId` participates only as a structural consistency
+  check and never as authority.
+- Added 52 focused tests: a table-driven one-field-at-a-time mutation matrix over every structural dimension,
+  integrity and plan-ref comparison cases, order/history independence, purity assertions over the module
+  boundary, and cross-consumer consistency proving no structural mismatch can be accepted by one consumer
+  while rejected by the other, with no lifecycle transition or write on rejection. Existing prepare,
+  admission, entry, guarded-start, persistence-safety and config suites pass unchanged as parity evidence.
+- No new aggregate, repository, schema, migration, durable state, Approval model or ExecutionPlan repository.
+  Post-wait live-plan source and operation-scoped Approval proof remain UNRESOLVED; `ApprovalRequest` still
+  has no kind/purpose/operation field. This is the last ratified slice before the Product Decision gate, which
+  is NEXT and NOT REACHED — trigger, authorized Actor/Project scope and receiver capability set were not
+  chosen. Receiver invocation remains NOT IMPLEMENTED and continuation activation DISABLED. Local only: no
+  Push/PR/Merge, no Runtime, Provider, network, Discord, secret read or shared-DB action.
+
+### Added — M3E-6H Static AgentProfile Configuration (delivered, PR #73)
 
 - Removed the hardcoded production `new AgentProfileRegistry([])` and replaced it with the ratified typed
   configuration surface. `QUOKY_AGENT_PROFILES` is parsed only in `apps/quoky/src/config.ts`, following the

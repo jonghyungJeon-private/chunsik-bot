@@ -1,10 +1,12 @@
-import { ApprovalStatus, ExecutionStatus, executionPlanRef, Capability, ContinuationAdmissionError, createWorkHandoff, IntentType, RiskLevel, TaskStatus, TaskRunStatus, WorkItemStatus } from '../domain';
+import { ApprovalStatus, executionPlanRef, Capability, ContinuationAdmissionError, createWorkHandoff, IntentType, RiskLevel, TaskStatus, TaskRunStatus, WorkItemStatus } from '../domain';
 import type { ApprovalRequest, ContinuationBinding, ExecutionPlan, Id } from '../domain';
 import type { ContinuationBindingRepository, StorageProvider } from '../ports';
 import { AgentProfileConfigurationError, type AgentProfileRegistry } from './agent-profile-registry';
 import type { TaskManager } from './task-manager';
 import type { ApprovalManager } from './approval-manager';
 import { ApprovalPolicy } from './approval-policy';
+import { isCanonicalText as canonicalText, isTimestampText as timestamp, matchesExecutionPlanRef,
+  matchesLiveExecutionPlanStructure } from './continuation-live-plan-proof';
 import { RiskPolicy } from './risk-policy';
 import { WorkHandoffConsumptionService } from './work-handoff-consumption-service';
 
@@ -31,14 +33,6 @@ export type ContinuationLifecycleResult = Readonly<
 export interface ContinuationLifecycleOwners {
   tasks: Pick<TaskManager, 'transition'>;
   approvals: Pick<ApprovalManager, 'requestFor' | 'get'>;
-}
-
-function canonicalText(value: unknown): value is string {
-  return typeof value === 'string' && value.length > 0 && value.trim() === value;
-}
-
-function timestamp(value: unknown): boolean {
-  return typeof value === 'string' && Number.isFinite(Date.parse(value));
 }
 
 function requireId(id: Id): void {
@@ -116,17 +110,9 @@ export class WorkHandoffContinuationService {
       || task.status === TaskStatus.WAITING_APPROVAL)) return deny('APPROVAL_UNPROVABLE');
     let requiresApproval = taskRequiresApproval;
     if (plan) {
-      if (!canonicalText(plan.id) || !canonicalText(plan.goal) || task.planId !== plan.id
-        || plan.projectId !== task.projectId || !Object.values(RiskLevel).includes(plan.overallRisk)
-        || typeof plan.approvalRequired !== 'boolean' || !Object.values(ExecutionStatus).includes(plan.status)
-        || !Array.isArray(plan.requiredCapabilities) || !plan.requiredCapabilities.includes(task.intent.capability)
-        || plan.requiredCapabilities.some(c => !Object.values(Capability).includes(c))
-        || !Array.isArray(plan.steps) || !Array.isArray(plan.requiredResources) || !plan.estimatedChanges
-        || !Array.isArray(plan.expectedArtifacts) || !timestamp(plan.createdAt)
-        || plan.integrity !== undefined && (!canonicalText(plan.integrity.kind)
-          || !canonicalText(plan.integrity.contractVersion) || !canonicalText(plan.integrity.digest))) {
-        return deny('APPROVAL_UNPROVABLE');
-      }
+      // Shared pure structural proof (ADR-0089 / M3E-6I-a). Approval-policy consistency below is a
+      // gate-specific lifecycle check and stays owned here, not in the shared helper.
+      if (!matchesLiveExecutionPlanStructure(plan, task)) return deny('APPROVAL_UNPROVABLE');
       const evaluation = new ApprovalPolicy(risk).evaluate(plan, workItem.actorId);
       requiresApproval = requiresApproval || plan.approvalRequired || evaluation.requiresApproval
         || plan.requiredCapabilities.some(c => risk.requiresApproval(risk.assessCapability(c)));
@@ -162,15 +148,14 @@ export class WorkHandoffContinuationService {
     return Object.freeze({ disposition: 'RUNNING_READY', ...identity });
   }
 
+  /**
+   * Gate-specific approval check. The shared helper proves only structural plan-reference equality; the
+   * exact request id and the `requestedBy` requester requirement are this gate's own semantics and are
+   * deliberately NOT shared with read-only admission or the future receiver boundary.
+   */
   private matchesApproval(approval: ApprovalRequest, plan: ExecutionPlan, actorId: Id): boolean {
-    const ref = executionPlanRef(plan);
-    const actual = approval.executionPlanRef;
     return canonicalText(approval.id) && approval.requestedBy === actorId
-      && !!actual && actual.id === ref.id && actual.goal === ref.goal
-      && (actual.integrity === undefined && ref.integrity === undefined
-        || !!actual.integrity && !!ref.integrity && actual.integrity.kind === ref.integrity.kind
-          && actual.integrity.contractVersion === ref.integrity.contractVersion
-          && actual.integrity.digest === ref.integrity.digest);
+      && matchesExecutionPlanRef(approval.executionPlanRef, executionPlanRef(plan));
   }
 
   /** Exact-id historical provenance lookup, not admission/claim or "latest run" selection. */

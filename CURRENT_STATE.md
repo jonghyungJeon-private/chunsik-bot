@@ -186,8 +186,9 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   `SQLITE_LOCKED` typed mapping and delete/start concurrency-test robustness all remain **TRACKED /
   NON_BLOCKING**.
 
-- **M3E-6H:** Static AgentProfile configuration **IMPLEMENTED LOCALLY / AWAITING REVIEW** on base
-  `80b28ea8fa9746cd970d37f982510ba5be4ada37`; not delivered. The hardcoded production
+- **M3E-6H:** Static AgentProfile configuration **DELIVERED** through **PR #73**, merge commit
+  `dfb473d882d58805270425657498caebc837c80c` (implementation `a94ecd765bfb7366581f541376b2afb2295154f4`); on base
+  `80b28ea8fa9746cd970d37f982510ba5be4ada37`. The hardcoded production
   `new AgentProfileRegistry([])` is removed. `QUOKY_AGENT_PROFILES` is parsed **only** in
   `apps/quoky/src/config.ts`, following the existing `QUOKY_ACTOR_IDENTITY_MAPPINGS` JSON convention
   (`requireRecord`/`requireOnlyKeys`, bounded indexed error codes, no payload echo), and the composition root
@@ -223,7 +224,56 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
   Product trigger **UNSELECTED**; Product Decision gate **NOT REACHED**; post-wait live-plan contract and
   operation-scoped Approval proof **UNRESOLVED**; production continuation caller and receiver invocation
   **NOT IMPLEMENTED**; continuation execution activation **DISABLED**. Independent implementation review
-  pending; delivery is not claimed.
+  **PASS_WITH_NON_BLOCKING_FINDINGS** (0 blocking) preceded delivery. Carry-forward: error cause-chain
+  redaction test, direct source-object mutation test, duplicate-id error echo (safe bounded input) and
+  readonly config typing all remain **TRACKED / NON_BLOCKING**.
+
+- **M3E-6I-a:** Shared structural live-plan predicate **IMPLEMENTED LOCALLY / AWAITING REVIEW** on base
+  `dfb473d882d58805270425657498caebc837c80c`; not delivered. A source audit confirmed exactly three
+  duplications between `WorkHandoffContinuationService.prepare` and
+  `ContinuationExecutionAdmissionService.evaluate`: the live-plan structural validation block (identical
+  apart from locally renamed helpers), the plan-reference/integrity comparison nested inside two
+  differently-scoped approval checks, and the `text`/`timestamp` micro-helpers. All three now live in one
+  pure Core module, `application/continuation-live-plan-proof.ts`, exporting `isCanonicalText`,
+  `isTimestampText`, `matchesExecutionPlanIntegrity`, `matchesExecutionPlanRef` and
+  `matchesLiveExecutionPlanStructure`.
+  The structural dimensions the shared proof owns are exactly those already proven by both callers: plan id
+  and goal canonical text, `Task.planId` ↔ plan id consistency, plan/Task project consistency, `overallRisk`,
+  `approvalRequired` type, `status`, `requiredCapabilities` shape plus inclusion of the Task capability and
+  validity of every entry, `steps`, `requiredResources`, `estimatedChanges`, `expectedArtifacts`, `createdAt`
+  timestamp, and the canonical integrity triple when integrity is present. No proof dimension was added.
+  The helper is pure: no storage, `ApprovalManager`, `TaskManager`, `AgentProfileRegistry`, Provider,
+  environment, configuration, clock, I/O or mutable state, and it returns booleans so no new failure taxonomy,
+  decision object or authority value is introduced. Callers map a `false` result into their existing bounded
+  reason, so both keep their own error codes.
+  Gate semantics were deliberately **not** flattened. Approval-policy consistency derivation
+  (`taskRequiresApproval`, `plan.approvalRequired`, `ApprovalPolicy.evaluate`, capability-risk escalation) is
+  a ratified policy-consistency check and stays in each caller. `prepare` still owns the `requestedBy`
+  requester requirement and the exact `ApprovalRequest.id` check inside `matchesApproval`; read-only
+  admission still does not require `requestedBy`. Lifecycle expectations still differ by design — admission
+  requires `RUNNING` while preparation accepts `PENDING`/`PLANNING`/`WAITING_APPROVAL` — and the
+  `PENDING → PLANNING → RUNNING`, `PENDING → PLANNING → WAITING_APPROVAL` and exact-authority
+  `WAITING_APPROVAL → RUNNING` paths are unchanged, with no TaskRun creation, guarded start or receiver call.
+  Admission remains read-only, ephemeral and non-authoritative; the M3E-6E guarded SQLite transaction remains
+  the only effect-time authority. `ContinuationExecutionEntryService` was not broadened.
+  The live plan remains caller-owned: nothing is persisted, cached, or reconstructed from `Task.planId`, an
+  `ExecutionPlanRef` or an `ApprovalRequest`, and a regression proves both consumers still refuse to proceed
+  without the supplied plan even when a persisted `planId` and an APPROVED request exist. `Task.planId`
+  participates only as a structural consistency check and is never authority.
+  Coverage: 52 focused tests — direct proof tests for every structural dimension via a table-driven
+  one-field-at-a-time mutation matrix, integrity and plan-ref comparison cases, order/history independence
+  with argument-mutation checks, purity assertions over the module boundary, and cross-consumer consistency
+  proving that no structural mismatch can be accepted by one consumer while rejected by the other (reason
+  codes intentionally may differ) with no lifecycle transition or write on rejection. The pre-existing
+  prepare, admission, entry, guarded-start, persistence-safety and config suites pass unchanged, which is the
+  behavioral parity evidence.
+  No new aggregate, repository, schema, migration, durable state, Approval model or ExecutionPlan repository;
+  dependency direction preserved. `POST_WAIT_LIVE_PLAN_SOURCE` and `OPERATION_SCOPED_APPROVAL_PROOF` remain
+  **UNRESOLVED**; `ApprovalRequest` still has no kind/purpose/operation field. This is the final ratified
+  implementation slice before the **Product Decision gate**, which is **NEXT / NOT REACHED**: the
+  continuation trigger, authorized Actor/Project scope and supported receiver capability set remain
+  Product Owner decisions and were not chosen here. Receiver invocation **NOT IMPLEMENTED**; continuation
+  execution activation **DISABLED**. Independent implementation review pending; delivery is not claimed.
 
 - **M3E-3:** Delivered through PR #58 (merge commit `618b5afcc6079be956d3756f9281506907571dde`).
   ADR-0083 is Ratified; independent implementation review PASS and documentation close-out review

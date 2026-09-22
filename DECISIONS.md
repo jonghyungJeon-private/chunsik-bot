@@ -7692,3 +7692,80 @@ preserved and AgentProfile remains configuration-only. Product trigger **UNSELEC
 **NOT REACHED**; post-wait live-plan contract and operation-scoped Approval proof **UNRESOLVED**; production
 continuation caller and receiver invocation **NOT IMPLEMENTED**; continuation execution activation
 **DISABLED**. Independent implementation review pending.
+
+
+#### M3E-6I-a local implementation follow-through (2026-09-22)
+
+M3E-6H was delivered through **PR #73**, merge commit `dfb473d882d58805270425657498caebc837c80c`
+(implementation `a94ecd765bfb7366581f541376b2afb2295154f4`), after independent implementation review
+**PASS_WITH_NON_BLOCKING_FINDINGS** with 0 blocking findings; the local status above is superseded. Its
+carry-forward items — error cause-chain redaction test, direct source-object mutation test, duplicate-id error
+echo over already bounded input, and readonly config typing — remain **TRACKED / NON_BLOCKING** and were
+deliberately not remediated here, as were the earlier M3E-6G persistence carry-forwards.
+
+ADR-0089's `LIVE_PLAN_PREDICATE_DEDUP_BEFORE_ACTIVATION = YES` prerequisite is now **IMPLEMENTED LOCALLY /
+AWAITING REVIEW** on base `dfb473d882d58805270425657498caebc837c80c`, not delivered. The ratified boundary is
+unchanged: extract only the shared pure structural proof and keep gate-specific semantics separate.
+
+A source audit produced the duplication matrix before any change. Exactly three items were genuinely
+identical and structural: (1) the live-plan structural validation block in
+`WorkHandoffContinuationService.prepare` and `ContinuationExecutionAdmissionService.evaluate`, differing only
+in the locally renamed `canonicalText`/`text` helpers; (2) the plan-reference plus integrity comparison nested
+inside `prepare`'s `matchesApproval` and admission's `samePlanRef`; and (3) the `text`/`timestamp`
+micro-helpers themselves. Items explicitly judged **not** shareable, matching the ratified wording that
+policy-consistency and requester checks stay separate: the `taskRequiresApproval` /
+`plan.approvalRequired` / `ApprovalPolicy.evaluate` / capability-risk approval derivation, `prepare`'s
+`requestedBy` requirement and exact `ApprovalRequest.id` check, each gate's lifecycle status expectations, and
+each gate's failure taxonomy.
+
+The shared module is `packages/core/src/application/continuation-live-plan-proof.ts`, exporting
+`isCanonicalText`, `isTimestampText`, `matchesExecutionPlanIntegrity`, `matchesExecutionPlanRef` and
+`matchesLiveExecutionPlanStructure`. Its structural dimensions are exactly those both callers already proved:
+canonical plan id and goal, `Task.planId` ↔ plan id consistency, plan/Task project consistency, `overallRisk`,
+`approvalRequired` type, `status`, `requiredCapabilities` shape with Task-capability inclusion and per-entry
+validity, `steps`, `requiredResources`, `estimatedChanges`, `expectedArtifacts`, `createdAt` timestamp, and
+the canonical integrity triple when integrity is present. No new proof dimension was introduced.
+
+The helper is pure Core logic: no storage, `ApprovalManager`, `TaskManager`, `AgentProfileRegistry`, Provider,
+environment, configuration, clock, I/O or mutable state, and no persistence or cache. It returns booleans
+rather than a new decision object, so no failure taxonomy, authority value or durable failure state was
+created and both callers keep their existing bounded reason codes. `prepare` keeps `matchesApproval` as its own
+gate-specific method, now composed of the shared structural reference comparison plus its exclusive
+`requestedBy` and exact-id requirements; requiring canonical text on the persisted side is implied by equality
+with a canonically proven expected ref, so behavior is identical.
+
+The helper validates a live plan the caller already owns. It never obtains, persists, caches or reconstructs
+one — not from `Task.planId`, not from an `ExecutionPlanRef`, and not from an `ApprovalRequest` — so
+`WHO_SUPPLIES_LIVE_PLAN_AFTER_WAIT` and `AUTHORITATIVE_POST_WAIT_PLAN_SOURCE` remain unresolved and M3E-6I-b
+is untouched. `Task.planId` participates only as structural consistency and is never execution authority.
+Exact approval semantics are intact: exact `ApprovalRequest.id`, APPROVED status, matching `ExecutionPlanRef`
+and matching integrity, with no `isApproved(planId)`, any-approved fallback or `Task.planId` authority.
+`OPERATION_SCOPED_APPROVAL_PROOF` remains **UNRESOLVED**; `ApprovalRequest` still has no
+kind/purpose/operation field and no Approval model or schema changed. AgentProfile/persona semantics were
+kept out of the plan proof, no Provider is selected, no Tool authority or receiver capability is granted, and
+relational Actor/Project consistency was preserved without becoming an authorization model.
+
+Lifecycle behavior is unchanged. `prepare` still walks `PENDING → PLANNING → RUNNING`,
+`PENDING → PLANNING → WAITING_APPROVAL` and exact-authority `WAITING_APPROVAL → RUNNING` through
+`TaskManager` alone, creates no TaskRun, performs no guarded start and invokes no receiver. `evaluate` remains
+read-only, ephemeral and non-authoritative; the M3E-6E guarded SQLite transaction remains the sole effect-time
+authority. `ContinuationExecutionEntryService` was not broadened.
+
+Coverage: 52 focused tests. Direct proof tests cover each structural dimension through a table-driven
+one-field-at-a-time mutation matrix, plus integrity/plan-ref comparison cases, non-object inputs,
+order-and-history independence with argument-mutation checks, and purity assertions over the module boundary
+rather than fragile source-string matching. Cross-consumer tests run both real services over one fixture —
+with per-gate Task variants, because their lifecycle expectations legitimately differ — and prove that no
+structural mismatch can be accepted by one consumer while rejected by the other, that reason codes may still
+differ, that no lifecycle transition or write occurs on structural rejection, that `prepare` alone enforces
+`requestedBy`, and that neither consumer proceeds without the caller-supplied live plan. Behavioral parity
+evidence is the pre-existing prepare, admission, entry, guarded-start, persistence-safety and configuration
+suites passing unchanged.
+
+No new aggregate, repository, schema, migration, durable state, Approval model or ExecutionPlan repository;
+dependency direction preserved, the shared predicate is pure, and gate-specific semantics are preserved. This
+is the final ratified implementation slice before the **Product Decision gate**, which is **NEXT / NOT
+REACHED**: `CONTINUATION_TRIGGER` remains **UNSELECTED**, and `AUTHORIZED_ACTOR_PROJECT_SCOPE` and
+`SUPPORTED_RECEIVER_CAPABILITIES` remain **PRODUCT_DECISION_REQUIRED**; none was chosen on the Product Owner's
+behalf and M3E-6I-b was not begun. Receiver invocation **NOT IMPLEMENTED**; continuation execution activation
+**DISABLED**. Independent implementation review pending.
