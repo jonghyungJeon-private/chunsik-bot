@@ -7769,3 +7769,61 @@ REACHED**: `CONTINUATION_TRIGGER` remains **UNSELECTED**, and `AUTHORIZED_ACTOR_
 `SUPPORTED_RECEIVER_CAPABILITIES` remain **PRODUCT_DECISION_REQUIRED**; none was chosen on the Product Owner's
 behalf and M3E-6I-b was not begun. Receiver invocation **NOT IMPLEMENTED**; continuation execution activation
 **DISABLED**. Independent implementation review pending.
+
+
+#### ADR-0089 continuation / M3E-6I-b — Initial no-wait continuation context (2026-09-22)
+
+**IMPLEMENTED LOCALLY / AWAITING REVIEW**, based on
+`bd3ede3336b7727a4fb84760c9868eadf7cddb2c`. Product Owner has approved the Product Decision gate;
+ADR-0089 remains **Ratified**, with **Family A / NO HUMAN WAIT** selected for initial activation.
+M3E-6G, M3E-6H and M3E-6I-a are CLOSED + DELIVERED at this baseline (older local entries below
+record their implementation-time status).
+
+- `CONTINUATION_TRIGGER = EXPLICIT_CONTINUATION_EXECUTION_REQUEST` only. Handoff/binding existence,
+  lifecycle status, approved requests, profiles and DI registration never infer a trigger.
+- `AUTHORIZED_ACTOR_PROJECT_SCOPE = EXACT_WORKITEM_OWNER_AND_EXACT_PROJECT_ONLY`: the explicit request
+  actor must equal both canonical WorkItem and Task actors; project must equal both canonical projects,
+  including all-three-undefined for projectless work. No session/workspace/current-project fallback.
+- Supported receiver capabilities: `GENERAL_CHAT`, `SUMMARIZATION`, `DOCUMENT_ANALYSIS`, `CODE_REVIEW`,
+  `ARCHITECTURE_PLANNING`, `READONLY_LOOKUP`, `PROJECT_ANALYSIS`. `CODE_IMPLEMENTATION`, `TEST_EXECUTION`
+  and `EMBEDDING` are denied. The Task and every plan required capability must be allowed; executable
+  step capabilities must also be allowed and declared. No structural-only capability exception was found.
+- `ContinuationExecutionRequestContext` contains only trigger, handoffId, taskId, actorId, optional projectId,
+  and the supplied live ExecutionPlan. Its factory defensively copies and recursively freezes that value.
+  This is an in-memory copy of the supplied live plan, never persistence or reconstruction from an id/ref.
+- `ContinuationExecutionProductPolicy.evaluate` is pure, stateless and synchronous. It reuses the shared
+  structural live-plan proof and canonical RiskPolicy/ApprovalPolicy; actual Task risk, Task capability risk,
+  plan risk, plan approvalRequired, required capability risk or ApprovalPolicy requiring approval denies
+  initial eligibility. An existing APPROVED request or externally supplied approvalId cannot override denial.
+- Results are frozen `ELIGIBLE_NO_WAIT` or `DENY(reason)` values, never execution authority, a reservation,
+  lease or claim. The future caller must supply exact canonical related facts using existing owners;
+  policy does not resolve or replace handoff/binding admission. `prepare` still owns lifecycle/approval
+  preparation; admission owns read-only eligibility; M3E-6E guardedStart owns effect-time persisted authority.
+
+```text
+PRODUCT_DECISION_GATE = PASSED
+REQUEST_AUTHORIZATION_EXPLICIT = YES
+INITIAL_ACTIVATION_RESOLUTION = FAMILY A / NO HUMAN WAIT
+POST_WAIT_CONTINUATION_SUPPORTED = NO
+LIVE_PLAN_CALLER_OWNED = YES
+LIVE_PLAN_PERSISTED = NO
+LIVE_PLAN_RECONSTRUCTED = NO
+OPERATION_SCOPED_APPROVAL_PROOF_FAMILY_A = NOT_REQUIRED
+OPERATION_SCOPED_APPROVAL_PROOF_FOR_POST_WAIT = UNRESOLVED / DEFERRED
+POST_WAIT_LIVE_PLAN_SOURCE_FOR_INITIAL_FAMILY_A = NOT_APPLICABLE
+GENERAL_POST_WAIT_PLAN_SOURCE = UNRESOLVED / DEFERRED
+GENERAL_OPERATION_SCOPED_APPROVAL_PROOF = UNRESOLVED / DEFERRED
+FAMILY_B_IMPLEMENTED = NO
+FAMILY_C_IMPLEMENTED = NO
+M3E-6J = NOT STARTED
+RECEIVER_INVOCATION = NOT IMPLEMENTED
+PROVIDER_SELECTED = NO
+PROVIDER_INVOKED = NO
+CONTINUATION_EXECUTION_ACTIVATION = DISABLED
+```
+
+No new aggregate, repository, schema, migration, durable state, Approval field/model, ExecutionPlan
+repository, runtime state or workflow engine. No approval acquisition/decision/latest lookup, wait resume,
+post-wait cache, re-plan or re-approve path. AgentProfile configuration and WorkHandoff domain are unchanged.
+This selects an already-ratified ADR-0089 resolution family; it does not solve general operation-scoped
+Approval proof or post-wait plan supply, and does not reopen ADR-0087/0088.

@@ -68,3 +68,4 @@ export * from './work-handoff-continuation-service';
 export * from './continuation-live-plan-proof';
 export * from './continuation-execution-admission-service';
 export * from './continuation-execution-entry-service';
+export * from './continuation-execution-product-policy';
