@@ -44,12 +44,13 @@ import type {
   TaskRepository,
   TaskRun,
   TaskRunRepository,
+  GuardedTaskRunStartFacts,
   WorkItem,
   WorkItemRepository,
   WorkHandoff,
   WorkHandoffRepository,
 } from '@quoky/core';
-import { Capability, TaskStatus, TaskRunStatus, newId, now, ResourceRef as DomainResourceRef, createWorkHandoff } from '@quoky/core';
+import { ApprovalStatus, GuardedTaskRunStartError, WorkItemStatus, Capability, TaskStatus, TaskRunStatus, newId, now, ResourceRef as DomainResourceRef, createWorkHandoff } from '@quoky/core';
 
 export interface SqliteConfig {
   /** Path to the SQLite database file, e.g. ./data/chunsik.db */
@@ -220,34 +221,94 @@ class SqliteTaskRepository extends JsonRepository<Task> implements TaskRepositor
 }
 
 class SqliteTaskRunRepository extends JsonRepository<TaskRun> implements TaskRunRepository {
+  private isBound(taskId: Id): boolean {
+    return !!this.db.prepare('SELECT 1 FROM continuation_bindings WHERE task_id = ?').get(taskId);
+  }
+
   async start(task: Task, capability: Capability): Promise<TaskRun> {
     return this.db.transaction(() => {
+      if (this.isBound(task.id)) throw new GuardedTaskRunStartError('CONTINUATION_GUARD_REQUIRED');
       const row = this.db.prepare('SELECT data FROM tasks WHERE id = ?').get(task.id) as Row | undefined;
       if (!row || task.status !== TaskStatus.RUNNING || !Object.values(Capability).includes(capability)
         || !isDeepStrictEqual(JSON.parse(row.data), JSON.parse(JSON.stringify(task)))) {
         throw new Error('TASK_RUN_START_INVALID_OR_STALE_TASK');
       }
-      const previous = this.db.prepare(
-        "SELECT MAX(json_extract(data, '$.attempt')) AS attempt FROM task_runs WHERE task_id = ?",
-      ).get(task.id) as { attempt: number | null };
-      const attempt = (previous.attempt ?? 0) + 1;
-      if (!Number.isSafeInteger(attempt) || attempt < 1) throw new Error('TASK_RUN_ATTEMPT_EXHAUSTED');
-      const run: TaskRun = { id: newId(), taskId: task.id, attempt, status: TaskRunStatus.STARTED,
-        capability, artifactIds: [], startedAt: now() };
-      this.db.prepare('INSERT INTO task_runs (id, task_id, data) VALUES (?, ?, ?)')
-        .run(run.id, run.taskId, JSON.stringify(run));
-      return run;
+      return this.insertStarted(task.id, capability);
     }).immediate();
   }
 
-  override async save(run: TaskRun): Promise<TaskRun> {
-    this.db
-      .prepare(
-        `INSERT INTO task_runs (id, task_id, data) VALUES (?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET task_id = excluded.task_id, data = excluded.data`,
-      )
+  async guardedStart(expected: GuardedTaskRunStartFacts, capability: Capability): Promise<TaskRun> {
+    return this.db.transaction(() => {
+      const { handoff, binding, workItem, task, approval } = expected;
+      // Fixed tables, bounded domain snapshots. No Approval/RiskPolicy or plan reconstruction in SQLite.
+      for (const [table, value, code] of [
+        ['work_handoffs', handoff, 'STALE_HANDOFF'],
+        ['work_items', workItem, 'WORK_ITEM_NOT_CONTINUABLE'],
+        ['tasks', task, 'TASK_NOT_EXECUTABLE'],
+      ] as const) {
+        const row = this.db.prepare(`SELECT data FROM ${table} WHERE id = ?`).get(value.id) as Row | undefined;
+        if (!row || !isDeepStrictEqual(JSON.parse(row.data), JSON.parse(JSON.stringify(value)))) {
+          throw new GuardedTaskRunStartError(code);
+        }
+      }
+      const bound = this.db.prepare('SELECT * FROM continuation_bindings WHERE handoff_id = ?')
+        .get(handoff.id) as { handoff_id: string; task_id: string; recorded_at: string } | undefined;
+      if (!bound || binding.handoffId !== handoff.id || binding.taskId !== task.id
+        || bound.handoff_id !== binding.handoffId || bound.task_id !== binding.taskId
+        || bound.recorded_at !== binding.recordedAt) throw new GuardedTaskRunStartError('BINDING_MISMATCH');
+      if (handoff.workItemId !== workItem.id || workItem.status !== WorkItemStatus.ACTIVE) {
+        throw new GuardedTaskRunStartError('WORK_ITEM_NOT_CONTINUABLE');
+      }
+      if (task.status !== TaskStatus.RUNNING || !workItem.actorId || task.actorId !== workItem.actorId
+        || task.projectId !== workItem.projectId || !Object.values(Capability).includes(capability)
+        || capability !== task.intent.capability) throw new GuardedTaskRunStartError('TASK_NOT_EXECUTABLE');
+      if (!approval || !['NOT_REQUIRED', 'APPROVED'].includes(approval.kind)
+        || task.planId !== approval.planRef?.id) throw new GuardedTaskRunStartError('APPROVAL_STALE');
+      if (approval.kind === 'APPROVED') {
+        const row = this.db.prepare('SELECT data FROM approvals WHERE id = ?').get(approval.request.id) as Row | undefined;
+        const persisted = row ? JSON.parse(row.data) as ApprovalRequest : null;
+        if (!persisted || persisted.id !== approval.request.id || persisted.status !== ApprovalStatus.APPROVED
+          || !isDeepStrictEqual(persisted, JSON.parse(JSON.stringify(approval.request)))
+          || !isDeepStrictEqual(persisted.executionPlanRef, JSON.parse(JSON.stringify(approval.planRef)))) {
+          throw new GuardedTaskRunStartError('APPROVAL_STALE');
+        }
+      }
+      // Status is the sole unresolved predicate. MAX(attempt) below is ordinal allocation only.
+      if (this.db.prepare("SELECT 1 FROM task_runs WHERE task_id = ? AND json_extract(data, '$.status') = ? LIMIT 1")
+        .get(task.id, TaskRunStatus.STARTED)) throw new GuardedTaskRunStartError('UNRESOLVED_STARTED_RUN');
+      return this.insertStarted(task.id, capability);
+    }).immediate(); // The single commit is the linearization point; return only after it succeeds.
+  }
+
+  private insertStarted(taskId: Id, capability: Capability): TaskRun {
+    const previous = this.db.prepare(
+      "SELECT MAX(json_extract(data, '$.attempt')) AS attempt FROM task_runs WHERE task_id = ?",
+    ).get(taskId) as { attempt: number | null };
+    const attempt = (previous.attempt ?? 0) + 1;
+    if (!Number.isSafeInteger(attempt) || attempt < 1) throw new Error('TASK_RUN_ATTEMPT_EXHAUSTED');
+    const run: TaskRun = { id: newId(), taskId, attempt, status: TaskRunStatus.STARTED,
+      capability, artifactIds: [], startedAt: now() };
+    this.db.prepare('INSERT INTO task_runs (id, task_id, data) VALUES (?, ?, ?)')
       .run(run.id, run.taskId, JSON.stringify(run));
     return run;
+  }
+
+  override async save(run: TaskRun): Promise<TaskRun> {
+    return this.db.transaction(() => {
+      const existing = this.db.prepare('SELECT data FROM task_runs WHERE id = ?').get(run.id) as Row | undefined;
+      if (this.isBound(run.taskId)) {
+        // Block ALL novel rows (including terminal-shaped insertion), and terminal → STARTED revival.
+        if (!existing || run.status === TaskRunStatus.STARTED
+          && (JSON.parse(existing.data) as TaskRun).status !== TaskRunStatus.STARTED) {
+          throw new GuardedTaskRunStartError('CONTINUATION_GUARD_REQUIRED');
+        }
+      }
+      this.db.prepare(
+        `INSERT INTO task_runs (id, task_id, data) VALUES (?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET task_id = excluded.task_id, data = excluded.data`,
+      ).run(run.id, run.taskId, JSON.stringify(run));
+      return run;
+    }).immediate();
   }
 
   async listByTask(taskId: Id): Promise<TaskRun[]> {

@@ -7,6 +7,26 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — M3E-6E Guarded Atomic TaskRun Start (local, awaiting review)
+
+- Implemented ADR-0088's sibling `TaskRunRepository.guardedStart` and TaskManager delegation. Core
+  `ContinuationExecutionEntryService` retains exactly the snapshots read by fresh admission, derives
+  expected refs from the caller-owned live plan, then returns the exact committed TaskRun. Approval/Risk
+  policy stays in Core; no plan persistence/reconstruction, Approval acquisition or Task transition.
+- SQLite verifies canonical handoff, binding, ACTIVE work, RUNNING task, Actor/Project relationships,
+  exact APPROVED request/ref/integrity and absence of unresolved STARTED in one IMMEDIATE transaction.
+  Its single commit starts the real attempt. Concurrent calls yield at most one winner; ordinal MAX is
+  allocation only, never rediscovery. No schema, table, index or durable-state addition.
+- Closed ordinary-start bypass using persisted binding presence and save bypass for novel bound rows;
+  rejected terminal → STARTED revival while preserving completeRun/failRun updates. Raw SQL fixtures
+  remain outside adapter-contract protection; one historical fixture now explicitly uses raw SQL.
+- Verified 33 focused tests (including six real child processes: one winner/five bounded conflicts),
+  646 relevant regressions and typecheck under Node 18.20.5. No Product Runtime or external execution.
+- M3E-6D is delivered through PR #69 at `bab2e197151f9682298697be0cf5b18cb8f1e79b`. M3E-6E awaits
+  independent review; production continuation trigger, AgentProfile configuration surface and receiver
+  invocation remain NOT IMPLEMENTED, activation DISABLED. No automatic post-start recovery is added.
+  Duplicated live-plan predicates and the non-atomic pending-Approval acquisition window remain tracked.
+
 ### Added — M3E-6D Continuation Task Lifecycle Wiring (local, awaiting review)
 
 - Added `WorkHandoffContinuationService.prepare` as the production Application lifecycle caller over
