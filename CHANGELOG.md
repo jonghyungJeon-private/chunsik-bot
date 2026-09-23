@@ -7,6 +7,24 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — M3E-6L Offline Activation Acceptance (local, awaiting review)
+
+- M3E-6K closed and delivered through PR #77 at `0b0c3be7c5d8d592b0739b4e8436bfa61731c185`.
+- Added an isolated Nest acceptance suite reusing production lifecycle/entry/execution/profile factories,
+  real Core owners, test-owned SQLite and a test-only fake CONTINUATION_RECEIVER binding. Added a minimal
+  receiver execution composition candidate, deliberately absent from production AppModule.
+- Proved real success/failure/throw terminalization of the exact frozen started run, actor/project and
+  capability denial, no human wait, lost-plan denial, approval non-authority, profile/receiver preflight,
+  pre-start failure shapes, unresolved STARTED non-redispatch and terminal-run delete protection.
+- Recorded a 19-row ADR-0089 Family-A acceptance matrix (15 PASS, 4 bound to executed existing regressions,
+  zero FAIL), including contention/no retry, CANCELED revival, ordinary conversation and raw-SQL carve-out.
+- No new runtime semantics, Provider integration, transport, production binding, schema or Approval fields.
+  Offline acceptance passes locally; independent review is pending. Activation remains DISABLED and strict
+  live-execution authorization is NOT GRANTED; general post-wait contracts remain UNRESOLVED / DEFERRED.
+
+- Validation on Node 18.20.5: focused 15 files / 881 PASS; final full suite 161 files / 3,292 PASS
+  (test-process GIT_ASKPASS unset); typecheck, build, direct strict test typecheck and diff check PASS.
+
 ### Added — M3E-6K Receiver Seam and Exact-Run Terminalization (local, awaiting review)
 
 - Added provider-agnostic ContinuationReceiver port and sibling ContinuationReceiverExecutionService.
