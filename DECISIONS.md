@@ -7947,3 +7947,122 @@ No new aggregate, repository, schema, migration, durable state, Approval model, 
 workflow engine or Provider policy. AgentProfile and existing TaskRun insertion/revival/delete safety
 are unchanged. Fake receiver plus real 6J/guarded-start/TaskManager/test-only SQLite integration is
 focused 6K verification, not M3E-6L activation acceptance. AppModule is unchanged.
+
+#### ADR-0089 implementation follow-through / M3E-6L (2026-09-23)
+
+**IMPLEMENTED LOCALLY / AWAITING REVIEW** on `0b0c3be7c5d8d592b0739b4e8436bfa61731c185`.
+M3E-6K is **CLOSED + DELIVERED** through PR #77 (merge `0b0c3be7c5d8d592b0739b4e8436bfa61731c185`,
+reviewed HEAD `91834bb144b4d9f581bafcceb3fa1c810c421a8c`, independent review
+PASS_WITH_NON_BLOCKING_FINDINGS / zero blockers). M3E-6G/H/I-a/I-b/J remain CLOSED + DELIVERED.
+ADR-0089 / Family A is unchanged. Earlier slice entries are implementation-time history.
+
+An isolated Nest application context reuses the production lifecycle, entry, execution and static
+AgentProfile registry factories with real Core owners and test-owned in-memory SQLite. The new
+`continuationReceiverExecutionProvider` is an unregistered composition candidate: only the acceptance
+module binds `CONTINUATION_RECEIVER` to a fake. AppModule, Runtime and Discord are unchanged.
+No AiProviderManager, CapabilityRouter/ProviderSelector implementation, AI_PROVIDERS or real CLI adapter
+is available in that isolated module. No Product Runtime bootstrap or Provider/network call occurs.
+
+The real acceptance chain is `admit → explicit request → 6K preflight → 6J canonical resolution →
+Family-A policy → prepare → fresh admission → guardedStart → fake receiver → completeRun/failRun`.
+Success, controlled failure and throw retain exact started-run identity, attempt 1, Task and capability;
+TaskManager terminalizes the frozen run and persisted failure contains only CONTINUATION_RECEIVER_FAILED.
+Cross-actor/project (including projectless mismatch), unsupported capabilities, HIGH-risk wait, lost live
+plan, existing APPROVED requests and approvalId injection fail closed. Configuration, DI, provenance,
+ACTIVE/RUNNING state and approval existence grant no implicit trigger or execution authority.
+
+The [19-row acceptance matrix](DECISIONS.md#m3e6l-offline-acceptance-matrix) records 15 PASS and 4
+BOUND_TO_EXISTING_REGRESSION, with no FAIL. Same-revision executed regressions cover actual SQLite busy
+contention, no Application retry, CANCELED revival denial, ordinary conversation and the raw-SQL carve-out.
+Simulated process death after real 6J start retains STARTED; subsequent 6K invocation raises typed
+UNRESOLVED_STARTED_RUN without redispatch or attempt 2. Public-port deletion of each exact terminal run
+is rejected. Raw SQL remains a trusted-admin boundary: **raw-SQL immunity is NOT CLAIMED**.
+
+```text
+OFFLINE_ACTIVATION_ACCEPTANCE = PASS LOCALLY
+OFFLINE_ACTIVATION_PREREQUISITES_ACCEPTED = YES (Family A / offline only; awaiting independent review)
+FAKE_RECEIVER_COMPOSITION = VERIFIED
+RECEIVER_EXECUTION_FACTORY_AVAILABLE = YES
+APP_MODULE_RECEIVER_EXECUTION_REGISTERED = NO
+CONTINUATION_RECEIVER_DI_TOKEN = TEST_ONLY_BOUND / PRODUCTION_UNBOUND
+CONTINUATION_PRESTART_FAILURE_CONTRACT_SPLIT = PINNED / DOCUMENTED / TRANSPORT_NORMALIZATION_DEFERRED
+PRE_START_FAILURE_SHAPES = BOUNDED_DENY | TYPED_ERROR
+CONTINUATION_CANONICAL_FAILURE_RESULT_SPLIT = TRACKED
+CONTINUATION_WORKITEM_DOUBLE_READ = TRACKED / INTENTIONAL
+CONTINUATION_COMPOSITION_TEST_HARNESS = VERIFIED (isolated 6L composition)
+STARTED_RUN_IN_PLACE_FREEZE = TRACKED / CURRENTLY SAFE
+REQUEST_KEY_VALIDATION_OWN_ENUMERABLE_ONLY = TRACKED / PRE_EXISTING / INERT
+NO_WAIT_DEFENSE_IN_DEPTH_TERMS = INTENTIONAL
+STEP_CAPABILITY_DECLARATION_RULE = SUPPORTED_AND_DECLARED_REQUIRED
+REAL_RECEIVER_ADAPTER = NOT IMPLEMENTED
+PRODUCTION_RECEIVER_BINDING = NOT IMPLEMENTED
+EXTERNAL_TRIGGER_TRANSPORT = NOT IMPLEMENTED
+PROVIDER_INVOCATION = NO
+RUNTIME_EXECUTION = NO
+LIVE_UAT = NO
+LIVE_ACTIVATION_AUTHORIZED = NO
+STRICT_EXECUTION_AUTHORIZATION = NOT GRANTED
+CONTINUATION_EXECUTION_ACTIVATION = DISABLED
+GENERAL_POST_WAIT_PLAN_SOURCE = UNRESOLVED / DEFERRED
+GENERAL_OPERATION_SCOPED_APPROVAL_PROOF = UNRESOLVED / DEFERRED
+```
+
+No new execution semantics, authority, Approval fields/model, plan persistence, schema, migration,
+aggregate, repository, durable state, workflow, Provider routing, cancellation API or transport.
+No retry, automatic recovery/redispatch, replacement run or exactly-once external-effect claim.
+Offline acceptance/ADR ratification/configuration/merge do not authorize live execution.
+
+<a id="m3e6l-offline-acceptance-matrix"></a>
+
+##### M3E-6L offline acceptance matrix
+
+Every BOUND_TO_EXISTING_REGRESSION row below refers to tests actually executed at this local revision,
+not inherited pass claims. These are offline prerequisites only, not a completed live-activation gate.
+`A` = `apps/quoky/src/continuation-offline-acceptance.test.ts` (20 tests).
+`S` = `packages/storage-sqlite/src/task-run-persistence-safety.local-e2e.test.ts` (18 tests).
+`J` = `packages/core/src/application/continuation-execution-service.test.ts` (45 tests).
+`P` = `packages/core/src/application/continuation-execution-product-policy.test.ts` (53 tests).
+
+| Boundary | Result | Executed evidence / accepted contract |
+|---|---|---|
+| Explicit trigger | PASS | A: configuration/DI/provenance/ACTIVE/RUNNING alone start no attempt; non-explicit trigger denied; full explicit chain succeeds. |
+| Exact Actor | PASS | A: cross-actor denied before prepare/transition/start/receiver/terminalization. |
+| Exact Project | PASS | A: cross-project denied; exact projectless request succeeds and added project denies. |
+| Supported capability | PASS | A: GENERAL_CHAT full chain; CODE_IMPLEMENTATION, TEST_EXECUTION, EMBEDDING deny before effects. P retains all seven allowlist and step-declaration cases. |
+| Human-wait denial | PASS | A: HIGH-risk plan denies HUMAN_WAIT_REQUIRED without approval acquisition. |
+| Lost live plan | PASS | A: Task.planId remains set, absent plan or reference-only object rejects INVALID_REQUEST; no reconstruction. |
+| Wrong-operation/unrelated approval | PASS | A: persisted APPROVED same/unrelated-plan records still cannot bypass HIGH-risk denial; runtime approvalId injection rejects at strict context boundary. General post-wait scope proof remains deferred. |
+| Destination profile | PASS | A: exact handoff.toAgentProfileId selects immutable five-field configured persona; missing destination fails before start; profile adds no capability/Provider/authority. |
+| Receiver unavailable | PASS | A: unavailable test binding denies RECEIVER_UNAVAILABLE before 6J. |
+| Receiver success | PASS | A: real prepare/admission/guardedStart and completeRun persist SUCCEEDED with artifact ids. |
+| Receiver controlled failure | PASS | A: real start and failRun persist bounded FAILED, once. |
+| Receiver throw | PASS | A: raw sentinel exception becomes CONTINUATION_RECEIVER_FAILED; raw text absent from persisted run; no retry. |
+| Exact TaskRun identity | PASS | A: guarded return === receiver input === TaskManager input; frozen run terminalizes; exact id/task/attempt/capability retained; no post-start get. |
+| Storage contention | BOUND_TO_EXISTING_REGRESSION | S: real SQLite write lock maps to TASK_RUN_STORAGE_BUSY with no committed run; J: typed busy error propagates with one entry call and no retry. Bounded driver wait is not Application retry. |
+| Unresolved STARTED ambiguity | PASS | A: stop after real ATTEMPT_STARTED, subsequent 6K call yields UNRESOLVED_STARTED_RUN, retains same STARTED row, no receiver/replacement/attempt 2. |
+| Terminal-run deletion | PASS | A: public repository delete rejects each SUCCEEDED/FAILED exact run and preserves it. |
+| CANCELED revival boundary | BOUND_TO_EXISTING_REGRESSION | S: STARTED→CANCELED persistence, CANCELED→STARTED denied. No new cancelRun or coordinator CANCELED write; this is not proof of receiver cancellation. |
+| Ordinary conversation regression | BOUND_TO_EXISTING_REGRESSION | conversation-runtime.test.ts (480), conversation-runtime-negation.test.ts (12), intent-resolver.test.ts (6), all under packages/core/src/application. Production-source audit finds no Runtime/Discord continuation call or automatic handoff trigger. |
+| Raw-SQL carve-out | BOUND_TO_EXISTING_REGRESSION | S: public delete rejects but direct SQL in disposable DB deletes. Source audit: storage-sqlite/src/index.ts delete checks canonical binding transactionally; trusted-admin raw SQL stays outside port protection; immunity NOT CLAIMED. |
+
+Totals: **19 rows / 15 PASS / 4 BOUND_TO_EXISTING_REGRESSION / 0 FAIL**.
+
+The accepted pre-start split is pinned by A with the same whitespace-invalid handoff id:
+6J returns `DENY / CONTEXT / INVALID_REQUEST`; 6K preflight throws typed
+`WorkHandoffConsumptionError(INVALID_HANDOFF_ID)`. Both leave Task PENDING with zero runs,
+receiver calls or terminalization. Future transport must handle **both** shapes; normalization is not
+implemented. Own-enumerable key semantics remain pre-existing/inert; no generic object-hardening change.
+The exact in-place-frozen STARTED run is accepted by current spread-copy completeRun/failRun; revisit
+before any in-place TaskRun mutator is introduced.
+
+Production-source audit: the receiver factory is absent from AppModule; CONTINUATION_RECEIVER is bound
+only in the isolated test composition. The only production startExplicitContinuation call remains the
+existing 6K coordinator. Neither ConversationRuntime nor adapter-discord references these execution
+operations. The new factory only constructs existing Core services, with no Provider or transport.
+
+Validation (Node 18.20.5): focused 15 files / 881 tests passed; final full suite 161 files /
+3,292 tests passed, including all 20 new acceptance cases. `pnpm typecheck`, `pnpm build`, direct strict
+new-test typecheck and `git diff --check` passed. Full suite used `env -u GIT_ASKPASS pnpm test` to avoid
+the known inherited askpass sensitivity; no credential value was read. Two test-authoring corrections
+were made before final validation: admission errors use `reason`, and Approval fixtures use the existing
+`executionPlanRef` helper including required goal. No production execution semantics were changed.

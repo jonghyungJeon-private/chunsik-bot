@@ -5,6 +5,77 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
+### M3E-6L — Offline activation/composition acceptance (2026-09-23)
+
+**IMPLEMENTED LOCALLY / AWAITING REVIEW** on `0b0c3be7c5d8d592b0739b4e8436bfa61731c185`.
+M3E-6K is **CLOSED + DELIVERED** through PR #77 (merge `0b0c3be7c5d8d592b0739b4e8436bfa61731c185`,
+reviewed HEAD `91834bb144b4d9f581bafcceb3fa1c810c421a8c`, independent review
+PASS_WITH_NON_BLOCKING_FINDINGS / zero blockers). M3E-6G/H/I-a/I-b/J remain CLOSED + DELIVERED.
+ADR-0089 / Family A is unchanged. Earlier entries below are implementation-time history.
+
+An isolated Nest application context reuses the production lifecycle, entry, execution and static
+AgentProfile registry factories with real Core owners and test-owned in-memory SQLite. The new
+`continuationReceiverExecutionProvider` is an unregistered composition candidate: only the acceptance
+module binds `CONTINUATION_RECEIVER` to a fake. AppModule, Runtime and Discord are unchanged.
+No AiProviderManager, CapabilityRouter/ProviderSelector implementation, AI_PROVIDERS or real CLI adapter
+is available in that isolated module. No Product Runtime bootstrap or Provider/network call occurs.
+
+The real acceptance chain is `admit → explicit request → 6K preflight → 6J canonical resolution →
+Family-A policy → prepare → fresh admission → guardedStart → fake receiver → completeRun/failRun`.
+Success, controlled failure and throw retain exact started-run identity, attempt 1, Task and capability;
+TaskManager terminalizes the frozen run and persisted failure contains only CONTINUATION_RECEIVER_FAILED.
+Cross-actor/project (including projectless mismatch), unsupported capabilities, HIGH-risk wait, lost live
+plan, existing APPROVED requests and approvalId injection fail closed. Configuration, DI, provenance,
+ACTIVE/RUNNING state and approval existence grant no implicit trigger or execution authority.
+
+The [19-row acceptance matrix](DECISIONS.md#m3e6l-offline-acceptance-matrix) records 15 PASS and 4
+BOUND_TO_EXISTING_REGRESSION, with no FAIL. Same-revision executed regressions cover actual SQLite busy
+contention, no Application retry, CANCELED revival denial, ordinary conversation and the raw-SQL carve-out.
+Simulated process death after real 6J start retains STARTED; subsequent 6K invocation raises typed
+UNRESOLVED_STARTED_RUN without redispatch or attempt 2. Public-port deletion of each exact terminal run
+is rejected. Raw SQL remains a trusted-admin boundary: **raw-SQL immunity is NOT CLAIMED**.
+
+```text
+OFFLINE_ACTIVATION_ACCEPTANCE = PASS LOCALLY
+OFFLINE_ACTIVATION_PREREQUISITES_ACCEPTED = YES (Family A / offline only; awaiting independent review)
+FAKE_RECEIVER_COMPOSITION = VERIFIED
+RECEIVER_EXECUTION_FACTORY_AVAILABLE = YES
+APP_MODULE_RECEIVER_EXECUTION_REGISTERED = NO
+CONTINUATION_RECEIVER_DI_TOKEN = TEST_ONLY_BOUND / PRODUCTION_UNBOUND
+CONTINUATION_PRESTART_FAILURE_CONTRACT_SPLIT = PINNED / DOCUMENTED / TRANSPORT_NORMALIZATION_DEFERRED
+PRE_START_FAILURE_SHAPES = BOUNDED_DENY | TYPED_ERROR
+CONTINUATION_CANONICAL_FAILURE_RESULT_SPLIT = TRACKED
+CONTINUATION_WORKITEM_DOUBLE_READ = TRACKED / INTENTIONAL
+CONTINUATION_COMPOSITION_TEST_HARNESS = VERIFIED (isolated 6L composition)
+STARTED_RUN_IN_PLACE_FREEZE = TRACKED / CURRENTLY SAFE
+REQUEST_KEY_VALIDATION_OWN_ENUMERABLE_ONLY = TRACKED / PRE_EXISTING / INERT
+NO_WAIT_DEFENSE_IN_DEPTH_TERMS = INTENTIONAL
+STEP_CAPABILITY_DECLARATION_RULE = SUPPORTED_AND_DECLARED_REQUIRED
+REAL_RECEIVER_ADAPTER = NOT IMPLEMENTED
+PRODUCTION_RECEIVER_BINDING = NOT IMPLEMENTED
+EXTERNAL_TRIGGER_TRANSPORT = NOT IMPLEMENTED
+PROVIDER_INVOCATION = NO
+RUNTIME_EXECUTION = NO
+LIVE_UAT = NO
+LIVE_ACTIVATION_AUTHORIZED = NO
+STRICT_EXECUTION_AUTHORIZATION = NOT GRANTED
+CONTINUATION_EXECUTION_ACTIVATION = DISABLED
+GENERAL_POST_WAIT_PLAN_SOURCE = UNRESOLVED / DEFERRED
+GENERAL_OPERATION_SCOPED_APPROVAL_PROOF = UNRESOLVED / DEFERRED
+```
+
+No new execution semantics, authority, Approval fields/model, plan persistence, schema, migration,
+aggregate, repository, durable state, workflow, Provider routing, cancellation API or transport.
+No retry, automatic recovery/redispatch, replacement run or exactly-once external-effect claim.
+Offline acceptance/ADR ratification/configuration/merge do not authorize live execution.
+
+Validation (Node 18.20.5): focused 15 files / 881 tests passed; final full suite 161 files /
+3,292 tests passed, including all 20 new acceptance cases. `pnpm typecheck`, `pnpm build`, direct strict
+new-test typecheck and `git diff --check` passed. Full suite used `env -u GIT_ASKPASS pnpm test` to avoid
+the known inherited askpass sensitivity; no credential value was read. Two test-authoring corrections
+were made before final validation: admission errors use `reason`, and Approval fixtures use the existing
+`executionPlanRef` helper including required goal. No production execution semantics were changed.
+
 ### M3E-6K — Receiver seam and exact-run terminalization (2026-09-22)
 
 **IMPLEMENTED LOCALLY / AWAITING REVIEW** on `cb46950927897092c3c5ff2c55b5ea7e4056fe60`.
