@@ -97,7 +97,10 @@ describe('R1 constrained-path adversarial contract (§30/§31/§32)', () => {
       if (stored) await f.storage.tasks.save({ ...stored, title: 'raced-after-entry-snapshot' });
       return realGuarded(...args);
     });
-    await expect(f.execution.executeExplicitContinuation(f.request)).rejects.toBeDefined();
+    // The mutated stored Task no longer deep-equals the Entry snapshot captured as expected.task, so
+    // the guarded transaction rejects with the specific typed error before committing any run.
+    await expect(f.execution.executeExplicitContinuation(f.request)).rejects.toMatchObject({
+      name: 'GuardedTaskRunStartError', code: 'TASK_NOT_EXECUTABLE' });
     expect(raced).toHaveBeenCalledTimes(1);
     expect(f.receiver.receive).not.toHaveBeenCalled();
     expect(await f.storage.taskRuns.listByTask(f.task.id)).toEqual([]);

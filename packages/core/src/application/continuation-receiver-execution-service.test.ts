@@ -40,7 +40,7 @@ function fixture() {
     capability: Capability.GENERAL_CHAT, artifactIds: [], startedAt: ts };
   const profiles = new AgentProfileRegistry(['source', 'receiver', 'receiver-b'].map(id => ({ id: agentProfileId(id), displayName: id,
     role: id, purpose: id, instructions: id })));
-  const continuation = { [constrainedContinuation]: vi.fn(async (_input: ContinuationExecutionRequestContext): Promise<ContinuationExecutionResult | ({ disposition: 'ATTEMPT_STARTED'; taskRun: TaskRun; boundTaskFacts: { capability: Capability; intentType: IntentType } })> =>
+  const continuation = { [constrainedContinuation]: vi.fn(async (_input: ContinuationExecutionRequestContext): Promise<Extract<ContinuationExecutionResult, { disposition: 'DENY' }> | ({ disposition: 'ATTEMPT_STARTED'; taskRun: TaskRun; boundTaskFacts: { capability: Capability; intentType: IntentType } })> =>
     ({ disposition: 'ATTEMPT_STARTED', taskRun: run, boundTaskFacts: { capability: run.capability, intentType: task.intent.type } })) };
   const tasks = {
     completeRun: vi.fn(async (value: TaskRun, facts: { artifactIds: string[] }) => ({ ...value, ...facts, status: TaskRunStatus.SUCCEEDED })),
@@ -181,8 +181,36 @@ describe('M3E-6K receiver seam and exact-run terminalization', () => {
     f.receiver.receive.mockResolvedValue({ disposition: 'UNKNOWN', error: 'SENSITIVE_SENTINEL', taskRun: { id: 'other' } } as unknown as ContinuationReceiverOutcome);
     const result = await f.execution.executeExplicitContinuation(f.request);
     expect(result.disposition).toBe('ATTEMPT_UNRESOLVED');
+    if (result.disposition !== 'ATTEMPT_UNRESOLVED') throw new Error('expected unresolved');
     expect(f.tasks.failRun).not.toHaveBeenCalled();
     expect(result.taskRun).toBe(f.run);
+  });
+  it('B1: contradictory FAILED + ACCEPTED audit maps to ATTEMPT_UNRESOLVED with the exact run STARTED', async () => {
+    const f = fixture();
+    // A receiver claiming definite FAILED while carrying ACCEPTED terminal evidence + a final Provider
+    // is contradictory. 6K has no dispatch knowledge, so it must never terminalize this as FAILED.
+    const contradictoryAudit = {
+      schemaVersion: 'continuation-routing-audit-v1', executionId: 'exact-run-42', matchedPolicyId: 'policy-1',
+      policyVersion: 'v1', configurationVersion: 'c1', policyDigest: null, configurationDigest: null,
+      terminalStatus: 'ACCEPTED', terminalCode: null, attemptCount: 1, attemptCountKnown: true,
+      attempts: [{ index: 1, path: 'PRIMARY', providerId: 'provider-1', outcome: 'VALIDATION_ACCEPTED',
+        failureCode: null, validationDisposition: 'ACCEPT', validationReasonCodes: [],
+        responseSha256: 'a'.repeat(64), byteCount: 128, durationMs: 12, dispatchEvidence: 'RETURNED' }],
+      finalAcceptedProviderId: 'provider-1', dispatchEvidence: 'RETURNED',
+      transitions: [{ sequence: 1, evidence: 'RETURNED', code: null }],
+    };
+    f.receiver.receive.mockResolvedValue({ disposition: 'FAILED', error: 'CONTINUATION_RECEIVER_FAILED',
+      routingAudit: contradictoryAudit } as unknown as ContinuationReceiverOutcome);
+    const result = await f.execution.executeExplicitContinuation(f.request);
+    expect(result.disposition).toBe('ATTEMPT_UNRESOLVED');
+    if (result.disposition !== 'ATTEMPT_UNRESOLVED') throw new Error('expected unresolved');
+    expect(result.taskRun).toBe(f.run);
+    expect(result.taskRun.status).toBe(TaskRunStatus.STARTED);
+    expect(f.tasks.failRun).not.toHaveBeenCalled();
+    expect(f.tasks.completeRun).not.toHaveBeenCalled();
+    // The rejected contradictory audit must not surface on the unresolved result at all.
+    expect(result.routingAudit).toBeUndefined();
+    expect(JSON.stringify(result)).not.toContain('provider-1');
   });
   it.each([
     ['empty', Object.freeze([] as Capability[])],

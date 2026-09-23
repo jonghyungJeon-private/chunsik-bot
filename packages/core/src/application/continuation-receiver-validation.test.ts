@@ -170,3 +170,180 @@ describe('snapshotReceiverOutcome — §34 bounded outcome/audit validation', ()
     expect(snapshotReceiverOutcome({ disposition: 'UNRESOLVED', reason: 'EXECUTION_UNCERTAIN', routingAudit: fabricated }, EXECUTION_ID)).toBeNull();
   });
 });
+
+/** A well-formed definite-failure audit: not ACCEPTED, no final Provider, no UNKNOWN uncertainty. */
+function failedAudit(overrides: Partial<ContinuationRoutingAudit> = {}): ContinuationRoutingAudit {
+  return acceptedAudit({
+    terminalStatus: 'EXECUTION_FAILED', terminalCode: 'PROVIDER_EXECUTION_FAILED', dispatchEvidence: 'DISPATCHED',
+    attemptCount: 1, attemptCountKnown: true, finalAcceptedProviderId: null,
+    attempts: [{
+      index: 1, path: 'PRIMARY', providerId: 'provider-1', outcome: 'PROVIDER_FAILED',
+      failureCode: 'PROVIDER_EXECUTION_FAILED', validationDisposition: null, validationReasonCodes: [],
+      responseSha256: null, byteCount: null, durationMs: 5, dispatchEvidence: 'DISPATCHED',
+    }],
+    transitions: [{ sequence: 1, evidence: 'DISPATCHED', code: 'PROVIDER_EXECUTION_FAILED' }],
+    ...overrides,
+  });
+}
+
+describe('snapshotReceiverOutcome — B1 outcome/audit consistency (§2, §3, §14)', () => {
+  it('FAILED_ACCEPTED_AUDIT_REJECTED: FAILED + ACCEPTED audit is invalid', () => {
+    expect(snapshotReceiverOutcome({ disposition: 'FAILED', error: 'CONTINUATION_RECEIVER_FAILED', routingAudit: acceptedAudit() }, EXECUTION_ID)).toBeNull();
+  });
+
+  it('FAILED + finalAcceptedProviderId (non-ACCEPTED status) is invalid', () => {
+    // projectAudit already rejects finalAcceptedProviderId on non-ACCEPTED audits; assert end-to-end.
+    const audit = failedAudit({ finalAcceptedProviderId: 'provider-1' });
+    expect(snapshotReceiverOutcome({ disposition: 'FAILED', error: 'CONTINUATION_RECEIVER_FAILED', routingAudit: audit }, EXECUTION_ID)).toBeNull();
+  });
+
+  it('FAILED_UNKNOWN_AUDIT_REJECTED: FAILED + UNKNOWN terminalStatus is invalid', () => {
+    const audit = failedAudit({ terminalStatus: 'UNKNOWN', terminalCode: null });
+    expect(snapshotReceiverOutcome({ disposition: 'FAILED', error: 'CONTINUATION_RECEIVER_FAILED', routingAudit: audit }, EXECUTION_ID)).toBeNull();
+  });
+
+  it('FAILED + UNKNOWN dispatchEvidence is invalid (uncertain termination)', () => {
+    const audit = failedAudit({
+      dispatchEvidence: 'UNKNOWN',
+      attempts: [{ ...failedAudit().attempts[0]!, dispatchEvidence: 'UNKNOWN' }],
+      transitions: [{ sequence: 1, evidence: 'UNKNOWN', code: 'PROVIDER_EXECUTION_FAILED' }],
+    });
+    expect(snapshotReceiverOutcome({ disposition: 'FAILED', error: 'CONTINUATION_RECEIVER_FAILED', routingAudit: audit }, EXECUTION_ID)).toBeNull();
+  });
+
+  it('FAILED + attemptCountKnown=false is invalid (definite failure requires known count)', () => {
+    const audit = failedAudit({ attemptCountKnown: false, attemptCount: null, attempts: [], dispatchEvidence: 'DISPATCHED', transitions: [] });
+    expect(snapshotReceiverOutcome({ disposition: 'FAILED', error: 'CONTINUATION_RECEIVER_FAILED', routingAudit: audit }, EXECUTION_ID)).toBeNull();
+  });
+
+  it('FAILED + per-attempt UNKNOWN outcome is invalid', () => {
+    const audit = failedAudit({
+      attempts: [{ ...failedAudit().attempts[0]!, outcome: 'UNKNOWN', failureCode: null }],
+    });
+    expect(snapshotReceiverOutcome({ disposition: 'FAILED', error: 'CONTINUATION_RECEIVER_FAILED', routingAudit: audit }, EXECUTION_ID)).toBeNull();
+  });
+
+  it('accepts a well-formed FAILED outcome with a consistent definite-failure audit', () => {
+    const outcome = snapshotReceiverOutcome({ disposition: 'FAILED', error: 'CONTINUATION_RECEIVER_FAILED', routingAudit: failedAudit() }, EXECUTION_ID);
+    expect(outcome?.disposition).toBe('FAILED');
+    expect(Object.isFrozen((outcome as { routingAudit: unknown }).routingAudit)).toBe(true);
+  });
+
+  it('UNRESOLVED_ACCEPTED_AUDIT_REJECTED: UNRESOLVED + ACCEPTED audit is invalid', () => {
+    expect(snapshotReceiverOutcome({ disposition: 'UNRESOLVED', reason: 'EXECUTION_UNCERTAIN', routingAudit: acceptedAudit() }, EXECUTION_ID)).toBeNull();
+  });
+
+  it('UNRESOLVED + finalAcceptedProviderId is invalid', () => {
+    const audit = failedAudit({ terminalStatus: 'UNKNOWN', terminalCode: null, dispatchEvidence: 'UNKNOWN',
+      attemptCountKnown: false, attemptCount: null, attempts: [], transitions: [], finalAcceptedProviderId: 'provider-1' });
+    expect(snapshotReceiverOutcome({ disposition: 'UNRESOLVED', reason: 'EXECUTION_UNCERTAIN', routingAudit: audit }, EXECUTION_ID)).toBeNull();
+  });
+
+  it('UNRESOLVED allows UNKNOWN/uncertain dispatch evidence', () => {
+    const audit = acceptedAudit({ terminalStatus: 'UNKNOWN', terminalCode: null, dispatchEvidence: 'UNKNOWN',
+      attemptCountKnown: false, attemptCount: null, attempts: [], transitions: [], finalAcceptedProviderId: null });
+    expect(snapshotReceiverOutcome({ disposition: 'UNRESOLVED', reason: 'EXECUTION_UNCERTAIN', routingAudit: audit }, EXECUTION_ID)?.disposition).toBe('UNRESOLVED');
+  });
+
+  it('ACCEPTED_PROVIDER_ON_FAILED_REJECTED: acceptedProviderId is not accepted on FAILED', () => {
+    expect(snapshotReceiverOutcome({ disposition: 'FAILED', error: 'CONTINUATION_RECEIVER_FAILED', acceptedProviderId: 'provider-1' } as unknown, EXECUTION_ID)).toBeNull();
+  });
+
+  it('ACCEPTED_PROVIDER_ON_UNRESOLVED_REJECTED: acceptedProviderId is not accepted on UNRESOLVED', () => {
+    expect(snapshotReceiverOutcome({ disposition: 'UNRESOLVED', reason: 'EXECUTION_UNCERTAIN', acceptedProviderId: 'provider-1' } as unknown, EXECUTION_ID)).toBeNull();
+  });
+
+  it('SUCCEEDED + non-ACCEPTED audit is invalid', () => {
+    expect(snapshotReceiverOutcome({ disposition: 'SUCCEEDED', artifactIds: ['a'], routingAudit: failedAudit() }, EXECUTION_ID)).toBeNull();
+  });
+
+  it('SUCCEEDED acceptedProviderId mismatch with audit final Provider is invalid', () => {
+    const value = { disposition: 'SUCCEEDED', artifactIds: ['a'], acceptedProviderId: 'provider-9', routingAudit: acceptedAudit() };
+    expect(snapshotReceiverOutcome(value as unknown, EXECUTION_ID)).toBeNull();
+  });
+});
+
+describe('snapshotReceiverOutcome — B2 inert projection adversarial (§5-§12, §16)', () => {
+  it('rejects own toJSON on the outcome container', () => {
+    const value = { disposition: 'FAILED', error: 'CONTINUATION_RECEIVER_FAILED',
+      toJSON() { return { disposition: 'SUCCEEDED', artifactIds: ['RAW_SECRET'] }; } };
+    expect(snapshotReceiverOutcome(value as unknown, EXECUTION_ID)).toBeNull();
+  });
+
+  it('rejects toJSON on artifactIds and never lets its raw value reach the snapshot', () => {
+    const artifactIds: string[] = ['a'];
+    (artifactIds as unknown as { toJSON: () => string }).toJSON = () => 'RAW_SECRET\n/etc/passwd';
+    const value = { disposition: 'SUCCEEDED', artifactIds };
+    const outcome = snapshotReceiverOutcome(value as unknown, EXECUTION_ID);
+    expect(outcome).toBeNull();
+    expect(JSON.stringify(outcome)).not.toContain('RAW_SECRET');
+  });
+
+  it('rejects toJSON on attempts inside the routing audit', () => {
+    const audit = acceptedAudit();
+    (audit.attempts as unknown as { toJSON: () => string }).toJSON = () => 'RAW_ATTEMPTS';
+    const outcome = snapshotReceiverOutcome({ disposition: 'SUCCEEDED', artifactIds: ['a'], routingAudit: audit }, EXECUTION_ID);
+    expect(outcome).toBeNull();
+    expect(JSON.stringify(outcome)).not.toContain('RAW_ATTEMPTS');
+  });
+
+  it('rejects an accessor (getter) artifactId — single-read semantics, no getter mutation reaches snapshot', () => {
+    let reads = 0;
+    const artifactIds: unknown[] = [];
+    Object.defineProperty(artifactIds, 0, {
+      enumerable: true, configurable: true,
+      get() { reads += 1; return reads === 1 ? 'a' : 'RAW_SECRET\n/etc/passwd'; },
+    });
+    Object.defineProperty(artifactIds, 'length', { value: 1, writable: true });
+    const outcome = snapshotReceiverOutcome({ disposition: 'SUCCEEDED', artifactIds }, EXECUTION_ID);
+    expect(outcome).toBeNull();
+    expect(JSON.stringify(outcome)).not.toContain('RAW_SECRET');
+  });
+
+  it('rejects a sparse artifactIds array (hole must never become [null])', () => {
+    // eslint-disable-next-line no-sparse-arrays
+    const artifactIds = ['a', , 'b'];
+    const outcome = snapshotReceiverOutcome({ disposition: 'SUCCEEDED', artifactIds }, EXECUTION_ID);
+    expect(outcome).toBeNull();
+    // The hole must never be materialized as a durable [null]: rejection is total, no projection exists.
+  });
+
+  it('rejects a sparse attempts array in the audit', () => {
+    const attempts = new Array(1) as ContinuationRoutingAudit['attempts'];
+    const audit = acceptedAudit({ attemptCount: 1, attempts });
+    expect(snapshotReceiverOutcome({ disposition: 'SUCCEEDED', artifactIds: ['a'], routingAudit: audit }, EXECUTION_ID)).toBeNull();
+  });
+
+  it('rejects an accessor index inside the audit attempts array', () => {
+    const attempts: unknown[] = [];
+    Object.defineProperty(attempts, 0, { enumerable: true, configurable: true, get() { return acceptedAudit().attempts[0]; } });
+    Object.defineProperty(attempts, 'length', { value: 1, writable: true });
+    const audit = acceptedAudit({ attemptCount: 1, attempts: attempts as ContinuationRoutingAudit['attempts'] });
+    expect(snapshotReceiverOutcome({ disposition: 'SUCCEEDED', artifactIds: ['a'], routingAudit: audit }, EXECUTION_ID)).toBeNull();
+  });
+
+  it('rejects a non-plain prototype audit object', () => {
+    class Evil { }
+    const audit = Object.assign(new Evil(), acceptedAudit());
+    expect(snapshotReceiverOutcome({ disposition: 'SUCCEEDED', artifactIds: ['a'], routingAudit: audit as unknown as ContinuationRoutingAudit }, EXECUTION_ID)).toBeNull();
+  });
+
+  it('rejects a symbol-keyed outcome container', () => {
+    const value: Record<string | symbol, unknown> = { disposition: 'FAILED', error: 'CONTINUATION_RECEIVER_FAILED' };
+    value[Symbol('x')] = 'y';
+    expect(snapshotReceiverOutcome(value as unknown, EXECUTION_ID)).toBeNull();
+  });
+
+  it('returns a fresh projection that does not retain receiver-owned nested references', () => {
+    const audit = acceptedAudit();
+    const outcome = snapshotReceiverOutcome({ disposition: 'SUCCEEDED', artifactIds: ['a'], routingAudit: audit }, EXECUTION_ID);
+    expect(outcome?.disposition).toBe('SUCCEEDED');
+    const projected = (outcome as { routingAudit: ContinuationRoutingAudit }).routingAudit;
+    expect(projected).not.toBe(audit);
+    expect(projected.attempts).not.toBe(audit.attempts);
+    expect(projected.attempts[0]).not.toBe(audit.attempts[0]);
+    expect(projected.transitions).not.toBe(audit.transitions);
+    expect(Object.isFrozen(projected.attempts)).toBe(true);
+    expect(Object.isFrozen(projected.attempts[0])).toBe(true);
+  });
+});

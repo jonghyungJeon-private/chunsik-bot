@@ -83,6 +83,11 @@ export class ContinuationExecutionService {
     if (!task || task.id !== request.taskId) {
       return Object.freeze({ disposition: 'DENY', stage: 'CANONICAL', reason: 'TASK_MISMATCH' });
     }
+    // Malformed canonical Task data (missing intent) fails through the typed canonical contract
+    // instead of a raw TypeError when the constrained path reads task.intent.capability below.
+    if (!task.intent) {
+      return Object.freeze({ disposition: 'DENY', stage: 'CANONICAL', reason: 'TASK_MISMATCH' });
+    }
     if (constraint && !constraint.supportedCapabilities.includes(task.intent.capability)) {
       return Object.freeze({ disposition: 'DENY', stage: 'PRODUCT_POLICY', reason: 'UNSUPPORTED_RECEIVER_CAPABILITY' });
     }
