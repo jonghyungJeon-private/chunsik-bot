@@ -1,3 +1,4 @@
+import { constrainedContinuation, constrainedEntry } from './continuation-execution-internal';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { agentProfileId, Capability, ExecutionStatus, IntentType, RiskLevel, TaskRunStatus, TaskStatus, WorkItemStatus } from '../domain';
@@ -39,13 +40,13 @@ function fixture() {
     capability: Capability.GENERAL_CHAT, artifactIds: [], startedAt: ts };
   const profiles = new AgentProfileRegistry(['source', 'receiver', 'receiver-b'].map(id => ({ id: agentProfileId(id), displayName: id,
     role: id, purpose: id, instructions: id })));
-  const continuation = { startExplicitContinuation: vi.fn(async (_input: ContinuationExecutionRequestContext): Promise<ContinuationExecutionResult> =>
-    ({ disposition: 'ATTEMPT_STARTED', taskRun: run })) };
+  const continuation = { [constrainedContinuation]: vi.fn(async (_input: ContinuationExecutionRequestContext): Promise<ContinuationExecutionResult | ({ disposition: 'ATTEMPT_STARTED'; taskRun: TaskRun; boundTaskFacts: { capability: Capability; intentType: IntentType } })> =>
+    ({ disposition: 'ATTEMPT_STARTED', taskRun: run, boundTaskFacts: { capability: run.capability, intentType: task.intent.type } })) };
   const tasks = {
     completeRun: vi.fn(async (value: TaskRun, facts: { artifactIds: string[] }) => ({ ...value, ...facts, status: TaskRunStatus.SUCCEEDED })),
     failRun: vi.fn(async (value: TaskRun, error: string) => ({ ...value, error, status: TaskRunStatus.FAILED })),
   };
-  const receiver = { receive: vi.fn(async (_input: ContinuationReceiverInput): Promise<ContinuationReceiverOutcome> =>
+  const receiver = { supportedCapabilities: Object.freeze([Capability.GENERAL_CHAT]), receive: vi.fn(async (_input: ContinuationReceiverInput): Promise<ContinuationReceiverOutcome> =>
     ({ disposition: 'SUCCEEDED', artifactIds: ['artifact-1'] })) };
   const execution = new ContinuationReceiverExecutionService(storage, profiles, continuation, tasks, receiver);
   return { work, handoff, task, plan, request, storage, run, profiles, continuation, tasks, receiver, execution };
@@ -58,14 +59,14 @@ describe('M3E-6K receiver seam and exact-run terminalization', () => {
     if (mode === 'FAILED') f.receiver.receive.mockResolvedValue({ disposition: 'FAILED', error: 'CONTINUATION_RECEIVER_FAILED' });
     if (mode === 'THROW') f.receiver.receive.mockRejectedValue(new Error('SENSITIVE_SENTINEL secret path stack'));
     const result = await f.execution.executeExplicitContinuation(f.request);
-    expect(f.continuation.startExplicitContinuation).toHaveBeenCalledTimes(1);
+    expect(f.continuation[constrainedContinuation]).toHaveBeenCalledTimes(1);
     expect(f.receiver.receive).toHaveBeenCalledTimes(1);
     const input = f.receiver.receive.mock.calls[0]![0];
     expect(input.taskRun).toBe(f.run);
     expect(input.taskRun.capability).toBe(f.run.capability);
     expect(input.destinationAgentProfile).toBe(f.profiles.get(agentProfileId('receiver-b')));
     expect(input.handoff).toEqual(f.handoff);
-    expect(Object.keys(input)).toEqual(['handoff', 'destinationAgentProfile', 'plan', 'taskRun']);
+    expect(Object.keys(input)).toEqual(['handoff', 'destinationAgentProfile', 'plan', 'taskRun', 'boundTaskFacts']);
     for (const value of [input, input.handoff, input.handoff.artifactIds, input.destinationAgentProfile,
       input.plan, input.plan.steps[0], input.taskRun, input.taskRun.artifactIds]) expect(Object.isFrozen(value)).toBe(true);
     if (result.disposition === 'DENY') throw new Error('expected terminal result');
@@ -78,6 +79,13 @@ describe('M3E-6K receiver seam and exact-run terminalization', () => {
       expect(result.disposition).toBe('ATTEMPT_SUCCEEDED');
       expect(result.taskRun).toBe(await f.tasks.completeRun.mock.results[0]!.value);
       expect(result.taskRun.status).toBe(TaskRunStatus.SUCCEEDED);
+    } else if (mode === 'THROW') {
+      expect(result.disposition).toBe('ATTEMPT_UNRESOLVED');
+      expect(result.taskRun).toBe(f.run);
+      expect(result.taskRun.status).toBe(TaskRunStatus.STARTED);
+      expect(f.tasks.completeRun).not.toHaveBeenCalled();
+      expect(f.tasks.failRun).not.toHaveBeenCalled();
+      expect(JSON.stringify(result)).not.toContain('SENSITIVE_SENTINEL');
     } else {
       expect(f.tasks.failRun).toHaveBeenCalledTimes(1);
       expect(f.tasks.failRun.mock.calls[0]![0]).toBe(f.run);
@@ -95,7 +103,7 @@ describe('M3E-6K receiver seam and exact-run terminalization', () => {
     { disposition: 'DENY', stage: 'PRODUCT_POLICY', reason: 'ACTOR_NOT_AUTHORIZED' },
     { disposition: 'DENY', stage: 'PREPARE', reason: 'HUMAN_WAIT_REQUIRED' },
   ] as const)('preserves 6J denial stage $stage without receiver or terminalization', async denial => {
-    const f = fixture(); f.continuation.startExplicitContinuation.mockResolvedValue(denial);
+    const f = fixture(); f.continuation[constrainedContinuation].mockResolvedValue(denial);
     expect(await f.execution.executeExplicitContinuation(f.request)).toBe(denial);
     expect(f.receiver.receive).not.toHaveBeenCalled();
     expect(f.tasks.completeRun).not.toHaveBeenCalled();
@@ -107,7 +115,7 @@ describe('M3E-6K receiver seam and exact-run terminalization', () => {
     expect(await f.execution.executeExplicitContinuation({ ...f.request, [key]: f.run }))
       .toMatchObject({ disposition: 'DENY', stage: 'CONTEXT' });
     expect(f.storage.workHandoffs.get).not.toHaveBeenCalled();
-    expect(f.continuation.startExplicitContinuation).not.toHaveBeenCalled();
+    expect(f.continuation[constrainedContinuation]).not.toHaveBeenCalled();
     expect(f.receiver.receive).not.toHaveBeenCalled();
   });
   it.each(['missing handoff', 'invalid handoff', 'missing destination'])('preflights %s before start', async mode => {
@@ -116,7 +124,7 @@ describe('M3E-6K receiver seam and exact-run terminalization', () => {
     if (mode === 'invalid handoff') f.storage.workHandoffs.get.mockResolvedValue({ ...f.handoff, objective: '' });
     if (mode === 'missing destination') f.storage.workHandoffs.get.mockResolvedValue({ ...f.handoff, toAgentProfileId: agentProfileId('unknown') });
     await expect(f.execution.executeExplicitContinuation(f.request)).rejects.toBeInstanceOf(WorkHandoffConsumptionError);
-    expect(f.continuation.startExplicitContinuation).not.toHaveBeenCalled();
+    expect(f.continuation[constrainedContinuation]).not.toHaveBeenCalled();
     expect(f.receiver.receive).not.toHaveBeenCalled();
     expect(f.tasks.completeRun).not.toHaveBeenCalled();
     expect(f.tasks.failRun).not.toHaveBeenCalled();
@@ -127,12 +135,12 @@ describe('M3E-6K receiver seam and exact-run terminalization', () => {
     expect(await disabled.executeExplicitContinuation(f.request)).toMatchObject({ disposition: 'DENY', reason: 'RECEIVER_UNAVAILABLE' });
     f.storage.workItems.get.mockResolvedValue({ ...f.work, status: WorkItemStatus.COMPLETED });
     expect(await f.execution.executeExplicitContinuation(f.request)).toMatchObject({ disposition: 'DENY', reason: 'WORK_ITEM_NOT_CONTINUABLE' });
-    expect(f.continuation.startExplicitContinuation).not.toHaveBeenCalled();
+    expect(f.continuation[constrainedContinuation]).not.toHaveBeenCalled();
     expect(f.receiver.receive).not.toHaveBeenCalled();
     expect(f.tasks.completeRun).not.toHaveBeenCalled();
     expect(f.tasks.failRun).not.toHaveBeenCalled();
   });
-  it.each(['SUCCEEDED', 'FAILED', 'THROW'] as const)('propagates terminalization failure without fallback/retry for %s', async mode => {
+  it.each(['SUCCEEDED', 'FAILED'] as const)('propagates terminalization failure without fallback/retry for %s', async mode => {
     const f = fixture(); const error = new Error('storage failure');
     if (mode === 'SUCCEEDED') f.tasks.completeRun.mockRejectedValue(error);
     else {
@@ -148,9 +156,9 @@ describe('M3E-6K receiver seam and exact-run terminalization', () => {
   });
   it('propagates typed 6J errors without receiver or failure save', async () => {
     const f = fixture(); const error = new ContinuationExecutionEntryError('UNRESOLVED_STARTED_RUN');
-    f.continuation.startExplicitContinuation.mockRejectedValue(error);
+    f.continuation[constrainedContinuation].mockRejectedValue(error);
     await expect(f.execution.executeExplicitContinuation(f.request)).rejects.toBe(error);
-    expect(f.continuation.startExplicitContinuation).toHaveBeenCalledTimes(1);
+    expect(f.continuation[constrainedContinuation]).toHaveBeenCalledTimes(1);
     expect(f.receiver.receive).not.toHaveBeenCalled();
     expect(f.tasks.failRun).not.toHaveBeenCalled();
   });
@@ -163,7 +171,7 @@ describe('M3E-6K receiver seam and exact-run terminalization', () => {
     f.plan.steps[0]!.title = 'mutated'; f.plan.integrity!.digest = 'mutated'; f.plan.estimatedChanges.scope = 'broad';
     Object.assign(f.request, { taskId: 'other', actorId: 'other' });
     release(f.handoff); await pending;
-    const passed = f.continuation.startExplicitContinuation.mock.calls[0]![0];
+    const passed = f.continuation[constrainedContinuation].mock.calls[0]![0];
     expect(passed.plan).toEqual(before);
     expect(f.receiver.receive.mock.calls[0]![0].plan).toBe(passed.plan);
     expect(passed.taskId).toBe('task');
@@ -172,8 +180,37 @@ describe('M3E-6K receiver seam and exact-run terminalization', () => {
     const f = fixture();
     f.receiver.receive.mockResolvedValue({ disposition: 'UNKNOWN', error: 'SENSITIVE_SENTINEL', taskRun: { id: 'other' } } as unknown as ContinuationReceiverOutcome);
     const result = await f.execution.executeExplicitContinuation(f.request);
-    expect(result.disposition).toBe('ATTEMPT_FAILED');
-    expect(f.tasks.failRun.mock.calls[0]).toEqual([f.run, 'CONTINUATION_RECEIVER_FAILED']);
+    expect(result.disposition).toBe('ATTEMPT_UNRESOLVED');
+    expect(f.tasks.failRun).not.toHaveBeenCalled();
+    expect(result.taskRun).toBe(f.run);
+  });
+  it.each([
+    ['empty', Object.freeze([] as Capability[])],
+    ['duplicate', Object.freeze([Capability.GENERAL_CHAT, Capability.GENERAL_CHAT])],
+    ['malformed', Object.freeze(['NOT_A_CAPABILITY'] as unknown as Capability[])],
+  ])('§29 fails closed before start when the receiver support declaration is %s', async (_label, supported) => {
+    const f = fixture();
+    const receiver = { ...f.receiver, supportedCapabilities: supported };
+    const execution = new ContinuationReceiverExecutionService(f.storage, f.profiles, f.continuation, f.tasks, receiver);
+    expect(await execution.executeExplicitContinuation(f.request))
+      .toMatchObject({ disposition: 'DENY', stage: 'RECEIVER_PREFLIGHT', reason: 'RECEIVER_UNAVAILABLE' });
+    expect(f.continuation[constrainedContinuation]).not.toHaveBeenCalled();
+    expect(f.receiver.receive).not.toHaveBeenCalled();
+    expect(f.tasks.completeRun).not.toHaveBeenCalled();
+    expect(f.tasks.failRun).not.toHaveBeenCalled();
+  });
+  it('§12 boundTaskFacts capability mismatch with the started run fails closed to unresolved', async () => {
+    const f = fixture();
+    // The constrained 6J path returns facts whose capability disagrees with the exact started run.
+    f.continuation[constrainedContinuation].mockResolvedValue({ disposition: 'ATTEMPT_STARTED', taskRun: f.run,
+      boundTaskFacts: { capability: Capability.SUMMARIZATION, intentType: IntentType.CHAT } });
+    const result = await f.execution.executeExplicitContinuation(f.request);
+    expect(result.disposition).toBe('ATTEMPT_UNRESOLVED');
+    if (result.disposition !== 'ATTEMPT_UNRESOLVED') throw new Error('expected unresolved');
+    expect(result.taskRun).toBe(f.run);
+    expect(f.receiver.receive).not.toHaveBeenCalled();
+    expect(f.tasks.completeRun).not.toHaveBeenCalled();
+    expect(f.tasks.failRun).not.toHaveBeenCalled();
   });
   it('keeps the port and orchestration provider agnostic with no post-start storage/run lookup', () => {
     const port = readFileSync(new URL('../ports/continuation-receiver.port.ts', import.meta.url), 'utf8');

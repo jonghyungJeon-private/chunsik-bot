@@ -1,3 +1,4 @@
+import { constrainedContinuation, constrainedEntry, type ContinuationExecutionConstraint, type BoundContinuationStart } from './continuation-execution-internal';
 import { WorkItemStatus } from '../domain';
 import type { TaskRun } from '../domain';
 import type { ContinuationBindingRepository, StorageProvider } from '../ports';
@@ -10,6 +11,9 @@ import { WorkHandoffConsumptionService } from './work-handoff-consumption-servic
 import type { ContinuationLifecycleResult, WorkHandoffContinuationService } from './work-handoff-continuation-service';
 
 type Reads = { [K in 'workHandoffs' | 'workItems' | 'tasks']: Pick<StorageProvider[K], 'get'> };
+type ConstrainedResult = Extract<ContinuationExecutionResult, { disposition: 'DENY' }>
+  | (Readonly<{ disposition: 'ATTEMPT_STARTED' }> & BoundContinuationStart);
+
 type PreparationDenial = Extract<ContinuationLifecycleResult, { disposition: 'DENY' }>['reason'];
 
 /** Same-invocation outcome only; never a reusable execution/dispatch authorization. */
@@ -34,10 +38,18 @@ export class ContinuationExecutionService {
     private readonly profiles: AgentProfileRegistry,
     private readonly bindings: Pick<ContinuationBindingRepository, 'get'>,
     private readonly preparation: Pick<WorkHandoffContinuationService, 'prepare'>,
-    private readonly entry: Pick<ContinuationExecutionEntryService, 'start'>,
+    private readonly entry: Pick<ContinuationExecutionEntryService, 'start'> & Partial<Pick<ContinuationExecutionEntryService, typeof constrainedEntry>>,
   ) {}
 
   async startExplicitContinuation(input: ContinuationExecutionRequestContext): Promise<ContinuationExecutionResult> {
+    return this.execute(input);
+  }
+
+  async [constrainedContinuation](input: ContinuationExecutionRequestContext, constraint: ContinuationExecutionConstraint): Promise<ConstrainedResult> {
+    return this.execute(input, constraint) as Promise<ConstrainedResult>;
+  }
+
+  private async execute(input: ContinuationExecutionRequestContext, constraint?: ContinuationExecutionConstraint): Promise<ContinuationExecutionResult | ConstrainedResult> {
     let request: ContinuationExecutionRequestContext;
     try {
       // No caller-supplied canonical entities or approval authority, including untyped transport extras.
@@ -71,6 +83,9 @@ export class ContinuationExecutionService {
     if (!task || task.id !== request.taskId) {
       return Object.freeze({ disposition: 'DENY', stage: 'CANONICAL', reason: 'TASK_MISMATCH' });
     }
+    if (constraint && !constraint.supportedCapabilities.includes(task.intent.capability)) {
+      return Object.freeze({ disposition: 'DENY', stage: 'PRODUCT_POLICY', reason: 'UNSUPPORTED_RECEIVER_CAPABILITY' });
+    }
     const policy = new ContinuationExecutionProductPolicy().evaluate(request, work, task);
     if (policy.disposition !== 'ELIGIBLE_NO_WAIT') {
       return Object.freeze({ disposition: 'DENY', stage: 'PRODUCT_POLICY', reason: policy.reason });
@@ -82,6 +97,12 @@ export class ContinuationExecutionService {
     }
     if (prepared.disposition !== 'RUNNING_READY' && prepared.disposition !== 'ALREADY_RUNNING') {
       return Object.freeze({ disposition: 'DENY', stage: 'PREPARE', reason: 'HUMAN_WAIT_REQUIRED' });
+    }
+    if (constraint) {
+      const start = this.entry[constrainedEntry];
+      if (!start) throw new Error('CONSTRAINED_ENTRY_UNAVAILABLE');
+      const bound = await start.call(this.entry, exact, constraint);
+      return Object.freeze({ disposition: 'ATTEMPT_STARTED', ...bound });
     }
     const taskRun = await this.entry.start(exact);
     // Preserve the exact returned object. No lookup, ordinal selection, receiver or terminalization.

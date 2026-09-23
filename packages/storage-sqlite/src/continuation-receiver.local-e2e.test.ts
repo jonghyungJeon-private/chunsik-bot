@@ -1,3 +1,4 @@
+import { constrainedContinuation, constrainedEntry } from '../../core/src/application/continuation-execution-internal';
 import { describe, expect, it, vi } from 'vitest';
 import { AgentProfileRegistry, agentProfileId, ApprovalManager, ApprovalPolicy, Capability,
   ContinuationExecutionEntryService, ContinuationExecutionService, ContinuationReceiverExecutionService,
@@ -34,13 +35,13 @@ describe('M3E-6K offline exact-run persistence with real 6J and fake receiver', 
       await preparation.admit('handoff', task.id);
       const entry = new ContinuationExecutionEntryService(storage, profiles, storage.continuationBindings, tasks);
       const continuation = new ContinuationExecutionService(storage, profiles, storage.continuationBindings, preparation, entry);
-      const receiver = { receive: vi.fn(async (_input: ContinuationReceiverInput): Promise<ContinuationReceiverOutcome> => {
+      const receiver = { supportedCapabilities: Object.freeze([Capability.GENERAL_CHAT]), receive: vi.fn(async (_input: ContinuationReceiverInput): Promise<ContinuationReceiverOutcome> => {
         if (mode === 'THROW') throw new Error('SENSITIVE_SENTINEL');
         return mode === 'SUCCEEDED' ? { disposition: 'SUCCEEDED', artifactIds: ['artifact-1'] }
           : { disposition: 'FAILED', error: 'CONTINUATION_RECEIVER_FAILED' };
       }) };
       const execution = new ContinuationReceiverExecutionService(storage, profiles, continuation, tasks, receiver);
-      const start = vi.spyOn(continuation, 'startExplicitContinuation');
+      const start = vi.spyOn(continuation, constrainedContinuation);
       const guarded = vi.spyOn(storage.taskRuns, 'guardedStart');
       const complete = vi.spyOn(tasks, 'completeRun');
       const fail = vi.spyOn(tasks, 'failRun');
@@ -54,6 +55,17 @@ describe('M3E-6K offline exact-run persistence with real 6J and fake receiver', 
       expect(lookup).not.toHaveBeenCalled();
       const started = await guarded.mock.results[0]!.value;
       expect(receiver.receive.mock.calls[0]![0].taskRun).toBe(started);
+      if (mode === 'THROW') {
+        expect(result.disposition).toBe('ATTEMPT_UNRESOLVED');
+        if (result.disposition !== 'ATTEMPT_UNRESOLVED') throw new Error('expected unresolved');
+        expect(result.taskRun).toBe(started);
+        expect(await storage.taskRuns.get(started.id)).toEqual(started);
+        expect(complete).not.toHaveBeenCalled(); expect(fail).not.toHaveBeenCalled();
+        await expect(execution.executeExplicitContinuation(request)).rejects.toMatchObject({ reason: 'UNRESOLVED_STARTED_RUN' });
+        expect(receiver.receive).toHaveBeenCalledTimes(1);
+        expect(await storage.taskRuns.listByTask(task.id)).toEqual([started]);
+        return;
+      }
       expect(complete).toHaveBeenCalledTimes(mode === 'SUCCEEDED' ? 1 : 0);
       expect(fail).toHaveBeenCalledTimes(mode === 'SUCCEEDED' ? 0 : 1);
       expect((mode === 'SUCCEEDED' ? complete.mock.calls[0]![0] : fail.mock.calls[0]![0])).toBe(started);

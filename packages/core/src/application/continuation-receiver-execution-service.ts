@@ -1,3 +1,7 @@
+import { constrainedContinuation, snapshotReceiverConstraint } from './continuation-execution-internal';
+import { snapshotReceiverOutcome } from './continuation-receiver-validation';
+import { Capability, IntentType } from '../domain';
+import type { ContinuationRoutingAudit } from '../ports';
 import { createWorkHandoff } from '../domain';
 import type { TaskRun } from '../domain';
 import type { ContinuationReceiver, ContinuationReceiverOutcome, StorageProvider } from '../ports';
@@ -12,7 +16,8 @@ import { WorkHandoffConsumptionError, WorkHandoffConsumptionFailureCode } from '
 export type ContinuationReceiverExecutionResult =
   | Extract<ContinuationExecutionResult, { disposition: 'DENY' }>
   | Readonly<{ disposition: 'DENY'; stage: 'RECEIVER_PREFLIGHT'; reason: 'RECEIVER_UNAVAILABLE' }>
-  | Readonly<{ disposition: 'ATTEMPT_SUCCEEDED' | 'ATTEMPT_FAILED'; taskRun: TaskRun }>;
+  | Readonly<{ disposition: 'ATTEMPT_SUCCEEDED' | 'ATTEMPT_FAILED'; taskRun: TaskRun }>
+  | Readonly<{ disposition: 'ATTEMPT_UNRESOLVED'; taskRun: TaskRun; routingAudit?: ContinuationRoutingAudit }>;
 
 /** Freeze in place to retain exact started-run identity, including any nested audit metadata. */
 function freezeValue<T>(value: T, seen = new WeakSet<object>()): T {
@@ -37,7 +42,7 @@ export class ContinuationReceiverExecutionService {
       workItems: Pick<StorageProvider['workItems'], 'get'>;
     },
     private readonly profiles: AgentProfileRegistry,
-    private readonly continuation: Pick<ContinuationExecutionService, 'startExplicitContinuation'>,
+    private readonly continuation: Pick<ContinuationExecutionService, typeof constrainedContinuation>,
     private readonly tasks: Pick<TaskManager, 'completeRun' | 'failRun'>,
     private readonly receiver: ContinuationReceiver | undefined,
   ) {}
@@ -54,6 +59,9 @@ export class ContinuationReceiverExecutionService {
     if (!receiver || typeof receiver.receive !== 'function') {
       return Object.freeze({ disposition: 'DENY', stage: 'RECEIVER_PREFLIGHT', reason: 'RECEIVER_UNAVAILABLE' });
     }
+    let constraint;
+    try { constraint = snapshotReceiverConstraint(receiver.supportedCapabilities); }
+    catch { return Object.freeze({ disposition: 'DENY', stage: 'RECEIVER_PREFLIGHT', reason: 'RECEIVER_UNAVAILABLE' }); }
     // Consumption validates exactly the immutable handoff retained for receiver context, without a
     // second handoff lookup. Its canonical lifecycle/profile checks stay with the existing owner.
     let handoff: ReturnType<typeof createWorkHandoff> | undefined;
@@ -72,31 +80,35 @@ export class ContinuationReceiverExecutionService {
     }
     if (!handoff) throw new WorkHandoffConsumptionError(WorkHandoffConsumptionFailureCode.HANDOFF_NOT_FOUND);
     const destinationAgentProfile = this.profiles.get(handoff.toAgentProfileId);
-    const started = await this.continuation.startExplicitContinuation(request);
+    const started = await this.continuation[constrainedContinuation](request, constraint);
     if (started.disposition === 'DENY') return started;
     const startedRun = started.taskRun;
-    let outcome: ContinuationReceiverOutcome;
+    const unresolved = (routingAudit?: ContinuationRoutingAudit): ContinuationReceiverExecutionResult =>
+      Object.freeze({ disposition: 'ATTEMPT_UNRESOLVED', taskRun: startedRun, ...(routingAudit ? { routingAudit } : {}) });
+    const facts = started.boundTaskFacts;
+    if (!facts || facts.capability !== startedRun.capability || !Object.values(Capability).includes(facts.capability)
+      || !Object.values(IntentType).includes(facts.intentType) || !constraint.supportedCapabilities.includes(facts.capability)) {
+      return unresolved();
+    }
+    let outcome: ContinuationReceiverOutcome | null;
     try {
       const input = Object.freeze({ handoff, destinationAgentProfile, plan: request.plan,
-        taskRun: freezeValue(startedRun) });
-      const reported = await receiver.receive(input);
-      // Runtime malformed/unexpected output is a bounded receiver failure, never fabricated success.
-      if (reported?.disposition === 'SUCCEEDED' && Array.isArray(reported.artifactIds)
-        && reported.artifactIds.every(id => typeof id === 'string' && id.length > 0 && id.trim() === id)) {
-        outcome = { disposition: 'SUCCEEDED', artifactIds: [...reported.artifactIds] };
-      } else {
-        outcome = { disposition: 'FAILED', error: 'CONTINUATION_RECEIVER_FAILED' };
-      }
+        taskRun: freezeValue(startedRun), boundTaskFacts: Object.freeze({ ...facts }) });
+      outcome = snapshotReceiverOutcome(await receiver.receive(input), startedRun.id);
     } catch {
-      // Never copy arbitrary exception messages, stacks, paths or payloads into persisted failure text.
-      outcome = { disposition: 'FAILED', error: 'CONTINUATION_RECEIVER_FAILED' };
+      // R1 amendment: 6K cannot know dispatch phase. Every receiver escape is uncertainty.
+      return unresolved();
     }
+    if (!outcome) return unresolved();
+    if (outcome.disposition === 'UNRESOLVED') return unresolved(outcome.routingAudit);
+    const metadata = outcome.routingAudit ? { routingAudit: outcome.routingAudit } : undefined;
     // Keep persistence outside the receiver catch: no fallback save or retry after terminalization errors.
     if (outcome.disposition === 'SUCCEEDED') {
-      const taskRun = await this.tasks.completeRun(startedRun, { artifactIds: [...outcome.artifactIds] });
+      const taskRun = await this.tasks.completeRun(startedRun, { artifactIds: [...outcome.artifactIds],
+        ...(outcome.acceptedProviderId ? { providerId: outcome.acceptedProviderId } : {}), ...(metadata ? { metadata } : {}) });
       return Object.freeze({ disposition: 'ATTEMPT_SUCCEEDED', taskRun });
     }
-    const taskRun = await this.tasks.failRun(startedRun, outcome.error);
+    const taskRun = await this.tasks.failRun(startedRun, outcome.error, metadata ? { metadata } : {});
     return Object.freeze({ disposition: 'ATTEMPT_FAILED', taskRun });
   }
 }

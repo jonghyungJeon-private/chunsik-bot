@@ -1,3 +1,4 @@
+import { constrainedContinuation, constrainedEntry } from '../../../packages/core/src/application/continuation-execution-internal';
 import 'reflect-metadata';
 import { readFileSync } from 'node:fs';
 import { Module } from '@nestjs/common';
@@ -56,7 +57,7 @@ async function fixture(options: { mode?: 'SUCCEEDED' | 'FAILED' | 'THROW'; proje
     approvalRequired: false, overallRisk: options.highRisk ? RiskLevel.HIGH : RiskLevel.LOW,
     expectedArtifacts: [], status: ExecutionStatus.PENDING, createdAt: ts };
   const task = await storage.tasks.save({ ...created, planId: plan.id });
-  const receiver = { receive: vi.fn(async (_input: ContinuationReceiverInput): Promise<ContinuationReceiverOutcome> => {
+  const receiver = { supportedCapabilities: Object.freeze([Capability.GENERAL_CHAT]), receive: vi.fn(async (_input: ContinuationReceiverInput): Promise<ContinuationReceiverOutcome> => {
     if (options.mode === 'THROW') throw new Error('RAW_RECEIVER_SENTINEL');
     return options.mode === 'FAILED' ? { disposition: 'FAILED', error: 'CONTINUATION_RECEIVER_FAILED' }
       : { disposition: 'SUCCEEDED', artifactIds: ['artifact-1'] };
@@ -78,9 +79,9 @@ async function fixture(options: { mode?: 'SUCCEEDED' | 'FAILED' | 'THROW'; proje
   const profiles = application.get(AgentProfileRegistry);
   const request: ContinuationExecutionRequestContext = { trigger: 'EXPLICIT_CONTINUATION_EXECUTION_REQUEST',
     handoffId: handoff.id, taskId: task.id, actorId: 'actor', projectId, plan };
-  const start = vi.spyOn(continuation, 'startExplicitContinuation');
+  const start = vi.spyOn(continuation, constrainedContinuation);
   const prepare = vi.spyOn(lifecycle, 'prepare');
-  const entry = vi.spyOn(application.get(ContinuationExecutionEntryService), 'start');
+  const entry = vi.spyOn(application.get(ContinuationExecutionEntryService), constrainedEntry);
   const guarded = vi.spyOn(storage.taskRuns, 'guardedStart');
   const transition = vi.spyOn(tasks, 'transition');
   const complete = vi.spyOn(tasks, 'completeRun');
@@ -126,6 +127,19 @@ describe('M3E-6L isolated offline continuation activation acceptance', () => {
     expect(input.plan).toEqual(f.plan);
     expect(input.plan).not.toBe(f.plan);
     expect(Object.isFrozen(input.plan)).toBe(true);
+    // R1 deliberately replaces delivered throw→FAILED with throw→unresolved STARTED.
+    if (mode === 'THROW') {
+      expect(result.disposition).toBe('ATTEMPT_UNRESOLVED');
+      if (result.disposition !== 'ATTEMPT_UNRESOLVED') throw new Error('expected unresolved');
+      expect(result.taskRun).toBe(started);
+      expect(await f.storage.taskRuns.get(started.id)).toEqual(started);
+      expect(f.complete).not.toHaveBeenCalled(); expect(f.fail).not.toHaveBeenCalled();
+      expect(JSON.stringify(result)).not.toContain('RAW_RECEIVER_SENTINEL');
+      await expect(f.execution.executeExplicitContinuation(f.request)).rejects.toMatchObject({ reason: 'UNRESOLVED_STARTED_RUN' });
+      expect(f.receiver.receive).toHaveBeenCalledTimes(1);
+      expect(await f.storage.taskRuns.listByTask(f.task.id)).toEqual([started]);
+      return;
+    }
     expect(f.complete).toHaveBeenCalledTimes(mode === 'SUCCEEDED' ? 1 : 0);
     expect(f.fail).toHaveBeenCalledTimes(mode === 'SUCCEEDED' ? 0 : 1);
     const terminal = mode === 'SUCCEEDED' ? f.complete : f.fail;
