@@ -7888,3 +7888,62 @@ remains the effect-time persisted authority. M3E-6J leaves the concrete run STAR
 receiver outcomes. M3E-6K must own same-invocation receiver execution and exact-run terminalization.
 No new aggregate, repository, schema, migration, durable state, Approval model/field, ExecutionPlan
 repository or workflow engine. Existing M3E-6G/6H/6I-a carry-forwards remain unchanged.
+
+#### ADR-0089 implementation follow-through / M3E-6K — Receiver seam and exact-run terminalization (2026-09-22)
+
+**IMPLEMENTED LOCALLY / AWAITING REVIEW** on `cb46950927897092c3c5ff2c55b5ea7e4056fe60`.
+M3E-6J is **CLOSED + DELIVERED** through PR #76 (reviewed HEAD
+`99f3354d469b06c17a1c073e570e68742276c179`, PASS_WITH_NON_BLOCKING_FINDINGS / zero blockers).
+ADR-0089 / Family A remains ratified. Earlier slice entries below are implementation-time history.
+
+The Core `ContinuationReceiver` port accepts immutable canonical handoff, destinationAgentProfile,
+live plan and exact started taskRun. Capability comes only from taskRun.capability. It exposes no
+storage, approval, Provider routing or workflow authority. The smallest outcome is SUCCEEDED with
+artifactIds, or FAILED with the fixed `CONTINUATION_RECEIVER_FAILED` code; optional Provider audit
+fields/metadata are not introduced. No real receiver adapter or production receiver binding exists.
+
+`ContinuationReceiverExecutionService.executeExplicitContinuation` accepts only the existing request
+context. It shares 6J's strict key check (extracted without changing its behavior), calls the canonical
+snapshot factory before the first await, and preflights receiver availability, canonical handoff
+consumption/actionability and the exact destination profile before invoking 6J. The retained handoff is
+an immutable value from that same preflight read; existing consumption still validates canonical
+provenance and profiles. The registry profile is selected only by handoff.toAgentProfileId.
+
+Only `ContinuationExecutionService.startExplicitContinuation` starts attempts. Its DENY is returned
+unchanged; existing typed canonical/entry errors propagate. On ATTEMPT_STARTED, the exact returned
+run is frozen in place, including nested values, and passed to the receiver by identity. The receiver
+observes the same semantic plan snapshot supplied to 6J. No run lookup, capability override, direct
+admission/guardedStart or repository save is added.
+
+Receiver success calls TaskManager.completeRun with that exact started object; controlled failure,
+unexpected receiver throw or malformed output calls TaskManager.failRun with that same object and
+only the fixed bounded failure code. Raw exception details are never persisted. The service returns
+the exact terminal TaskRun produced by its owner. Terminalization is outside the receiver catch:
+storage failure propagates with no fallback save, receiver retry, terminalization retry or fabricated
+terminal state. Task status is not terminalized.
+
+```text
+CONTINUATION_RECEIVER_SEAM = IMPLEMENTED LOCALLY
+EXACT_RUN_TERMINALIZATION = IMPLEMENTED LOCALLY
+REAL_RECEIVER_ADAPTER = NOT IMPLEMENTED
+PRODUCTION_RECEIVER_BINDING = NOT IMPLEMENTED
+PROVIDER_INVOCATION = NO
+EXTERNAL_TRIGGER_TRANSPORT = NOT IMPLEMENTED
+M3E-6L = NOT STARTED
+CONTINUATION_EXECUTION_ACTIVATION = DISABLED
+GENERAL_POST_WAIT_PLAN_SOURCE = UNRESOLVED / DEFERRED
+GENERAL_OPERATION_SCOPED_APPROVAL_PROOF = UNRESOLVED / DEFERRED
+CONTINUATION_CANONICAL_FAILURE_RESULT_SPLIT = TRACKED
+CONTINUATION_WORKITEM_DOUBLE_READ = TRACKED / INTENTIONAL
+CONTINUATION_COMPOSITION_TEST_HARNESS = TRACKED / NON_BLOCKING
+NO_WAIT_DEFENSE_IN_DEPTH_TERMS = INTENTIONAL
+STEP_CAPABILITY_DECLARATION_RULE = SUPPORTED_AND_DECLARED_REQUIRED
+```
+
+Post-start process crash may leave an unresolved STARTED attempt. There is no automatic redispatch,
+replacement TaskRun or recovery; operator/future recovery policy is required. Exactly-once external
+receiver effects are not claimed. Results are same-invocation outcomes, never reusable authority.
+No new aggregate, repository, schema, migration, durable state, Approval model, ExecutionPlan repository,
+workflow engine or Provider policy. AgentProfile and existing TaskRun insertion/revival/delete safety
+are unchanged. Fake receiver plus real 6J/guarded-start/TaskManager/test-only SQLite integration is
+focused 6K verification, not M3E-6L activation acceptance. AppModule is unchanged.

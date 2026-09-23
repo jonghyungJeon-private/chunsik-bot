@@ -7,6 +7,23 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — M3E-6K Receiver Seam and Exact-Run Terminalization (local, awaiting review)
+
+- Added provider-agnostic ContinuationReceiver port and sibling ContinuationReceiverExecutionService.
+  Receiver prerequisites are checked before existing 6J start; immutable input carries canonical handoff,
+  exact destination profile, caller-owned snapshotted plan and the exact started run.
+- Reused TaskManager.completeRun/failRun for exact-run terminalization, without Task terminalization,
+  post-start run lookup or retry. Receiver throws/malformed outcomes use a fixed failure code; persistence
+  failures propagate without fallback or fabricated terminal states. Process crashes may leave STARTED.
+- Shared the existing strict request-key check with 6J, preserving its behavior and rejection of injected
+  canonical facts/authority. No Provider, production receiver binding, external transport or activation.
+- Added fake-receiver tests and focused real-6J/SQLite integration for success, controlled failure and
+  exception persistence; preserved existing safety contracts and deferred general post-wait concerns.
+- Validation on Node 18.20.5: focused 2 files / 30 tests passed; full suite 160 files / 3,272 tests passed
+  with inherited GIT_ASKPASS removed only from the test process. Typecheck, build, direct new-test typechecks
+  and diff checks passed. No failure-remediation rounds were needed.
+
+
 ### Added — M3E-6J Explicit Continuation Caller (local, awaiting review)
 
 - Added ContinuationExecutionService using the existing immutable context contract/factory, canonical

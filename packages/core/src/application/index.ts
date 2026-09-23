@@ -70,3 +70,4 @@ export * from './continuation-execution-admission-service';
 export * from './continuation-execution-entry-service';
 export * from './continuation-execution-product-policy';
 export * from './continuation-execution-service';
+export * from './continuation-receiver-execution-service';

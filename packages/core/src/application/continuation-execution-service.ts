@@ -3,7 +3,7 @@ import type { TaskRun } from '../domain';
 import type { ContinuationBindingRepository, StorageProvider } from '../ports';
 import type { AgentProfileRegistry } from './agent-profile-registry';
 import type { ContinuationExecutionEntryService } from './continuation-execution-entry-service';
-import { ContinuationExecutionProductPolicy, createContinuationExecutionRequestContext } from './continuation-execution-product-policy';
+import { ContinuationExecutionProductPolicy, createContinuationExecutionRequestContext, hasOnlyContinuationRequestFields } from './continuation-execution-product-policy';
 import type { ContinuationExecutionProductDenial, ContinuationExecutionRequestContext } from './continuation-execution-product-policy';
 import { isCanonicalText, isTimestampText } from './continuation-live-plan-proof';
 import { WorkHandoffConsumptionService } from './work-handoff-consumption-service';
@@ -41,8 +41,7 @@ export class ContinuationExecutionService {
     let request: ContinuationExecutionRequestContext;
     try {
       // No caller-supplied canonical entities or approval authority, including untyped transport extras.
-      if (!input || Object.keys(input).some(key =>
-        !['trigger', 'handoffId', 'taskId', 'actorId', 'projectId', 'plan'].includes(key))) {
+      if (!hasOnlyContinuationRequestFields(input)) {
         return Object.freeze({ disposition: 'DENY', stage: 'CONTEXT', reason: 'INVALID_REQUEST' });
       }
       // Must precede the first await. Only this independent frozen snapshot survives async boundaries.

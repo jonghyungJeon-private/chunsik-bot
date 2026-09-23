@@ -15,6 +15,12 @@ export interface ContinuationExecutionRequestContext {
   readonly plan: ExecutionPlan;
 }
 
+/** Shared strict public request boundary; never accept injected canonical facts or authority. */
+export function hasOnlyContinuationRequestFields(input: ContinuationExecutionRequestContext): boolean {
+  return !!input && Object.keys(input).every(key =>
+    ['trigger', 'handoffId', 'taskId', 'actorId', 'projectId', 'plan'].includes(key));
+}
+
 /** Copy and recursively freeze the caller's live value, without freezing its original plan. */
 export function createContinuationExecutionRequestContext(
   input: ContinuationExecutionRequestContext,
