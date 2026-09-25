@@ -227,6 +227,23 @@ describe('M3E-6K receiver seam and exact-run terminalization', () => {
     expect(f.tasks.completeRun).not.toHaveBeenCalled();
     expect(f.tasks.failRun).not.toHaveBeenCalled();
   });
+  it('F1: SUCCEEDED with an unaudited acceptedProviderId maps to ATTEMPT_UNRESOLVED, exact run STARTED', async () => {
+    const f = fixture();
+    // A receiver claims SUCCEEDED and a durable Provider identity but provides NO routing audit.
+    // A Provider ID must be audit-backed; without bounded routing evidence the outcome is invalid,
+    // so 6K must never terminalize it. The exact run stays STARTED; no complete/fail; no Provider leak.
+    f.receiver.receive.mockResolvedValue({ disposition: 'SUCCEEDED', artifactIds: ['artifact-1'],
+      acceptedProviderId: 'provider-1' } as unknown as ContinuationReceiverOutcome);
+    const result = await f.execution.executeExplicitContinuation(f.request);
+    expect(result.disposition).toBe('ATTEMPT_UNRESOLVED');
+    if (result.disposition !== 'ATTEMPT_UNRESOLVED') throw new Error('expected unresolved');
+    expect(result.taskRun).toBe(f.run);
+    expect(result.taskRun.status).toBe(TaskRunStatus.STARTED);
+    expect(f.tasks.completeRun).not.toHaveBeenCalled();
+    expect(f.tasks.failRun).not.toHaveBeenCalled();
+    expect(result.routingAudit).toBeUndefined();
+    expect(JSON.stringify(result)).not.toContain('provider-1');
+  });
   it('§12 boundTaskFacts capability mismatch with the started run fails closed to unresolved', async () => {
     const f = fixture();
     // The constrained 6J path returns facts whose capability disagrees with the exact started run.

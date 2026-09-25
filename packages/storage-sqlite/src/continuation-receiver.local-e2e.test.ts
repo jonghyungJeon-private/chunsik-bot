@@ -149,4 +149,60 @@ describe('M3E-6K offline exact-run persistence with real 6J and fake receiver', 
       expect(receiver.receive).toHaveBeenCalledTimes(1);
     } finally { await storage.close(); }
   });
+
+  it('F1/DURABILITY: SUCCEEDED with an unaudited acceptedProviderId is not durably saved', async () => {
+    const storage = new SqliteStorageProvider({ dbPath: ':memory:' });
+    await storage.init();
+    try {
+      await storage.workItems.save({ id: 'work', actorId: 'actor', projectId: 'project', status: WorkItemStatus.ACTIVE,
+        origin: 'conversation', resourceRefs: [], createdAt: ts, updatedAt: ts });
+      await storage.workHandoffs.insert(createWorkHandoff({ id: 'handoff', workItemId: 'work',
+        fromAgentProfileId: agentProfileId('source'), toAgentProfileId: agentProfileId('receiver'), objective: 'continue',
+        resourceRefs: [], artifactIds: [], executionReceiptIds: [], createdAt: ts }));
+      const profiles = new AgentProfileRegistry(['source', 'receiver'].map(id => ({ id: agentProfileId(id), displayName: id,
+        role: id, purpose: id, instructions: id })));
+      const tasks = new TaskManager(storage);
+      const approvals = new ApprovalManager(storage, new ApprovalPolicy(new RiskPolicy()));
+      let task = await tasks.createTask({ type: IntentType.CHAT, capability: Capability.GENERAL_CHAT, confidence: 1,
+        requiresWork: true, summary: 'continue' }, { platform: 'test', channelId: 'channel', userId: 'user' },
+      { actorId: 'actor', projectId: 'project', requestText: 'continue' });
+      const plan: ExecutionPlan = { id: 'plan', goal: 'continue', summary: 'continue', projectId: 'project', steps: [],
+        requiredCapabilities: [Capability.GENERAL_CHAT], requiredResources: [], estimatedChanges: { fileCount: 0, scope: 'none' },
+        approvalRequired: false, overallRisk: RiskLevel.LOW,
+        expectedArtifacts: [], status: ExecutionStatus.PENDING, createdAt: ts };
+      task = await storage.tasks.save({ ...task, planId: plan.id });
+
+      const preparation = new WorkHandoffContinuationService(storage, profiles, storage.continuationBindings, { tasks, approvals });
+      await preparation.admit('handoff', task.id);
+      const entry = new ContinuationExecutionEntryService(storage, profiles, storage.continuationBindings, tasks);
+      const continuation = new ContinuationExecutionService(storage, profiles, storage.continuationBindings, preparation, entry);
+      // A receiver claims SUCCEEDED and a durable Provider identity WITHOUT any routing audit. A
+      // Provider ID must be audit-backed; without bounded routing evidence 6K must not terminalize.
+      const receiver = { supportedCapabilities: Object.freeze([Capability.GENERAL_CHAT]),
+        receive: vi.fn(async (_input: ContinuationReceiverInput): Promise<ContinuationReceiverOutcome> => ({
+          disposition: 'SUCCEEDED', artifactIds: ['artifact-1'], acceptedProviderId: 'provider-unaudited',
+        }) as unknown as ContinuationReceiverOutcome) };
+      const execution = new ContinuationReceiverExecutionService(storage, profiles, continuation, tasks, receiver);
+      const guarded = vi.spyOn(storage.taskRuns, 'guardedStart');
+      const complete = vi.spyOn(tasks, 'completeRun');
+      const fail = vi.spyOn(tasks, 'failRun');
+      const request: ContinuationExecutionRequestContext = { trigger: 'EXPLICIT_CONTINUATION_EXECUTION_REQUEST',
+        handoffId: 'handoff', taskId: task.id, actorId: 'actor', projectId: 'project', plan };
+      const result = await execution.executeExplicitContinuation(request);
+      const started = await guarded.mock.results[0]!.value;
+      expect(receiver.receive).toHaveBeenCalledTimes(1);
+      expect(result.disposition).toBe('ATTEMPT_UNRESOLVED');
+      if (result.disposition !== 'ATTEMPT_UNRESOLVED') throw new Error('expected unresolved');
+      expect(complete).not.toHaveBeenCalled();
+      expect(fail).not.toHaveBeenCalled();
+      const persisted = await storage.taskRuns.get(started.id);
+      expect(persisted).toEqual(started);
+      expect(persisted!.status).toBe(TaskRunStatus.STARTED);
+      // The unaudited Provider identity must never appear in durable state.
+      expect(JSON.stringify(persisted)).not.toContain('provider-unaudited');
+      expect(await storage.taskRuns.listByTask(task.id)).toEqual([started]); // no attempt 2
+      await expect(execution.executeExplicitContinuation(request)).rejects.toMatchObject({ reason: 'UNRESOLVED_STARTED_RUN' });
+      expect(receiver.receive).toHaveBeenCalledTimes(1);
+    } finally { await storage.close(); }
+  });
 });

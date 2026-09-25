@@ -347,3 +347,143 @@ describe('snapshotReceiverOutcome — B2 inert projection adversarial (§5-§12,
     expect(Object.isFrozen(projected.attempts[0])).toBe(true);
   });
 });
+
+describe('snapshotReceiverOutcome — F1 acceptedProviderId requires audit-backed evidence', () => {
+  it('SUCCEEDED + acceptedProviderId + routingAudit absent → null (no audit, no durable Provider)', () => {
+    const value = { disposition: 'SUCCEEDED', artifactIds: ['a'], acceptedProviderId: 'p1' };
+    expect(snapshotReceiverOutcome(value as unknown, EXECUTION_ID)).toBeNull();
+  });
+
+  it('SUCCEEDED + acceptedProviderId + non-ACCEPTED audit → null', () => {
+    // failedAudit is a valid non-ACCEPTED audit; a Provider identity may not ride on it.
+    const value = { disposition: 'SUCCEEDED', artifactIds: ['a'], acceptedProviderId: 'provider-1', routingAudit: failedAudit() };
+    expect(snapshotReceiverOutcome(value as unknown, EXECUTION_ID)).toBeNull();
+  });
+
+  it('SUCCEEDED + acceptedProviderId matching an ACCEPTED audit final Provider → accepted', () => {
+    const value = { disposition: 'SUCCEEDED', artifactIds: ['a'], acceptedProviderId: 'provider-1', routingAudit: acceptedAudit() };
+    const outcome = snapshotReceiverOutcome(value as unknown, EXECUTION_ID);
+    expect(outcome?.disposition).toBe('SUCCEEDED');
+    expect((outcome as { acceptedProviderId?: string }).acceptedProviderId).toBe('provider-1');
+  });
+
+  it('SUCCEEDED + acceptedProviderId mismatching the ACCEPTED audit final Provider → null', () => {
+    const value = { disposition: 'SUCCEEDED', artifactIds: ['a'], acceptedProviderId: 'provider-9', routingAudit: acceptedAudit() };
+    expect(snapshotReceiverOutcome(value as unknown, EXECUTION_ID)).toBeNull();
+  });
+
+  it('SUCCEEDED without acceptedProviderId is still accepted (Provider is optional; audit optional)', () => {
+    expect(snapshotReceiverOutcome({ disposition: 'SUCCEEDED', artifactIds: ['a'] }, EXECUTION_ID)?.disposition).toBe('SUCCEEDED');
+    const withAudit = snapshotReceiverOutcome({ disposition: 'SUCCEEDED', artifactIds: ['a'], routingAudit: acceptedAudit() }, EXECUTION_ID);
+    expect(withAudit?.disposition).toBe('SUCCEEDED');
+    expect((withAudit as { acceptedProviderId?: string }).acceptedProviderId).toBeUndefined();
+  });
+});
+
+describe('snapshotReceiverOutcome — F2 Proxy adversarial (length snapshot + has trap)', () => {
+  // A Proxy array whose observed length changes between reads. Our projection snapshots length once
+  // from the own `length` data descriptor and validates the exact own-key set, so a later-enlarged
+  // length can never enlarge the projected array.
+  function shiftingLengthArray(reportedFirst: number, reportedLater: number, realIndices: number): unknown[] {
+    const target: unknown[] = [];
+    for (let i = 0; i < realIndices; i++) target[i] = `x${i}`;
+    let lengthReads = 0;
+    return new Proxy(target, {
+      getOwnPropertyDescriptor(t, key) {
+        if (key === 'length') {
+          lengthReads += 1;
+          return { value: lengthReads === 1 ? reportedFirst : reportedLater, writable: true, enumerable: false, configurable: false };
+        }
+        return Object.getOwnPropertyDescriptor(t, key);
+      },
+      get(t, key) {
+        if (key === 'length') {
+          lengthReads += 1;
+          return lengthReads === 1 ? reportedFirst : reportedLater;
+        }
+        return (t as Record<string | symbol, unknown>)[key];
+      },
+    }) as unknown as unknown[];
+  }
+
+  it('artifactIds Proxy that reports length 1 then 500 cannot yield a 500-length projection', () => {
+    const artifactIds = shiftingLengthArray(1, 500, 1);
+    const outcome = snapshotReceiverOutcome({ disposition: 'SUCCEEDED', artifactIds }, EXECUTION_ID);
+    // Contradictory length observations → strict rejection (key set never matches a stable snapshot).
+    if (outcome) {
+      expect((outcome as { artifactIds: readonly string[] }).artifactIds.length).toBeLessThanOrEqual(128);
+      expect((outcome as { artifactIds: readonly string[] }).artifactIds.length).not.toBe(500);
+    } else {
+      expect(outcome).toBeNull();
+    }
+  });
+
+  it('artifactIds Proxy claiming length 500 but only 1 real index is rejected (never projects 500)', () => {
+    const artifactIds = shiftingLengthArray(500, 500, 1);
+    const outcome = snapshotReceiverOutcome({ disposition: 'SUCCEEDED', artifactIds }, EXECUTION_ID);
+    expect(outcome).toBeNull();
+  });
+
+  it('attempts Proxy cannot exceed the Stage2B/R1 max (2) via shifting length', () => {
+    const attempts = shiftingLengthArray(1, 500, 1) as unknown as ContinuationRoutingAudit['attempts'];
+    const audit = acceptedAudit({ attemptCount: 1, attempts });
+    const outcome = snapshotReceiverOutcome({ disposition: 'SUCCEEDED', artifactIds: ['a'], routingAudit: audit }, EXECUTION_ID);
+    // Whatever the Proxy reports, the projected attempts can never exceed 2 (here it is rejected).
+    if (outcome) {
+      const projected = (outcome as { routingAudit: ContinuationRoutingAudit }).routingAudit;
+      expect(projected.attempts.length).toBeLessThanOrEqual(2);
+    } else {
+      expect(outcome).toBeNull();
+    }
+  });
+
+  it('attempts Proxy claiming length 500 is rejected before it can exceed the bound', () => {
+    const attempts = shiftingLengthArray(500, 500, 1) as unknown as ContinuationRoutingAudit['attempts'];
+    const audit = acceptedAudit({ attemptCount: 1, attempts });
+    expect(snapshotReceiverOutcome({ disposition: 'SUCCEEDED', artifactIds: ['a'], routingAudit: audit }, EXECUTION_ID)).toBeNull();
+  });
+
+  it('transitions Proxy cannot exceed max transitions (7) via shifting length', () => {
+    const transitions = shiftingLengthArray(1, 500, 1) as unknown as ContinuationRoutingAudit['transitions'];
+    const audit = acceptedAudit({ transitions });
+    const outcome = snapshotReceiverOutcome({ disposition: 'SUCCEEDED', artifactIds: ['a'], routingAudit: audit }, EXECUTION_ID);
+    if (outcome) {
+      const projected = (outcome as { routingAudit: ContinuationRoutingAudit }).routingAudit;
+      expect(projected.transitions.length).toBeLessThanOrEqual(7);
+    } else {
+      expect(outcome).toBeNull();
+    }
+  });
+
+  it('transitions Proxy claiming length 500 is rejected before it can exceed the bound', () => {
+    const transitions = shiftingLengthArray(500, 500, 1) as unknown as ContinuationRoutingAudit['transitions'];
+    const audit = acceptedAudit({ transitions });
+    expect(snapshotReceiverOutcome({ disposition: 'SUCCEEDED', artifactIds: ['a'], routingAudit: audit }, EXECUTION_ID)).toBeNull();
+  });
+
+  it('Proxy has trap lying about routingAudit presence does not create a phantom audit', () => {
+    // The container is a Proxy over a valid SUCCEEDED body. Its `has` trap claims `routingAudit`
+    // exists, but there is no own `routingAudit` data property. Presence must be decided by the own
+    // descriptor snapshot only — never by `in`/`has` — so the projection carries no routingAudit.
+    const target: Record<string, unknown> = { disposition: 'SUCCEEDED', artifactIds: ['a'] };
+    const proxy = new Proxy(target, {
+      has(t, key) { if (key === 'routingAudit' || key === 'acceptedProviderId') return true; return key in t; },
+    });
+    const outcome = snapshotReceiverOutcome(proxy as unknown, EXECUTION_ID);
+    expect(outcome?.disposition).toBe('SUCCEEDED');
+    expect((outcome as { routingAudit?: unknown }).routingAudit).toBeUndefined();
+    expect((outcome as { acceptedProviderId?: unknown }).acceptedProviderId).toBeUndefined();
+  });
+
+  it('Proxy has trap lying about acceptedProviderId does not inject a Provider identity', () => {
+    // has() claims acceptedProviderId exists, but there is no own data property for it. The result
+    // must not carry any Provider id, and certainly not one fabricated by the trap.
+    const target: Record<string, unknown> = { disposition: 'SUCCEEDED', artifactIds: ['a'] };
+    const proxy = new Proxy(target, {
+      has(t, key) { if (key === 'acceptedProviderId') return true; return key in t; },
+    });
+    const outcome = snapshotReceiverOutcome(proxy as unknown, EXECUTION_ID);
+    expect(outcome?.disposition).toBe('SUCCEEDED');
+    expect((outcome as { acceptedProviderId?: unknown }).acceptedProviderId).toBeUndefined();
+  });
+});

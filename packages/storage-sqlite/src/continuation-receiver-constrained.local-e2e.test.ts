@@ -134,6 +134,34 @@ describe('R1 constrained-path adversarial contract (§30/§31/§32)', () => {
     await f.storage.close();
   });
 
+  it('N-a canonical Task with missing intent yields a typed CANONICAL TASK_MISMATCH, not a raw TypeError', async () => {
+    // A canonical Task exists but its intent is missing/malformed. The constrained 6J path must fail
+    // through the typed canonical contract (stage CANONICAL, reason TASK_MISMATCH) rather than throwing
+    // a raw TypeError when it would otherwise read task.intent.capability.
+    const f = await harness();
+    const realGet = f.storage.tasks.get.bind(f.storage.tasks);
+    vi.spyOn(f.storage.tasks, 'get').mockImplementation(async (id: string) => {
+      const current = await realGet(id);
+      if (!current) return current;
+      const { intent: _intent, ...withoutIntent } = current as Task;
+      return withoutIntent as unknown as Task;
+    });
+    let result: Awaited<ReturnType<typeof f.execution.executeExplicitContinuation>> | undefined;
+    let threw: unknown;
+    try { result = await f.execution.executeExplicitContinuation(f.request); }
+    catch (e) { threw = e; }
+    // Must be a typed/bounded DENY, never a raw TypeError from reading intent.capability.
+    expect(threw).toBeUndefined();
+    expect(result!.disposition).toBe('DENY');
+    if (result!.disposition !== 'DENY') throw new Error('expected deny');
+    expect(result!.stage).toBe('CANONICAL');
+    expect(result!.reason).toBe('TASK_MISMATCH');
+    expect(f.guarded).not.toHaveBeenCalled();
+    expect(f.receiver.receive).not.toHaveBeenCalled();
+    expect(await f.storage.taskRuns.listByTask(f.task.id)).toEqual([]);
+    await f.storage.close();
+  });
+
   it('§32 canonical intent binding: receiver observes the guarded-start-bound Task IntentType', async () => {
     // Use a distinctive IntentType so binding provenance is unambiguous. It must come from Entry's
     // fresh Task snapshot that becomes the guarded-start expected Task, not any earlier representation.

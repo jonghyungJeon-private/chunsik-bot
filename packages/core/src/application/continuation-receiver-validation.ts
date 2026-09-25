@@ -41,21 +41,50 @@ function readValue(v: RecordValue, key: string): unknown {
 }
 
 /**
- * B2 §8: dense bounded array with only own data-descriptor indices. Rejects sparse arrays (holes),
- * accessor indices, custom prototypes, own toJSON, and any unexpected own keys beyond length+indices.
- * Returns the read-once values in index order; never re-reads an index.
+ * F2 §7-§8: field presence via a single own descriptor snapshot — never the `in` operator (which
+ * can trigger a Proxy `has` trap that lies about presence). One descriptor read decides everything:
+ *  - ABSENT: no own property at all;
+ *  - INVALID: an own property that is not a data descriptor (accessor) → caller must reject;
+ *  - PRESENT: an own data property, carrying its read-once `value`.
+ * Presence is determined ONLY by the own descriptor snapshot, independent of any `has` result.
+ */
+type OptionalOwnDataProperty =
+  | { readonly kind: 'ABSENT' }
+  | { readonly kind: 'INVALID' }
+  | { readonly kind: 'PRESENT'; readonly value: unknown };
+const ABSENT: OptionalOwnDataProperty = { kind: 'ABSENT' };
+const INVALID: OptionalOwnDataProperty = { kind: 'INVALID' };
+function readOptionalOwnDataProperty(v: RecordValue, key: string): OptionalOwnDataProperty {
+  const d = Object.getOwnPropertyDescriptor(v, key);
+  if (!d) return ABSENT;
+  if (!('value' in d)) return INVALID; // accessor/non-data descriptor → never invoke, reject
+  return { kind: 'PRESENT', value: d.value };
+}
+
+/**
+ * B2 §8 + F2: dense bounded array with only own data-descriptor indices. The array length is
+ * snapshotted EXACTLY ONCE from its own `length` data descriptor — receiver-controlled `.length`
+ * is never read again (a Proxy that reports 1 then 500 cannot enlarge the projection). Rejects
+ * sparse arrays (holes), accessor indices, accessor/non-data length, custom prototypes, own toJSON,
+ * and any unexpected own keys beyond length+indices. Returns read-once values in index order.
  */
 function denseArray(v: unknown, maxLength: number): unknown[] | null {
   if (!Array.isArray(v) || Object.getPrototypeOf(v) !== Array.prototype) return null;
-  if (v.length > maxLength) return null;
+  // F2 §6: take the length from the own data descriptor ONCE; never re-read receiver-controlled .length.
+  const lengthDescriptor = Object.getOwnPropertyDescriptor(v, 'length');
+  if (!lengthDescriptor || !('value' in lengthDescriptor)) return null; // accessor/non-data length → reject
+  const length = lengthDescriptor.value;
+  if (!Number.isSafeInteger(length) || length < 0 || length > maxLength) return null;
   const keys = Reflect.ownKeys(v);
   if (keys.some(k => typeof k === 'symbol')) return null;
   const expected = new Set<string>(['length']);
-  for (let i = 0; i < v.length; i++) expected.add(String(i));
-  if (!(keys as string[]).every(k => expected.has(k))) return null; // no extra own props, no toJSON
+  for (let i = 0; i < length; i++) expected.add(String(i));
+  // Own key set must be exactly {length, 0..length-1}: no extra props, no toJSON, no indices >= length.
+  if ((keys as string[]).length !== expected.size) return null;
+  if (!(keys as string[]).every(k => expected.has(k))) return null;
   const out: unknown[] = [];
-  for (let i = 0; i < v.length; i++) {
-    const d = Object.getOwnPropertyDescriptor(v, i);
+  for (let i = 0; i < length; i++) {
+    const d = Object.getOwnPropertyDescriptor(v, String(i));
     if (!d || !('value' in d)) return null; // hole or accessor index → reject
     out.push(d.value);
   }
@@ -203,10 +232,12 @@ export function snapshotReceiverOutcome(value: unknown, executionId: string): Co
     if (!fields || !plainObject(container, fields,
       state === 'SUCCEEDED' ? ['routingAudit', 'acceptedProviderId'] : ['routingAudit'])) return null;
 
-    const rawAudit = 'routingAudit' in container ? readValue(container, 'routingAudit') : undefined;
+    // F2 §7: presence via a single own descriptor snapshot, never the `in` operator (no `has` trap).
+    const auditProperty = readOptionalOwnDataProperty(container, 'routingAudit');
+    if (auditProperty.kind === 'INVALID') return null;
     let audit: RecordValue | undefined;
-    if (rawAudit !== undefined) {
-      const projected = projectAudit(rawAudit, executionId);
+    if (auditProperty.kind === 'PRESENT' && auditProperty.value !== undefined) {
+      const projected = projectAudit(auditProperty.value, executionId);
       if (!projected) return null;
       audit = projected;
     }
@@ -215,18 +246,28 @@ export function snapshotReceiverOutcome(value: unknown, executionId: string): Co
       const rawArtifactIds = readValue(container, 'artifactIds');
       const artifactIds = denseArray(rawArtifactIds, 128);
       if (!artifactIds || !artifactIds.every(v => typeof v === 'string' && v.length > 0 && v.length <= 256 && v.trim() === v)) return null;
-      const acceptedProviderId = 'acceptedProviderId' in container ? readValue(container, 'acceptedProviderId') : undefined;
-      if (acceptedProviderId !== undefined && !id(acceptedProviderId)) return null;
-      if (audit) {
-        // SUCCEEDED with audit must carry ACCEPTED terminal evidence (projectAudit already enforced
-        // the ACCEPTED shape). An acceptedProviderId, when present, must match the final Provider.
-        if (audit.terminalStatus !== 'ACCEPTED') return null;
-        if (acceptedProviderId !== undefined && acceptedProviderId !== audit.finalAcceptedProviderId) return null;
+      // F2 §7: acceptedProviderId presence via the own descriptor snapshot only, never `in`.
+      const providerProperty = readOptionalOwnDataProperty(container, 'acceptedProviderId');
+      if (providerProperty.kind === 'INVALID') return null;
+      const hasProvider = providerProperty.kind === 'PRESENT' && providerProperty.value !== undefined;
+      const acceptedProviderId = hasProvider ? providerProperty.value : undefined;
+      if (hasProvider && !id(acceptedProviderId)) return null;
+      // F1 §2-§3: an acceptedProviderId must be audit-backed. It is durable Provider identity, so it
+      // is permitted ONLY when a valid ACCEPTED routing audit exists and its finalAcceptedProviderId
+      // matches exactly. No Provider ID is persisted without bounded routing evidence.
+      if (hasProvider) {
+        if (!audit || audit.terminalStatus !== 'ACCEPTED'
+          || audit.finalAcceptedProviderId === null || audit.finalAcceptedProviderId === undefined
+          || acceptedProviderId !== audit.finalAcceptedProviderId) return null;
+      } else if (audit && audit.terminalStatus !== 'ACCEPTED') {
+        // A SUCCEEDED outcome carrying an audit must carry ACCEPTED terminal evidence
+        // (projectAudit already enforced the full ACCEPTED shape).
+        return null;
       }
       return freezeContinuationValue({
         disposition: 'SUCCEEDED',
         artifactIds: Object.freeze([...artifactIds]) as readonly string[],
-        ...(acceptedProviderId !== undefined ? { acceptedProviderId } : {}),
+        ...(hasProvider ? { acceptedProviderId } : {}),
         ...(audit ? { routingAudit: audit } : {}),
       } as ContinuationReceiverOutcome);
     }
