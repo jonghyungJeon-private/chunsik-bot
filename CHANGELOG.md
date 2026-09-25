@@ -7,6 +7,43 @@ Versioning follows [SemVer](https://semver.org/). Commits follow
 
 ## [Unreleased]
 
+### Added — Production Continuation Receiver R1: Core contract / lifecycle semantics (local, awaiting review)
+
+- Extended the Core `ContinuationReceiver` port with an immutable `supportedCapabilities` list that only
+  narrows eligibility (the canonical Task stays the capability source). 6K snapshots and freezes the
+  declaration before the first await; empty/duplicate/malformed declarations fail closed
+  (`DENY / RECEIVER_PREFLIGHT / RECEIVER_UNAVAILABLE`) before any start. The public caller cannot supply a
+  support list; `PUBLIC_REQUEST_CAPABILITY_OVERRIDE = NO`.
+- Added a package-internal, non-authoritative `ContinuationExecutionConstraint` (absent from the public
+  request DTO and transport surface) that drives an early capability check before `prepare` and an
+  effect-time recheck over the Entry fresh `facts.task` snapshot — the exact object that becomes the
+  guarded-start expected Task — closing the receiver-support capability TOCTOU at the existing SQLite
+  transactional deep-equality invariant with no new expected field.
+- Extracted the unchanged Family-A seven-capability allowlist into a single `isFamilyACapability`
+  predicate shared by the Product policy and the constrained Entry revalidation; the Family-A recheck
+  applies on the constrained path only. Generic `ContinuationExecutionEntryService.start` semantics are
+  unchanged (no global Family-A specialization).
+- The constrained Entry now returns immutable `boundTaskFacts { capability, intentType }` derived from the
+  same guarded-start-bound Task snapshot, so the receiver observes canonical intent without any post-start
+  Task re-read (`CANONICAL_INTENT_SOURCE = GUARDED_START_BOUND_TASK_SNAPSHOT`).
+- Made `ContinuationReceiverOutcome` three-state (`SUCCEEDED` / `FAILED` / `UNRESOLVED`) with no new
+  `TaskRunStatus`. Added a bounded, provider-agnostic `ContinuationRoutingAudit` DTO in the Core port layer
+  (no raw prompt/output/error, path, secret, credential, environment, `descriptor.modelId` or unbounded
+  metadata; explicit unknown/null, never a fabricated `attemptCount = 0`).
+- `receiver UNRESOLVED` and any escaped `receiver.receive(...)` exception both resolve to
+  `ATTEMPT_UNRESOLVED`: the exact run remains STARTED, `completeRun = 0`, `failRun = 0`, no persisted
+  UNRESOLVED audit, and no retry/redispatch/replacement. Intentional `DELIVERED_TEST_CONTRACT_CHANGE`: the
+  delivered `6K receiver throw → failRun` and `6L throw → persisted FAILED` tests were updated to
+  `throw → ATTEMPT_UNRESOLVED`.
+- Added 44 focused R1 tests: receiver support-declaration validation, bounded outcome/audit validation
+  matrix, adversarial capability TOCTOU, Family-A constrained-only vs generic, and canonical intent
+  binding. Amended ADR-0089 in `DECISIONS.md` with the ratified R1 semantics.
+- No R2/R3 work: no provider routing, prompt composition, artifact persistence, production receiver
+  binding, `QUOKY_CONTINUATION_RECEIVER_MODE`, external trigger or Provider execution. R2/R3 = NOT STARTED;
+  `LIVE_CONTAINMENT_READY = NO`; `CONTINUATION_EXECUTION_ACTIVATION = DISABLED`.
+- Validation on Node 18.20.5: focused continuation suite 14 files / 359 PASS (44 new); typecheck, build and
+  diff check PASS (test-process `GIT_ASKPASS` unset). No production readiness claimed.
+
 ### Added — M3E-6L Offline Activation Acceptance (local, awaiting review)
 
 - M3E-6K closed and delivered through PR #77 at `0b0c3be7c5d8d592b0739b4e8436bfa61731c185`.

@@ -8066,3 +8066,99 @@ new-test typecheck and `git diff --check` passed. Full suite used `env -u GIT_AS
 the known inherited askpass sensitivity; no credential value was read. Two test-authoring corrections
 were made before final validation: admission errors use `reason`, and Approval fixtures use the existing
 `executionPlanRef` helper including required goal. No production execution semantics were changed.
+
+
+#### ADR-0089 amendment — Production Continuation Receiver R1 (Core contract / lifecycle semantics)
+
+**Status: Implemented locally / awaiting review.** This amendment ratifies the R1 slice of the production
+continuation receiver. It changes the Core continuation execution contract only; it does not implement
+provider routing, prompt composition, artifact persistence, production receiver binding or any live
+execution. Independent Architecture Review returned `PASS_WITH_NON_BLOCKING_FINDINGS`;
+`R1_CORE_CONTRACT_READY_TO_START = YES`. `DELIVERED_TEST_CONTRACT_CHANGE = YES`.
+
+**Receiver-supported capability narrowing.** The Core `ContinuationReceiver` port gains an immutable
+`readonly supportedCapabilities: readonly Capability[]`. A support declaration can only *narrow*
+eligibility; it never grants authority, and the canonical Task remains the capability source. The 6K
+coordinator snapshots/copies/freezes the receiver declaration before the first await
+(`snapshotReceiverConstraint`). Empty, duplicate, non-`Capability` or otherwise malformed declarations
+**fail closed** before any start (bounded `DENY / RECEIVER_PREFLIGHT / RECEIVER_UNAVAILABLE`). The public
+caller cannot supply a support list; the later R2 production declaration `supportedCapabilities =
+[GENERAL_CHAT]` is supported by the contract but is **not** hard-coded into generic Core behavior.
+
+**Internal constraint is non-authoritative.** The smallest per-invocation
+`ContinuationExecutionConstraint { readonly supportedCapabilities }` is package-internal only. It is
+absent from `ContinuationExecutionRequestContext`, never accepted from transport/caller input, and never
+exposed through the public transport-facing surface. `PUBLIC_REQUEST_CAPABILITY_OVERRIDE = NO`. The
+constrained cooperation path (`constrainedContinuation` / `constrainedEntry`, keyed by module-private
+symbols) is used only by 6K; the public `startExplicitContinuation(request)` shape and result semantics
+are unchanged.
+
+**Early + effect-time capability recheck.** On the constrained path the receiver support snapshot →
+internal constraint → 6J canonical Task read → `Task.intent.capability ∈ supportedCapabilities` check
+occurs **before lifecycle prepare**. On an unsupported capability: prepare = 0, entry = 0, guardedStart =
+0, receiver = 0, TaskRun created = 0. Because Entry fresh admission resolves a later canonical Task
+snapshot, the same check is repeated at effect time over `facts.task` — the exact object that becomes the
+guarded-start expected Task — with no Task rediscovery after the check. The existing SQLite transactional
+deep-equality invariant (`stored Task deep-equals expected.task` and `guarded-start capability ==
+expected.task.intent.capability`) closes the effect-time capability TOCTOU; `NEW_GUARDED_START_EXPECTED_
+FIELD = NO` (the reviewed invariant held during implementation).
+
+**Family-A recheck only on the constrained path.** The Family-A seven-capability allowlist is defined
+once as a pure predicate (`isFamilyACapability`; contents unchanged:
+`GENERAL_CHAT, SUMMARIZATION, DOCUMENT_ANALYSIS, CODE_REVIEW, ARCHITECTURE_PLANNING, READONLY_LOOKUP,
+PROJECT_ANALYSIS`). `ContinuationExecutionProductPolicy` and the constrained Entry revalidation both call
+that predicate; Entry does **not** import or own the Product policy. With the internal constraint absent,
+generic `ContinuationExecutionEntryService` semantics are unchanged (no global Family-A specialization);
+with the constraint present, the Family-A capability recheck applies at effect time.
+`FAMILY_A_ALLOWLIST_CHANGED = NO`; `PRODUCT_POLICY_AUTHORITY_CHANGED = NO`.
+
+**Guarded-start-bound canonical intent facts.** The constrained Entry returns
+`{ taskRun, boundTaskFacts: { capability, intentType } }` where `boundTaskFacts` is immutable and derived
+from the same `facts.task` snapshot that becomes the guarded-start expected Task.
+`CANONICAL_INTENT_SOURCE = GUARDED_START_BOUND_TASK_SNAPSHOT`. Intent is never taken from a 6J
+pre-prepare Task, hard-coded CHAT, a post-start Task re-read, the receiver, an AgentProfile or the caller.
+The receiver input carries `boundTaskFacts`; `boundTaskFacts.capability == taskRun.capability` and a
+mismatch fails closed to unresolved before any future Provider dispatch.
+
+**Three-state receiver outcome.** `ContinuationReceiverOutcome` becomes
+`SUCCEEDED { artifactIds; acceptedProviderId?; routingAudit? }` |
+`FAILED { error; routingAudit? }` | `UNRESOLVED { reason; routingAudit? }`. There is **no**
+`TaskRunStatus.UNRESOLVED` and no new domain lifecycle status. `acceptedProviderId` is allowed only on
+`SUCCEEDED`, must be bounded/valid, and (where the audit provides identity) must equal the audit's final
+accepted Provider identity. A bounded, provider-agnostic `ContinuationRoutingAudit` DTO lives in the Core
+port layer with no Application implementation imports and no coupling to `RuntimeProviderRoutingAudit`;
+it is validated/frozen with bounded attempt/transition/string/array lengths and finite non-negative
+numerics, uses explicit unknown/null representation (never a fabricated `attemptCount = 0`), and never
+contains raw prompt, raw Provider output, raw error, filesystem paths, secrets, credentials, environment,
+`descriptor.modelId` or unbounded metadata.
+
+**UNRESOLVED semantics and escaped exceptions.** `receiver UNRESOLVED → completeRun = 0, failRun = 0,
+TaskRun remains STARTED, return ATTEMPT_UNRESOLVED` with the exact started TaskRun and same-invocation
+bounded evidence only. Any exception escaping `ContinuationReceiver.receive(...)` becomes UNRESOLVED
+always — 6K does not inspect the exception type to guess dispatch phase.
+`ESCAPED_RECEIVER_EXCEPTION = UNRESOLVED`; `failRun calls = 0`. This is an intentional change from the
+delivered M3E-6K behavior. Structurally malformed post-start receiver data that cannot prove termination
+also resolves to ATTEMPT_UNRESOLVED; a pre-start contract/config failure remains definite and occurs
+before TaskRun start. `UNRESOLVED_AUDIT_PERSISTENCE = NO` — R1 does not persist UNRESOLVED routing audit
+onto the STARTED TaskRun and never calls repository `.save()` to update STARTED metadata; UNRESOLVED
+audit is same-invocation return only. TaskRun metadata audit is written only for terminalized (SUCCEEDED/
+FAILED) runs by `TaskManager`.
+
+**No automatic retry/replacement.** An UNRESOLVED STARTED TaskRun stays STARTED; a subsequent continuation
+execution is blocked by the existing unresolved-STARTED protection (no new run).
+`AUTO_RETRY = NO`, `AUTO_REDISPATCH = NO`, `REPLACEMENT_RUN = NO`. No cancel/recovery API is added in R1;
+operator resolution remains out of scope.
+
+**Delivered test contract change.** Existing tests that pinned `6K receiver throw → failRun` and
+`6L acceptance receiver throw → persisted FAILED` are intentionally updated to the ratified semantics
+(`receiver throw → ATTEMPT_UNRESOLVED`, TaskRun remains STARTED, failRun = 0, completeRun = 0). This is an
+intentional lifecycle contract change, not a weakened assertion. Existing `SUCCEEDED → exact run
+SUCCEEDED` and `FAILED → exact run FAILED` behavior is preserved; only escaped/explicit-UNRESOLVED
+outcomes change terminalization.
+
+**R1/R2/R3 sequence.** R1 (this amendment) is implemented locally and awaiting review. R2 (provider
+routing, prompt composition, artifact persistence, production receiver binding, `QUOKY_CONTINUATION_
+RECEIVER_MODE`, uncertainty classification over the audit) is **NOT STARTED**. R3 is **NOT STARTED**. B4
+containment is still required before any live UAT, and strict live authorization remains a separate gate:
+`LIVE_CONTAINMENT_READY = NO`, `LIVE_PROVIDER_EXECUTION_AUTHORIZED = NO`,
+`CONTINUATION_EXECUTION_ACTIVATION = DISABLED`. No production readiness is claimed.

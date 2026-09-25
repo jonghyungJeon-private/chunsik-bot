@@ -1,3 +1,4 @@
+import { isFamilyACapability } from './continuation-family-a-capability';
 import { Capability, RiskLevel } from '../domain';
 import type { ExecutionPlan, Id, Task, WorkItem } from '../domain';
 import { ApprovalPolicy } from './approval-policy';
@@ -53,11 +54,6 @@ export type ContinuationExecutionProductDecision = Readonly<
   | { disposition: 'DENY'; reason: ContinuationExecutionProductDenial }
 >;
 
-const SUPPORTED: readonly Capability[] = Object.freeze([
-  Capability.GENERAL_CHAT, Capability.SUMMARIZATION, Capability.DOCUMENT_ANALYSIS,
-  Capability.CODE_REVIEW, Capability.ARCHITECTURE_PLANNING, Capability.READONLY_LOOKUP,
-  Capability.PROJECT_ANALYSIS,
-]);
 const deny = (reason: ContinuationExecutionProductDenial): ContinuationExecutionProductDecision =>
   Object.freeze({ disposition: 'DENY', reason });
 
@@ -82,13 +78,13 @@ export class ContinuationExecutionProductPolicy {
       || request.actorId !== task.actorId) return deny('ACTOR_NOT_AUTHORIZED');
     if (request.projectId !== work.projectId || request.projectId !== task.projectId
       || request.projectId !== undefined && !isCanonicalText(request.projectId)) return deny('PROJECT_NOT_AUTHORIZED');
-    if (!task.intent || !SUPPORTED.includes(task.intent.capability)) return deny('UNSUPPORTED_RECEIVER_CAPABILITY');
+    if (!task.intent || !isFamilyACapability(task.intent.capability)) return deny('UNSUPPORTED_RECEIVER_CAPABILITY');
     if (!Object.values(RiskLevel).includes(task.riskLevel)) return deny('INVALID_REQUEST');
     const plan = request.plan;
     if (!matchesLiveExecutionPlanStructure(plan, task)) return deny('PLAN_UNPROVABLE');
     // ExecutionStep is executable, not structural-only. Deny hidden or undeclared step capabilities too.
-    if (!plan.requiredCapabilities.every(capability => SUPPORTED.includes(capability))
-      || !plan.steps.every(step => step && SUPPORTED.includes(step.capability)
+    if (!plan.requiredCapabilities.every(capability => isFamilyACapability(capability))
+      || !plan.steps.every(step => step && isFamilyACapability(step.capability)
         && plan.requiredCapabilities.includes(step.capability))) return deny('UNSUPPORTED_RECEIVER_CAPABILITY');
     const risk = new RiskPolicy();
     const approval = new ApprovalPolicy(risk).evaluate(plan, request.actorId);

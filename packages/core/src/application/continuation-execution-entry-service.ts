@@ -1,3 +1,5 @@
+import { constrainedEntry, type ContinuationExecutionConstraint, type BoundContinuationStart } from './continuation-execution-internal';
+import { isFamilyACapability } from './continuation-family-a-capability';
 import { executionPlanRef } from '../domain';
 import type { ApprovalRequest, ContinuationBinding, Task, TaskRun, WorkHandoff, WorkItem } from '../domain';
 import type { ContinuationBindingRepository, GuardedTaskRunStartFacts, StorageProvider } from '../ports';
@@ -35,6 +37,14 @@ export class ContinuationExecutionEntryService {
   ) {}
 
   async start(input: ContinuationExecutionAdmissionInput): Promise<TaskRun> {
+    return (await this.startBound(input)).taskRun;
+  }
+
+  async [constrainedEntry](input: ContinuationExecutionAdmissionInput, constraint: ContinuationExecutionConstraint): Promise<BoundContinuationStart> {
+    return this.startBound(input, constraint);
+  }
+
+  private async startBound(input: ContinuationExecutionAdmissionInput, constraint?: ContinuationExecutionConstraint): Promise<BoundContinuationStart> {
     let request: ContinuationExecutionAdmissionInput;
     try { request = snapshot(input); }
     catch { throw new ContinuationExecutionEntryError('INVALID_REQUEST'); }
@@ -63,6 +73,11 @@ export class ContinuationExecutionEntryService {
       if (error instanceof AgentProfileConfigurationError) throw new ContinuationExecutionEntryError('AGENT_PROFILE_UNAVAILABLE');
       throw error;
     }
+    if (constraint && (!constraint.supportedCapabilities.includes(facts.task.intent.capability)
+      || !isFamilyACapability(facts.task.intent.capability))) {
+      throw new ContinuationExecutionEntryError('INVALID_REQUEST');
+    }
+    const boundTaskFacts = Object.freeze({ capability: facts.task.intent.capability, intentType: facts.task.intent.type });
     const planRef = request.plan ? executionPlanRef(request.plan) : undefined;
     const expected: GuardedTaskRunStartFacts = {
       handoff: facts.handoff, binding: facts.binding, workItem: facts.workItem, task: facts.task,
@@ -70,6 +85,7 @@ export class ContinuationExecutionEntryService {
         ? { kind: 'APPROVED', request: facts.approval, planRef }
         : { kind: 'NOT_REQUIRED', ...(planRef ? { planRef } : {}) },
     };
-    return this.tasks.guardedStartRun(expected, facts.task.intent.capability);
+    const taskRun = await this.tasks.guardedStartRun(expected, facts.task.intent.capability);
+    return Object.freeze({ taskRun, boundTaskFacts });
   }
 }

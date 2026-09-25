@@ -5,6 +5,65 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
+### Production Continuation Receiver R1 — Core contract / lifecycle semantics (2026-09-23)
+
+**IMPLEMENTED LOCALLY / AWAITING REVIEW** on review base
+`c0e1f9d41f9d120e78cc5dcd12c89dc4c18d7300`. R1 changes only the Core continuation execution contract so a
+future real receiver can distinguish definite success, definite failure and execution uncertainty, and
+binds receiver capability support to the exact canonical Task that actually starts. No provider routing,
+prompt composition, artifact persistence, production receiver binding or live execution is implemented;
+R2/R3 are NOT STARTED.
+
+The `ContinuationReceiver` port gains an immutable `supportedCapabilities` list that can only narrow
+eligibility (never grant authority); the canonical Task remains the capability source. 6K snapshots and
+freezes that declaration before the first await; empty/duplicate/malformed declarations fail closed
+(`DENY / RECEIVER_PREFLIGHT / RECEIVER_UNAVAILABLE`) before any start. A package-internal, non-authoritative
+`ContinuationExecutionConstraint` (absent from the public request DTO and transport surface) drives an
+early capability check before `prepare` and an effect-time recheck over the Entry fresh `facts.task`
+snapshot — the same object that becomes the guarded-start expected Task — closing the receiver-support
+TOCTOU at the existing SQLite transactional deep-equality boundary with no new expected field. The
+Family-A seven-capability allowlist is unchanged and now defined once as `isFamilyACapability`, applied on
+the constrained path only; generic `Entry.start` semantics are unchanged. The constrained Entry returns
+immutable `boundTaskFacts { capability, intentType }` from that same snapshot, so the receiver observes
+canonical intent without any post-start Task re-read.
+
+`ContinuationReceiverOutcome` is now three-state (`SUCCEEDED` / `FAILED` / `UNRESOLVED`) with no new
+`TaskRunStatus`. A bounded provider-agnostic `ContinuationRoutingAudit` DTO lives in the Core port layer
+(no raw prompt/output/error, path, secret, credential, environment, modelId or unbounded metadata; no
+fabricated `attemptCount = 0`). `receiver UNRESOLVED` and any escaped `receiver.receive(...)` exception both
+resolve to `ATTEMPT_UNRESOLVED` with the exact run left STARTED, `completeRun = 0`, `failRun = 0`, no
+persisted UNRESOLVED audit and no retry/redispatch/replacement. This is an intentional
+`DELIVERED_TEST_CONTRACT_CHANGE`: the delivered `receiver throw → failRun` / `6L throw → persisted FAILED`
+tests were updated to `throw → ATTEMPT_UNRESOLVED`.
+
+```text
+RECEIVER_SUPPORTED_CAPABILITIES = YES / IMMUTABLE
+PUBLIC_REQUEST_CAPABILITY_OVERRIDE = NO
+OUTCOME_STATES = SUCCEEDED | FAILED | UNRESOLVED
+TASKRUN_STATUS_UNRESOLVED_ADDED = NO
+INTERNAL_CONSTRAINT = NON_AUTHORITATIVE / PACKAGE_INTERNAL
+EARLY_6J_CHECK = YES (before prepare)
+ENTRY_FRESH_CHECK = YES (over guarded-start-bound facts.task)
+FAMILY_A_RECHECK_CONSTRAINED_ONLY = YES
+FAMILY_A_ALLOWLIST_CHANGED = NO
+TOCTOU_CLOSED_AT_GUARDED_START = YES
+CANONICAL_INTENT_SOURCE = GUARDED_START_BOUND_TASK_SNAPSHOT
+POST_START_TASK_REDISCOVERY = NO
+ESCAPED_RECEIVER_EXCEPTION = UNRESOLVED
+AUTO_RETRY = NO / AUTO_REDISPATCH = NO / REPLACEMENT_RUN = NO
+UNRESOLVED_AUDIT_PERSISTENCE = NO (same-invocation return only)
+CONTINUATION_ROUTING_AUDIT = PORT_LAYER / BOUNDED / PROVIDER_AGNOSTIC
+DELIVERED_TEST_CONTRACT_CHANGE = YES
+R2_STARTED = NO / R3_STARTED = NO
+LIVE_CONTAINMENT_READY = NO
+LIVE_PROVIDER_EXECUTION_AUTHORIZED = NO
+CONTINUATION_EXECUTION_ACTIVATION = DISABLED
+```
+
+Validation (Node 18.20.5): focused continuation suite 14 files / 359 tests passed (44 new R1 tests);
+`pnpm typecheck`, `pnpm build` and `git diff --check` passed with `GIT_ASKPASS` unset for the test run.
+No production readiness is claimed; no Provider/Runtime/Discord/network/live UAT occurred.
+
 ### M3E-6L — Offline activation/composition acceptance (2026-09-23)
 
 **IMPLEMENTED LOCALLY / AWAITING REVIEW** on `0b0c3be7c5d8d592b0739b4e8436bfa61731c185`.

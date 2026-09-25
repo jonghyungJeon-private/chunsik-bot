@@ -16,3 +16,5 @@ export * from './connector-provider.port';
 export * from './tool-provider.port';
 export * from './continuation-binding.port';
 export * from './continuation-receiver.port';
+
+export * from './continuation-routing-audit';
