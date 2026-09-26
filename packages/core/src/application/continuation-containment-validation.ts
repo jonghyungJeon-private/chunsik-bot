@@ -62,9 +62,23 @@ const BINDING_KEYS = [
   'channelAResultDigest', 'channelBResultDigest', 'preflightDisposition', 'modelIntegrityStatus',
 ] as const;
 
+const PREPARED_KEYS = ['providerBindingDigest', 'securityProfileId', 'instanceIdentityDigest',
+  'channelAVerifierVersion', 'channelBVerifierVersion'] as const;
+
 /** Inert projection of the immutable binding evidence against the exact executionId/taskRunId. */
 function projectBinding(raw: unknown, executionId: string, taskRunId: string): ContainmentBindingEvidence | null {
-  if (!plainObject(raw, BINDING_KEYS)) return null;
+  if (!plainObject(raw, BINDING_KEYS, PREPARED_KEYS)) return null;
+  const prepared: Record<string, unknown> = {};
+  if (PREPARED_KEYS.some(k => Object.prototype.hasOwnProperty.call(raw, k))) {
+    if (!PREPARED_KEYS.every(k => Object.prototype.hasOwnProperty.call(raw, k))) return null;
+    for (const key of PREPARED_KEYS) prepared[key] = readValue(raw, key);
+    if (!hex64(prepared.providerBindingDigest) || !id(prepared.securityProfileId)
+      || !hex64(prepared.instanceIdentityDigest) || !version(prepared.channelAVerifierVersion)
+      || !version(prepared.channelBVerifierVersion)
+      || prepared.channelAVerifierVersion === prepared.channelBVerifierVersion
+      || prepared.providerBindingDigest === readValue(raw, 'containmentBindingDigest')
+      || readValue(raw, 'preflightDisposition') !== 'VERIFIED') return null;
+  }
   const executionIdValue = readValue(raw, 'executionId');
   const taskRunIdValue = readValue(raw, 'taskRunId');
   const containmentPolicyId = readValue(raw, 'containmentPolicyId');
@@ -99,6 +113,7 @@ function projectBinding(raw: unknown, executionId: string, taskRunId: string): C
     return null;
   }
   return Object.freeze({
+    ...prepared,
     executionId: executionIdValue, taskRunId: taskRunIdValue, containmentPolicyId, containmentPolicyVersion,
     containmentPolicyDigest, containmentBindingDigest, providerId, modelId, modelDigest, imageDigest,
     runtimeFamily, runtimeVersion, securityProfileDigest, modelMountIdentityDigest, verifierVersion,
@@ -183,7 +198,7 @@ export function containmentEvidencePreserved(
 
 /** Deep structural equality over the bounded binding fields (no reference identity assumed). */
 export function bindingIdentical(a: ContainmentBindingEvidence, b: ContainmentBindingEvidence): boolean {
-  return BINDING_KEYS.every((k) => a[k] === b[k]);
+  return [...BINDING_KEYS, ...PREPARED_KEYS].every((k) => a[k] === b[k]);
 }
 
 /** Deep structural equality over the bounded post-attempt fields. */

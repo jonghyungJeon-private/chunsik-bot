@@ -5,6 +5,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [SemVer](https://semver.org/). Commits follow
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## R3-B2 secure terminalization and containment evidence — 2026-09-26
+
+- Route continuation receiver terminal outcomes through current-row security-preserving TaskManager persistence.
+- Preserve newer containment evidence across stale receiver snapshots; persisted post-attempt uncertainty
+  vetoes terminalization and retains STARTED / UNRESOLVED.
+- Bind verified preparation to the exact continuation run, policy and bounded runtime/model-mount identity;
+  project to R3-A evidence with distinct Provider/containment digests and both verifier identities.
+- Reject unissued profile/instance copies and add fake-only projection, exact-run and persistence integration
+  coverage. No production runtime/capability issuer or live activation; independent review pending.
+
 ## R2 continuation receiver review remediation — 2026-09-26
 
 - Reject enabled continuation mode through production config until R3 containment exists.

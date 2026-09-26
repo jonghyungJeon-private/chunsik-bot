@@ -454,6 +454,10 @@ class SqliteTaskRunRepository extends JsonRepository<TaskRun> implements TaskRun
         throw new ContainmentEvidenceConflictError('CALLER_SUPPLIED_EVIDENCE');
       }
       const preservedAudit = extractContainmentAudit(run); // durable evidence from the CURRENT row only
+      // R3-B2: current durable post-attempt uncertainty vetoes either terminal request atomically.
+      // Keep STARTED (the existing UNRESOLVED lifecycle); never manufacture a definite terminal state.
+      if (preservedAudit?.postAttempt && (preservedAudit.postAttempt.postAttemptModelIntegrity === 'MISMATCH'
+        || preservedAudit.postAttempt.failureCode !== null)) return run;
       const mergedMetadata: Record<string, unknown> = {
         ...(run.metadata ?? {}),
         ...(request.metadata ?? {}),

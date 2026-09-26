@@ -153,7 +153,8 @@ export class TaskManager implements ContinuationContainmentEvidenceSink {
    * R3-A current-row terminal merge. Terminalizes the exact STARTED run from the CURRENT persisted row
    * (never a stale caller snapshot), preserving durable containment evidence and merging the routing
    * audit + terminal metadata atomically. Use this instead of completeRun/failRun for continuation runs
-   * that may carry containment evidence.
+   * that may carry containment evidence. Current post-attempt uncertainty returns STARTED (UNRESOLVED)
+   * without a terminal write; callers must inspect the returned status.
    */
   async terminalizePreservingSecurityEvidence(
     exactTaskRunId: Id,

@@ -5,6 +5,31 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
+### R3-B2 — secure terminalization and containment evidence (2026-09-26)
+
+**IMPLEMENTED LOCALLY / AWAITING INDEPENDENT EXACT-HEAD REVIEW.** Authorized base:
+`a52705abb9b8b22b5caa7fe841b70032f4405719`; R3-A and R3-B1 are CLOSED + DELIVERED per the R3-B2 task.
+This entry supersedes the historical R3-not-started statements below.
+
+Continuation receiver completion/failure now uses TaskManager's current-row secure terminalization.
+All runs admitted at this seam are continuation-bound; ordinary completeRun/failRun callers are unchanged.
+Current durable post-attempt integrity mismatch or containment failure keeps STARTED / UNRESOLVED,
+including when a stale receiver outcome requests success or failure. No status or persistence owner added.
+
+Prepared candidates bind executionId = taskRunId (the canonical exact attempt identity), policy id/version/
+digest, runtime family/version and model-mount digest before both verification channels. The containment
+binding digest includes that context. A pure prepared-object projection reuses R3-A audit evidence and
+retains the distinct provider digest, profile/instance identity and both channel verifier versions/results.
+Legacy R3-A evidence remains readable; prepared identity fields are an all-or-none validated extension.
+Profile/instance copies are rejected by module issuance registries; these public bounded identity factories
+are NOT production runtime attestation. Trusted production issuance remains a mandatory future gate.
+
+Fake-only in-memory tests cover current-row evidence preservation, stale snapshots, cross-attempt rejection,
+model mismatch, containment/download uncertainty and phase-sensitive PROVIDER_SPAWN_FAILED.
+No runtime family chosen, no real Provider/runtime/network/feasibility UAT, no production capability issuer,
+no activation/config guard change. R3-C+ remains unauthorized. Local commit only; Push/PR/Merge require
+separate approval after independent exact-HEAD review.
+
 ### Production Continuation Receiver R2 — offline provider-backed receiver (2026-09-26)
 
 **IMPLEMENTED LOCALLY / AWAITING REVIEW** on review base

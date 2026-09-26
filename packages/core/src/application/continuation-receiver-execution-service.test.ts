@@ -43,8 +43,9 @@ function fixture() {
   const continuation = { [constrainedContinuation]: vi.fn(async (_input: ContinuationExecutionRequestContext): Promise<Extract<ContinuationExecutionResult, { disposition: 'DENY' }> | ({ disposition: 'ATTEMPT_STARTED'; taskRun: TaskRun; boundTaskFacts: { capability: Capability; intentType: IntentType } })> =>
     ({ disposition: 'ATTEMPT_STARTED', taskRun: run, boundTaskFacts: { capability: run.capability, intentType: task.intent.type } })) };
   const tasks = {
-    completeRun: vi.fn(async (value: TaskRun, facts: { artifactIds: string[] }) => ({ ...value, ...facts, status: TaskRunStatus.SUCCEEDED })),
-    failRun: vi.fn(async (value: TaskRun, error: string) => ({ ...value, error, status: TaskRunStatus.FAILED })),
+    terminalizePreservingSecurityEvidence: vi.fn(async (_id: string, facts: {
+      terminalStatus: TaskRunStatus.SUCCEEDED | TaskRunStatus.FAILED; artifactIds?: string[]; error?: string;
+    }) => ({ ...run, ...facts, status: facts.terminalStatus })),
   };
   const receiver = { supportedCapabilities: Object.freeze([Capability.GENERAL_CHAT]), receive: vi.fn(async (_input: ContinuationReceiverInput): Promise<ContinuationReceiverOutcome> =>
     ({ disposition: 'SUCCEEDED', artifactIds: ['artifact-1'] })) };
@@ -72,27 +73,24 @@ describe('M3E-6K receiver seam and exact-run terminalization', () => {
     if (result.disposition === 'DENY') throw new Error('expected terminal result');
     expect(result.taskRun).toMatchObject({ id: 'exact-run-42', taskId: f.run.taskId, attempt: 42, capability: f.run.capability });
     if (mode === 'SUCCEEDED') {
-      expect(f.tasks.completeRun).toHaveBeenCalledTimes(1);
-      expect(f.tasks.completeRun.mock.calls[0]![0]).toBe(f.run);
-      expect(f.tasks.completeRun.mock.calls[0]![1]).toEqual({ artifactIds: ['artifact-1'] });
-      expect(f.tasks.failRun).not.toHaveBeenCalled();
+      expect(f.tasks.terminalizePreservingSecurityEvidence).toHaveBeenCalledTimes(1);
+      expect(f.tasks.terminalizePreservingSecurityEvidence.mock.calls[0]![0]).toBe(f.run.id);
+      expect(f.tasks.terminalizePreservingSecurityEvidence.mock.calls[0]![1]).toEqual({ terminalStatus: TaskRunStatus.SUCCEEDED, artifactIds: ['artifact-1'] });
       expect(result.disposition).toBe('ATTEMPT_SUCCEEDED');
-      expect(result.taskRun).toBe(await f.tasks.completeRun.mock.results[0]!.value);
+      expect(result.taskRun).toBe(await f.tasks.terminalizePreservingSecurityEvidence.mock.results[0]!.value);
       expect(result.taskRun.status).toBe(TaskRunStatus.SUCCEEDED);
     } else if (mode === 'THROW') {
       expect(result.disposition).toBe('ATTEMPT_UNRESOLVED');
       expect(result.taskRun).toBe(f.run);
       expect(result.taskRun.status).toBe(TaskRunStatus.STARTED);
-      expect(f.tasks.completeRun).not.toHaveBeenCalled();
-      expect(f.tasks.failRun).not.toHaveBeenCalled();
+      expect(f.tasks.terminalizePreservingSecurityEvidence).not.toHaveBeenCalled();
       expect(JSON.stringify(result)).not.toContain('SENSITIVE_SENTINEL');
     } else {
-      expect(f.tasks.failRun).toHaveBeenCalledTimes(1);
-      expect(f.tasks.failRun.mock.calls[0]![0]).toBe(f.run);
-      expect(f.tasks.failRun.mock.calls[0]![1]).toBe('CONTINUATION_RECEIVER_FAILED');
-      expect(f.tasks.completeRun).not.toHaveBeenCalled();
+      expect(f.tasks.terminalizePreservingSecurityEvidence).toHaveBeenCalledTimes(1);
+      expect(f.tasks.terminalizePreservingSecurityEvidence.mock.calls[0]![0]).toBe(f.run.id);
+      expect(f.tasks.terminalizePreservingSecurityEvidence.mock.calls[0]![1]).toEqual({ terminalStatus: TaskRunStatus.FAILED, error: 'CONTINUATION_RECEIVER_FAILED' });
       expect(result.disposition).toBe('ATTEMPT_FAILED');
-      expect(result.taskRun).toBe(await f.tasks.failRun.mock.results[0]!.value);
+      expect(result.taskRun).toBe(await f.tasks.terminalizePreservingSecurityEvidence.mock.results[0]!.value);
       expect(JSON.stringify(result)).not.toContain('SENSITIVE_SENTINEL');
       expect(result.taskRun.status).toBe(TaskRunStatus.FAILED);
     }
@@ -106,8 +104,7 @@ describe('M3E-6K receiver seam and exact-run terminalization', () => {
     const f = fixture(); f.continuation[constrainedContinuation].mockResolvedValue(denial);
     expect(await f.execution.executeExplicitContinuation(f.request)).toBe(denial);
     expect(f.receiver.receive).not.toHaveBeenCalled();
-    expect(f.tasks.completeRun).not.toHaveBeenCalled();
-    expect(f.tasks.failRun).not.toHaveBeenCalled();
+    expect(f.tasks.terminalizePreservingSecurityEvidence).not.toHaveBeenCalled();
   });
   it.each(['taskRun', 'destinationAgentProfile', 'handoff', 'workItem', 'task', 'binding', 'receiverOutcome', 'providerId', 'approvalId'])
   ('rejects injected %s before starting', async key => {
@@ -126,8 +123,7 @@ describe('M3E-6K receiver seam and exact-run terminalization', () => {
     await expect(f.execution.executeExplicitContinuation(f.request)).rejects.toBeInstanceOf(WorkHandoffConsumptionError);
     expect(f.continuation[constrainedContinuation]).not.toHaveBeenCalled();
     expect(f.receiver.receive).not.toHaveBeenCalled();
-    expect(f.tasks.completeRun).not.toHaveBeenCalled();
-    expect(f.tasks.failRun).not.toHaveBeenCalled();
+    expect(f.tasks.terminalizePreservingSecurityEvidence).not.toHaveBeenCalled();
   });
   it('unavailable receiver and NO_ACTION never start attempts', async () => {
     const f = fixture();
@@ -137,21 +133,15 @@ describe('M3E-6K receiver seam and exact-run terminalization', () => {
     expect(await f.execution.executeExplicitContinuation(f.request)).toMatchObject({ disposition: 'DENY', reason: 'WORK_ITEM_NOT_CONTINUABLE' });
     expect(f.continuation[constrainedContinuation]).not.toHaveBeenCalled();
     expect(f.receiver.receive).not.toHaveBeenCalled();
-    expect(f.tasks.completeRun).not.toHaveBeenCalled();
-    expect(f.tasks.failRun).not.toHaveBeenCalled();
+    expect(f.tasks.terminalizePreservingSecurityEvidence).not.toHaveBeenCalled();
   });
   it.each(['SUCCEEDED', 'FAILED'] as const)('propagates terminalization failure without fallback/retry for %s', async mode => {
     const f = fixture(); const error = new Error('storage failure');
-    if (mode === 'SUCCEEDED') f.tasks.completeRun.mockRejectedValue(error);
-    else {
-      f.tasks.failRun.mockRejectedValue(error);
-      if (mode === 'FAILED') f.receiver.receive.mockResolvedValue({ disposition: 'FAILED', error: 'CONTINUATION_RECEIVER_FAILED' });
-      else f.receiver.receive.mockRejectedValue(new Error('receiver failure'));
-    }
+    f.tasks.terminalizePreservingSecurityEvidence.mockRejectedValue(error);
+    if (mode === 'FAILED') f.receiver.receive.mockResolvedValue({ disposition: 'FAILED', error: 'CONTINUATION_RECEIVER_FAILED' });
     await expect(f.execution.executeExplicitContinuation(f.request)).rejects.toBe(error);
     expect(f.receiver.receive).toHaveBeenCalledTimes(1);
-    expect(f.tasks.completeRun).toHaveBeenCalledTimes(mode === 'SUCCEEDED' ? 1 : 0);
-    expect(f.tasks.failRun).toHaveBeenCalledTimes(mode === 'SUCCEEDED' ? 0 : 1);
+    expect(f.tasks.terminalizePreservingSecurityEvidence).toHaveBeenCalledTimes(1);
     expect(f.run.status).toBe(TaskRunStatus.STARTED);
   });
   it('propagates typed 6J errors without receiver or failure save', async () => {
@@ -160,7 +150,7 @@ describe('M3E-6K receiver seam and exact-run terminalization', () => {
     await expect(f.execution.executeExplicitContinuation(f.request)).rejects.toBe(error);
     expect(f.continuation[constrainedContinuation]).toHaveBeenCalledTimes(1);
     expect(f.receiver.receive).not.toHaveBeenCalled();
-    expect(f.tasks.failRun).not.toHaveBeenCalled();
+    expect(f.tasks.terminalizePreservingSecurityEvidence).not.toHaveBeenCalled();
   });
   it('isolates original request mutations across preflight and uses the same semantic plan in 6J and receiver', async () => {
     const f = fixture(); let release!: (value: WorkHandoff) => void;
@@ -182,7 +172,7 @@ describe('M3E-6K receiver seam and exact-run terminalization', () => {
     const result = await f.execution.executeExplicitContinuation(f.request);
     expect(result.disposition).toBe('ATTEMPT_UNRESOLVED');
     if (result.disposition !== 'ATTEMPT_UNRESOLVED') throw new Error('expected unresolved');
-    expect(f.tasks.failRun).not.toHaveBeenCalled();
+    expect(f.tasks.terminalizePreservingSecurityEvidence).not.toHaveBeenCalled();
     expect(result.taskRun).toBe(f.run);
   });
   it('B1: contradictory FAILED + ACCEPTED audit maps to ATTEMPT_UNRESOLVED with the exact run STARTED', async () => {
@@ -206,8 +196,7 @@ describe('M3E-6K receiver seam and exact-run terminalization', () => {
     if (result.disposition !== 'ATTEMPT_UNRESOLVED') throw new Error('expected unresolved');
     expect(result.taskRun).toBe(f.run);
     expect(result.taskRun.status).toBe(TaskRunStatus.STARTED);
-    expect(f.tasks.failRun).not.toHaveBeenCalled();
-    expect(f.tasks.completeRun).not.toHaveBeenCalled();
+    expect(f.tasks.terminalizePreservingSecurityEvidence).not.toHaveBeenCalled();
     // The rejected contradictory audit must not surface on the unresolved result at all.
     expect(result.routingAudit).toBeUndefined();
     expect(JSON.stringify(result)).not.toContain('provider-1');
@@ -224,8 +213,7 @@ describe('M3E-6K receiver seam and exact-run terminalization', () => {
       .toMatchObject({ disposition: 'DENY', stage: 'RECEIVER_PREFLIGHT', reason: 'RECEIVER_UNAVAILABLE' });
     expect(f.continuation[constrainedContinuation]).not.toHaveBeenCalled();
     expect(f.receiver.receive).not.toHaveBeenCalled();
-    expect(f.tasks.completeRun).not.toHaveBeenCalled();
-    expect(f.tasks.failRun).not.toHaveBeenCalled();
+    expect(f.tasks.terminalizePreservingSecurityEvidence).not.toHaveBeenCalled();
   });
   it('F1: SUCCEEDED with an unaudited acceptedProviderId maps to ATTEMPT_UNRESOLVED, exact run STARTED', async () => {
     const f = fixture();
@@ -239,8 +227,7 @@ describe('M3E-6K receiver seam and exact-run terminalization', () => {
     if (result.disposition !== 'ATTEMPT_UNRESOLVED') throw new Error('expected unresolved');
     expect(result.taskRun).toBe(f.run);
     expect(result.taskRun.status).toBe(TaskRunStatus.STARTED);
-    expect(f.tasks.completeRun).not.toHaveBeenCalled();
-    expect(f.tasks.failRun).not.toHaveBeenCalled();
+    expect(f.tasks.terminalizePreservingSecurityEvidence).not.toHaveBeenCalled();
     expect(result.routingAudit).toBeUndefined();
     expect(JSON.stringify(result)).not.toContain('provider-1');
   });
@@ -254,8 +241,7 @@ describe('M3E-6K receiver seam and exact-run terminalization', () => {
     if (result.disposition !== 'ATTEMPT_UNRESOLVED') throw new Error('expected unresolved');
     expect(result.taskRun).toBe(f.run);
     expect(f.receiver.receive).not.toHaveBeenCalled();
-    expect(f.tasks.completeRun).not.toHaveBeenCalled();
-    expect(f.tasks.failRun).not.toHaveBeenCalled();
+    expect(f.tasks.terminalizePreservingSecurityEvidence).not.toHaveBeenCalled();
   });
   it('keeps the port and orchestration provider agnostic with no post-start storage/run lookup', () => {
     const port = readFileSync(new URL('../ports/continuation-receiver.port.ts', import.meta.url), 'utf8');
