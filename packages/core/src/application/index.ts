@@ -60,6 +60,42 @@ export * from './validation-profile-registry';
 export * from './runtime-response-validator';
 export * from './runtime-provider-routing-service';
 export * from './continuation-provider-routing-service';
+// R3-B1 (G3A-1): EXPLICIT named exports only — the wildcard previously leaked the test-only
+// `createFakeContainedExecutionCapability` through the production @quoky/core barrel. That factory is
+// test infrastructure and is DELIBERATELY excluded here; focused R3-B1 tests import it directly from the
+// relative module. Every legitimate production-facing R3-B1 contract/function is re-exported below.
+export {
+  CONTAINMENT_SECURITY_PROFILE_SCHEMA,
+  CONTAINMENT_INSTANCE_IDENTITY_SCHEMA,
+  SOLE_PROVIDER_SELECTION_SCHEMA,
+  CONTAINMENT_CANDIDATE_BINDING_SCHEMA,
+  VERIFIED_CONTAINMENT_BINDING_SCHEMA,
+  CONTAINED_EXECUTION_CAPABILITY_SCHEMA,
+  PREPARED_CONTAINMENT_EXECUTION_SCHEMA,
+  PreparedContainmentError,
+  createContainmentSecurityProfile,
+  createContainmentInstanceIdentity,
+  assertExactSoleProviderSelection,
+  createContainmentCandidateBinding,
+  prepareVerifiedContainmentBinding,
+  PreparedContainmentExecution,
+} from './continuation-prepared-containment';
+export type {
+  PreparedContainmentFailureCode,
+  ContainmentSecurityProfile,
+  ContainmentInstanceIdentity,
+  SoleProviderSelection,
+  StaticEligibilityDecision,
+  ContainmentCandidateBinding,
+  ContainmentVerificationSubject,
+  ContainmentChannelStatus,
+  ContainmentChannelResult,
+  ContainmentVerificationChannel,
+  VerifiedContainmentBinding,
+  ContainedExecutionInput,
+  ContainedExecutionResult,
+  ContainedExecutionCapability,
+} from './continuation-prepared-containment';
 export * from './continuation-containment-validation';
 export * from './containment-failure-classifier';
 export * from './tool-manager';
