@@ -64,3 +64,28 @@ export class GuardedTaskRunStartError extends Error {
     this.name = 'GuardedTaskRunStartError';
   }
 }
+
+/**
+ * R3-A containment evidence conflict (ADR-0089 amendment A-1). A single coherent bounded classification
+ * for every attempt to violate the containment evidence state machine: replacing immutable binding
+ * evidence, removing/changing append-once post-attempt evidence, dropping evidence, or acting on a
+ * TaskRun that is not in the required STARTED state. Adapters own driver-error translation; Core never
+ * inspects driver codes. The single `code` keeps the classification from multiplying unnecessarily
+ * while `reason` records the bounded cause for audit/tests.
+ */
+export class ContainmentEvidenceConflictError extends Error {
+  readonly code = 'CONTAINMENT_EVIDENCE_CONFLICT' as const;
+  constructor(
+    readonly reason:
+      | 'RUN_NOT_FOUND'
+      | 'RUN_NOT_STARTED'
+      | 'BINDING_DIGEST_CONFLICT'
+      | 'BINDING_MISSING'
+      | 'POST_ATTEMPT_CONFLICT'
+      | 'EVIDENCE_REMOVED'
+      | 'MALFORMED_EVIDENCE',
+  ) {
+    super('CONTAINMENT_EVIDENCE_CONFLICT');
+    this.name = 'ContainmentEvidenceConflictError';
+  }
+}

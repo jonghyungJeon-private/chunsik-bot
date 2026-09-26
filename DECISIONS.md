@@ -8280,3 +8280,106 @@ Provider-facing Runtime request. This extends the Gateway Application API, not t
 authentication refusal, not a timeout or ambiguous termination. It does not claim NOT_DISPATCHED or no
 side effects: dispatch evidence remains DISPATCHED. An untyped escape or uncertain operational failure
 remains UNRESOLVED. This relies on adapters honoring the AUTH_REQUIRED failure contract.
+
+
+#### ADR-0089 amendment — R3 Architecture v3 RATIFIED WITH FEASIBILITY GATE + R3-A implemented (2026-09-26)
+
+**Status: R3 Architecture v3 = RATIFIED WITH FEASIBILITY GATE. R3-A implemented locally / awaiting
+independent review.** This amendment records the independently reviewed and ratified R3 containment
+architecture (v3) and the R3-A runtime-family-independent foundations. It cross-references ADR-0089 and
+the Stage2B provider-routing architecture; no new decision family was created. Independent reviewer:
+`BLOCKING_FINDINGS = 0`; `R3_A_B_IMPLEMENTATION_ARCHITECTURALLY_SEPARABLE = YES`;
+`R3_IMPLEMENTATION_AUTHORIZED_BY_REVIEW = NO`. Chief Architect authorized **R3-A ONLY**; R3-B/C/D/E are
+NOT authorized.
+
+**Ratified architecture (v3).**
+```text
+R3 Architecture v3        = RATIFIED WITH FEASIBILITY GATE
+runtime selection         = PENDING
+production host           = UNDEFINED (PRODUCTION_HOST_DECISION_REQUIRED)
+R3-C+                     = BLOCKED pending Strict R3_CONTAINMENT_FEASIBILITY_UAT
+Option A                  = no-network contained execution family (ephemeral container per exact attempt;
+                            private in-container Ollama daemon + one-shot client; RO digest-pinned model
+                            volume). Shared-VM kernel-escape residual is explicitly documented (Option A
+                            does not protect against a container kernel escape into the shared runtime VM).
+Option C                  = no-NIC VM comparison family (intentional vsock/virtiofs/stdin-stdout I/O in
+                            threat model). Stronger vs shared-VM network escape; higher startup/memory/ops.
+startup guard             = UNCHANGED (general-chat-v1 → CONTINUATION_RECEIVER_CONTAINMENT_UNAVAILABLE)
+Live Provider             = NOT AUTHORIZED
+```
+
+**R3-A scope delivered (runtime-family-independent; ZERO runtime/container/VM/Ollama/network/production
+activation).**
+- Separate bounded Core containment audit contract `ContinuationContainmentAudit`
+  (`continuation-containment-audit-v1`), independent of and never merged into
+  `continuation-routing-audit-v1`. Core-visible bounded semantic facts only; NO raw container ID,
+  OrbStack/Docker path, inspect JSON, CLI argv, host filesystem/socket/mount path, environment dump, or
+  raw runtime error. Adapter/runtime identity contributes to a digest without being surfaced raw.
+- Strict fail-closed projection `snapshotContainmentAudit` (inert descriptor-safe: reads each field once
+  from its own data descriptor; rejects accessors, symbol keys, unknown keys, prototype pollution,
+  malformed digests/enums, and cross-run identity mismatches).
+- TaskRun-owned atomic containment evidence persistence (no new repository, no new table, no schema
+  migration): `recordContainmentBindingIfAbsent` (insert-once CAS), `recordContainmentPostEvidenceIfAbsent`
+  (append-once), `terminalizePreservingSecurityEvidence` (current-row terminal merge). All run inside the
+  repository's existing exclusive `db.transaction(...).immediate()` (BEGIN IMMEDIATE).
+- Narrow Application seam `ContinuationContainmentEvidenceSink` (record-binding / record-post-evidence);
+  TaskManager implements it and remains the sole lifecycle/mutation owner
+  (`PERSISTENCE_OWNERSHIP_CHANGE = NO`). The receiver never injects TaskManager and gains no generic
+  metadata-mutation capability.
+- Bounded typed failure `ContainmentEvidenceConflictError` (single `code =
+  CONTAINMENT_EVIDENCE_CONFLICT`, bounded `reason`).
+- Failure/uncertainty mapping amendment: `CONTAINMENT_FAILURE` and `MODEL_DOWNLOAD_DETECTED` become
+  UNRESOLVED once an attempt is dispatched (added to
+  `ContinuationProviderRoutingService.isPostDispatchUncertain`), remaining definite FAILED pre-attempt.
+  Pure phase-sensitive classifier (`classifyContainmentFailure`, `classifyProviderSpawnFailed`):
+  PRE_ATTEMPT definite failure → FAILED; ATTEMPT_STARTED/POST_ATTEMPT uncertainty → UNRESOLVED;
+  `PROVIDER_SPAWN_FAILED` is phase/evidence-sensitive, never globally classified. No new TaskRunStatus.
+
+**Mandatory amendments.**
+- **A-1 (generic-save evidence immutability).** For continuation-bound runs the generic
+  `taskRuns.save(fullRun)` now rejects, inside the existing bound-run IMMEDIATE transaction, any write
+  that removes or mutates durable containment evidence (binding-digest change, evidence removal, or a
+  different append-once post-attempt value); identical preservation is allowed. No migration.
+- **A-2 (prepared-execution structural substitution + digest naming).** RECORDED for R3-B (no runtime
+  code now): future continuation contained execution must use a `PreparedContainmentExecution`
+  (Application capability whose identity includes `executionId`, `providerId`, `containmentBindingDigest`,
+  and whose `execute` is closed over the verified runtime instance); the raw host Ollama provider must be
+  ABSENT or sentinel-refusing so the Gateway cannot fall through to it. NO containment fields are added to
+  `AiRequest`. Digest naming ambiguity is closed: the Stage2B provider binding digest (over
+  providerId/adapterId/modelId/bindingVersion/profileVersion) is `providerBindingDigest`; the R3
+  containment binding digest is `containmentBindingDigest`. They are never conflated in new APIs.
+- **A-3 (scoped model identity + post-attempt revalidation).** The audit MUST NOT claim the exact model
+  bytes were immutable throughout execution against a privileged host/runtime actor. `modelIntegrityStatus`
+  supports `VERIFIED_AT_BIND` at bind and a bounded post-attempt disposition
+  (`MATCHED | MISMATCH | NOT_REVERIFIED | UNAVAILABLE`). Post-attempt `MISMATCH` → integrity flag →
+  UNRESOLVED. Privileged host/runtime mutation is explicitly out of scope for the Provider-egress invariant.
+- **A-4 (private daemon readiness is strictly non-inference).** Semantic policy only in R3-A (no daemon
+  implemented): allowed pre-dispatch readiness = non-inference operations (version/tags/source-equivalent);
+  FORBIDDEN before Gateway dispatch = pull, create, generate, model inference, cloud routing. Cloud
+  capability = disabled; model storage = read-only. Any future model pre-warm needs explicit semantic
+  classification and separate review; inference is never quietly interpreted as readiness.
+
+**Static eligibility contract (Architecture v3 §23 / R3-A §28).** Continuation preparation must derive
+primary-only STATIC eligible candidates BEFORE expensive containment preparation, reusing
+`RoutingPolicyEngine` + `ProviderExecutionPlanner`/ranking semantics with no fabricated "all AVAILABLE"
+availability evidence and no duplicate ranking algorithm; anything other than exactly one acceptable
+candidate → pre-dispatch FAILED with no runtime instance created. The cleanest implementation belongs in
+R3-B (it interacts with the prepared-execution substitution); R3-A records this contract and defers the
+code. No host `isAvailable()` may serve as continuation availability evidence
+(`HOST_PROVIDER_AVAILABILITY_REUSED = NO`); ordinary Runtime paths are unchanged.
+
+**Persistence mechanics (grounded).** `task_runs.data` is a JSON document already carrying arbitrary
+`metadata`; the v11 `task_runs_immutable_start` trigger freezes only `id/task_id/attempt/startedAt/
+capability` (not `status`/`metadata`), so a STARTED→STARTED metadata write and current-row terminal merge
+are mechanically allowed. Insert-once/append-once is enforced by repository compare-and-set inside BEGIN
+IMMEDIATE, not by a v12 trigger. `SCHEMA_MIGRATION = NO`, `NEW_REPOSITORY = NO`, `NEW_SCHEMA = NO`.
+
+**Gates.**
+```text
+R3_B_AUTHORIZED = NO ; R3_C_PLUS_AUTHORIZED = NO
+PRODUCTION_HOST_DECISION = PENDING ; R3_CONTAINMENT_FEASIBILITY_UAT = NOT AUTHORIZED
+FINAL_RUNTIME_SELECTION = PENDING ; LIVE_PROVIDER = NOT AUTHORIZED
+```
+
+No R3 implementation is claimed complete. No container/VM/Ollama/network/runtime activation and no
+production startup-guard removal were performed in R3-A.

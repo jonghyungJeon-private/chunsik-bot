@@ -3,14 +3,22 @@ import { newId } from '../util/id';
 import { now } from '../util/clock';
 import { Capability, RiskLevel, TaskRunStatus, TaskStatus } from '../domain';
 import type { ConversationContext, Id, Intent, Metadata, Task, TaskRun } from '../domain';
-import type { GuardedTaskRunStartFacts, StorageProvider } from '../ports';
+import type {
+  ContinuationContainmentAudit,
+  ContinuationContainmentEvidenceSink,
+  GuardedTaskRunStartFacts,
+  StorageProvider,
+} from '../ports';
 
 /**
  * Owns Task / TaskRun lifecycle and persistence. The status state machine is
  * deterministic policy, so it is implemented in v1; the cognition that decides
  * WHICH transition to make lives in the orchestrator and planner.
+ *
+ * R3-A: TaskManager is also the owner-side implementation of ContinuationContainmentEvidenceSink; the
+ * narrow sink port is what the continuation composition receives, delegating here.
  */
-export class TaskManager {
+export class TaskManager implements ContinuationContainmentEvidenceSink {
   /** Allowed status transitions. Terminal states map to []. */
   private static readonly TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
     [TaskStatus.PENDING]: [TaskStatus.PLANNING, TaskStatus.CANCELED],
@@ -119,5 +127,51 @@ export class TaskManager {
 
   private static elapsed(startedAt: string, finishedAt: string): number {
     return Math.max(0, Date.parse(finishedAt) - Date.parse(startedAt));
+  }
+
+  /**
+   * R3-A: record immutable containment binding evidence on the exact STARTED run. TaskManager remains
+   * the lifecycle owner; it delegates the atomic insert-once compare-and-set to the repository. No
+   * lifecycle transition and no Provider attempt occur here.
+   */
+  async recordContainmentBindingIfAbsent(
+    exactTaskRunId: Id,
+    containmentAudit: ContinuationContainmentAudit,
+  ): Promise<TaskRun> {
+    return this.storage.taskRuns.recordContainmentBindingIfAbsent(exactTaskRunId, containmentAudit);
+  }
+
+  /** R3-A: append optional post-attempt evidence; delegates to the repository append-once CAS. */
+  async recordContainmentPostEvidenceIfAbsent(
+    exactTaskRunId: Id,
+    containmentAudit: ContinuationContainmentAudit,
+  ): Promise<TaskRun> {
+    return this.storage.taskRuns.recordContainmentPostEvidenceIfAbsent(exactTaskRunId, containmentAudit);
+  }
+
+  /**
+   * R3-A current-row terminal merge. Terminalizes the exact STARTED run from the CURRENT persisted row
+   * (never a stale caller snapshot), preserving durable containment evidence and merging the routing
+   * audit + terminal metadata atomically. Use this instead of completeRun/failRun for continuation runs
+   * that may carry containment evidence.
+   */
+  async terminalizePreservingSecurityEvidence(
+    exactTaskRunId: Id,
+    request: {
+      terminalStatus: TaskRunStatus.SUCCEEDED | TaskRunStatus.FAILED;
+      artifactIds?: Id[];
+      providerId?: string;
+      error?: string;
+      metadata?: Metadata;
+    },
+  ): Promise<TaskRun> {
+    return this.storage.taskRuns.terminalizePreservingSecurityEvidence(exactTaskRunId, {
+      terminalStatus: request.terminalStatus,
+      finishedAt: now(),
+      ...(request.artifactIds ? { artifactIds: request.artifactIds } : {}),
+      ...(request.providerId ? { providerId: request.providerId } : {}),
+      ...(request.error ? { error: request.error } : {}),
+      ...(request.metadata ? { metadata: request.metadata } : {}),
+    });
   }
 }

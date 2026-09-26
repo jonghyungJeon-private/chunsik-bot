@@ -12,9 +12,11 @@ import type {
   ExecutionKind,
   ExecutionReceipt,
   Id,
+  IsoTimestamp,
   MemoryRecord,
   MemoryScope,
   MemoryType,
+  Metadata,
   PatchSet,
   Project,
   ResourceRef,
@@ -25,6 +27,7 @@ import type {
   WorkHandoff,
   WorkspaceChange,
 } from '../domain';
+import type { ContinuationContainmentAudit } from './continuation-containment-audit';
 
 /**
  * A minimal repository abstraction. Deliberately NOT a query language — the
@@ -63,8 +66,34 @@ export interface TaskRunRepository extends Repository<TaskRun> {
    */
   guardedStart(expected: GuardedTaskRunStartFacts, capability: Capability): Promise<TaskRun>;
   /** Bound Tasks: update existing runs only; reject novel insertion and terminal → STARTED revival.
-   * Existing complete/fail terminal updates remain supported. */
+   * Existing complete/fail terminal updates remain supported.
+   * R3-A / A-1: for bound runs this additionally rejects any generic-save that would remove or mutate
+   * durable containment evidence (binding digest change, evidence removal, or a different append-once
+   * post-attempt value). Identical preservation is allowed. No schema migration. */
   save(run: TaskRun): Promise<TaskRun>;
+  /** R3-A: atomically record immutable containment binding evidence on the exact STARTED run.
+   * Insert-once compare-and-set inside one exclusive transaction: absent → write; identical
+   * containmentBindingDigest → idempotent success; different digest → reject. Status stays STARTED.
+   * A wrong state (missing run / not STARTED) or malformed evidence rejects with a bounded conflict.
+   * No Provider attempt is started by this operation. */
+  recordContainmentBindingIfAbsent(
+    exactTaskRunId: Id,
+    containmentAudit: ContinuationContainmentAudit,
+  ): Promise<TaskRun>;
+  /** R3-A: atomically append optional post-attempt evidence to an existing binding on the exact STARTED
+   * run. Append-once: binding must already exist and be identical; postAttempt absent → record; identical
+   * → idempotent; different → reject. The binding identity is never changed. */
+  recordContainmentPostEvidenceIfAbsent(
+    exactTaskRunId: Id,
+    containmentAudit: ContinuationContainmentAudit,
+  ): Promise<TaskRun>;
+  /** R3-A: terminalize the exact STARTED run from the CURRENT persisted row (never a stale caller
+   * snapshot), preserving any durable containment evidence and merging the routing audit + terminal
+   * metadata atomically. terminalStatus must be SUCCEEDED or FAILED. */
+  terminalizePreservingSecurityEvidence(
+    exactTaskRunId: Id,
+    request: TerminalizePreservingSecurityEvidenceRequest,
+  ): Promise<TaskRun>;
   /** ADR-0089: refuse deletion of every continuation-bound TaskRun, including terminal history, because
    * bound-run provenance and `MAX(attempt)+1` ordinal identity both depend on retention. The decision must
    * come from the persisted run's own taskId and the canonical binding — never a caller flag, argument or
@@ -73,6 +102,17 @@ export interface TaskRunRepository extends Repository<TaskRun> {
    * it claims no immunity against arbitrary direct SQL. */
   delete(id: Id): Promise<void>;
   listByTask(taskId: Id): Promise<TaskRun[]>;
+}
+
+/** R3-A terminal merge request. terminalStatus is restricted to the two terminal outcomes. */
+export interface TerminalizePreservingSecurityEvidenceRequest {
+  readonly terminalStatus: 'SUCCEEDED' | 'FAILED';
+  readonly finishedAt: IsoTimestamp;
+  readonly artifactIds?: readonly Id[];
+  readonly providerId?: string;
+  readonly error?: string;
+  /** Merged into metadata alongside preserved containment evidence. */
+  readonly metadata?: Metadata;
 }
 
 /** Bounded, storage-neutral candidate lookup for durable-memory recall. */
