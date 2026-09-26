@@ -8162,3 +8162,100 @@ RECEIVER_MODE`, uncertainty classification over the audit) is **NOT STARTED**. R
 containment is still required before any live UAT, and strict live authorization remains a separate gate:
 `LIVE_CONTAINMENT_READY = NO`, `LIVE_PROVIDER_EXECUTION_AUTHORIZED = NO`,
 `CONTINUATION_EXECUTION_ACTIVATION = DISABLED`. No production readiness is claimed.
+
+
+#### ADR-0089 amendment — Production Continuation Receiver R2 (offline provider-backed receiver) (2026-09-26)
+
+**Status: Implemented locally / awaiting review.** This amendment records the R2 slice of the production
+continuation receiver: the offline, provider-backed continuation path. It cross-references ADR-0089 and
+the Stage2B provider-routing architecture; no new decision family was created. R2 changes the production
+routing policy configuration and its configuration digest, adds a Core `composeContinuation` prompt API
+and a Core `ContinuationProviderRoutingService`, an app-layer `ProviderBackedContinuationReceiver`, and a
+separate `QUOKY_CONTINUATION_RECEIVER_MODE` activation mode. It does **not** implement live provider
+execution, real containment enforcement (R3), or any external trigger. `R1 = CLOSED + DELIVERED` (PR #79,
+merge `ccb1864d98257ee844723f78155fbb2c2433cb73`). `R3 = NOT STARTED`.
+
+**Sibling routing service.** `ContinuationProviderRoutingService` is a Core Application **sibling** of
+`RuntimeProviderRoutingService` — not a wrapper, import dependency, `CapabilityRouter`, or direct
+`AiProvider` caller. It reuses the existing Stage2B primitives (`ProviderRegistry`,
+`ProviderBindingRegistry`, `RoutingPolicyEngine`, `ProviderExecutionPlanner`, `ProviderRoutingGateway`,
+`ValidationProfileRegistry`, deadline policy) and owns only continuation-specific orchestration. It never
+treats `handoff.objective` as `currentUserTurn` and inherits no ConversationRuntime semantics.
+`RUNTIME_ROUTING_DIRECT_REUSE = NO`; `DIRECT_AI_PROVIDER = NO`.
+
+**Continuation routing policy + chat policy hardening.** Added the ratified production policy
+`stage2b-continuation-general-chat-v1` (v1, `when` = capabilities `[GENERAL_CHAT]`, requestTypes
+`[WORK]`, intentTypes `[CHAT]`, validationProfiles `[AUTHORITY_SENSITIVE]`; eligibility
+`requiredRoutingClasses = [BALANCED]`). The existing `stage2b-general-chat-v1` chat policy is hardened to
+require `requestTypes = [CONVERSATIONAL]`, preserving ConversationRuntime behavior. Policy separation is
+by **predicate**, not precedence: a CONVERSATIONAL context matches only the chat policy, a WORK/CHAT/
+AUTHORITY_SENSITIVE context matches only the continuation policy. `ROUTING_POLICY_CONFIGURATION_CHANGE =
+YES`; `CONFIGURATION_DIGEST_CHANGE = YES` (the production digest now deterministically binds both
+validation-profile configuration digests, canonically ordered). Pre-R2 digest equality is **not** claimed.
+
+**Fixed routing context + primary-only.** The continuation routing context is fixed: capability
+GENERAL_CHAT, requestType WORK, intentType CHAT, semanticRisk STANDARD, latency BALANCED, tool/authority/
+continuity NOT_REQUIRED, output MEDIUM, validationProfile AUTHORITY_SENSITIVE. capability/intent are
+asserted against the R1 bound Task facts and fail closed otherwise; no caller-supplied overrides.
+Primary-only is **enforced in code**: after the planner produces a plan, `operationalFallback === null &&
+semanticEscalation === null` must hold, else the result is a definite `PRE_DISPATCH_FAILED` and the
+Gateway is never invoked (0 executions). This does not rely on the current provider inventory.
+
+**Prompt ownership + reframe guard.** `PromptComposer.composeContinuation(input)` returns a `PromptSpec`
+plus a **separate** bounded validation corpus (never merged into PromptSpec/AiRequest/RoutingContext).
+Refs are identifiers only (no Artifact/ExecutionReceipt/resource resolution). AgentProfile persona,
+objective and plan are subordinate data, never authority. Bounds fail closed (16 refs/category, 48 total,
+256 B/ref, 16 plan steps, 32 KiB rendered prompt, corpus ≤ 8 entries / 4 KiB each / 16 KiB total); an
+over-limit corpus entry is excluded by an explicit rule, never truncated. The continuation prompt uses
+distinct section headings and does **not** emit the ConversationRuntime transcript layout
+(`## 3. Conversation transcript`) or a `--- Current user message ---` task, so the Ollama adapter passes
+it through without a conversation reframe (proven with the real adapter + a fake `CliRunner`).
+
+**Provider-backed receiver.** `ProviderBackedContinuationReceiver` (app layer) implements the Core
+`ContinuationReceiver` port with `supportedCapabilities = [GENERAL_CHAT]`. Narrow deps only:
+PromptComposer, PromptRenderer, the routing seam, and a narrow Artifact sink — no StorageProvider,
+TaskManager, ApprovalManager, or concrete Provider adapter. Preflight failures (unsupported capability/
+intent, prompt-bound violations) return **bounded FAILED** (never thrown, so 6K does not convert them to
+UNRESOLVED); a non-`ContinuationPromptError` pre-composition escape is re-thrown so 6K maps it to
+UNRESOLVED. Post-dispatch exceptions are not caught into FAILED. On ACCEPTED it persists exactly one
+platform-owned `MARKDOWN_REPORT` (`text/markdown`, taskId/taskRunId = exact run); Provider-supplied
+artifact/task/run ids and URIs are ignored. A definite Artifact save failure → FAILED (no fabricated
+success, no retry, possible orphan Artifact documented). The receiver never terminalizes the TaskRun.
+
+**Audit / uncertainty mapping.** The service maps the Stage2B `ProviderExecutionAudit` into the bounded
+R1 `ContinuationRoutingAudit` (executionId = exact TaskRun id). Classification uses per-attempt/dispatch
+evidence, not final status alone: definite pre-dispatch failure (config invalid, policy not matched, no
+eligible provider, primary-only rejected, unsupported facts) → FAILED / NOT_DISPATCHED / attemptCount 0;
+dispatched-but-uncertain (post-dispatch TIMEOUT / EXECUTION_FAILED / UNAVAILABLE / SPAWN_FAILED /
+DEADLINE) → UNRESOLVED / DISPATCHED; provider returned + terminal validation → ACCEPTED (SUCCEEDED) or
+FAILED. Produced outcomes are accepted by the R1 `snapshotReceiverOutcome` validator.
+
+**Activation mode.** `QUOKY_CONTINUATION_RECEIVER_MODE = disabled | general-chat-v1` (default `disabled`),
+kept separate from `QUOKY_PROVIDER_ROUTING_MODE`. `disabled` → receiver binding absent, no composition, no
+external caller (AppModule unchanged; the R1 acceptance test that asserts AppModule has no
+`CONTINUATION_RECEIVER` still holds). `general-chat-v1` requires every mandatory dependency plus a verified
+containment seam; because R3 containment is not implemented, production `general-chat-v1` **fails closed**
+at startup. Tests exercise the enabled composition with a fake verified containment and fake providers.
+
+```text
+CONTINUATION_ROUTING_SERVICE = ContinuationProviderRoutingService (Core sibling)
+CONTINUATION_POLICY = stage2b-continuation-general-chat-v1
+CHAT_POLICY_NARROWED = YES (requestTypes = [CONVERSATIONAL])
+REQUEST_TYPE = WORK ; INTENT_SOURCE = R1 bound Task facts ; VALIDATION_PROFILE = AUTHORITY_SENSITIVE
+PRIMARY_ONLY_ENFORCED = YES (in code)
+PROMPT_OWNER = PromptComposer.composeContinuation ; CONVERSATION_REFRAME = NOT TRIGGERED
+RESOURCE/ARTIFACT/RECEIPT_REF_RESOLUTION = NONE (identifiers only)
+OUTPUT_OWNER = platform ArtifactManager ; ARTIFACT_KIND = MARKDOWN_REPORT ; PROVIDER_ARTIFACT_IDS_TRUSTED = NO
+TASKRUN_TERMINALIZATION_IN_RECEIVER = NO ; EXECUTION_ID_EXACT_RUN = YES
+CONTINUATION_MODE = disabled | general-chat-v1 ; DEFAULT_MODE = disabled ; PROVIDER_ROUTING_MODE_COUPLED = NO
+ENABLED_WITHOUT_CONTAINMENT = STARTUP_FAIL_CLOSED ; PRODUCTION_LIVE_READY = NO
+PRODUCTION_PROVIDER_BACKED_RECEIVER = IMPLEMENTED OFFLINE
+CONTINUATION_EXECUTION_ACTIVATION = DISABLED / NOT LIVE-READY
+LIVE_CONTAINMENT_READY = NO ; LIVE_PROVIDER_EXECUTION_AUTHORIZED = NO ; RUNTIME_EXECUTION_AUTHORIZED = NO
+R3 = NOT STARTED ; DISCORD_LIVE_UAT_AUTHORIZED = NO
+```
+
+No new aggregate, repository, schema, migration, durable workflow state, Approval model, ExecutionPlan
+persistence, post-wait plan source, live provider execution, containment enforcement, external runtime
+trigger, direct AiProvider bypass, or CapabilityRouter bypass. R2 production enabled mode remains fail-
+closed until R3 containment exists.

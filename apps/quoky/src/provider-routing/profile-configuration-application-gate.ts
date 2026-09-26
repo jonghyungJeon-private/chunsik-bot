@@ -3,8 +3,10 @@ import { ProviderRegistry, RoutingPolicyEngine } from '@quoky/core';
 import type { ProviderDescriptor, RoutingPolicyConfiguration } from '@quoky/core';
 import {
   GENERAL_CHAT,
+  AUTHORITY_SENSITIVE,
   DEFAULT_PROVIDER_DEADLINE_POLICY,
   DeadlineClass,
+  createDefaultValidationProfileRegistry,
 } from '@quoky/core';
 import {
   PRODUCTION_ROUTING_CONFIGURATION_VERSION,
@@ -134,11 +136,23 @@ function computeConfigurationDigest(
     })),
   );
   const policy = new RoutingPolicyEngine(declaration.routingPolicy);
+  // R2 (§11): mirror the production configuration digest exactly — it binds BOTH validation profile
+  // configuration digests (canonically ordered by profile id) for the Runtime GENERAL_CHAT path and the
+  // Continuation AUTHORITY_SENSITIVE path. This copy MUST stay in lockstep with
+  // buildProductionProviderRoutingConfiguration.
+  const validationProfiles = createDefaultValidationProfileRegistry();
+  const generalChatProfile = validationProfiles.resolve(GENERAL_CHAT);
+  const authoritySensitiveProfile = validationProfiles.resolve(AUTHORITY_SENSITIVE);
   return createHash('sha256').update(JSON.stringify({
     version: declaration.version,
     registryConfigurationDigest: registry.configurationDigest,
     policyConfigurationDigest: policy.policyDigest,
-    validationProfile: declaration.validationProfile,
+    validationProfileConfigurationDigests: {
+      [AUTHORITY_SENSITIVE]: authoritySensitiveProfile.configurationDigest,
+      [GENERAL_CHAT]: generalChatProfile.configurationDigest,
+    },
+    runtimeValidationProfile: GENERAL_CHAT,
+    continuationValidationProfile: AUTHORITY_SENSITIVE,
     deadlineClass: declaration.deadlineClass,
     deadlinePolicyVersion: declaration.deadlinePolicyVersion,
   })).digest('hex');
