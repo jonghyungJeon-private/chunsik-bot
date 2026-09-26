@@ -32,7 +32,17 @@ chat policy to `requestTypes = [CONVERSATIONAL]`; separation is by predicate. Th
 digest changed to deterministically bind both validation-profile configuration digests.
 `QUOKY_CONTINUATION_RECEIVER_MODE = disabled | general-chat-v1` (default `disabled`) is separate from
 `QUOKY_PROVIDER_ROUTING_MODE`; `disabled` leaves the receiver binding absent (AppModule unchanged), and
-`general-chat-v1` fails closed at startup because R3 containment is absent.
+`general-chat-v1` is explicitly rejected by production `loadConfig` with typed
+`CONTINUATION_RECEIVER_CONTAINMENT_UNAVAILABLE` until R3 containment is delivered. The offline activation
+factory is not production-wired; tests may compose it with fake containment. R2 is offline only.
+
+R2 review remediation B-1–B-4: Gateway invocation escapes now produce UNRESOLVED/UNKNOWN with unknown
+attempt count; corpus travels in Application validation facts, absent from Provider contextFiles, while
+Runtime contextFiles behavior is preserved. The offline activation factory requires destination profiles
+and rejects those whose minimal real composer/renderer prompt exceeds 32 KiB, without truncation.
+Oversized (>4 KiB) corpus directives are excluded, so persona echo detection may omit those entries.
+AUTH_REQUIRED remains a definite authentication refusal (FAILED, still DISPATCHED), not uncertain
+termination; arbitrary Gateway escapes remain UNRESOLVED. R3 remains required and has not started.
 
 ```text
 CONTINUATION_ROUTING_SERVICE = ContinuationProviderRoutingService (Core sibling)

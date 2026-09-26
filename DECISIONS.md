@@ -8206,7 +8206,8 @@ plus a **separate** bounded validation corpus (never merged into PromptSpec/AiRe
 Refs are identifiers only (no Artifact/ExecutionReceipt/resource resolution). AgentProfile persona,
 objective and plan are subordinate data, never authority. Bounds fail closed (16 refs/category, 48 total,
 256 B/ref, 16 plan steps, 32 KiB rendered prompt, corpus ≤ 8 entries / 4 KiB each / 16 KiB total); an
-over-limit corpus entry is excluded by an explicit rule, never truncated. The continuation prompt uses
+over-limit corpus entry is excluded by an explicit rule, never truncated; persona echo detection may
+omit that oversized directive entry. The continuation prompt uses
 distinct section headings and does **not** emit the ConversationRuntime transcript layout
 (`## 3. Conversation transcript`) or a `--- Current user message ---` task, so the Ollama adapter passes
 it through without a conversation reframe (proven with the real adapter + a fake `CliRunner`).
@@ -8233,9 +8234,14 @@ FAILED. Produced outcomes are accepted by the R1 `snapshotReceiverOutcome` valid
 **Activation mode.** `QUOKY_CONTINUATION_RECEIVER_MODE = disabled | general-chat-v1` (default `disabled`),
 kept separate from `QUOKY_PROVIDER_ROUTING_MODE`. `disabled` → receiver binding absent, no composition, no
 external caller (AppModule unchanged; the R1 acceptance test that asserts AppModule has no
-`CONTINUATION_RECEIVER` still holds). `general-chat-v1` requires every mandatory dependency plus a verified
-containment seam; because R3 containment is not implemented, production `general-chat-v1` **fails closed**
-at startup. Tests exercise the enabled composition with a fake verified containment and fake providers.
+`CONTINUATION_RECEIVER` still holds). Production `loadConfig` explicitly rejects `general-chat-v1` with
+`CONTINUATION_RECEIVER_CONTAINMENT_UNAVAILABLE` until R3 containment is delivered. The activation factory
+is NOT wired into production AppModule. The isolated offline factory can compose with fake verified
+containment, fake providers, and a configured destination AgentProfile snapshot. It checks every profile's
+minimal legal continuation envelope using the real composer/renderer and UTF-8 byte bound, rejecting an
+infeasible fixed persona with `CONTINUATION_RECEIVER_PROFILE_PROMPT_INFEASIBLE`, without truncation.
+Larger request envelopes remain subject to request-time bounds. R2 is offline implementation only; R3
+remains required.
 
 ```text
 CONTINUATION_ROUTING_SERVICE = ContinuationProviderRoutingService (Core sibling)
@@ -8259,3 +8265,18 @@ No new aggregate, repository, schema, migration, durable workflow state, Approva
 persistence, post-wait plan source, live provider execution, containment enforcement, external runtime
 trigger, direct AiProvider bypass, or CapabilityRouter bypass. R2 production enabled mode remains fail-
 closed until R3 containment exists.
+
+**R2 review remediation (B-1–B-4).** Earlier reviewed R2 code parsed enabled production mode without
+calling the offline factory; the startup claim above is now enforced in the real `loadConfig` path.
+Gateway invocation is explicitly tracked: any escape after invocation, including after Provider return,
+becomes UNRESOLVED / UNKNOWN / attemptCountKnown=false / attemptCount=null, without fabricated attempts.
+The corpus is passed only through Application `ProviderRoutingValidationFacts.contextCorpus`; continuation
+AiRequest has no corpus contextFiles. Persona/directive material still authors the intended prompt; the
+validator corpus is not separately injected as Provider context. Explicit contextCorpus (including [])
+overrides validation input; absent contextCorpus preserves Runtime contextFiles fallback and the original
+Provider-facing Runtime request. This extends the Gateway Application API, not the Core AiRequest port.
+
+`PROVIDER_AUTH_REQUIRED` remains a definite FAILED outcome: the typed adapter result denotes a completed
+authentication refusal, not a timeout or ambiguous termination. It does not claim NOT_DISPATCHED or no
+side effects: dispatch evidence remains DISPATCHED. An untyped escape or uncertain operational failure
+remains UNRESOLVED. This relies on adapters honoring the AUTH_REQUIRED failure contract.

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   ArtifactKind,
+  ArtifactManager,
   Capability,
   IntentType,
   PromptComposer,
@@ -10,6 +11,7 @@ import {
 } from '@quoky/core';
 import type {
   Artifact,
+  StorageProvider,
   ContinuationProviderRouting,
   ContinuationProviderRoutingResult,
   ContinuationReceiverInput,
@@ -265,7 +267,7 @@ describe('ProviderBackedContinuationReceiver (R2)', () => {
     expect(s.create).toHaveBeenCalledTimes(1);
   });
 
-  it('forwards the validation corpus as contextFiles to routing', async () => {
+  it('forwards three validation entries only as Application validation facts', async () => {
     const routing = fakeRouting({
       disposition: 'ACCEPTED',
       output: { text: 'answer', artifacts: [], responseSha256: 'c'.repeat(64), byteCount: 42 },
@@ -274,8 +276,27 @@ describe('ProviderBackedContinuationReceiver (R2)', () => {
     });
     await receiver(routing, sink().sink).receive(input());
     const call = (routing.execute as ReturnType<typeof vi.fn>).mock.calls[0]![0];
-    expect(call.request.contextFiles?.length).toBeGreaterThan(0);
+    expect(call.request.contextFiles).toBeUndefined();
+    expect(call.validationFacts.contextCorpus).toHaveLength(3);
     expect(call.executionId).toBe(executionId);
     expect(call.facts).toEqual({ capability: Capability.GENERAL_CHAT, intentType: IntentType.CHAT });
   });
+});
+
+it('persists exact-run MARKDOWN_REPORT ownership through real ArtifactManager with test storage', async () => {
+  const save = vi.fn(async (artifact: Artifact) => artifact);
+  const manager = new ArtifactManager({ artifacts: { save } } as unknown as StorageProvider);
+  const routing = fakeRouting({
+    disposition: 'ACCEPTED',
+    output: { text: 'answer', artifacts: [], responseSha256: 'c'.repeat(64), byteCount: 6 },
+    acceptedProviderId: 'ollama-cli:llama3.1:8b', audit: acceptedAudit(),
+  });
+  const request = input();
+  const outcome = await receiver(routing, manager).receive(request);
+  expect(outcome.disposition).toBe('SUCCEEDED');
+  expect(save).toHaveBeenCalledTimes(1);
+  expect(save).toHaveBeenCalledWith(expect.objectContaining({
+    taskId: request.taskRun.taskId, taskRunId: request.taskRun.id,
+    kind: ArtifactKind.MARKDOWN_REPORT, content: 'answer',
+  }));
 });

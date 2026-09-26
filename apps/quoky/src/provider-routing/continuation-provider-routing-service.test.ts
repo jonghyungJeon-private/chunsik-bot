@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   AUTHORITY_SENSITIVE,
   Capability,
@@ -6,6 +6,9 @@ import {
   GENERAL_CHAT,
   IntentType,
   ProviderExecutionPlanner,
+  ProviderRoutingGateway,
+  RuntimeResponseValidator,
+  ValidationProfileRegistry,
   RoutingRequestType,
   createDefaultValidationProfileRegistry,
 } from '@quoky/core';
@@ -16,6 +19,7 @@ import type {
   ProviderExecutionPlan,
   RoutingContext,
 } from '@quoky/core';
+import { snapshotReceiverOutcome } from '../../../../packages/core/src/application/continuation-receiver-validation';
 import { AiProviderError } from '../../../../packages/core/src/errors';
 import { AiFailureKind } from '../../../../packages/core/src/domain';
 import {
@@ -32,6 +36,7 @@ class FakeProvider implements AiProvider {
   readonly capabilities = [];
   availabilityCalls = 0;
   executionCalls = 0;
+  lastRequest?: AiRequest;
   constructor(
     readonly id: string,
     private readonly behaviour: {
@@ -46,6 +51,7 @@ class FakeProvider implements AiProvider {
   }
   async execute(_request: AiRequest): Promise<AiExecutionResult> {
     this.executionCalls += 1;
+    this.lastRequest = _request;
     if (this.behaviour.throwKind) throw new AiProviderError(this.behaviour.throwKind, 'fake failure');
     return { text: this.behaviour.response ?? 'A concise continuation answer.' };
   }
@@ -54,7 +60,7 @@ class FakeProvider implements AiProvider {
 function config(behaviour: {
   balanced?: ConstructorParameters<typeof FakeProvider>[1];
   semantic?: ConstructorParameters<typeof FakeProvider>[1];
-} = {}) {
+} = {}, reverse = false) {
   const balanced = new FakeProvider(BALANCED_PROVIDER_ID, behaviour.balanced);
   const semantic = new FakeProvider(SEMANTIC_PROVIDER_ID, behaviour.semantic);
   const definitions: readonly [ProductionProviderDefinition, ProductionProviderDefinition] = [
@@ -73,10 +79,10 @@ function config(behaviour: {
       provider: semantic,
     },
   ];
-  return { built: buildProductionProviderRoutingConfiguration(definitions), balanced, semantic };
+  return { built: buildProductionProviderRoutingConfiguration(reverse ? [...definitions].reverse() : definitions), balanced, semantic };
 }
 
-function service(built: ReturnType<typeof config>['built'], planner?: ProviderExecutionPlanner) {
+function service(built: ReturnType<typeof config>['built'], planner?: ProviderExecutionPlanner, clock?: { nowMs(): number }) {
   return new ContinuationProviderRoutingService({
     providerRegistry: built.providerRegistry,
     policyEngine: built.policyEngine,
@@ -85,6 +91,7 @@ function service(built: ReturnType<typeof config>['built'], planner?: ProviderEx
     configurationVersion: built.version,
     configurationDigest: built.configurationDigest,
     ...(planner ? { planner } : {}),
+    ...(clock ? { clock } : {}),
   });
 }
 
@@ -96,9 +103,14 @@ describe('ContinuationProviderRoutingService (R2)', () => {
   it('resolves AUTHORITY_SENSITIVE at construction; missing profile fails closed (§10)', () => {
     const { built } = config();
     expect(() => service(built)).not.toThrow();
-    // A registry without AUTHORITY_SENSITIVE cannot construct the service.
-    const registryWithoutAuthority = createDefaultValidationProfileRegistry();
-    expect(() => registryWithoutAuthority.resolve(AUTHORITY_SENSITIVE)).not.toThrow();
+    const registryWithoutAuthority = new ValidationProfileRegistry(
+      createDefaultValidationProfileRegistry().all().filter((p) => p.profileId !== AUTHORITY_SENSITIVE),
+    );
+    const gateway = vi.spyOn(ProviderRoutingGateway.prototype, 'execute');
+    try {
+      expect(() => service({ ...built, validationProfiles: registryWithoutAuthority })).toThrow('Unknown validation profile');
+      expect(gateway).not.toHaveBeenCalled();
+    } finally { gateway.mockRestore(); }
   });
 
   it('accepts a validated Provider return → ACCEPTED with exact-run executionId (§23/§26)', async () => {
@@ -238,5 +250,62 @@ describe('ContinuationProviderRoutingService (R2)', () => {
     const second = config().built.configurationDigest;
     expect(first).toBe(second);
     expect(first).toMatch(/^[a-f0-9]{64}$/);
+  });
+});
+
+describe('R2 remediation regressions', () => {
+  it('Provider executes once then a Gateway clock escape becomes UNRESOLVED / UNKNOWN', async () => {
+    const { built, balanced } = config();
+    const clock = { nowMs: () => {
+      if (balanced.executionCalls > 0) throw new Error('post-provider clock failure');
+      return 0;
+    } };
+    const result = await service(built, undefined, clock).execute({ facts, request: request(), executionId });
+    expect(balanced.executionCalls).toBe(1);
+    expect(result.disposition).toBe('UNRESOLVED');
+    expect(snapshotReceiverOutcome({ disposition: 'UNRESOLVED', reason: 'EXECUTION_UNCERTAIN',
+      routingAudit: result.audit }, executionId)).not.toBeNull();
+    expect(result.audit).toMatchObject({
+      terminalStatus: 'EXECUTION_FAILED', terminalCode: null, dispatchEvidence: 'UNKNOWN',
+      attemptCountKnown: false, attemptCount: null, attempts: [],
+    });
+  });
+
+  it('semantic escalation alone rejects before Gateway invocation', async () => {
+    const { built, balanced } = config();
+    const planner = { create(...args: Parameters<ProviderExecutionPlanner['create']>) {
+      const plan = new ProviderExecutionPlanner().create(...args);
+      return { ...plan, operationalFallback: null, semanticEscalation: plan.primary };
+    } } as ProviderExecutionPlanner;
+    const gateway = vi.spyOn(ProviderRoutingGateway.prototype, 'execute');
+    try {
+      const result = await service(built, planner).execute({ facts, request: request(), executionId });
+      expect(result.audit.terminalStatus).toBe('PRE_DISPATCH_FAILED');
+      expect(gateway).not.toHaveBeenCalled();
+      expect(balanced.executionCalls).toBe(0);
+    } finally { gateway.mockRestore(); }
+  });
+
+  it('registration insertion order does not change the production digest', () => {
+    expect(config({}, true).built.configurationDigest).toBe(config().built.configurationDigest);
+  });
+
+  it('three validator-only entries reach the real validator but never Provider contextFiles', async () => {
+    const corpus = ['Private directive number one with sufficient length.',
+      'Private directive number two with sufficient length.',
+      'Private directive number three with sufficient length.'];
+    const { built, balanced } = config({ balanced: { response: corpus.join('\n') } });
+    const validator = vi.spyOn(RuntimeResponseValidator.prototype, 'validate');
+    try {
+      const result = await service(built).execute({
+        facts, request: request(), executionId, validationFacts: { contextCorpus: corpus },
+      });
+      expect(balanced.executionCalls).toBe(1);
+      expect(balanced.lastRequest?.contextFiles).toBeUndefined();
+      expect(balanced.lastRequest?.prompt).not.toContain(corpus[0]);
+      expect(validator).toHaveBeenCalledWith(expect.objectContaining({ contextCorpus: corpus }));
+      expect(result.disposition).toBe('FAILED');
+      expect(result.audit.attempts[0]?.validationReasonCodes).toContain('MULTI_ENTRY_ECHO');
+    } finally { validator.mockRestore(); }
   });
 });

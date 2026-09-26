@@ -8,7 +8,7 @@ import type { AgentProfile, ExecutionPlan, IntentType as IntentTypeT, WorkHandof
  * code-generation authorship. The receiver never assembles Provider prompt strings, and Provider
  * adapters never author continuation semantics. A bounded validation corpus travels ALONGSIDE the
  * PromptSpec (never inside PromptSpec / AiRequest / RoutingContext) and is consumed only by the
- * Gateway's RuntimeResponseValidator (MULTI_ENTRY_ECHO) via request.contextFiles content.
+ * Gateway's RuntimeResponseValidator (MULTI_ENTRY_ECHO) via Application-layer validation facts.
  *
  * All bounds fail closed: an over-limit input is rejected, never silently truncated (§17, §20).
  */
@@ -137,8 +137,8 @@ export function buildContinuationValidationCorpus(
   candidates: readonly ContinuationValidationCorpusEntry[],
 ): ContinuationValidationCorpus {
   const bounds = CONTINUATION_PROMPT_BOUNDS.corpus;
-  // Documented exclusion rule: an individual entry over maxEntryBytes is meaningless for echo
-  // detection (a legitimate answer cannot restate 4 KiB verbatim) and is excluded, not truncated.
+  // Explicit exclusion rule: entries over maxEntryBytes are omitted, never truncated.
+  // Persona echo detection may therefore omit an oversized directive entry.
   const withinEntryBound = candidates.filter(
     (entry) => entry.content.length > 0 && byteLength(entry.content) <= bounds.maxEntryBytes,
   );

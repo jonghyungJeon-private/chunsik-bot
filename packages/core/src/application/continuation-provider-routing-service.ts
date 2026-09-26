@@ -26,6 +26,7 @@ import {
   ProviderRoutingGateway,
   type ProviderAttemptAudit,
   type ProviderGatewayResult,
+  type ProviderRoutingValidationFacts,
 } from './provider-routing-gateway';
 import {
   AuthorityRequirement,
@@ -69,6 +70,7 @@ export interface ContinuationRoutingFacts {
 export interface ContinuationProviderRoutingRequest {
   readonly facts: ContinuationRoutingFacts;
   readonly request: AiRequest;
+  readonly validationFacts?: ProviderRoutingValidationFacts;
   /** Exact TaskRun identity. ContinuationRoutingAudit.executionId MUST equal this (§26). */
   readonly executionId: string;
 }
@@ -213,6 +215,7 @@ export class ContinuationProviderRoutingService implements ContinuationProviderR
     }
 
     let decision: ProviderSelectionDecision | null = null;
+    let gatewayInvoked = false;
     try {
       const availabilityEntries = await Promise.all(
         this.bindings.map(async (binding): Promise<readonly [ProviderId, ProviderAvailability]> => {
@@ -259,11 +262,22 @@ export class ContinuationProviderRoutingService implements ContinuationProviderR
         this.deadlinePolicy,
         this.clock,
       );
-      const result = await gateway.execute(plan, input.request, {});
+      gatewayInvoked = true;
+      const result = await gateway.execute(plan, input.request, input.validationFacts ?? {});
       return this.mapGatewayResult(input.executionId, decision, result);
     } catch (error) {
-      // Escape BEFORE gateway invocation is a definite pre-dispatch configuration failure. The Gateway
-      // owns its own post-dispatch failures and never throws, so any throw here is pre-dispatch.
+      // Crossing the invocation boundary means dispatch can no longer be disproved.
+      if (gatewayInvoked) {
+        return Object.freeze({
+          disposition: 'UNRESOLVED',
+          audit: this.buildAudit({
+            executionId: input.executionId, decision, terminalStatus: 'EXECUTION_FAILED',
+            terminalCode: null, attemptCount: null, attemptCountKnown: false, attempts: [],
+            finalAcceptedProviderId: null, dispatchEvidence: 'UNKNOWN',
+            transitions: [Object.freeze({ sequence: 1, evidence: 'UNKNOWN', code: null })],
+          }),
+        });
+      }
       const code: ContinuationRoutingCode = error instanceof ProviderExecutionPlanError
         ? toContinuationCode(error.code) ?? 'PRE_DISPATCH_FAILED'
         : 'PRE_DISPATCH_FAILED';

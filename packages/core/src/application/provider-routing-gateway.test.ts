@@ -40,6 +40,7 @@ import {
   ProviderGatewayTerminalStatus,
   ProviderRoutingGateway,
 } from './provider-routing-gateway';
+import { RuntimeResponseValidator } from './runtime-response-validator';
 import { MAX_ROUTING_TRANSITIONS } from './routing-execution-state';
 import { RoutingFailureCode, RuntimeValidationRule } from './runtime-response-validation-contracts';
 import {
@@ -502,4 +503,26 @@ describe('ProviderRoutingGateway — bounded two-attempt orchestration', () => {
     expect(primary.execute).toHaveBeenCalledTimes(1);
     expect(fallback.execute).not.toHaveBeenCalled();
   });
+});
+
+describe('Gateway Application validation facts', () => {
+  it.each([undefined, { currentUserTurn: 'answer' }, { contextCorpus: [] }])(
+    'preserves Runtime files and uses explicit corpus only when supplied: %j', async (facts) => {
+      const files = [{ path: 'runtime-context', content: 'Runtime-owned memory' }];
+      const primary = fakeProvider('provider-a', async () => ({ text: 'bounded answer' }));
+      const registry = snapshot([descriptor('provider-a')]);
+      const bindings = new ProviderBindingRegistry(registry, [binding(primary)]);
+      const profiles = createDefaultValidationProfileRegistry();
+      const validate = vi.spyOn(RuntimeResponseValidator.prototype, 'validate');
+      try {
+        await gateway(bindings, profiles).execute(plan(registry, bindings, profiles), {
+          ...REQUEST, contextFiles: files,
+        }, facts);
+        expect(primary.execute).toHaveBeenCalledWith(expect.objectContaining({ contextFiles: files }));
+        expect(validate).toHaveBeenCalledWith(expect.objectContaining({
+          contextCorpus: facts && 'contextCorpus' in facts ? [] : ['Runtime-owned memory'],
+        }));
+      } finally { validate.mockRestore(); }
+    },
+  );
 });

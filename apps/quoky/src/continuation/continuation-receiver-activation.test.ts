@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   ArtifactKind,
+  AgentProfileRegistry,
+  CONTINUATION_PROMPT_BOUNDS,
   Capability,
   IntentType,
   PromptComposer,
@@ -22,6 +24,7 @@ import {
   ContinuationReceiverActivationErrorCode,
   createProductionContinuationReceiverActivation,
   parseContinuationReceiverMode,
+  minimalContinuationPromptBytes,
 } from './continuation-receiver-activation';
 import type { ContinuationContainment } from './continuation-receiver-activation';
 import {
@@ -100,6 +103,7 @@ describe('createProductionContinuationReceiverActivation (§32/§33/§34)', () =
       ollama,
       containment: verifiedContainment,
       artifactManager: { create: async (i) => ({ id: 'a1', kind: i.kind, title: i.title, createdAt: ts }) },
+      destinationAgentProfiles: [receiverInput().destinationAgentProfile],
       createConfiguration: () => buildFakeConfiguration(),
     });
     expect(receiver).toBeDefined();
@@ -192,7 +196,7 @@ function receiverInput(): ContinuationReceiverInput {
   } as ContinuationReceiverInput;
 }
 
-describe('end-to-end enabled composition (offline, fake runner) — no conversation reframe (§16/§36)', () => {
+describe('offline activation factory composition (offline, fake runner) — no conversation reframe (§16/§36)', () => {
   it('drives the real Ollama adapter with a fake CliRunner and is NOT reframed', async () => {
     const captured: { input: string }[] = [];
     const runner: CliRunner = async (_bin, _args, options): Promise<CliRunResult> => {
@@ -231,6 +235,7 @@ describe('end-to-end enabled composition (offline, fake runner) — no conversat
       promptComposer: new PromptComposer(),
       promptRenderer: new PromptRenderer(),
       artifactManager: { create } as never,
+      destinationAgentProfiles: [receiverInput().destinationAgentProfile],
       createConfiguration: () => configuration,
     });
     expect(receiver).toBeDefined();
@@ -248,5 +253,53 @@ describe('end-to-end enabled composition (offline, fake runner) — no conversat
     expect(dispatched[0]!.input).not.toContain('## 3. Conversation transcript');
     expect(dispatched[0]!.input).toContain('Continuation request');
     expect(create).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('activation profile feasibility', () => {
+  function activate(instructions: string) {
+    const profile = { ...receiverInput().destinationAgentProfile, instructions };
+    // Prove the input is valid under unchanged AgentProfile character rules.
+    const profiles = new AgentProfileRegistry([profile]).list();
+    const createConfiguration = vi.fn(() => buildFakeConfiguration());
+    const run = () => createProductionContinuationReceiverActivation({
+      mode: 'general-chat-v1', ollama: { ollamaBin: '/unused' },
+      containment: { verify: () => ({ status: 'verified' }) },
+      artifactManager: { create: async () => ({} as Artifact) },
+      destinationAgentProfiles: profiles, createConfiguration,
+    });
+    return { profile, run, createConfiguration };
+  }
+  it('requires a destination profile snapshot even with other offline dependencies present', () => {
+    expect(() => createProductionContinuationReceiverActivation({
+      mode: 'general-chat-v1', ollama: { ollamaBin: '/unused' },
+      containment: { verify: () => ({ status: 'verified' }) },
+      artifactManager: { create: async () => ({} as Artifact) },
+    })).toThrow('CONTINUATION_RECEIVER_DEPENDENCY_MISSING');
+  });
+  it('accepts any legal profile identity in the synthetic feasibility envelope', () => {
+    expect(minimalContinuationPromptBytes({
+      ...receiverInput().destinationAgentProfile, id: agentProfileId('source'),
+    })).toBeLessThan(CONTINUATION_PROMPT_BOUNDS.maxRenderedPromptBytes);
+  });
+  it('allows an ASCII profile within budget with fake containment', () => {
+    expect(activate('a'.repeat(16384)).run()).toBeDefined();
+  });
+  it('rejects a valid Korean profile before configuration/routing, without truncation', () => {
+    const test = activate('가'.repeat(16384));
+    expect(test.run).toThrow('CONTINUATION_RECEIVER_PROFILE_PROMPT_INFEASIBLE');
+    expect(test.createConfiguration).not.toHaveBeenCalled();
+    expect(test.profile.instructions).toBe('가'.repeat(16384));
+  });
+  it('allows a minimal rendered prompt exactly one byte under the limit', () => {
+    const base = activate('x').profile;
+    const remaining = CONTINUATION_PROMPT_BOUNDS.maxRenderedPromptBytes
+      - minimalContinuationPromptBytes(base);
+    const extra = remaining - 1;
+    const test = activate('x' + '가'.repeat(Math.floor(extra / 3)) + 'a'.repeat(extra % 3));
+    expect(minimalContinuationPromptBytes(test.profile)).toBe(
+      CONTINUATION_PROMPT_BOUNDS.maxRenderedPromptBytes - 1,
+    );
+    expect(test.run()).toBeDefined();
   });
 });

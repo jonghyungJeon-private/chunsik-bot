@@ -15,7 +15,6 @@ import type {
   ContinuationReceiverInput,
   ContinuationReceiverOutcome,
   ContinuationRoutingAudit,
-  ContinuationValidationCorpus,
   ExecutionPlan,
   Id,
   Metadata,
@@ -67,14 +66,6 @@ function unresolved(routingAudit?: ContinuationRoutingAudit): ContinuationReceiv
   }) as ContinuationReceiverOutcome;
 }
 
-/** §19 corpus is carried as contextFiles so the Gateway forwards it as validation contextCorpus. */
-function corpusToContextFiles(corpus: ContinuationValidationCorpus): { path: string; content: string }[] {
-  return corpus.entries.map((entry, index) => ({
-    path: `continuation-validation-corpus/${index}-${entry.source}.txt`,
-    content: entry.content,
-  }));
-}
-
 export class ProviderBackedContinuationReceiver implements ContinuationReceiver {
   readonly supportedCapabilities = SUPPORTED_CAPABILITIES;
   private readonly promptComposer: PromptComposer;
@@ -123,14 +114,14 @@ export class ProviderBackedContinuationReceiver implements ContinuationReceiver 
 
     const request = this.promptRenderer.render(composition.spec, {
       capability: Capability.GENERAL_CHAT,
-      contextFiles: corpusToContextFiles(composition.validationCorpus),
     });
 
-    // Routing/gateway own their own post-dispatch failures and never throw. Do NOT wrap this in a
+    // Preserve post-invocation uncertainty. Do NOT wrap this in a
     // catch that turns arbitrary post-dispatch exceptions into FAILED (§24).
     const result = await this.routing.execute({
       facts: { capability: Capability.GENERAL_CHAT, intentType: IntentType.CHAT },
       request,
+      validationFacts: { contextCorpus: composition.validationCorpus.entries.map((entry) => entry.content) },
       executionId,
     });
 

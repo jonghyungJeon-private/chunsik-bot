@@ -1,9 +1,17 @@
 import {
   ContinuationProviderRoutingService,
+  AgentProfileRegistry,
+  Capability,
+  IntentType,
+  ExecutionStatus,
+  RiskLevel,
+  createWorkHandoff,
+  agentProfileId,
+  assertRenderedPromptBytes,
   PromptComposer,
   PromptRenderer,
 } from '@quoky/core';
-import type { ArtifactManager, ContinuationReceiver } from '@quoky/core';
+import type { AgentProfile, ArtifactManager, ContinuationReceiver } from '@quoky/core';
 import {
   buildProductionProviderRoutingConfiguration,
   createProductionProviderRoutingConfiguration,
@@ -26,6 +34,7 @@ export enum ContinuationReceiverActivationErrorCode {
   INVALID_MODE = 'CONTINUATION_RECEIVER_INVALID_MODE',
   CONTAINMENT_UNAVAILABLE = 'CONTINUATION_RECEIVER_CONTAINMENT_UNAVAILABLE',
   CONTAINMENT_UNVERIFIED = 'CONTINUATION_RECEIVER_CONTAINMENT_UNVERIFIED',
+  PROFILE_PROMPT_INFEASIBLE = 'CONTINUATION_RECEIVER_PROFILE_PROMPT_INFEASIBLE',
   DEPENDENCY_MISSING = 'CONTINUATION_RECEIVER_DEPENDENCY_MISSING',
 }
 
@@ -64,6 +73,8 @@ export interface ProductionContinuationReceiverActivationInput {
   readonly promptComposer?: PromptComposer;
   readonly promptRenderer?: PromptRenderer;
   readonly artifactManager?: ArtifactManager;
+  /** Destination profile snapshot; required before enabled offline composition. */
+  readonly destinationAgentProfiles?: readonly AgentProfile[];
   readonly createConfiguration?: (
     input: ProductionProviderRoutingFactoryInput,
   ) => ProductionProviderRoutingConfiguration;
@@ -86,8 +97,8 @@ function continuationRoutingServiceFrom(
 /**
  * §32/§33 continuation receiver activation. disabled → undefined (absent binding, no composition). For
  * general-chat-v1 EVERY mandatory dependency must be present AND containment must verify; anything
- * missing/unverified fails closed. R3 containment is absent in production, so production general-chat-v1
- * fails closed by construction — R2 production shape is IMPLEMENTED but never production live-ready.
+ * missing/unverified fails closed. This is an isolated offline factory, not production AppModule wiring.
+ * Production loadConfig rejects general-chat-v1 until R3 containment is delivered.
  */
 export function createProductionContinuationReceiverActivation(
   input: ProductionContinuationReceiverActivationInput,
@@ -114,10 +125,20 @@ export function createProductionContinuationReceiverActivation(
   const promptComposer = input.promptComposer ?? new PromptComposer();
   const promptRenderer = input.promptRenderer ?? new PromptRenderer();
   const artifactManager = input.artifactManager;
-  if (artifactManager === undefined) {
+  if (artifactManager === undefined || input.destinationAgentProfiles === undefined) {
     throw new ContinuationReceiverActivationError(
       ContinuationReceiverActivationErrorCode.DEPENDENCY_MISSING,
     );
+  }
+
+  for (const profile of new AgentProfileRegistry(input.destinationAgentProfiles).list()) {
+    try {
+      minimalContinuationPromptBytes(profile, promptComposer, promptRenderer);
+    } catch {
+      throw new ContinuationReceiverActivationError(
+        ContinuationReceiverActivationErrorCode.PROFILE_PROMPT_INFEASIBLE,
+      );
+    }
   }
 
   const configuration = (input.createConfiguration ?? createProductionProviderRoutingConfiguration)(
@@ -134,3 +155,32 @@ export function createProductionContinuationReceiverActivation(
 
 /** Re-exported for tests that build a configuration directly. */
 export { buildProductionProviderRoutingConfiguration, continuationRoutingServiceFrom };
+
+/** Pure feasibility witness: shortest nonempty objective/goal, empty summary, no steps or references.
+ * Uses real authoring/rendering and never executes routing, a Provider, or persistence.
+ */
+export function minimalContinuationPromptBytes(
+  profile: AgentProfile,
+  composer = new PromptComposer(),
+  renderer = new PromptRenderer(),
+): number {
+  const createdAt = '1970-01-01T00:00:00.000Z';
+  const { spec } = composer.composeContinuation({
+    destinationAgentProfile: profile,
+    boundTaskFacts: { capability: Capability.GENERAL_CHAT, intentType: IntentType.CHAT },
+    handoff: createWorkHandoff({
+      id: 'h', workItemId: 'w', fromAgentProfileId: agentProfileId(profile.id === 'source' ? 'other' : 'source'),
+      toAgentProfileId: profile.id, objective: 'x', resourceRefs: [], artifactIds: [],
+      executionReceiptIds: [], createdAt,
+    }),
+    plan: {
+      id: 'p', goal: 'x', summary: '', steps: [], requiredCapabilities: [Capability.GENERAL_CHAT],
+      requiredResources: [], estimatedChanges: { fileCount: 0, scope: 'none' },
+      approvalRequired: false, overallRisk: RiskLevel.LOW, expectedArtifacts: [],
+      status: ExecutionStatus.PENDING, createdAt,
+    },
+  });
+  const request = renderer.render(spec, { capability: Capability.GENERAL_CHAT });
+  assertRenderedPromptBytes(request.prompt);
+  return Buffer.byteLength(request.prompt, 'utf8');
+}

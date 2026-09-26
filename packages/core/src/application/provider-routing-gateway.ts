@@ -227,6 +227,13 @@ function terminalStatus(code: ProviderGatewayFailureCode): ProviderGatewayTermin
   return ProviderGatewayTerminalStatus.EXECUTION_FAILED;
 }
 
+/** Application-only validator evidence; never forwarded as Provider request fields. */
+export interface ProviderRoutingValidationFacts {
+  readonly recencyFact?: string;
+  readonly currentUserTurn?: string;
+  readonly contextCorpus?: readonly string[];
+}
+
 /** Owns bounded execution only; it does not select Providers or integrate Runtime. */
 export class ProviderRoutingGateway {
   private readonly validator: RuntimeResponseValidator;
@@ -243,7 +250,7 @@ export class ProviderRoutingGateway {
   async execute(
     plan: ProviderExecutionPlan,
     request: AiRequest,
-    validationFacts: Readonly<{ recencyFact?: string; currentUserTurn?: string }> = {},
+    validationFacts?: ProviderRoutingValidationFacts,
   ): Promise<ProviderGatewayResult> {
     const machine = new RoutingExecutionStateMachine();
     const attempts: ProviderAttemptAudit[] = [];
@@ -451,7 +458,9 @@ export class ProviderRoutingGateway {
         validationProfile: plan.validationProfile,
         prompt: request.prompt,
         ...validationFacts,
-        contextCorpus: request.contextFiles?.map((file) => file.content),
+        contextCorpus: validationFacts && 'contextCorpus' in validationFacts
+          ? validationFacts.contextCorpus
+          : request.contextFiles?.map((file) => file.content),
         result,
       });
       const validationFailure = classifyValidationFailure(validation);

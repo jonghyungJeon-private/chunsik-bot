@@ -5,6 +5,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [SemVer](https://semver.org/). Commits follow
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## R2 continuation receiver review remediation — 2026-09-26
+
+- Reject enabled continuation mode through production config until R3 containment exists.
+- Preserve uncertainty after Gateway invocation; keep validation corpus in Application facts, outside
+  Provider contextFiles, with existing Runtime validation behavior preserved.
+- Validate destination profile minimum prompt feasibility in the offline activation factory.
+- Add startup, post-Provider escape, corpus visibility, multibyte/boundary profile, primary-only,
+  missing validation profile, registration-order digest, and real ArtifactManager regressions.
+
 ## [Unreleased]
 
 ### Added — Production Continuation Receiver R1: Core contract / lifecycle semantics (local, awaiting review)
