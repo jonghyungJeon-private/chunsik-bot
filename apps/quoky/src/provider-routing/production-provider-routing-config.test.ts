@@ -15,6 +15,7 @@ import {
   SemanticRisk,
   SortDirection,
   AuthorityRequirement,
+  AUTHORITY_SENSITIVE,
   adapterId,
   providerId,
 } from '@quoky/core';
@@ -169,6 +170,51 @@ describe('Stage 2B Slice 5B-1 production Provider routing configuration', () => 
       selectedProviderId: null,
       reasonCode: RoutingReasonCode.POLICY_NOT_MATCHED,
     });
+  });
+
+  it('R2 §7/§6: chat policy is CONVERSATIONAL-only and a WORK/CHAT continuation matches only the continuation policy', () => {
+    const configuration = buildProductionProviderRoutingConfiguration(definitions());
+    const available = {
+      [BALANCED_PROVIDER_ID]: ProviderAvailability.AVAILABLE,
+      [SEMANTIC_PROVIDER_ID]: ProviderAvailability.AVAILABLE,
+    };
+    const snapshot = configuration.providerRegistry.snapshot(available);
+    // Chat policy is still policies[0] and hardened to require CONVERSATIONAL.
+    expect(configuration.routingPolicy.policies[0]?.policyId).toBe('stage2b-general-chat-v1');
+    expect(configuration.routingPolicy.policies[0]?.when.requestTypes).toEqual([RoutingRequestType.CONVERSATIONAL]);
+    const continuationPolicy = configuration.routingPolicy.policies.find(
+      (candidate) => candidate.policyId === 'stage2b-continuation-general-chat-v1',
+    );
+    expect(continuationPolicy?.when.requestTypes).toEqual([RoutingRequestType.WORK]);
+    expect(continuationPolicy?.when.intentTypes).toEqual([IntentType.CHAT]);
+    expect(continuationPolicy?.when.validationProfiles).toEqual([AUTHORITY_SENSITIVE]);
+    expect(continuationPolicy?.eligibility.requiredRoutingClasses).toEqual([RoutingClass.BALANCED]);
+
+    // Ordinary ConversationRuntime GENERAL_CHAT (CONVERSATIONAL) → chat policy, selects the balanced primary.
+    const conversation = context(Capability.GENERAL_CHAT);
+    expect(configuration.policyEngine.select(conversation, snapshot)).toMatchObject({
+      matchedPolicyId: 'stage2b-general-chat-v1',
+      selectedProviderId: BALANCED_PROVIDER_ID,
+      reasonCode: RoutingReasonCode.SELECTED,
+    });
+
+    // Continuation WORK/CHAT/AUTHORITY_SENSITIVE → continuation policy only; the single BALANCED
+    // eligible provider yields a primary-only decision (no fallback candidate).
+    const continuation: RoutingContext = {
+      ...conversation,
+      requestType: RoutingRequestType.WORK,
+      validationProfile: AUTHORITY_SENSITIVE as RoutingContext['validationProfile'],
+    };
+    const continuationDecision = configuration.policyEngine.select(continuation, snapshot);
+    expect(continuationDecision.matchedPolicyId).toBe('stage2b-continuation-general-chat-v1');
+    expect(continuationDecision.reasonCode).toBe(RoutingReasonCode.SELECTED);
+    expect(continuationDecision.eligibleProviderIds).toEqual([BALANCED_PROVIDER_ID]);
+
+    // A WORK GENERAL_CHAT with the GENERAL_CHAT profile matches NEITHER policy (separation by predicate).
+    const mismatched: RoutingContext = { ...conversation, requestType: RoutingRequestType.WORK };
+    expect(configuration.policyEngine.select(mismatched, snapshot).reasonCode).toBe(
+      RoutingReasonCode.POLICY_NOT_MATCHED,
+    );
   });
 
   it('uses conservative equal operational profiles and the approved bounded reliability profiles', () => {

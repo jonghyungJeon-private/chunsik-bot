@@ -5,6 +5,67 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 (rules) or `ROADMAP.md` (direction); for the status of individual concepts see the
 `[NOW]/[RESERVE]/[LATER]` labels in `ARCHITECTURE.md`.
 
+### Production Continuation Receiver R2 — offline provider-backed receiver (2026-09-26)
+
+**IMPLEMENTED LOCALLY / AWAITING REVIEW** on review base
+`ccb1864d98257ee844723f78155fbb2c2433cb73` (R1 = CLOSED + DELIVERED via PR #79). R2 implements the offline,
+production-shaped provider-backed continuation path and remains fully testable offline with no real
+Provider execution. R3 is NOT STARTED and live activation is not authorized.
+
+A Core `ContinuationProviderRoutingService` — a **sibling** of `RuntimeProviderRoutingService`, not a
+wrapper/import dependency, `CapabilityRouter`, or direct `AiProvider` caller — reuses the existing Stage2B
+primitives, builds a fixed WORK/CHAT/AUTHORITY_SENSITIVE routing context from the R1 bound Task facts, and
+enforces primary-only in code (any planned fallback/escalation → `PRE_DISPATCH_FAILED`, Gateway not
+invoked). It maps the Stage2B execution audit into the bounded R1 `ContinuationRoutingAudit` using
+per-attempt/dispatch evidence: definite pre-dispatch failure → FAILED; dispatched-but-uncertain
+(post-dispatch timeout/execution-failure/unavailable) → UNRESOLVED; provider returned + terminal
+validation → SUCCEEDED/FAILED. `PromptComposer.composeContinuation` owns continuation prompt authorship and
+returns a PromptSpec plus a separate bounded validation corpus (identifiers only, fail-closed bounds, no
+`## 3. Conversation transcript` layout so the Ollama adapter never reframes it). The app-layer
+`ProviderBackedContinuationReceiver` implements the Core port with `supportedCapabilities = [GENERAL_CHAT]`
+and narrow deps only; known pre-dispatch failures return bounded FAILED, it persists exactly one
+platform-owned `MARKDOWN_REPORT` (ignoring provider-supplied artifact ownership), treats an Artifact save
+failure as FAILED, and never terminalizes the TaskRun.
+
+The production routing policy configuration adds `stage2b-continuation-general-chat-v1` and hardens the
+chat policy to `requestTypes = [CONVERSATIONAL]`; separation is by predicate. The production configuration
+digest changed to deterministically bind both validation-profile configuration digests.
+`QUOKY_CONTINUATION_RECEIVER_MODE = disabled | general-chat-v1` (default `disabled`) is separate from
+`QUOKY_PROVIDER_ROUTING_MODE`; `disabled` leaves the receiver binding absent (AppModule unchanged), and
+`general-chat-v1` is explicitly rejected by production `loadConfig` with typed
+`CONTINUATION_RECEIVER_CONTAINMENT_UNAVAILABLE` until R3 containment is delivered. The offline activation
+factory is not production-wired; tests may compose it with fake containment. R2 is offline only.
+
+R2 review remediation B-1–B-4: Gateway invocation escapes now produce UNRESOLVED/UNKNOWN with unknown
+attempt count; corpus travels in Application validation facts, absent from Provider contextFiles, while
+Runtime contextFiles behavior is preserved. The offline activation factory requires destination profiles
+and rejects those whose minimal real composer/renderer prompt exceeds 32 KiB, without truncation.
+Oversized (>4 KiB) corpus directives are excluded, so persona echo detection may omit those entries.
+AUTH_REQUIRED remains a definite authentication refusal (FAILED, still DISPATCHED), not uncertain
+termination; arbitrary Gateway escapes remain UNRESOLVED. R3 remains required and has not started.
+
+```text
+CONTINUATION_ROUTING_SERVICE = ContinuationProviderRoutingService (Core sibling)
+RUNTIME_ROUTING_DIRECT_REUSE = NO / DIRECT_AI_PROVIDER = NO
+CONTINUATION_POLICY = stage2b-continuation-general-chat-v1 / CHAT_POLICY_NARROWED = CONVERSATIONAL
+REQUEST_TYPE = WORK / VALIDATION_PROFILE = AUTHORITY_SENSITIVE / PRIMARY_ONLY_ENFORCED = YES
+PROMPT_OWNER = PromptComposer.composeContinuation / CONVERSATION_REFRAME = NOT TRIGGERED
+REF_RESOLUTION = NONE (identifiers only)
+OUTPUT_OWNER = platform ArtifactManager / ARTIFACT_KIND = MARKDOWN_REPORT / PROVIDER_ARTIFACT_IDS_TRUSTED = NO
+TASKRUN_TERMINALIZATION_IN_RECEIVER = NO / EXECUTION_ID_EXACT_RUN = YES
+CONTINUATION_MODE = disabled | general-chat-v1 / DEFAULT_MODE = disabled / PROVIDER_ROUTING_MODE_COUPLED = NO
+ENABLED_WITHOUT_CONTAINMENT = STARTUP_FAIL_CLOSED / PRODUCTION_LIVE_READY = NO
+ROUTING_POLICY_CONFIGURATION_CHANGE = YES / CONFIGURATION_DIGEST_CHANGE = YES
+PRODUCTION_PROVIDER_BACKED_RECEIVER = IMPLEMENTED OFFLINE
+CONTINUATION_EXECUTION_ACTIVATION = DISABLED / NOT LIVE-READY
+LIVE_CONTAINMENT_READY = NO / LIVE_PROVIDER_EXECUTION_AUTHORIZED = NO / RUNTIME_EXECUTION_AUTHORIZED = NO
+R3_STARTED = NO / DISCORD_LIVE_UAT_AUTHORIZED = NO
+```
+
+No new aggregate, repository, schema, migration, durable state, Approval model, plan persistence, live
+provider execution, containment enforcement, external trigger, AiProvider bypass or CapabilityRouter
+bypass. No Provider/Runtime/Discord/network/live UAT occurred.
+
 ### Production Continuation Receiver R1 — Core contract / lifecycle semantics (2026-09-23)
 
 **IMPLEMENTED LOCALLY / AWAITING REVIEW** on review base

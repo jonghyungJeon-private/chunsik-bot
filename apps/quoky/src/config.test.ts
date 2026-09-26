@@ -175,6 +175,55 @@ describe('loadConfig — dormant Provider routing activation (Stage 2B Slice 5C-
   });
 });
 
+describe('loadConfig — continuation receiver activation mode (R2, §31)', () => {
+  it('maps missing and exact disabled to disabled', () => {
+    expect(loadConfig(env({})).continuationReceiverMode).toBe('disabled');
+    expect(loadConfig(env({ QUOKY_CONTINUATION_RECEIVER_MODE: 'disabled' })).continuationReceiverMode).toBe(
+      'disabled',
+    );
+  });
+
+  it('rejects the exact general-chat-v1 candidate until R3 containment', () => {
+    expect(() => loadConfig(env({ QUOKY_CONTINUATION_RECEIVER_MODE: 'general-chat-v1' })))
+      .toThrow('CONTINUATION_RECEIVER_CONTAINMENT_UNAVAILABLE');
+  });
+
+  it.each(['', ' ', ' disabled ', 'DISABLED', 'General-Chat-v1', 'true', '1', 'yes', 'enabled', 'on'])(
+    'rejects invalid exact value %j',
+    (value) => {
+      expect(() => loadConfig(env({ QUOKY_CONTINUATION_RECEIVER_MODE: value }))).toThrow(
+        'CONTINUATION_RECEIVER_INVALID_MODE',
+      );
+    },
+  );
+
+  it('uses identical parsing in dev and prod', () => {
+    for (const runtime of ['dev', 'prod']) {
+      expect(
+        loadConfig(env({ QUOKY_RUNTIME_ENV: runtime, QUOKY_CONTINUATION_RECEIVER_MODE: 'disabled' }))
+          .continuationReceiverMode,
+      ).toBe('disabled');
+      expect(() =>
+        loadConfig(env({ QUOKY_RUNTIME_ENV: runtime, QUOKY_CONTINUATION_RECEIVER_MODE: 'DISABLED' })),
+      ).toThrow('CONTINUATION_RECEIVER_INVALID_MODE');
+    }
+  });
+
+  it('is independent of the provider routing mode (not coupled)', () => {
+    const config = loadConfig(
+      env({ QUOKY_PROVIDER_ROUTING_MODE: 'stage2b-general-chat-v1', QUOKY_CONTINUATION_RECEIVER_MODE: 'disabled' }),
+    );
+    expect(config.providerRoutingMode).toBe('stage2b-general-chat-v1');
+    expect(config.continuationReceiverMode).toBe('disabled');
+  });
+
+  it('does not read a CHUNSIK_CONTINUATION_RECEIVER_MODE alias', () => {
+    expect(
+      loadConfig(env({ CHUNSIK_CONTINUATION_RECEIVER_MODE: 'general-chat-v1' })).continuationReceiverMode,
+    ).toBe('disabled');
+  });
+});
+
 describe('loadConfig — Actor identity mappings (M3A-1.1)', () => {
   it('parses one or more explicit non-secret Discord-to-work identity mappings', () => {
     const actorIdentityMappings = [
@@ -352,4 +401,22 @@ describe('Product namespace environment compatibility', () => {
       githubApp: { appId: '123', privateKeyPem: 'synthetic-fixture-key' }, githubAppInstallationId: 456 });
     // Authentication selection/rejection remains at the existing composition boundary.
   });
+});
+
+describe('production continuation mode startup guard (R2)', () => {
+  it('boots disabled with the mode unset', () => {
+    expect(loadConfig({}).continuationReceiverMode).toBe('disabled');
+  });
+  it.each([undefined, 'disabled', 'general-chat-v1'])(
+    'rejects enabled continuation independently of provider routing mode %s', (providerMode) => {
+      expect(() => loadConfig({
+        QUOKY_CONTINUATION_RECEIVER_MODE: 'general-chat-v1',
+        QUOKY_PROVIDER_ROUTING_MODE: providerMode,
+      })).toThrowError(expect.objectContaining({
+        name: 'ContinuationReceiverActivationError',
+        code: 'CONTINUATION_RECEIVER_CONTAINMENT_UNAVAILABLE',
+        message: 'CONTINUATION_RECEIVER_CONTAINMENT_UNAVAILABLE',
+      }));
+    },
+  );
 });

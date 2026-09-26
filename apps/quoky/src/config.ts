@@ -3,6 +3,8 @@ import { AgentProfileRegistry, agentProfileId, isAgentProfileId } from '@quoky/c
 import type { AgentProfile, ContextBuilderConfig, RepositoryIdentityConfig } from '@quoky/core';
 import { parseProviderRoutingMode } from './provider-routing/provider-routing-activation';
 import type { ProviderRoutingMode } from './provider-routing/provider-routing-activation';
+import { ContinuationReceiverActivationError, ContinuationReceiverActivationErrorCode, parseContinuationReceiverMode } from './continuation/continuation-receiver-activation';
+import type { ContinuationReceiverMode } from './continuation/continuation-receiver-activation';
 
 /**
  * Reads runtime configuration from the environment. QUOKY_* takes precedence over
@@ -50,6 +52,13 @@ export interface QuokyConfig {
   runtimeEnv: 'dev' | 'prod';
   /** Dormant Stage 2B routing activation. Missing is exactly equivalent to `legacy`. */
   providerRoutingMode: ProviderRoutingMode;
+  /**
+   * §31 continuation receiver activation mode, kept SEPARATE from `providerRoutingMode`. Missing is
+   * exactly equivalent to `disabled`: no production ProviderBackedContinuationReceiver binding, no
+   * receiver-execution composition, no external continuation trigger. `general-chat-v1` still fails
+   * closed at startup because R3 containment is not implemented.
+   */
+  continuationReceiverMode: ContinuationReceiverMode;
   /** GENERAL_CHAT context selection policy, consumed only by the composition root. */
   contextBuilder: ContextBuilderConfig;
   /**
@@ -73,6 +82,13 @@ export interface ActorIdentityMapping {
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): QuokyConfig {
+  const continuationReceiverMode = parseContinuationReceiverMode(env.QUOKY_CONTINUATION_RECEIVER_MODE);
+  // R2 production has no live containment. The offline activation factory is not AppModule wiring.
+  if (continuationReceiverMode === 'general-chat-v1') {
+    throw new ContinuationReceiverActivationError(
+      ContinuationReceiverActivationErrorCode.CONTAINMENT_UNAVAILABLE,
+    );
+  }
   // Owner/repo prefer the new QUOKY_* env, falling back to legacy CHUNSIK_* (Sprint 4b, ADR-0061 N3/N4).
   const owner = env.QUOKY_GITHUB_OWNER ?? env.CHUNSIK_GITHUB_OWNER;
   const repo = env.QUOKY_GITHUB_REPO ?? env.CHUNSIK_GITHUB_REPO;
@@ -106,6 +122,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): QuokyConfig {
     githubAppInstallationId: parseInstallationId(env.QUOKY_GITHUB_APP_INSTALLATION_ID),
     runtimeEnv: resolveRuntimeEnv(env),
     providerRoutingMode: parseProviderRoutingMode(env.QUOKY_PROVIDER_ROUTING_MODE),
+    continuationReceiverMode,
     contextBuilder: {
       rankingEnabled: true,
       compressionEnabled: true,

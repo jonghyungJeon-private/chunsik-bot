@@ -3,6 +3,7 @@ import { OllamaCliProvider } from '@quoky/ai-cli';
 import {
   DEFAULT_PROVIDER_DEADLINE_POLICY,
   GENERAL_CHAT,
+  AUTHORITY_SENSITIVE,
   AdapterId,
   AvailabilityClass,
   Capability,
@@ -11,6 +12,7 @@ import {
   CostTier,
   DeadlineClass,
   ExecutionLocality,
+  IntentType,
   LatencyTier,
   ProviderBindingRegistry,
   ProviderDescriptor,
@@ -22,6 +24,7 @@ import {
   RoutingConfigurationError,
   RoutingPolicyConfiguration,
   RoutingPolicyEngine,
+  RoutingRequestType,
   SortDirection,
   SupportLevel,
   TerminalDecision,
@@ -91,6 +94,7 @@ export interface ProductionProviderRoutingConfiguration {
   readonly executableBindings: readonly ExecutableProviderBinding[];
   readonly routingPolicy: RoutingPolicyConfiguration;
   readonly validationProfile: typeof GENERAL_CHAT;
+  readonly continuationValidationProfile: typeof AUTHORITY_SENSITIVE;
   readonly validationProfiles: ValidationProfileRegistry;
   readonly deadlineClass: DeadlineClass.STANDARD;
   readonly deadlinePolicy: ProviderDeadlinePolicy;
@@ -212,8 +216,12 @@ function routingPolicyConfiguration(): RoutingPolicyConfiguration {
         policyId: policyId('stage2b-general-chat-v1'),
         version: '1',
         precedence: 100,
+        // §7 chat policy hardening: explicitly require CONVERSATIONAL. This preserves existing
+        // ConversationRuntime behaviour (its context is CONVERSATIONAL) and makes policy separation
+        // come from predicates, not precedence — a continuation (WORK) context can never match here.
         when: Object.freeze({
           capabilities: Object.freeze([Capability.GENERAL_CHAT]),
+          requestTypes: Object.freeze([RoutingRequestType.CONVERSATIONAL]),
           validationProfiles: Object.freeze([GENERAL_CHAT]),
         }),
         eligibility: Object.freeze({}),
@@ -228,6 +236,36 @@ function routingPolicyConfiguration(): RoutingPolicyConfiguration {
           }),
           Object.freeze({
             dimension: RankingDimension.SEMANTIC_RELIABILITY,
+            direction: SortDirection.DESCENDING,
+          }),
+        ]),
+        terminal: TerminalDecision.NO_SELECTION,
+      }),
+      // §6 ratified production continuation policy. Lower precedence than the chat policy so the chat
+      // policy remains policies[0]; separation is still by predicate (WORK+CHAT+AUTHORITY_SENSITIVE).
+      // requiredRoutingClasses = [BALANCED] means only the BALANCED_PRIMARY provider is eligible, so
+      // the planner yields a primary-only plan (the single eligible provider leaves no fallback pool).
+      Object.freeze({
+        policyId: policyId('stage2b-continuation-general-chat-v1'),
+        version: '1',
+        precedence: 90,
+        when: Object.freeze({
+          capabilities: Object.freeze([Capability.GENERAL_CHAT]),
+          requestTypes: Object.freeze([RoutingRequestType.WORK]),
+          intentTypes: Object.freeze([IntentType.CHAT]),
+          validationProfiles: Object.freeze([AUTHORITY_SENSITIVE]),
+        }),
+        eligibility: Object.freeze({
+          requiredRoutingClasses: Object.freeze([RoutingClass.BALANCED]),
+        }),
+        ranking: Object.freeze([
+          Object.freeze({
+            dimension: RankingDimension.ROUTING_CLASS,
+            direction: SortDirection.ASCENDING,
+            routingClassPreference: Object.freeze([RoutingClass.BALANCED]),
+          }),
+          Object.freeze({
+            dimension: RankingDimension.AUTHORITY_RELIABILITY,
             direction: SortDirection.DESCENDING,
           }),
         ]),
@@ -266,12 +304,23 @@ export function buildProductionProviderRoutingConfiguration(
   const routingPolicy = routingPolicyConfiguration();
   const policyEngine = new RoutingPolicyEngine(routingPolicy);
   const validationProfiles = createDefaultValidationProfileRegistry();
-  validationProfiles.resolve(GENERAL_CHAT);
+  const generalChatProfile = validationProfiles.resolve(GENERAL_CHAT);
+  const authoritySensitiveProfile = validationProfiles.resolve(AUTHORITY_SENSITIVE);
+  // §11 CONFIGURATION_DIGEST_CHANGE: the production configuration now represents BOTH the Runtime
+  // GENERAL_CHAT path and the Continuation AUTHORITY_SENSITIVE path, so the digest deterministically
+  // binds both validation profile configuration digests (canonically ordered by profile id) plus the
+  // provider registry digest, policy digest, versions and deadline policy version. This intentionally
+  // differs from the pre-R2 Runtime-only digest; expected fixtures change.
   const configurationDigest = sha256Canonical({
     version: PRODUCTION_ROUTING_CONFIGURATION_VERSION,
     registryConfigurationDigest: providerRegistry.configurationDigest,
     policyConfigurationDigest: policyEngine.policyDigest,
-    validationProfile: GENERAL_CHAT,
+    validationProfileConfigurationDigests: {
+      [AUTHORITY_SENSITIVE]: authoritySensitiveProfile.configurationDigest,
+      [GENERAL_CHAT]: generalChatProfile.configurationDigest,
+    },
+    runtimeValidationProfile: GENERAL_CHAT,
+    continuationValidationProfile: AUTHORITY_SENSITIVE,
     deadlineClass: DeadlineClass.STANDARD,
     deadlinePolicyVersion: DEFAULT_PROVIDER_DEADLINE_POLICY.version,
   });
@@ -283,6 +332,7 @@ export function buildProductionProviderRoutingConfiguration(
     executableBindings,
     routingPolicy,
     validationProfile: GENERAL_CHAT,
+    continuationValidationProfile: AUTHORITY_SENSITIVE,
     validationProfiles,
     deadlineClass: DeadlineClass.STANDARD,
     deadlinePolicy: DEFAULT_PROVIDER_DEADLINE_POLICY,
