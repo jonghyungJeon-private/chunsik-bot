@@ -385,14 +385,22 @@ export class ContinuationProviderRoutingService implements ContinuationProviderR
     return Object.freeze({ disposition: 'FAILED', audit });
   }
 
-  /** Post-dispatch operational codes that make termination uncertain (no proof of no side effect). */
+  /** Post-dispatch operational codes that make termination uncertain (no proof of no side effect).
+   *
+   * R3-A failure-mapping amendment: once an attempt has been DISPATCHED (the Provider attempt boundary
+   * is crossed), a bounded CONTAINMENT_FAILURE or a post-attempt MODEL_DOWNLOAD_DETECTED can no longer be
+   * treated as a definite FAILED — the execution/enforcement state is unknown, so it maps to UNRESOLVED.
+   * These codes remain definite ONLY pre-dispatch (attemptCount 0 / NOT_DISPATCHED), which this method
+   * never sees because callers gate it behind `dispatched`. */
   private isPostDispatchUncertain(code: string | null): boolean {
     return (
       code === RoutingFailureCode.PROVIDER_TIMEOUT ||
       code === RoutingFailureCode.PROVIDER_EXECUTION_FAILED ||
       code === RoutingFailureCode.PROVIDER_UNAVAILABLE ||
       code === RoutingFailureCode.PROVIDER_SPAWN_FAILED ||
-      code === RoutingFailureCode.DEADLINE_EXHAUSTED
+      code === RoutingFailureCode.DEADLINE_EXHAUSTED ||
+      code === RoutingFailureCode.CONTAINMENT_FAILURE ||
+      code === RoutingFailureCode.MODEL_DOWNLOAD_DETECTED
     );
   }
 

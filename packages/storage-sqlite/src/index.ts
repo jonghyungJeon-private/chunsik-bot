@@ -44,6 +44,8 @@ import type {
   TaskRepository,
   TaskRun,
   TaskRunRepository,
+  TerminalizePreservingSecurityEvidenceRequest,
+  ContinuationContainmentAudit,
   GuardedTaskRunStartFacts,
   WorkItem,
   WorkItemRepository,
@@ -51,6 +53,14 @@ import type {
   WorkHandoffRepository,
 } from '@quoky/core';
 import { ApprovalStatus, GuardedTaskRunStartError, WorkItemStatus, Capability, TaskStatus, TaskRunStatus, newId, now, ResourceRef as DomainResourceRef, createWorkHandoff } from '@quoky/core';
+import {
+  ContainmentEvidenceConflictError,
+  CONTAINMENT_AUDIT_METADATA_KEY,
+  snapshotContainmentAudit,
+  containmentEvidenceIdentical,
+  bindingIdentical,
+  postAttemptIdentical,
+} from '@quoky/core';
 
 /** ADR-0089: the SQLite lock wait is explicit adapter configuration, not an implicit driver default.
  * This preserves the previously effective better-sqlite3 default. It is a bounded wait inside a single
@@ -69,6 +79,18 @@ export interface SqliteConfig {
 function isLockContention(error: unknown): boolean {
   const code = (error as { code?: unknown } | null | undefined)?.code;
   return typeof code === 'string' && code.startsWith('SQLITE_BUSY');
+}
+
+/**
+ * R3-A: project any durable containment audit stored under a TaskRun's metadata, anchored to the run's
+ * own id (executionId === taskRunId === run.id for a continuation attempt). Returns null when absent or
+ * malformed, so a malformed persisted blob is treated as "no evidence" for preservation comparison
+ * rather than being trusted.
+ */
+function extractContainmentAudit(run: TaskRun): ContinuationContainmentAudit | null {
+  const raw = run.metadata?.[CONTAINMENT_AUDIT_METADATA_KEY];
+  if (raw === undefined) return null;
+  return snapshotContainmentAudit(raw, run.id, run.id);
 }
 
 type Db = Database.Database;
@@ -328,6 +350,21 @@ class SqliteTaskRunRepository extends JsonRepository<TaskRun> implements TaskRun
           && (JSON.parse(existing.data) as TaskRun).status !== TaskRunStatus.STARTED) {
           throw new GuardedTaskRunStartError('CONTINUATION_GUARD_REQUIRED');
         }
+        // R3-A / B-1: a generic save on a bound run may ONLY carry forward the exact durable containment
+        // evidence already present. It must never CREATE, remove, or mutate it — evidence creation and
+        // mutation are reserved for the semantic CAS APIs (recordContainmentBinding/PostEvidenceIfAbsent).
+        // Rule (§2/§3/§4): both absent → ALLOW; both present & identical → ALLOW; anything else → REJECT.
+        // Compared inside this IMMEDIATE transaction against the current persisted row.
+        const current = extractContainmentAudit(JSON.parse(existing!.data) as TaskRun);
+        const incoming = extractContainmentAudit(run);
+        if (!containmentEvidenceIdentical(current, incoming)) {
+          const reason = current === null
+            ? 'MALFORMED_EVIDENCE' // current absent + incoming present: generic save may not create evidence
+            : incoming === null
+              ? 'EVIDENCE_REMOVED'
+              : 'BINDING_DIGEST_CONFLICT';
+          throw new ContainmentEvidenceConflictError(reason);
+        }
       }
       this.db.prepare(
         `INSERT INTO task_runs (id, task_id, data) VALUES (?, ?, ?)
@@ -335,6 +372,142 @@ class SqliteTaskRunRepository extends JsonRepository<TaskRun> implements TaskRun
       ).run(run.id, run.taskId, JSON.stringify(run));
       return run;
     }).immediate());
+  }
+
+  /**
+   * R3-A: atomic insert-once compare-and-set of immutable containment binding evidence on the exact
+   * STARTED run. Inside one IMMEDIATE transaction: load current row → require STARTED → inspect existing
+   * evidence → absent: write; identical containmentBindingDigest: idempotent; different: reject. Status
+   * is never changed. Malformed incoming evidence, a missing run, or a non-STARTED run all fail closed.
+   */
+  async recordContainmentBindingIfAbsent(
+    exactTaskRunId: Id,
+    containmentAudit: ContinuationContainmentAudit,
+  ): Promise<TaskRun> {
+    return this.noContention(() => this.db.transaction(() => {
+      const run = this.loadStartedRunOrThrow(exactTaskRunId);
+      const projected = snapshotContainmentAudit(containmentAudit, exactTaskRunId, exactTaskRunId);
+      if (!projected || projected.postAttempt !== undefined) {
+        // Binding recording must carry a valid binding and MUST NOT carry post-attempt evidence.
+        throw new ContainmentEvidenceConflictError('MALFORMED_EVIDENCE');
+      }
+      const current = extractContainmentAudit(run);
+      if (current !== null) {
+        if (!bindingIdentical(current.binding, projected.binding)) {
+          throw new ContainmentEvidenceConflictError('BINDING_DIGEST_CONFLICT');
+        }
+        return run; // idempotent: identical binding already present
+      }
+      return this.writeContainmentAudit(run, projected);
+    }).immediate());
+  }
+
+  /**
+   * R3-A: append-once record of optional post-attempt evidence. The binding must already exist and be
+   * identical; postAttempt absent → record; identical → idempotent; different → reject. Binding identity
+   * is never changed.
+   */
+  async recordContainmentPostEvidenceIfAbsent(
+    exactTaskRunId: Id,
+    containmentAudit: ContinuationContainmentAudit,
+  ): Promise<TaskRun> {
+    return this.noContention(() => this.db.transaction(() => {
+      const run = this.loadStartedRunOrThrow(exactTaskRunId);
+      const projected = snapshotContainmentAudit(containmentAudit, exactTaskRunId, exactTaskRunId);
+      if (!projected || projected.postAttempt === undefined) {
+        throw new ContainmentEvidenceConflictError('MALFORMED_EVIDENCE');
+      }
+      const current = extractContainmentAudit(run);
+      if (current === null) throw new ContainmentEvidenceConflictError('BINDING_MISSING');
+      if (!bindingIdentical(current.binding, projected.binding)) {
+        throw new ContainmentEvidenceConflictError('BINDING_DIGEST_CONFLICT');
+      }
+      if (current.postAttempt !== undefined) {
+        if (!postAttemptIdentical(current.postAttempt, projected.postAttempt)) {
+          throw new ContainmentEvidenceConflictError('POST_ATTEMPT_CONFLICT');
+        }
+        return run; // idempotent: identical post-attempt already present
+      }
+      return this.writeContainmentAudit(run, projected);
+    }).immediate());
+  }
+
+  /**
+   * R3-A current-row terminal merge. Terminalize the exact STARTED run from the CURRENT persisted row,
+   * preserving any durable containment evidence and merging routing audit + terminal metadata atomically.
+   */
+  async terminalizePreservingSecurityEvidence(
+    exactTaskRunId: Id,
+    request: TerminalizePreservingSecurityEvidenceRequest,
+  ): Promise<TaskRun> {
+    return this.noContention(() => this.db.transaction(() => {
+      const run = this.loadStartedRunOrThrow(exactTaskRunId);
+      if (request.terminalStatus !== 'SUCCEEDED' && request.terminalStatus !== 'FAILED') {
+        throw new ContainmentEvidenceConflictError('MALFORMED_EVIDENCE');
+      }
+      // R3-A / B-2: the caller may NEVER create or replace containment evidence through terminal metadata.
+      // Reject any caller-supplied CONTAINMENT_AUDIT_METADATA_KEY (prefer reject over silent stripping so a
+      // caller contract violation is surfaced, not hidden). The ONLY source of truth for containment
+      // evidence is the CURRENT persisted row.
+      if (request.metadata !== undefined
+        && Object.prototype.hasOwnProperty.call(request.metadata, CONTAINMENT_AUDIT_METADATA_KEY)) {
+        throw new ContainmentEvidenceConflictError('CALLER_SUPPLIED_EVIDENCE');
+      }
+      const preservedAudit = extractContainmentAudit(run); // durable evidence from the CURRENT row only
+      const mergedMetadata: Record<string, unknown> = {
+        ...(run.metadata ?? {}),
+        ...(request.metadata ?? {}),
+      };
+      // Containment evidence from the current persisted row is always preserved, never overwritten by a
+      // caller-supplied terminal metadata bag. Caller metadata was already rejected above if it carried it.
+      if (preservedAudit !== null) mergedMetadata[CONTAINMENT_AUDIT_METADATA_KEY] = preservedAudit;
+      else delete mergedMetadata[CONTAINMENT_AUDIT_METADATA_KEY];
+      const terminal: TaskRun = {
+        ...run,
+        status: request.terminalStatus === 'SUCCEEDED' ? TaskRunStatus.SUCCEEDED : TaskRunStatus.FAILED,
+        finishedAt: request.finishedAt,
+        durationMs: Math.max(0, Date.parse(request.finishedAt) - Date.parse(run.startedAt)),
+        ...(request.artifactIds ? { artifactIds: [...request.artifactIds] } : {}),
+        ...(request.providerId ? { providerId: request.providerId } : {}),
+        ...(request.error ? { error: request.error } : {}),
+        ...(Object.keys(mergedMetadata).length > 0 ? { metadata: mergedMetadata } : {}),
+      };
+      this.db.prepare(
+        `INSERT INTO task_runs (id, task_id, data) VALUES (?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET task_id = excluded.task_id, data = excluded.data`,
+      ).run(terminal.id, terminal.taskId, JSON.stringify(terminal));
+      return terminal;
+    }).immediate());
+  }
+
+  /**
+   * Load the exact run and require STARTED AND continuation-bound; fail closed with a bounded conflict
+   * otherwise. R3-A / B-3: containment evidence is continuation-specific, so every semantic evidence
+   * operation (binding CAS, post-attempt CAS, security-preserving terminalize) must reject an ordinary/
+   * unbound TaskRun. The bound check uses the canonical continuation-binding source of truth (isBound over
+   * the persisted run's own task_id) and runs INSIDE the caller's IMMEDIATE transaction, so there is no
+   * check-outside-then-mutate race.
+   */
+  private loadStartedRunOrThrow(id: Id): TaskRun {
+    const row = this.db.prepare('SELECT data FROM task_runs WHERE id = ?').get(id) as Row | undefined;
+    if (!row) throw new ContainmentEvidenceConflictError('RUN_NOT_FOUND');
+    const run = JSON.parse(row.data) as TaskRun;
+    if (!this.isBound(run.taskId)) throw new ContainmentEvidenceConflictError('RUN_NOT_CONTINUATION_BOUND');
+    if (run.status !== TaskRunStatus.STARTED) throw new ContainmentEvidenceConflictError('RUN_NOT_STARTED');
+    return run;
+  }
+
+  /** Write the projected containment audit into the run's metadata, preserving STARTED and all else. */
+  private writeContainmentAudit(run: TaskRun, audit: ContinuationContainmentAudit): TaskRun {
+    const next: TaskRun = {
+      ...run,
+      metadata: { ...(run.metadata ?? {}), [CONTAINMENT_AUDIT_METADATA_KEY]: audit },
+    };
+    this.db.prepare(
+      `INSERT INTO task_runs (id, task_id, data) VALUES (?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET task_id = excluded.task_id, data = excluded.data`,
+    ).run(next.id, next.taskId, JSON.stringify(next));
+    return next;
   }
 
   /** ADR-0089 bound-run retention. The refusal is derived from the persisted run's own task_id and the

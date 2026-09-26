@@ -18,3 +18,5 @@ export * from './continuation-binding.port';
 export * from './continuation-receiver.port';
 
 export * from './continuation-routing-audit';
+export * from './continuation-containment-audit';
+export * from './continuation-containment-evidence-sink.port';
