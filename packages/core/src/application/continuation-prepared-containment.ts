@@ -10,11 +10,18 @@ import { createHash } from 'node:crypto';
  * independent channel contracts; only a dual-channel agreement yields a `VerifiedContainmentBinding`,
  * and only that binding can construct a `PreparedContainmentExecution`.
  *
- * Identity distinction (ratified R3 Architecture v3): the Stage2B `providerBindingDigest` and the R3
- * `containmentBindingDigest` are DISTINCT concepts and DISTINCT values. The containment binding digest
- * binds the security profile + containment instance + Provider binding identity + model identity +
- * verification identity + schema/version facts; it is domain-separated so it can never collide with a
- * Stage2B provider binding digest even on overlapping inputs.
+ * R3-B1 remediation (B-1/B-2/B-3): every security-bearing capability in this module is NON-FORGEABLE at
+ * runtime, not merely by TypeScript shape. Issuance is gated by module-private `WeakSet` registries: an
+ * object literal, spread copy, or reconstructed look-alike is rejected because it was never issued by
+ * this module. Digests are recomputed and re-verified on acceptance (defense in depth). There is NO
+ * public arbitrary execution-callback injection point; the only contained execution capability is a
+ * module-issued deterministic fake bound to an exact containment instance.
+ *
+ * Identity distinction (ratified R3 Architecture v3, Gate 4): the Stage2B `providerBindingDigest` and the
+ * R3 `containmentBindingDigest` are DISTINCT concepts and DISTINCT values. `providerBindingDigest` stays
+ * opaque and is never recomputed here; `containmentBindingDigest` is independently derived and
+ * domain-separated so it can never collide with a Stage2B provider binding digest even on overlapping
+ * inputs.
  *
  * Digest convention reuses the repository's canonical `sha256(JSON.stringify(canonicalShape))` form
  * (see provider-binding-registry / routing-policy-engine), never an unrelated hashing scheme.
@@ -22,8 +29,10 @@ import { createHash } from 'node:crypto';
 
 export const CONTAINMENT_SECURITY_PROFILE_SCHEMA = 'containment-security-profile-v1' as const;
 export const CONTAINMENT_INSTANCE_IDENTITY_SCHEMA = 'containment-instance-identity-v1' as const;
+export const SOLE_PROVIDER_SELECTION_SCHEMA = 'sole-provider-selection-v1' as const;
 export const CONTAINMENT_CANDIDATE_BINDING_SCHEMA = 'containment-candidate-binding-v1' as const;
 export const VERIFIED_CONTAINMENT_BINDING_SCHEMA = 'verified-containment-binding-v1' as const;
+export const CONTAINED_EXECUTION_CAPABILITY_SCHEMA = 'contained-execution-capability-v1' as const;
 export const PREPARED_CONTAINMENT_EXECUTION_SCHEMA = 'prepared-containment-execution-v1' as const;
 
 /** Domain-separation tags so a containment digest can never equal a Stage2B provider binding digest. */
@@ -48,13 +57,19 @@ function sha256Canonical(domain: string, shape: unknown): string {
 export type PreparedContainmentFailureCode =
   | 'CONTAINMENT_CONFIGURATION_INVALID'
   | 'CONTAINMENT_CANDIDATE_INVALID'
+  | 'CONTAINMENT_CANDIDATE_NOT_ISSUED'
+  | 'PROVIDER_SELECTION_NOT_ISSUED'
   | 'STATIC_ELIGIBILITY_NOT_SATISFIED'
   | 'PRIMARY_ONLY_VIOLATION'
   | 'PROVIDER_SELECTION_NOT_SOLE'
   | 'CHANNEL_A_UNVERIFIED'
   | 'CHANNEL_B_UNVERIFIED'
   | 'CHANNEL_DISAGREEMENT'
-  | 'VERIFICATION_UNCERTAIN';
+  | 'VERIFICATION_UNCERTAIN'
+  | 'VERIFIED_BINDING_NOT_ISSUED'
+  | 'CONTAINMENT_BINDING_DIGEST_MISMATCH'
+  | 'EXECUTION_CAPABILITY_NOT_ISSUED'
+  | 'EXECUTION_CAPABILITY_INSTANCE_MISMATCH';
 
 /** Bounded, fail-closed preparation error. Carries a code only — never host/runtime detail. */
 export class PreparedContainmentError extends Error {
@@ -124,11 +139,92 @@ export function createContainmentInstanceIdentity(opaqueInstanceToken: string): 
   });
 }
 
+// ────────────────────────────────────────────────────────────────────────────────────────────────
+// B-2 — Non-forgeable exact sole Provider selection.
+//
+// `SoleProviderSelection` is an OPAQUE nominal capability: its concrete class is module-private and its
+// instances are registered in a module-private WeakSet. Only `assertExactSoleProviderSelection` can mint
+// one (after enforcing static eligibility + PRIMARY_ONLY + exact sole selection). An arbitrary object
+// literal is not a member of the registry, so `createContainmentCandidateBinding` rejects it. The public
+// type is an opaque brand; the selected providerId is read only through a module function, and the
+// candidate derives its providerId FROM the selection — a caller can never substitute a different one.
+// ────────────────────────────────────────────────────────────────────────────────────────────────
+
+/** Opaque, non-forgeable exact-sole-Provider selection. No public constructor; no readable fields. */
+export interface SoleProviderSelection {
+  readonly schemaVersion: typeof SOLE_PROVIDER_SELECTION_SCHEMA;
+  /** Opaque brand — the real identity lives in module-private state, not in this surface. */
+  readonly __brand: 'SoleProviderSelection';
+}
+
+class IssuedSoleProviderSelection implements SoleProviderSelection {
+  readonly schemaVersion = SOLE_PROVIDER_SELECTION_SCHEMA;
+  readonly __brand = 'SoleProviderSelection' as const;
+  constructor(readonly providerId: string) {
+    Object.freeze(this);
+  }
+}
+
+const issuedSelections = new WeakSet<IssuedSoleProviderSelection>();
+
+/** Recover the selected providerId ONLY from a genuinely issued selection; else fail closed. */
+function selectedProviderIdOf(selection: SoleProviderSelection): string {
+  if (!(selection instanceof IssuedSoleProviderSelection) || !issuedSelections.has(selection)) {
+    throw new PreparedContainmentError('PROVIDER_SELECTION_NOT_ISSUED');
+  }
+  return selection.providerId;
+}
+
+/**
+ * Static-eligibility seam expressing the MANDATORY ordering:
+ *   static eligibility → PRIMARY_ONLY enforcement → exact sole Provider selection → containment
+ *   preparation.
+ * It does NOT duplicate Stage2B eligibility/ranking, does NOT fabricate an AVAILABLE Provider snapshot,
+ * and does NOT use host `ollama --version` as availability evidence. It receives the already-decided
+ * eligible-provider set (a trusted Application seam/fake in R3-B1) and enforces that exactly one provider
+ * is eligible AND is the sole selection before any containment candidate may be prepared.
+ */
+export interface StaticEligibilityDecision {
+  /** The eligible providers a prior (fake in R3-B1) static-eligibility pass produced. */
+  readonly eligibleProviderIds: readonly string[];
+  /** The sole selected provider. PRIMARY_ONLY requires this to be the ONLY eligible provider. */
+  readonly selectedProviderId: string;
+  /** Positive assertion from the caller's PRIMARY_ONLY enforcement (no fallback/escalation planned). */
+  readonly primaryOnly: true;
+}
+
+/**
+ * Assert the mandatory ordering; fail closed on any deviation. Returns an OPAQUE, non-forgeable
+ * `SoleProviderSelection` (not a raw string) that is the ONLY key able to open candidate creation.
+ */
+export function assertExactSoleProviderSelection(decision: StaticEligibilityDecision): SoleProviderSelection {
+  if (decision.primaryOnly !== true) throw new PreparedContainmentError('PRIMARY_ONLY_VIOLATION');
+  const eligible = decision.eligibleProviderIds;
+  if (!Array.isArray(eligible) || eligible.length === 0 || eligible.some((v) => !isId(v))) {
+    throw new PreparedContainmentError('STATIC_ELIGIBILITY_NOT_SATISFIED');
+  }
+  if (new Set(eligible).size !== eligible.length) {
+    throw new PreparedContainmentError('STATIC_ELIGIBILITY_NOT_SATISFIED');
+  }
+  // PRIMARY_ONLY: exactly one eligible provider, and it must be the selected one.
+  if (eligible.length !== 1) throw new PreparedContainmentError('PRIMARY_ONLY_VIOLATION');
+  if (!isId(decision.selectedProviderId) || eligible[0] !== decision.selectedProviderId) {
+    throw new PreparedContainmentError('PROVIDER_SELECTION_NOT_SOLE');
+  }
+  const selection = new IssuedSoleProviderSelection(decision.selectedProviderId);
+  issuedSelections.add(selection);
+  return selection;
+}
+
 /**
  * Pure candidate/binding input that preserves DISTINCT identities. `providerBindingDigest` is the
  * Stage2B provider binding digest (opaque here, never recomputed) and is deliberately kept separate from
  * every containment digest. `expectedModelId`/`expectedModelDigest` are the model identity the future
  * contained attempt must run; they are not resolved or executed here.
+ *
+ * B-2: the candidate is runtime-distinguishable from an arbitrary object literal (module-private
+ * WeakSet registration) and its `providerId` is DERIVED from the issued `SoleProviderSelection` — never
+ * a caller-supplied raw providerId.
  */
 export interface ContainmentCandidateBinding {
   readonly schemaVersion: typeof CONTAINMENT_CANDIDATE_BINDING_SCHEMA;
@@ -143,8 +239,11 @@ export interface ContainmentCandidateBinding {
   readonly instanceIdentityDigest: string;
 }
 
+const issuedCandidates = new WeakSet<ContainmentCandidateBinding>();
+
 export function createContainmentCandidateBinding(input: {
-  providerId: string;
+  /** The ONLY source of providerId — an issued exact sole selection. No raw providerId is accepted. */
+  selection: SoleProviderSelection;
   providerBindingDigest: string;
   securityProfile: ContainmentSecurityProfile;
   expectedModelId: string;
@@ -152,15 +251,22 @@ export function createContainmentCandidateBinding(input: {
   imageDigest: string;
   instance: ContainmentInstanceIdentity;
 }): ContainmentCandidateBinding {
+  // B-2: providerId is derived from the issued selection; an unissued selection fails closed here.
+  const providerId = selectedProviderIdOf(input.selection);
   if (
-    !isId(input.providerId) || !isHex64(input.providerBindingDigest) ||
+    input.securityProfile?.schemaVersion !== CONTAINMENT_SECURITY_PROFILE_SCHEMA ||
+    !isHex64(input.securityProfile.securityProfileDigest) ||
+    !isId(input.securityProfile.securityProfileId) ||
+    input.instance?.schemaVersion !== CONTAINMENT_INSTANCE_IDENTITY_SCHEMA ||
+    !isHex64(input.instance.instanceIdentityDigest) ||
+    !isHex64(input.providerBindingDigest) ||
     !isOpaque(input.expectedModelId) || !isHex64(input.expectedModelDigest) || !isHex64(input.imageDigest)
   ) {
     throw new PreparedContainmentError('CONTAINMENT_CANDIDATE_INVALID');
   }
-  return Object.freeze({
+  const candidate: ContainmentCandidateBinding = Object.freeze({
     schemaVersion: CONTAINMENT_CANDIDATE_BINDING_SCHEMA,
-    providerId: input.providerId,
+    providerId,
     providerBindingDigest: input.providerBindingDigest,
     securityProfileId: input.securityProfile.securityProfileId,
     securityProfileDigest: input.securityProfile.securityProfileDigest,
@@ -169,42 +275,8 @@ export function createContainmentCandidateBinding(input: {
     imageDigest: input.imageDigest,
     instanceIdentityDigest: input.instance.instanceIdentityDigest,
   });
-}
-
-/**
- * Static-eligibility seam expressing the MANDATORY ordering:
- *   static eligibility → PRIMARY_ONLY enforcement → exact sole Provider selection → containment
- *   preparation.
- * It does NOT duplicate Stage2B eligibility/ranking, does NOT fabricate an AVAILABLE Provider snapshot,
- * and does NOT use host `ollama --version` as availability evidence. It receives the already-decided
- * eligible-provider set (a fake/stub in R3-B1) and enforces that exactly one provider is eligible AND is
- * the sole selection before any containment candidate may be prepared.
- */
-export interface StaticEligibilityDecision {
-  /** The eligible providers a prior (fake in R3-B1) static-eligibility pass produced. */
-  readonly eligibleProviderIds: readonly string[];
-  /** The sole selected provider. PRIMARY_ONLY requires this to be the ONLY eligible provider. */
-  readonly selectedProviderId: string;
-  /** Positive assertion from the caller's PRIMARY_ONLY enforcement (no fallback/escalation planned). */
-  readonly primaryOnly: true;
-}
-
-/** Assert the mandatory ordering; fail closed on any deviation. Returns the sole provider id. */
-export function assertExactSoleProviderSelection(decision: StaticEligibilityDecision): string {
-  if (decision.primaryOnly !== true) throw new PreparedContainmentError('PRIMARY_ONLY_VIOLATION');
-  const eligible = decision.eligibleProviderIds;
-  if (!Array.isArray(eligible) || eligible.length === 0 || eligible.some((v) => !isId(v))) {
-    throw new PreparedContainmentError('STATIC_ELIGIBILITY_NOT_SATISFIED');
-  }
-  if (new Set(eligible).size !== eligible.length) {
-    throw new PreparedContainmentError('STATIC_ELIGIBILITY_NOT_SATISFIED');
-  }
-  // PRIMARY_ONLY: exactly one eligible provider, and it must be the selected one.
-  if (eligible.length !== 1) throw new PreparedContainmentError('PRIMARY_ONLY_VIOLATION');
-  if (!isId(decision.selectedProviderId) || eligible[0] !== decision.selectedProviderId) {
-    throw new PreparedContainmentError('PROVIDER_SELECTION_NOT_SOLE');
-  }
-  return decision.selectedProviderId;
+  issuedCandidates.add(candidate);
+  return candidate;
 }
 
 /**
@@ -241,9 +313,10 @@ export interface ContainmentVerificationChannel {
 
 /**
  * The verified binding. It is issued ONLY by `prepareVerifiedContainmentBinding` after BOTH channels
- * independently VERIFIED the identical subject. `containmentBindingDigest` is domain-separated and binds
- * the security profile, containment instance, Provider binding, model identity, both channel verifier
- * identities + result digests, and schema/version facts — DISTINCT from `providerBindingDigest`.
+ * independently VERIFIED the identical subject, AND is registered in a module-private WeakSet so it
+ * cannot be forged. `containmentBindingDigest` is domain-separated and binds the security profile,
+ * containment instance, Provider binding, model identity, both channel verifier identities + result
+ * digests, and schema/version facts — DISTINCT from `providerBindingDigest`.
  */
 export interface VerifiedContainmentBinding {
   readonly schemaVersion: typeof VERIFIED_CONTAINMENT_BINDING_SCHEMA;
@@ -263,21 +336,47 @@ export interface VerifiedContainmentBinding {
   readonly containmentBindingDigest: string;
 }
 
+const issuedVerifiedBindings = new WeakSet<VerifiedContainmentBinding>();
+
+/** Canonical shape whose digest is `containmentBindingDigest`; used to recompute/verify on acceptance. */
+function verifiedBindingCanonicalShape(binding: VerifiedContainmentBinding) {
+  return {
+    schemaVersion: VERIFIED_CONTAINMENT_BINDING_SCHEMA,
+    providerId: binding.providerId,
+    providerBindingDigest: binding.providerBindingDigest,
+    securityProfileId: binding.securityProfileId,
+    securityProfileDigest: binding.securityProfileDigest,
+    instanceIdentityDigest: binding.instanceIdentityDigest,
+    expectedModelId: binding.expectedModelId,
+    expectedModelDigest: binding.expectedModelDigest,
+    imageDigest: binding.imageDigest,
+    channelAVerifierVersion: binding.channelAVerifierVersion,
+    channelBVerifierVersion: binding.channelBVerifierVersion,
+    channelAResultDigest: binding.channelAResultDigest,
+    channelBResultDigest: binding.channelBResultDigest,
+  };
+}
+
+/**
+ * Accept a binding as verified ONLY if (defense in depth):
+ *  1. it was issued by this module (WeakSet membership) — literals/spread copies/reconstructions fail; AND
+ *  2. its `containmentBindingDigest` still equals the recomputed digest over its canonical identity.
+ */
+function requireIssuedVerifiedBinding(binding: VerifiedContainmentBinding): void {
+  if (binding?.schemaVersion !== VERIFIED_CONTAINMENT_BINDING_SCHEMA
+    || !isHex64(binding.containmentBindingDigest)
+    || !issuedVerifiedBindings.has(binding)) {
+    throw new PreparedContainmentError('VERIFIED_BINDING_NOT_ISSUED');
+  }
+  const recomputed = sha256Canonical(CONTAINMENT_BINDING_DIGEST_DOMAIN, verifiedBindingCanonicalShape(binding));
+  if (recomputed !== binding.containmentBindingDigest) {
+    throw new PreparedContainmentError('CONTAINMENT_BINDING_DIGEST_MISMATCH');
+  }
+}
+
 function channelResultDigest(subject: ContainmentVerificationSubject, channel: 'A' | 'B', verifierVersion: string): string {
   return sha256Canonical(`quoky.r3.containment.channel.${channel}.v1`, {
     verifierVersion,
-    providerId: subject.candidate.providerId,
-    providerBindingDigest: subject.providerBindingDigest,
-    securityProfileDigest: subject.securityProfileDigest,
-    instanceIdentityDigest: subject.instanceIdentityDigest,
-    expectedModelDigest: subject.expectedModelDigest,
-    imageDigest: subject.candidate.imageDigest,
-  });
-}
-
-/** The canonical subject digest each channel must have verified against; used to detect disagreement. */
-function subjectDigestFor(subject: ContainmentVerificationSubject): string {
-  return sha256Canonical('quoky.r3.containment.subject.v1', {
     providerId: subject.candidate.providerId,
     providerBindingDigest: subject.providerBindingDigest,
     securityProfileDigest: subject.securityProfileDigest,
@@ -307,10 +406,10 @@ function requireChannelVerified(
 }
 
 /**
- * Produce a `VerifiedContainmentBinding` only when BOTH independent channels VERIFIED the identical
- * subject. Missing, malformed, failed, unavailable, mismatched, or uncertain verification fails closed
- * (throws `PreparedContainmentError`) and NEVER issues a binding. The two channels must be distinct
- * verifier identities and must agree on the same subject.
+ * Produce a `VerifiedContainmentBinding` only when the candidate was genuinely issued (B-2) AND BOTH
+ * independent channels VERIFIED the identical subject. Missing, malformed, failed, unavailable,
+ * mismatched, or uncertain verification fails closed (throws `PreparedContainmentError`) and NEVER issues
+ * a binding. The issued binding is registered so it cannot later be forged (B-1).
  */
 export function prepareVerifiedContainmentBinding(input: {
   candidate: ContainmentCandidateBinding;
@@ -318,8 +417,9 @@ export function prepareVerifiedContainmentBinding(input: {
   channelB: ContainmentVerificationChannel;
 }): VerifiedContainmentBinding {
   const { candidate, channelA, channelB } = input;
-  if (candidate?.schemaVersion !== CONTAINMENT_CANDIDATE_BINDING_SCHEMA) {
-    throw new PreparedContainmentError('CONTAINMENT_CANDIDATE_INVALID');
+  // B-2: only a candidate this module issued may be prepared. Literals/spread copies are rejected here.
+  if (candidate?.schemaVersion !== CONTAINMENT_CANDIDATE_BINDING_SCHEMA || !issuedCandidates.has(candidate)) {
+    throw new PreparedContainmentError('CONTAINMENT_CANDIDATE_NOT_ISSUED');
   }
   if (channelA?.channel !== 'A' || channelB?.channel !== 'B') {
     throw new PreparedContainmentError('CHANNEL_DISAGREEMENT');
@@ -340,9 +440,6 @@ export function prepareVerifiedContainmentBinding(input: {
   if (resultA.verifierVersion === resultB.verifierVersion) {
     throw new PreparedContainmentError('CHANNEL_DISAGREEMENT');
   }
-  // Both channels are pinned to the same subject digest by construction; assert it explicitly.
-  const subjectDigest = subjectDigestFor(subject);
-  void subjectDigest;
 
   const bindingShape = {
     schemaVersion: VERIFIED_CONTAINMENT_BINDING_SCHEMA,
@@ -359,22 +456,24 @@ export function prepareVerifiedContainmentBinding(input: {
     channelAResultDigest,
     channelBResultDigest,
   };
-  return Object.freeze({
+  const binding: VerifiedContainmentBinding = Object.freeze({
     ...bindingShape,
     containmentBindingDigest: sha256Canonical(CONTAINMENT_BINDING_DIGEST_DOMAIN, bindingShape),
   });
+  issuedVerifiedBindings.add(binding);
+  return binding;
 }
 
-/**
- * The ONLY future execution-facing contained capability. It encapsulates a `VerifiedContainmentBinding`
- * and exposes NO raw AiProvider, host executable, command, socket, endpoint, or other host-provider
- * escape hatch. In R3-B1 it is exercised only through a fake execution seam in tests; it is NOT wired
- * into the production ContinuationReceiverExecutionService.
- *
- * The execution seam is a narrow injected function that itself never receives a raw provider/host handle;
- * the prepared capability passes ONLY the bounded verified binding identity to it. Production wiring, a
- * real runtime, and terminalize integration are explicitly out of R3-B1 scope.
- */
+// ────────────────────────────────────────────────────────────────────────────────────────────────
+// B-3 — Contained execution capability is issued, not injected.
+//
+// There is NO public arbitrary execution-callback / AiProvider / command / socket / endpoint injection
+// point. The only contained execution capability is a module-issued deterministic fake, registered in a
+// module-private WeakSet and bound to an EXACT `instanceIdentityDigest`. Its `run` is closed over
+// module-internal deterministic logic; a caller cannot supply the function body, so it can never wrap
+// `hostProvider.execute(...)`. Production runtime capability issuance is deferred to a later slice.
+// ────────────────────────────────────────────────────────────────────────────────────────────────
+
 export interface ContainedExecutionInput {
   /** Rendered provider-agnostic prompt text ONLY (no containment/runtime/security fields — those never
    * enter AiRequest). Provided by the future R3-C caller; opaque to this capability. */
@@ -385,40 +484,94 @@ export interface ContainedExecutionResult {
   readonly text: string;
 }
 
-/** The bounded runtime seam. It receives the verified binding identity + prompt; never a raw provider. */
-export type ContainedExecutionRunner = (
-  binding: VerifiedContainmentBinding,
-  input: ContainedExecutionInput,
-) => Promise<ContainedExecutionResult>;
+/**
+ * Opaque contained execution capability. Non-forgeable: the concrete class is module-private and only a
+ * module factory can mint + register one. It is bound to an exact containment instance identity digest,
+ * and its `run` cannot be supplied by a caller.
+ */
+export interface ContainedExecutionCapability {
+  readonly schemaVersion: typeof CONTAINED_EXECUTION_CAPABILITY_SCHEMA;
+  readonly instanceIdentityDigest: string;
+}
 
+class IssuedContainedExecutionCapability implements ContainedExecutionCapability {
+  readonly schemaVersion = CONTAINED_EXECUTION_CAPABILITY_SCHEMA;
+  constructor(
+    readonly instanceIdentityDigest: string,
+    /** Module-internal deterministic run. Never caller-supplied; never a host handle. */
+    readonly run: (binding: VerifiedContainmentBinding, input: ContainedExecutionInput) => Promise<ContainedExecutionResult>,
+  ) {
+    Object.freeze(this);
+  }
+}
+
+const issuedCapabilities = new WeakSet<IssuedContainedExecutionCapability>();
+
+/**
+ * R3-B1 test-only deterministic fake contained execution capability. It accepts ONLY a bounded instance
+ * identity — NO execution callback, AiProvider, executable, command, endpoint, socket, or generic host
+ * function. Its `run` is fixed, deterministic, and closed over module-internal logic, so executing it can
+ * never invoke a caller-injected host Provider. This is the intentionally narrow issuance surface for
+ * R3-B1; a production runtime capability is a later authorized slice.
+ */
+export function createFakeContainedExecutionCapability(
+  instance: ContainmentInstanceIdentity,
+): ContainedExecutionCapability {
+  if (instance?.schemaVersion !== CONTAINMENT_INSTANCE_IDENTITY_SCHEMA || !isHex64(instance.instanceIdentityDigest)) {
+    throw new PreparedContainmentError('CONTAINMENT_CONFIGURATION_INVALID');
+  }
+  const capability = new IssuedContainedExecutionCapability(
+    instance.instanceIdentityDigest,
+    // Deterministic, side-effect-free fake. No network, provider, command, or host access.
+    async (binding, input) =>
+      Object.freeze({
+        text: `contained-fake:${binding.containmentBindingDigest.slice(0, 12)}:${input.prompt}`,
+      }),
+  );
+  issuedCapabilities.add(capability);
+  return capability;
+}
+
+function requireIssuedCapability(capability: ContainedExecutionCapability): IssuedContainedExecutionCapability {
+  if (!(capability instanceof IssuedContainedExecutionCapability) || !issuedCapabilities.has(capability)) {
+    throw new PreparedContainmentError('EXECUTION_CAPABILITY_NOT_ISSUED');
+  }
+  return capability;
+}
+
+/**
+ * The ONLY future execution-facing contained capability holder. It encapsulates a genuinely issued
+ * `VerifiedContainmentBinding` and a genuinely issued `ContainedExecutionCapability`, and exposes NO raw
+ * AiProvider, host executable, command, socket, endpoint, or execution-callback injection point. It is
+ * NOT wired into the production ContinuationReceiverExecutionService; production wiring, a real runtime,
+ * and terminalize integration are explicitly out of R3-B1 scope.
+ */
 export class PreparedContainmentExecution {
   readonly schemaVersion = PREPARED_CONTAINMENT_EXECUTION_SCHEMA;
   private readonly binding: VerifiedContainmentBinding;
-  private readonly runner: ContainedExecutionRunner;
+  private readonly capability: IssuedContainedExecutionCapability;
 
-  private constructor(binding: VerifiedContainmentBinding, runner: ContainedExecutionRunner) {
+  private constructor(binding: VerifiedContainmentBinding, capability: IssuedContainedExecutionCapability) {
     this.binding = binding;
-    this.runner = runner;
+    this.capability = capability;
     Object.freeze(this);
   }
 
   /**
-   * Construct the capability. It REQUIRES a `VerifiedContainmentBinding` (which itself can only exist
-   * after dual-channel verification). The runner is the future R3-C/D execution seam; in R3-B1 tests it
-   * is a fake. No raw AiProvider/host handle is accepted or stored.
+   * Construct the capability holder. It REQUIRES a genuinely issued `VerifiedContainmentBinding` (B-1)
+   * and a genuinely issued `ContainedExecutionCapability` (B-3) whose `instanceIdentityDigest` exactly
+   * equals the binding's. No raw runner/AiProvider/host handle is accepted.
    */
   static fromVerifiedBinding(
     binding: VerifiedContainmentBinding,
-    runner: ContainedExecutionRunner,
+    capability: ContainedExecutionCapability,
   ): PreparedContainmentExecution {
-    if (binding?.schemaVersion !== VERIFIED_CONTAINMENT_BINDING_SCHEMA
-      || !isHex64(binding.containmentBindingDigest)) {
-      throw new PreparedContainmentError('CONTAINMENT_CONFIGURATION_INVALID');
+    requireIssuedVerifiedBinding(binding); // B-1: issued + digest recomputed/verified
+    const issuedCapability = requireIssuedCapability(capability); // B-3: issued, not a forged object/callback
+    if (issuedCapability.instanceIdentityDigest !== binding.instanceIdentityDigest) {
+      throw new PreparedContainmentError('EXECUTION_CAPABILITY_INSTANCE_MISMATCH');
     }
-    if (typeof runner !== 'function') {
-      throw new PreparedContainmentError('CONTAINMENT_CONFIGURATION_INVALID');
-    }
-    return new PreparedContainmentExecution(binding, runner);
+    return new PreparedContainmentExecution(binding, issuedCapability);
   }
 
   /** Bounded, read-only view of the verified containment binding identity. No host escape hatch. */
@@ -441,10 +594,11 @@ export class PreparedContainmentExecution {
   }
 
   /**
-   * Future contained execution entry (R3-B1: fake-runner only). It passes ONLY the verified binding and
-   * the bounded prompt to the injected runner; it never surfaces a provider/host handle to the caller.
+   * Future contained execution entry (R3-B1: module-issued fake capability only). It passes ONLY the
+   * verified binding and the bounded prompt to the issued capability's fixed `run`; there is no
+   * caller-injected function, so it can never invoke a host Provider.
    */
   async execute(input: ContainedExecutionInput): Promise<ContainedExecutionResult> {
-    return this.runner(this.binding, input);
+    return this.capability.run(this.binding, input);
   }
 }
