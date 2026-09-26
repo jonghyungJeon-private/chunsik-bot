@@ -88,6 +88,12 @@ export type ContainmentAuditFailureCode = typeof CONTAINMENT_AUDIT_FAILURE_CODES
  * to a different digest (insert-once).
  */
 export interface ContainmentBindingEvidence {
+  /** R3-B2 prepared identity extension: all five fields occur together; absent on legacy R3-A audits. */
+  readonly providerBindingDigest?: string;
+  readonly securityProfileId?: string;
+  readonly instanceIdentityDigest?: string;
+  readonly channelAVerifierVersion?: string;
+  readonly channelBVerifierVersion?: string;
   readonly executionId: string;
   readonly taskRunId: string;
   readonly containmentPolicyId: string;

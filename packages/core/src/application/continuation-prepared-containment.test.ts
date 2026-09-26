@@ -1,3 +1,4 @@
+import { snapshotContainmentAudit, bindingIdentical } from './continuation-containment-validation';
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import {
@@ -27,6 +28,10 @@ const HEX = (c: string) => c.repeat(64);
 const PROVIDER_ID = 'ollama-cli:llama3.1:8b';
 const PROVIDER_BINDING_DIGEST = HEX('a'); // opaque Stage2B digest (distinct from any containment digest)
 
+const executionContext = { executionId: 'run-1', taskRunId: 'run-1', containmentPolicyId: 'policy-1',
+  containmentPolicyVersion: 'v1', containmentPolicyDigest: HEX('e'), runtimeFamily: 'NONE' as const,
+  runtimeVersion: 'fake-v1', modelMountIdentityDigest: HEX('f') };
+
 function securityProfile() {
   return createContainmentSecurityProfile({ securityProfileId: 'no-network-v1', securityProfileVersion: '1' });
 }
@@ -37,6 +42,7 @@ function soleSelection(providerId = PROVIDER_ID): SoleProviderSelection {
 
 function candidate(overrides: Partial<Parameters<typeof createContainmentCandidateBinding>[0]> = {}): ContainmentCandidateBinding {
   return createContainmentCandidateBinding({
+    executionContext,
     selection: soleSelection(),
     providerBindingDigest: PROVIDER_BINDING_DIGEST,
     securityProfile: securityProfile(),
@@ -57,6 +63,7 @@ function honestChannel(channel: 'A' | 'B', verifierVersion: string): Containment
         domain: `quoky.r3.containment.channel.${channel}.v1`,
         shape: {
           verifierVersion,
+          executionContext: subject.candidate.executionContext,
           providerId: subject.candidate.providerId,
           providerBindingDigest: subject.providerBindingDigest,
           securityProfileDigest: subject.securityProfileDigest,
@@ -191,6 +198,7 @@ describe('R3-B1 B-2 — selection → candidate → preparation ordering is stru
   it('an arbitrary literal SoleProviderSelection is rejected by candidate creation', () => {
     const forgedSelection = { schemaVersion: 'sole-provider-selection-v1', __brand: 'SoleProviderSelection' } as unknown as SoleProviderSelection;
     expect(() => createContainmentCandidateBinding({
+    executionContext,
       selection: forgedSelection, providerBindingDigest: PROVIDER_BINDING_DIGEST, securityProfile: securityProfile(),
       expectedModelId: 'llama3.1:8b', expectedModelDigest: HEX('c'), imageDigest: HEX('d'),
       instance: createContainmentInstanceIdentity('opaque-instance-token-1'),
@@ -217,6 +225,7 @@ describe('R3-B1 B-2 — selection → candidate → preparation ordering is stru
     // The API has no raw providerId parameter; providerId always comes from the issued selection.
     const selection = soleSelection('provider-alpha');
     const c = createContainmentCandidateBinding({
+    executionContext,
       selection, providerBindingDigest: PROVIDER_BINDING_DIGEST, securityProfile: securityProfile(),
       expectedModelId: 'llama3.1:8b', expectedModelDigest: HEX('c'), imageDigest: HEX('d'),
       instance: createContainmentInstanceIdentity('opaque-instance-token-1'),
@@ -230,6 +239,7 @@ describe('R3-B1 B-2 — selection → candidate → preparation ordering is stru
     // The only way to obtain a candidate is via an issued selection; without one, creation fails closed.
     const forgedSelection = { schemaVersion: 'sole-provider-selection-v1', __brand: 'SoleProviderSelection' } as unknown as SoleProviderSelection;
     expect(() => createContainmentCandidateBinding({
+    executionContext,
       selection: forgedSelection, providerBindingDigest: PROVIDER_BINDING_DIGEST, securityProfile: securityProfile(),
       expectedModelId: 'llama3.1:8b', expectedModelDigest: HEX('c'), imageDigest: HEX('d'),
       instance: createContainmentInstanceIdentity('opaque-instance-token-1'),
@@ -238,11 +248,13 @@ describe('R3-B1 B-2 — selection → candidate → preparation ordering is stru
 
   it('malformed candidate identities fail closed even with a valid issued selection', () => {
     expect(() => createContainmentCandidateBinding({
+    executionContext,
       selection: soleSelection(), providerBindingDigest: 'not-hex', securityProfile: securityProfile(),
       expectedModelId: 'llama3.1:8b', expectedModelDigest: HEX('c'), imageDigest: HEX('d'),
       instance: createContainmentInstanceIdentity('opaque-instance-token-1'),
     })).toThrow(/CONTAINMENT_CANDIDATE_INVALID/);
     expect(() => createContainmentCandidateBinding({
+    executionContext,
       selection: soleSelection(), providerBindingDigest: PROVIDER_BINDING_DIGEST, securityProfile: securityProfile(),
       expectedModelId: 'llama3.1:8b', expectedModelDigest: 'short', imageDigest: HEX('d'),
       instance: createContainmentInstanceIdentity('opaque-instance-token-1'),
@@ -348,7 +360,7 @@ describe('R3-B1 B-3 — prepared execution rejects arbitrary execution capabilit
     const prepared = PreparedContainmentExecution.fromVerifiedBinding(binding, capability);
     const proto = Object.getPrototypeOf(prepared);
     const publicMethods = Object.getOwnPropertyNames(proto).filter((n) => n !== 'constructor');
-    expect(publicMethods.sort()).toEqual(['bindingIdentity', 'containmentBindingDigest', 'execute'].sort());
+    expect(publicMethods.sort()).toEqual(['bindingIdentity', 'containmentAudit', 'containmentBindingDigest', 'execute'].sort());
     const identity = prepared.bindingIdentity();
     expect(JSON.stringify(identity)).not.toMatch(/127\.0\.0\.1|:11434|\/bin\/|\/usr\/|\.sock|https?:\/\//i);
     expect((prepared as unknown as { provider?: unknown; runner?: unknown }).provider).toBeUndefined();
@@ -376,5 +388,88 @@ describe('R3-B1 B-3 — prepared execution rejects arbitrary execution capabilit
   it('the fake capability factory accepts only a bounded instance identity (fail closed otherwise)', () => {
     expect(() => createFakeContainedExecutionCapability({ schemaVersion: 'wrong', instanceIdentityDigest: HEX('f') } as never))
       .toThrow(PreparedContainmentError);
+  });
+});
+
+describe('R3-B2 exact-run prepared evidence projection', () => {
+  const prepare = (c = candidate()) => PreparedContainmentExecution.fromVerifiedBinding(
+    prepareVerifiedContainmentBinding({ candidate: c, channelA: channelA(), channelB: channelB() }),
+    createFakeContainedExecutionCapability(createContainmentInstanceIdentity('opaque-instance-token-1')));
+
+  it('projects every verified identity without conflating provider and containment digests', () => {
+    const b = verifiedBinding();
+    const p = PreparedContainmentExecution.fromVerifiedBinding(b,
+      createFakeContainedExecutionCapability(createContainmentInstanceIdentity('opaque-instance-token-1')));
+    const audit = p.containmentAudit('run-1');
+    expect(audit.binding).toEqual({ ...executionContext, providerId: b.providerId,
+      providerBindingDigest: b.providerBindingDigest, containmentBindingDigest: b.containmentBindingDigest,
+      securityProfileId: b.securityProfileId, securityProfileDigest: b.securityProfileDigest,
+      instanceIdentityDigest: b.instanceIdentityDigest, modelId: b.expectedModelId, modelDigest: b.expectedModelDigest,
+      imageDigest: b.imageDigest, verifierVersion: 'prepared-containment-v1',
+      channelAVerifierVersion: b.channelAVerifierVersion, channelBVerifierVersion: b.channelBVerifierVersion,
+      channelAResultDigest: b.channelAResultDigest, channelBResultDigest: b.channelBResultDigest,
+      preflightDisposition: 'VERIFIED', modelIntegrityStatus: 'VERIFIED_AT_BIND' });
+    expect(Object.isFrozen(audit.binding)).toBe(true);
+    expect(audit.binding.providerBindingDigest).not.toBe(audit.binding.containmentBindingDigest);
+    expect(() => p.containmentAudit('run-2')).toThrow('EXACT_RUN_BINDING_MISMATCH');
+    expect(() => PreparedContainmentExecution.prototype.containmentAudit.call({} as never, 'run-1'))
+      .toThrow('VERIFIED_BINDING_NOT_ISSUED');
+  });
+
+  it.each(['executionId', 'taskRunId', 'containmentPolicyId', 'containmentPolicyVersion',
+    'containmentPolicyDigest', 'runtimeFamily', 'runtimeVersion', 'modelMountIdentityDigest'] as const)
+  ('rejects malformed/inconsistent %s before verification', key => {
+    expect(() => candidate({ executionContext: { ...executionContext, [key]: '' } })).toThrow('EXACT_RUN_BINDING_MISMATCH');
+  });
+
+  it('rejects accessor-based run context without invoking it', () => {
+    const context = { ...executionContext };
+    let called = false;
+    Object.defineProperty(context, 'taskRunId', { get: () => { called = true; return 'run-1'; } });
+    expect(() => candidate({ executionContext: context })).toThrow('EXACT_RUN_BINDING_MISMATCH');
+    expect(called).toBe(false);
+  });
+
+  it('binds another attempt into both channel digests and containment digest before verification', () => {
+    const first = prepare().containmentAudit('run-1');
+    const second = prepare(candidate({ executionContext: { ...executionContext, executionId: 'run-2', taskRunId: 'run-2' } })).containmentAudit('run-2');
+    for (const key of ['containmentBindingDigest', 'channelAResultDigest', 'channelBResultDigest'] as const) {
+      expect(first.binding[key]).not.toBe(second.binding[key]);
+    }
+    expect(first.binding.providerBindingDigest).toBe(second.binding.providerBindingDigest);
+    expect(() => prepareVerifiedContainmentBinding({ candidate: candidate({ executionContext: {
+      ...executionContext, executionId: 'run-2', taskRunId: 'run-2' } }),
+      channelA: { channel: 'A', verify: () => ({ status: 'VERIFIED', verifierVersion: 'verifier-a-1', resultDigest: first.binding.channelAResultDigest }) },
+      channelB: channelB() })).toThrow('CHANNEL_DISAGREEMENT');
+  });
+
+  it.each(['providerBindingDigest', 'securityProfileId', 'instanceIdentityDigest',
+    'channelAVerifierVersion', 'channelBVerifierVersion'] as const)
+  ('strictly validates and preserves the prepared extension field %s', key => {
+    const audit = prepare().containmentAudit('run-1');
+    const binding = { ...audit.binding };
+    delete binding[key];
+    expect(snapshotContainmentAudit({ ...audit, binding }, 'run-1', 'run-1')).toBeNull();
+    expect(bindingIdentical(audit.binding, binding)).toBe(false);
+    expect(snapshotContainmentAudit({ ...audit, binding: { ...audit.binding, [key]: '' } }, 'run-1', 'run-1')).toBeNull();
+    let called = false;
+    Object.defineProperty(binding, key, { get: () => { called = true; return audit.binding[key]; } });
+    expect(snapshotContainmentAudit({ ...audit, binding }, 'run-1', 'run-1')).toBeNull();
+    expect(called).toBe(false);
+  });
+
+  it('rejects conflated digests, channel identities and cross-run projections', () => {
+    const audit = prepare().containmentAudit('run-1');
+    for (const override of [{ providerBindingDigest: audit.binding.containmentBindingDigest },
+      { channelBVerifierVersion: audit.binding.channelAVerifierVersion }]) {
+      expect(snapshotContainmentAudit({ ...audit, binding: { ...audit.binding, ...override } }, 'run-1', 'run-1')).toBeNull();
+    }
+    expect(snapshotContainmentAudit(audit, 'run-2', 'run-2')).toBeNull();
+  });
+
+  it('rejects caller-created profile/instance copies instead of projecting them as issued identities', () => {
+    expect(() => candidate({ securityProfile: { ...securityProfile() } })).toThrow('CONTAINMENT_CANDIDATE_INVALID');
+    expect(() => candidate({ instance: { ...createContainmentInstanceIdentity('opaque-instance-token-1') } }))
+      .toThrow('CONTAINMENT_CANDIDATE_INVALID');
   });
 });

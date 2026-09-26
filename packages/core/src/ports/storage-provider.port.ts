@@ -89,7 +89,9 @@ export interface TaskRunRepository extends Repository<TaskRun> {
   ): Promise<TaskRun>;
   /** R3-A: terminalize the exact STARTED run from the CURRENT persisted row (never a stale caller
    * snapshot), preserving any durable containment evidence and merging the routing audit + terminal
-   * metadata atomically. terminalStatus must be SUCCEEDED or FAILED. */
+   * metadata atomically. terminalStatus must be SUCCEEDED or FAILED. R3-B2: current post-attempt
+   * integrity mismatch or containment failure vetoes terminalization and returns the unchanged STARTED
+   * row (UNRESOLVED); callers must inspect the returned status. */
   terminalizePreservingSecurityEvidence(
     exactTaskRunId: Id,
     request: TerminalizePreservingSecurityEvidenceRequest,

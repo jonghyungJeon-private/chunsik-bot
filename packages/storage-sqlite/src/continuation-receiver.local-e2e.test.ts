@@ -43,6 +43,7 @@ describe('M3E-6K offline exact-run persistence with real 6J and fake receiver', 
       const execution = new ContinuationReceiverExecutionService(storage, profiles, continuation, tasks, receiver);
       const start = vi.spyOn(continuation, constrainedContinuation);
       const guarded = vi.spyOn(storage.taskRuns, 'guardedStart');
+      const terminal = vi.spyOn(tasks, 'terminalizePreservingSecurityEvidence');
       const complete = vi.spyOn(tasks, 'completeRun');
       const fail = vi.spyOn(tasks, 'failRun');
       const lookup = vi.spyOn(storage.taskRuns, 'get');
@@ -61,14 +62,16 @@ describe('M3E-6K offline exact-run persistence with real 6J and fake receiver', 
         expect(result.taskRun).toBe(started);
         expect(await storage.taskRuns.get(started.id)).toEqual(started);
         expect(complete).not.toHaveBeenCalled(); expect(fail).not.toHaveBeenCalled();
+        expect(terminal).not.toHaveBeenCalled();
         await expect(execution.executeExplicitContinuation(request)).rejects.toMatchObject({ reason: 'UNRESOLVED_STARTED_RUN' });
         expect(receiver.receive).toHaveBeenCalledTimes(1);
         expect(await storage.taskRuns.listByTask(task.id)).toEqual([started]);
         return;
       }
-      expect(complete).toHaveBeenCalledTimes(mode === 'SUCCEEDED' ? 1 : 0);
-      expect(fail).toHaveBeenCalledTimes(mode === 'SUCCEEDED' ? 0 : 1);
-      expect((mode === 'SUCCEEDED' ? complete.mock.calls[0]![0] : fail.mock.calls[0]![0])).toBe(started);
+      expect(terminal).toHaveBeenCalledTimes(1);
+      expect(terminal.mock.calls[0]![0]).toBe(started.id);
+      expect(complete).not.toHaveBeenCalled();
+      expect(fail).not.toHaveBeenCalled();
       if (result.disposition === 'DENY') throw new Error('expected terminal outcome');
       expect(result.taskRun).toMatchObject({ id: started.id, taskId: task.id, attempt: started.attempt,
         capability: started.capability, status: mode === 'SUCCEEDED' ? TaskRunStatus.SUCCEEDED : TaskRunStatus.FAILED });
@@ -124,6 +127,7 @@ describe('M3E-6K offline exact-run persistence with real 6J and fake receiver', 
         }) as unknown as ContinuationReceiverOutcome) };
       const execution = new ContinuationReceiverExecutionService(storage, profiles, continuation, tasks, receiver);
       const guarded = vi.spyOn(storage.taskRuns, 'guardedStart');
+      const terminal = vi.spyOn(tasks, 'terminalizePreservingSecurityEvidence');
       const complete = vi.spyOn(tasks, 'completeRun');
       const fail = vi.spyOn(tasks, 'failRun');
       const request: ContinuationExecutionRequestContext = { trigger: 'EXPLICIT_CONTINUATION_EXECUTION_REQUEST',
@@ -184,6 +188,7 @@ describe('M3E-6K offline exact-run persistence with real 6J and fake receiver', 
         }) as unknown as ContinuationReceiverOutcome) };
       const execution = new ContinuationReceiverExecutionService(storage, profiles, continuation, tasks, receiver);
       const guarded = vi.spyOn(storage.taskRuns, 'guardedStart');
+      const terminal = vi.spyOn(tasks, 'terminalizePreservingSecurityEvidence');
       const complete = vi.spyOn(tasks, 'completeRun');
       const fail = vi.spyOn(tasks, 'failRun');
       const request: ContinuationExecutionRequestContext = { trigger: 'EXPLICIT_CONTINUATION_EXECUTION_REQUEST',
@@ -195,6 +200,7 @@ describe('M3E-6K offline exact-run persistence with real 6J and fake receiver', 
       if (result.disposition !== 'ATTEMPT_UNRESOLVED') throw new Error('expected unresolved');
       expect(complete).not.toHaveBeenCalled();
       expect(fail).not.toHaveBeenCalled();
+      expect(terminal).not.toHaveBeenCalled();
       const persisted = await storage.taskRuns.get(started.id);
       expect(persisted).toEqual(started);
       expect(persisted!.status).toBe(TaskRunStatus.STARTED);

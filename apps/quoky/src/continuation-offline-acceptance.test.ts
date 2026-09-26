@@ -84,11 +84,12 @@ async function fixture(options: { mode?: 'SUCCEEDED' | 'FAILED' | 'THROW'; proje
   const entry = vi.spyOn(application.get(ContinuationExecutionEntryService), constrainedEntry);
   const guarded = vi.spyOn(storage.taskRuns, 'guardedStart');
   const transition = vi.spyOn(tasks, 'transition');
+  const terminal = vi.spyOn(tasks, 'terminalizePreservingSecurityEvidence');
   const complete = vi.spyOn(tasks, 'completeRun');
   const fail = vi.spyOn(tasks, 'failRun');
   const acquireApproval = vi.spyOn(approvals, 'requestFor');
   return { storage, task, plan, receiver, application, lifecycle, continuation, execution, profiles, request,
-    start, prepare, entry, guarded, transition, complete, fail, acquireApproval };
+    start, prepare, entry, guarded, transition, terminal, complete, fail, acquireApproval };
 }
 
 async function expectNoExecution(f: Awaited<ReturnType<typeof fixture>>) {
@@ -99,6 +100,7 @@ async function expectNoExecution(f: Awaited<ReturnType<typeof fixture>>) {
   expect(f.receiver.receive).not.toHaveBeenCalled();
   expect(f.complete).not.toHaveBeenCalled();
   expect(f.fail).not.toHaveBeenCalled();
+  expect(f.terminal).not.toHaveBeenCalled();
   expect(f.acquireApproval).not.toHaveBeenCalled();
   expect(await f.storage.taskRuns.listByTask(f.task.id)).toEqual([]);
   expect((await f.storage.tasks.get(f.task.id))!.status).toBe(TaskStatus.PENDING);
@@ -134,16 +136,18 @@ describe('M3E-6L isolated offline continuation activation acceptance', () => {
       expect(result.taskRun).toBe(started);
       expect(await f.storage.taskRuns.get(started.id)).toEqual(started);
       expect(f.complete).not.toHaveBeenCalled(); expect(f.fail).not.toHaveBeenCalled();
+      expect(f.terminal).not.toHaveBeenCalled();
       expect(JSON.stringify(result)).not.toContain('RAW_RECEIVER_SENTINEL');
       await expect(f.execution.executeExplicitContinuation(f.request)).rejects.toMatchObject({ reason: 'UNRESOLVED_STARTED_RUN' });
       expect(f.receiver.receive).toHaveBeenCalledTimes(1);
       expect(await f.storage.taskRuns.listByTask(f.task.id)).toEqual([started]);
       return;
     }
-    expect(f.complete).toHaveBeenCalledTimes(mode === 'SUCCEEDED' ? 1 : 0);
-    expect(f.fail).toHaveBeenCalledTimes(mode === 'SUCCEEDED' ? 0 : 1);
-    const terminal = mode === 'SUCCEEDED' ? f.complete : f.fail;
-    expect(terminal.mock.calls[0]![0]).toBe(started);
+    expect(f.complete).not.toHaveBeenCalled();
+    expect(f.fail).not.toHaveBeenCalled();
+    const terminal = f.terminal;
+    expect(terminal).toHaveBeenCalledTimes(1);
+    expect(terminal.mock.calls[0]![0]).toBe(started.id);
     const order = [f.start, f.prepare, f.entry, f.guarded, f.receiver.receive, terminal]
       .map(spy => spy.mock.invocationCallOrder[0]!);
     expect(order).toEqual([...order].sort((a, b) => a - b));

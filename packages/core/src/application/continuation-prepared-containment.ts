@@ -1,4 +1,9 @@
+import { containmentBindingDigest, VERIFIED_CONTAINMENT_BINDING_SCHEMA } from './containment-binding-digest';
+export { VERIFIED_CONTAINMENT_BINDING_SCHEMA } from './containment-binding-digest';
 import { createHash } from 'node:crypto';
+import { CONTAINMENT_RUNTIME_FAMILIES, CONTINUATION_CONTAINMENT_AUDIT_SCHEMA,
+  type ContainmentBindingEvidence, type ContinuationContainmentAudit } from '../ports/continuation-containment-audit';
+import { snapshotContainmentAudit } from './continuation-containment-validation';
 
 /**
  * R3-B1 — Verified Prepared Containment Contract (runtime-family-independent, offline).
@@ -31,14 +36,12 @@ export const CONTAINMENT_SECURITY_PROFILE_SCHEMA = 'containment-security-profile
 export const CONTAINMENT_INSTANCE_IDENTITY_SCHEMA = 'containment-instance-identity-v1' as const;
 export const SOLE_PROVIDER_SELECTION_SCHEMA = 'sole-provider-selection-v1' as const;
 export const CONTAINMENT_CANDIDATE_BINDING_SCHEMA = 'containment-candidate-binding-v1' as const;
-export const VERIFIED_CONTAINMENT_BINDING_SCHEMA = 'verified-containment-binding-v1' as const;
 export const CONTAINED_EXECUTION_CAPABILITY_SCHEMA = 'contained-execution-capability-v1' as const;
 export const PREPARED_CONTAINMENT_EXECUTION_SCHEMA = 'prepared-containment-execution-v1' as const;
 
 /** Domain-separation tags so a containment digest can never equal a Stage2B provider binding digest. */
 const CONTAINMENT_SECURITY_PROFILE_DIGEST_DOMAIN = 'quoky.r3.containment.security-profile.v1' as const;
 const CONTAINMENT_INSTANCE_DIGEST_DOMAIN = 'quoky.r3.containment.instance.v1' as const;
-const CONTAINMENT_BINDING_DIGEST_DOMAIN = 'quoky.r3.containment.binding.v1' as const;
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const HEX64 = /^[a-f0-9]{64}$/;
@@ -69,7 +72,8 @@ export type PreparedContainmentFailureCode =
   | 'VERIFIED_BINDING_NOT_ISSUED'
   | 'CONTAINMENT_BINDING_DIGEST_MISMATCH'
   | 'EXECUTION_CAPABILITY_NOT_ISSUED'
-  | 'EXECUTION_CAPABILITY_INSTANCE_MISMATCH';
+  | 'EXECUTION_CAPABILITY_INSTANCE_MISMATCH'
+  | 'EXACT_RUN_BINDING_MISMATCH';
 
 /** Bounded, fail-closed preparation error. Carries a code only — never host/runtime detail. */
 export class PreparedContainmentError extends Error {
@@ -95,6 +99,9 @@ export interface ContainmentSecurityProfile {
   readonly securityProfileDigest: string;
 }
 
+const issuedProfiles = new WeakSet<ContainmentSecurityProfile>();
+const issuedInstances = new WeakSet<ContainmentInstanceIdentity>();
+
 export function createContainmentSecurityProfile(input: {
   securityProfileId: string;
   securityProfileVersion: string;
@@ -111,10 +118,12 @@ export function createContainmentSecurityProfile(input: {
     denyDns: true as const,
     denyModelDownload: true as const,
   };
-  return Object.freeze({
+  const profile = Object.freeze({
     ...canonical,
     securityProfileDigest: sha256Canonical(CONTAINMENT_SECURITY_PROFILE_DIGEST_DOMAIN, canonical),
   });
+  issuedProfiles.add(profile);
+  return profile;
 }
 
 /**
@@ -133,10 +142,12 @@ export function createContainmentInstanceIdentity(opaqueInstanceToken: string): 
   if (!isOpaque(opaqueInstanceToken)) {
     throw new PreparedContainmentError('CONTAINMENT_CONFIGURATION_INVALID');
   }
-  return Object.freeze({
+  const instance = Object.freeze({
     schemaVersion: CONTAINMENT_INSTANCE_IDENTITY_SCHEMA,
     instanceIdentityDigest: sha256Canonical(CONTAINMENT_INSTANCE_DIGEST_DOMAIN, { token: opaqueInstanceToken }),
   });
+  issuedInstances.add(instance);
+  return instance;
 }
 
 // ────────────────────────────────────────────────────────────────────────────────────────────────
@@ -216,6 +227,12 @@ export function assertExactSoleProviderSelection(decision: StaticEligibilityDeci
   return selection;
 }
 
+/** Existing R3-A slots; executionId === taskRunId is the canonical continuation attempt identity.
+ * These bounded facts select no runtime. They are frozen before either verification channel runs. */
+export type ContainmentExecutionContext = Readonly<Pick<ContainmentBindingEvidence,
+  'executionId' | 'taskRunId' | 'containmentPolicyId' | 'containmentPolicyVersion'
+  | 'containmentPolicyDigest' | 'runtimeFamily' | 'runtimeVersion' | 'modelMountIdentityDigest'>>;
+
 /**
  * Pure candidate/binding input that preserves DISTINCT identities. `providerBindingDigest` is the
  * Stage2B provider binding digest (opaque here, never recomputed) and is deliberately kept separate from
@@ -227,6 +244,7 @@ export function assertExactSoleProviderSelection(decision: StaticEligibilityDeci
  * a caller-supplied raw providerId.
  */
 export interface ContainmentCandidateBinding {
+  readonly executionContext: ContainmentExecutionContext;
   readonly schemaVersion: typeof CONTAINMENT_CANDIDATE_BINDING_SCHEMA;
   readonly providerId: string;
   /** Stage2B provider binding digest — DISTINCT from any containment digest. */
@@ -242,6 +260,7 @@ export interface ContainmentCandidateBinding {
 const issuedCandidates = new WeakSet<ContainmentCandidateBinding>();
 
 export function createContainmentCandidateBinding(input: {
+  executionContext: ContainmentExecutionContext;
   /** The ONLY source of providerId — an issued exact sole selection. No raw providerId is accepted. */
   selection: SoleProviderSelection;
   providerBindingDigest: string;
@@ -253,12 +272,41 @@ export function createContainmentCandidateBinding(input: {
 }): ContainmentCandidateBinding {
   // B-2: providerId is derived from the issued selection; an unissued selection fails closed here.
   const providerId = selectedProviderIdOf(input.selection);
+  const rawContext = input.executionContext;
+  const contextKeys = ['executionId', 'taskRunId', 'containmentPolicyId', 'containmentPolicyVersion',
+    'containmentPolicyDigest', 'runtimeFamily', 'runtimeVersion', 'modelMountIdentityDigest'] as const;
+  if (!rawContext || typeof rawContext !== 'object'
+    || ![Object.prototype, null].includes(Object.getPrototypeOf(rawContext))
+    || Reflect.ownKeys(rawContext).length !== contextKeys.length) {
+    throw new PreparedContainmentError('EXACT_RUN_BINDING_MISMATCH');
+  }
+  const values: Record<string, unknown> = {};
+  for (const key of contextKeys) {
+    const descriptor = Object.getOwnPropertyDescriptor(rawContext, key);
+    if (!descriptor || !('value' in descriptor)) throw new PreparedContainmentError('EXACT_RUN_BINDING_MISMATCH');
+    values[key] = descriptor.value;
+  }
+  const c = values as unknown as ContainmentExecutionContext;
+  if (!c || c.executionId !== c.taskRunId || !isId(c.taskRunId)
+    || !isId(c.containmentPolicyId) || !isVersion(c.containmentPolicyVersion)
+    || !isHex64(c.containmentPolicyDigest) || !isVersion(c.runtimeVersion)
+    || !CONTAINMENT_RUNTIME_FAMILIES.includes(c.runtimeFamily)
+    || !isHex64(c.modelMountIdentityDigest)) {
+    throw new PreparedContainmentError('EXACT_RUN_BINDING_MISMATCH');
+  }
+  const executionContext = Object.freeze({ executionId: c.executionId, taskRunId: c.taskRunId,
+    containmentPolicyId: c.containmentPolicyId, containmentPolicyVersion: c.containmentPolicyVersion,
+    containmentPolicyDigest: c.containmentPolicyDigest, runtimeFamily: c.runtimeFamily,
+    runtimeVersion: c.runtimeVersion, modelMountIdentityDigest: c.modelMountIdentityDigest });
+  const profile = input.securityProfile;
+  const instance = input.instance;
   if (
-    input.securityProfile?.schemaVersion !== CONTAINMENT_SECURITY_PROFILE_SCHEMA ||
-    !isHex64(input.securityProfile.securityProfileDigest) ||
-    !isId(input.securityProfile.securityProfileId) ||
-    input.instance?.schemaVersion !== CONTAINMENT_INSTANCE_IDENTITY_SCHEMA ||
-    !isHex64(input.instance.instanceIdentityDigest) ||
+    !issuedProfiles.has(profile) || !issuedInstances.has(instance) ||
+    profile?.schemaVersion !== CONTAINMENT_SECURITY_PROFILE_SCHEMA ||
+    !isHex64(profile.securityProfileDigest) ||
+    !isId(profile.securityProfileId) ||
+    instance?.schemaVersion !== CONTAINMENT_INSTANCE_IDENTITY_SCHEMA ||
+    !isHex64(instance.instanceIdentityDigest) ||
     !isHex64(input.providerBindingDigest) ||
     !isOpaque(input.expectedModelId) || !isHex64(input.expectedModelDigest) || !isHex64(input.imageDigest)
   ) {
@@ -266,14 +314,15 @@ export function createContainmentCandidateBinding(input: {
   }
   const candidate: ContainmentCandidateBinding = Object.freeze({
     schemaVersion: CONTAINMENT_CANDIDATE_BINDING_SCHEMA,
+    executionContext,
     providerId,
     providerBindingDigest: input.providerBindingDigest,
-    securityProfileId: input.securityProfile.securityProfileId,
-    securityProfileDigest: input.securityProfile.securityProfileDigest,
+    securityProfileId: profile.securityProfileId,
+    securityProfileDigest: profile.securityProfileDigest,
     expectedModelId: input.expectedModelId,
     expectedModelDigest: input.expectedModelDigest,
     imageDigest: input.imageDigest,
-    instanceIdentityDigest: input.instance.instanceIdentityDigest,
+    instanceIdentityDigest: instance.instanceIdentityDigest,
   });
   issuedCandidates.add(candidate);
   return candidate;
@@ -319,6 +368,7 @@ export interface ContainmentVerificationChannel {
  * digests, and schema/version facts — DISTINCT from `providerBindingDigest`.
  */
 export interface VerifiedContainmentBinding {
+  readonly executionContext: ContainmentExecutionContext;
   readonly schemaVersion: typeof VERIFIED_CONTAINMENT_BINDING_SCHEMA;
   readonly providerId: string;
   readonly providerBindingDigest: string;
@@ -338,25 +388,6 @@ export interface VerifiedContainmentBinding {
 
 const issuedVerifiedBindings = new WeakSet<VerifiedContainmentBinding>();
 
-/** Canonical shape whose digest is `containmentBindingDigest`; used to recompute/verify on acceptance. */
-function verifiedBindingCanonicalShape(binding: VerifiedContainmentBinding) {
-  return {
-    schemaVersion: VERIFIED_CONTAINMENT_BINDING_SCHEMA,
-    providerId: binding.providerId,
-    providerBindingDigest: binding.providerBindingDigest,
-    securityProfileId: binding.securityProfileId,
-    securityProfileDigest: binding.securityProfileDigest,
-    instanceIdentityDigest: binding.instanceIdentityDigest,
-    expectedModelId: binding.expectedModelId,
-    expectedModelDigest: binding.expectedModelDigest,
-    imageDigest: binding.imageDigest,
-    channelAVerifierVersion: binding.channelAVerifierVersion,
-    channelBVerifierVersion: binding.channelBVerifierVersion,
-    channelAResultDigest: binding.channelAResultDigest,
-    channelBResultDigest: binding.channelBResultDigest,
-  };
-}
-
 /**
  * Accept a binding as verified ONLY if (defense in depth):
  *  1. it was issued by this module (WeakSet membership) — literals/spread copies/reconstructions fail; AND
@@ -368,7 +399,7 @@ function requireIssuedVerifiedBinding(binding: VerifiedContainmentBinding): void
     || !issuedVerifiedBindings.has(binding)) {
     throw new PreparedContainmentError('VERIFIED_BINDING_NOT_ISSUED');
   }
-  const recomputed = sha256Canonical(CONTAINMENT_BINDING_DIGEST_DOMAIN, verifiedBindingCanonicalShape(binding));
+  const recomputed = containmentBindingDigest(binding);
   if (recomputed !== binding.containmentBindingDigest) {
     throw new PreparedContainmentError('CONTAINMENT_BINDING_DIGEST_MISMATCH');
   }
@@ -377,6 +408,7 @@ function requireIssuedVerifiedBinding(binding: VerifiedContainmentBinding): void
 function channelResultDigest(subject: ContainmentVerificationSubject, channel: 'A' | 'B', verifierVersion: string): string {
   return sha256Canonical(`quoky.r3.containment.channel.${channel}.v1`, {
     verifierVersion,
+    executionContext: subject.candidate.executionContext,
     providerId: subject.candidate.providerId,
     providerBindingDigest: subject.providerBindingDigest,
     securityProfileDigest: subject.securityProfileDigest,
@@ -443,6 +475,7 @@ export function prepareVerifiedContainmentBinding(input: {
 
   const bindingShape = {
     schemaVersion: VERIFIED_CONTAINMENT_BINDING_SCHEMA,
+    executionContext: candidate.executionContext,
     providerId: candidate.providerId,
     providerBindingDigest: candidate.providerBindingDigest,
     securityProfileId: candidate.securityProfileId,
@@ -458,7 +491,7 @@ export function prepareVerifiedContainmentBinding(input: {
   };
   const binding: VerifiedContainmentBinding = Object.freeze({
     ...bindingShape,
-    containmentBindingDigest: sha256Canonical(CONTAINMENT_BINDING_DIGEST_DOMAIN, bindingShape),
+    containmentBindingDigest: containmentBindingDigest(bindingShape),
   });
   issuedVerifiedBindings.add(binding);
   return binding;
@@ -539,12 +572,15 @@ function requireIssuedCapability(capability: ContainedExecutionCapability): Issu
   return capability;
 }
 
+const issuedPrepared = new WeakSet<PreparedContainmentExecution>();
+
 /**
  * The ONLY future execution-facing contained capability holder. It encapsulates a genuinely issued
  * `VerifiedContainmentBinding` and a genuinely issued `ContainedExecutionCapability`, and exposes NO raw
  * AiProvider, host executable, command, socket, endpoint, or execution-callback injection point. It is
  * NOT wired into the production ContinuationReceiverExecutionService; production wiring, a real runtime,
- * and terminalize integration are explicitly out of R3-B1 scope.
+ * and production capability issuance remain unauthorized. R3-B2 only projects its verified identity
+ * into existing evidence for fake-only integration.
  */
 export class PreparedContainmentExecution {
   readonly schemaVersion = PREPARED_CONTAINMENT_EXECUTION_SCHEMA;
@@ -552,8 +588,14 @@ export class PreparedContainmentExecution {
   private readonly capability: IssuedContainedExecutionCapability;
 
   private constructor(binding: VerifiedContainmentBinding, capability: IssuedContainedExecutionCapability) {
+    requireIssuedVerifiedBinding(binding);
+    requireIssuedCapability(capability);
+    if (capability.instanceIdentityDigest !== binding.instanceIdentityDigest) {
+      throw new PreparedContainmentError('EXECUTION_CAPABILITY_INSTANCE_MISMATCH');
+    }
     this.binding = binding;
     this.capability = capability;
+    issuedPrepared.add(this);
     Object.freeze(this);
   }
 
@@ -572,6 +614,32 @@ export class PreparedContainmentExecution {
       throw new PreparedContainmentError('EXECUTION_CAPABILITY_INSTANCE_MISMATCH');
     }
     return new PreparedContainmentExecution(binding, issuedCapability);
+  }
+
+  /** Pure R3-B1 → R3-A projection. No evidence issuer/runtime is made production-reachable.
+   * Both channel versions/results are retained; verifierVersion names this projection protocol.
+   * The context was bound BEFORE verification, never supplied after preparation for rebinding. */
+  containmentAudit(exactTaskRunId: string): ContinuationContainmentAudit {
+    if (!issuedPrepared.has(this)) throw new PreparedContainmentError('VERIFIED_BINDING_NOT_ISSUED');
+    requireIssuedVerifiedBinding(this.binding);
+    const b = this.binding;
+    if (b.executionContext.taskRunId !== exactTaskRunId) {
+      throw new PreparedContainmentError('EXACT_RUN_BINDING_MISMATCH');
+    }
+    const audit = snapshotContainmentAudit({
+      schemaVersion: CONTINUATION_CONTAINMENT_AUDIT_SCHEMA,
+      binding: { ...b.executionContext, providerId: b.providerId,
+        providerBindingDigest: b.providerBindingDigest, containmentBindingDigest: b.containmentBindingDigest,
+        securityProfileId: b.securityProfileId, securityProfileDigest: b.securityProfileDigest,
+        instanceIdentityDigest: b.instanceIdentityDigest, modelId: b.expectedModelId,
+        modelDigest: b.expectedModelDigest, imageDigest: b.imageDigest,
+        verifierVersion: 'prepared-containment-v1', channelAVerifierVersion: b.channelAVerifierVersion,
+        channelBVerifierVersion: b.channelBVerifierVersion, channelAResultDigest: b.channelAResultDigest,
+        channelBResultDigest: b.channelBResultDigest, preflightDisposition: 'VERIFIED',
+        modelIntegrityStatus: 'VERIFIED_AT_BIND' },
+    }, exactTaskRunId, exactTaskRunId);
+    if (!audit) throw new PreparedContainmentError('CONTAINMENT_BINDING_DIGEST_MISMATCH');
+    return audit;
   }
 
   /** Bounded, read-only view of the verified containment binding identity. No host escape hatch. */
@@ -599,6 +667,7 @@ export class PreparedContainmentExecution {
    * caller-injected function, so it can never invoke a host Provider.
    */
   async execute(input: ContainedExecutionInput): Promise<ContainedExecutionResult> {
+    if (!issuedPrepared.has(this)) throw new PreparedContainmentError('VERIFIED_BINDING_NOT_ISSUED');
     return this.capability.run(this.binding, input);
   }
 }

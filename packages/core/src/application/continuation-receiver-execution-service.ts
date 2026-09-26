@@ -1,6 +1,6 @@
 import { constrainedContinuation, snapshotReceiverConstraint } from './continuation-execution-internal';
 import { snapshotReceiverOutcome } from './continuation-receiver-validation';
-import { Capability, IntentType } from '../domain';
+import { Capability, IntentType, TaskRunStatus } from '../domain';
 import type { ContinuationRoutingAudit } from '../ports';
 import { createWorkHandoff } from '../domain';
 import type { TaskRun } from '../domain';
@@ -43,7 +43,7 @@ export class ContinuationReceiverExecutionService {
     },
     private readonly profiles: AgentProfileRegistry,
     private readonly continuation: Pick<ContinuationExecutionService, typeof constrainedContinuation>,
-    private readonly tasks: Pick<TaskManager, 'completeRun' | 'failRun'>,
+    private readonly tasks: Pick<TaskManager, 'terminalizePreservingSecurityEvidence'>,
     private readonly receiver: ContinuationReceiver | undefined,
   ) {}
 
@@ -102,13 +102,15 @@ export class ContinuationReceiverExecutionService {
     if (!outcome) return unresolved();
     if (outcome.disposition === 'UNRESOLVED') return unresolved(outcome.routingAudit);
     const metadata = outcome.routingAudit ? { routingAudit: outcome.routingAudit } : undefined;
+    // All runs admitted here are continuation-bound: use current-row merge even when the stale
+    // started snapshot predates containment evidence. Ordinary TaskManager callers are unchanged.
     // Keep persistence outside the receiver catch: no fallback save or retry after terminalization errors.
     if (outcome.disposition === 'SUCCEEDED') {
-      const taskRun = await this.tasks.completeRun(startedRun, { artifactIds: [...outcome.artifactIds],
+      const taskRun = await this.tasks.terminalizePreservingSecurityEvidence(startedRun.id, { terminalStatus: TaskRunStatus.SUCCEEDED, artifactIds: [...outcome.artifactIds],
         ...(outcome.acceptedProviderId ? { providerId: outcome.acceptedProviderId } : {}), ...(metadata ? { metadata } : {}) });
-      return Object.freeze({ disposition: 'ATTEMPT_SUCCEEDED', taskRun });
+      return Object.freeze({ disposition: taskRun.status === TaskRunStatus.STARTED ? 'ATTEMPT_UNRESOLVED' : 'ATTEMPT_SUCCEEDED', taskRun });
     }
-    const taskRun = await this.tasks.failRun(startedRun, outcome.error, metadata ? { metadata } : {});
-    return Object.freeze({ disposition: 'ATTEMPT_FAILED', taskRun });
+    const taskRun = await this.tasks.terminalizePreservingSecurityEvidence(startedRun.id, { terminalStatus: TaskRunStatus.FAILED, error: outcome.error, ...(metadata ? { metadata } : {}) });
+    return Object.freeze({ disposition: taskRun.status === TaskRunStatus.STARTED ? 'ATTEMPT_UNRESOLVED' : 'ATTEMPT_FAILED', taskRun });
   }
 }

@@ -86,6 +86,7 @@ export type {
   ContainmentInstanceIdentity,
   SoleProviderSelection,
   StaticEligibilityDecision,
+  ContainmentExecutionContext,
   ContainmentCandidateBinding,
   ContainmentVerificationSubject,
   ContainmentChannelStatus,
