@@ -1,3 +1,5 @@
+import { containmentBindingDigest, VERIFIED_CONTAINMENT_BINDING_SCHEMA } from './containment-binding-digest';
+export { VERIFIED_CONTAINMENT_BINDING_SCHEMA } from './containment-binding-digest';
 import { createHash } from 'node:crypto';
 import { CONTAINMENT_RUNTIME_FAMILIES, CONTINUATION_CONTAINMENT_AUDIT_SCHEMA,
   type ContainmentBindingEvidence, type ContinuationContainmentAudit } from '../ports/continuation-containment-audit';
@@ -34,14 +36,12 @@ export const CONTAINMENT_SECURITY_PROFILE_SCHEMA = 'containment-security-profile
 export const CONTAINMENT_INSTANCE_IDENTITY_SCHEMA = 'containment-instance-identity-v1' as const;
 export const SOLE_PROVIDER_SELECTION_SCHEMA = 'sole-provider-selection-v1' as const;
 export const CONTAINMENT_CANDIDATE_BINDING_SCHEMA = 'containment-candidate-binding-v1' as const;
-export const VERIFIED_CONTAINMENT_BINDING_SCHEMA = 'verified-containment-binding-v1' as const;
 export const CONTAINED_EXECUTION_CAPABILITY_SCHEMA = 'contained-execution-capability-v1' as const;
 export const PREPARED_CONTAINMENT_EXECUTION_SCHEMA = 'prepared-containment-execution-v1' as const;
 
 /** Domain-separation tags so a containment digest can never equal a Stage2B provider binding digest. */
 const CONTAINMENT_SECURITY_PROFILE_DIGEST_DOMAIN = 'quoky.r3.containment.security-profile.v1' as const;
 const CONTAINMENT_INSTANCE_DIGEST_DOMAIN = 'quoky.r3.containment.instance.v1' as const;
-const CONTAINMENT_BINDING_DIGEST_DOMAIN = 'quoky.r3.containment.binding.v1' as const;
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const HEX64 = /^[a-f0-9]{64}$/;
@@ -388,26 +388,6 @@ export interface VerifiedContainmentBinding {
 
 const issuedVerifiedBindings = new WeakSet<VerifiedContainmentBinding>();
 
-/** Canonical shape whose digest is `containmentBindingDigest`; used to recompute/verify on acceptance. */
-function verifiedBindingCanonicalShape(binding: VerifiedContainmentBinding) {
-  return {
-    schemaVersion: VERIFIED_CONTAINMENT_BINDING_SCHEMA,
-    executionContext: binding.executionContext,
-    providerId: binding.providerId,
-    providerBindingDigest: binding.providerBindingDigest,
-    securityProfileId: binding.securityProfileId,
-    securityProfileDigest: binding.securityProfileDigest,
-    instanceIdentityDigest: binding.instanceIdentityDigest,
-    expectedModelId: binding.expectedModelId,
-    expectedModelDigest: binding.expectedModelDigest,
-    imageDigest: binding.imageDigest,
-    channelAVerifierVersion: binding.channelAVerifierVersion,
-    channelBVerifierVersion: binding.channelBVerifierVersion,
-    channelAResultDigest: binding.channelAResultDigest,
-    channelBResultDigest: binding.channelBResultDigest,
-  };
-}
-
 /**
  * Accept a binding as verified ONLY if (defense in depth):
  *  1. it was issued by this module (WeakSet membership) — literals/spread copies/reconstructions fail; AND
@@ -419,7 +399,7 @@ function requireIssuedVerifiedBinding(binding: VerifiedContainmentBinding): void
     || !issuedVerifiedBindings.has(binding)) {
     throw new PreparedContainmentError('VERIFIED_BINDING_NOT_ISSUED');
   }
-  const recomputed = sha256Canonical(CONTAINMENT_BINDING_DIGEST_DOMAIN, verifiedBindingCanonicalShape(binding));
+  const recomputed = containmentBindingDigest(binding);
   if (recomputed !== binding.containmentBindingDigest) {
     throw new PreparedContainmentError('CONTAINMENT_BINDING_DIGEST_MISMATCH');
   }
@@ -511,7 +491,7 @@ export function prepareVerifiedContainmentBinding(input: {
   };
   const binding: VerifiedContainmentBinding = Object.freeze({
     ...bindingShape,
-    containmentBindingDigest: sha256Canonical(CONTAINMENT_BINDING_DIGEST_DOMAIN, bindingShape),
+    containmentBindingDigest: containmentBindingDigest(bindingShape),
   });
   issuedVerifiedBindings.add(binding);
   return binding;

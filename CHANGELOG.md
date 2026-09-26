@@ -5,6 +5,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [SemVer](https://semver.org/). Commits follow
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## R3-B2 blocking remediation — 2026-09-26
+
+- Share one canonical v1 containment binding digest constructor between issuance and prepared-evidence
+  persistence validation; reject cross-run ID rewriting and policy/runtime/model-mount identity tampering.
+- Reject generic terminal transitions for current containment-bound STARTED rows inside the existing
+  SQLite transaction, preserving secure terminalization as the sole terminal path.
+- Add explicit in-memory digest-replay and completeRun/failRun bypass tests. Reviewed history is preserved;
+  new independent exact-HEAD review required. Production provenance and R3-C+ remain deferred.
+
 ## R3-B2 secure terminalization and containment evidence — 2026-09-26
 
 - Route continuation receiver terminal outcomes through current-row security-preserving TaskManager persistence.

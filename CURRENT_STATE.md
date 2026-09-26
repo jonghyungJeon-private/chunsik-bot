@@ -11,6 +11,14 @@ sprint's definition-of-done. It deliberately avoids duplicating `ARCHITECTURE.md
 `a52705abb9b8b22b5caa7fe841b70032f4405719`; R3-A and R3-B1 are CLOSED + DELIVERED per the R3-B2 task.
 This entry supersedes the historical R3-not-started statements below.
 
+R3-B2 blocking remediation of reviewed `3bb5c165efeac4b3661ea30ef3dc1d4d2dc5a693` is implemented
+locally, awaiting a NEW independent exact-HEAD review. Prepared evidence validation now recomputes the
+same canonical v1 binding digest used at issuance, rejecting rewritten run IDs or binding facts while
+preserving JSON/restart compatibility. Generic save rejects every STARTED → terminal transition when
+the current persisted row carries containment evidence, including completeRun/failRun with identical
+or stale evidence. Only secure terminalization may perform that transition. Production provenance is
+still a separate mandatory gate; no broader provenance redesign is included.
+
 Continuation receiver completion/failure now uses TaskManager's current-row secure terminalization.
 All runs admitted at this seam are continuation-bound; ordinary completeRun/failRun callers are unchanged.
 Current durable post-attempt integrity mismatch or containment failure keeps STARTED / UNRESOLVED,

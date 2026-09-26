@@ -344,6 +344,14 @@ class SqliteTaskRunRepository extends JsonRepository<TaskRun> implements TaskRun
   override async save(run: TaskRun): Promise<TaskRun> {
     return this.noContention(() => this.db.transaction(() => {
       const existing = this.db.prepare('SELECT data FROM task_runs WHERE id = ?').get(run.id) as Row | undefined;
+      const persisted = existing ? JSON.parse(existing.data) as TaskRun : null;
+      // R3-B2 B-2: containment-bound STARTED rows may terminalize ONLY through the secure API.
+      // Inspect the current row, not the caller's evidence/taskId; even a stale snapshot must not bypass
+      // this guard. Presence is conservative: malformed evidence never grants generic terminal authority.
+      if (persisted?.status === TaskRunStatus.STARTED && run.status !== TaskRunStatus.STARTED
+        && Object.prototype.hasOwnProperty.call(persisted.metadata ?? {}, CONTAINMENT_AUDIT_METADATA_KEY)) {
+        throw new GuardedTaskRunStartError('CONTINUATION_GUARD_REQUIRED');
+      }
       if (this.isBound(run.taskId)) {
         // Block ALL novel rows (including terminal-shaped insertion), and terminal → STARTED revival.
         if (!existing || run.status === TaskRunStatus.STARTED

@@ -130,3 +130,109 @@ describe('R3-B2 fake-only prepared containment → persisted evidence → receiv
     } finally { await storage.close(); }
   });
 });
+
+async function withBoundRun(fn: (storage: SqliteStorageProvider, tasks: TaskManager, run: TaskRun) => Promise<void>) {
+  const storage = new SqliteStorageProvider({ dbPath: ':memory:' });
+  await storage.init();
+  try {
+    const f = await fixture(storage);
+    const started = await f.continuation.startExplicitContinuation(f.request);
+    if (started.disposition !== 'ATTEMPT_STARTED') throw new Error('Expected exact bound run');
+    await fn(storage, f.tasks, started.taskRun);
+  } finally { await storage.close(); }
+}
+
+describe('R3-B2 B-1 canonical digest enforcement at persistence', () => {
+  it.each(['taskRunId', 'executionId', 'both'] as const)('rejects run-A evidence replay with rewritten %s', async field => {
+    await withBoundRun(async (storageA, tasksA, runA) => {
+      const auditA = prepared(runA.id).containmentAudit(runA.id);
+      // Issued evidence persists for A, including a JSON round trip without issuance registry identity.
+      await tasksA.recordContainmentBindingIfAbsent(runA.id, JSON.parse(JSON.stringify(auditA)));
+      expect((await storageA.taskRuns.get(runA.id))!.metadata?.containmentAudit).toEqual(auditA);
+      await withBoundRun(async (storageB, tasksB, runB) => {
+        const binding = { ...auditA.binding,
+          ...(field !== 'executionId' ? { taskRunId: runB.id } : {}),
+          ...(field !== 'taskRunId' ? { executionId: runB.id } : {}) };
+        await expect(tasksB.recordContainmentBindingIfAbsent(runB.id, { ...auditA, binding }))
+          .rejects.toMatchObject({ code: 'CONTAINMENT_EVIDENCE_CONFLICT', reason: 'MALFORMED_EVIDENCE' });
+        expect((await storageB.taskRuns.get(runB.id))!.metadata?.containmentAudit).toBeUndefined();
+        const auditB = prepared(runB.id).containmentAudit(runB.id);
+        expect(auditB.binding.containmentBindingDigest).not.toBe(auditA.binding.containmentBindingDigest);
+        await tasksB.recordContainmentBindingIfAbsent(runB.id, auditB);
+        expect((await storageB.taskRuns.get(runB.id))!.metadata?.containmentAudit).toEqual(auditB);
+      });
+    });
+  });
+
+  it.each([
+    ['containmentPolicyId', 'other-policy'], ['containmentPolicyVersion', 'v2'],
+    ['containmentPolicyDigest', HEX('f')], ['runtimeFamily', 'VM_NO_NIC'],
+    ['runtimeVersion', 'fake-v2'], ['modelMountIdentityDigest', HEX('f')],
+    ['providerId', 'other-provider'], ['providerBindingDigest', HEX('f')],
+    ['securityProfileId', 'other-profile'], ['securityProfileDigest', HEX('f')],
+    ['instanceIdentityDigest', HEX('f')], ['modelId', 'other-model'], ['modelDigest', HEX('f')],
+    ['imageDigest', HEX('f')], ['channelAVerifierVersion', 'other-A'], ['channelBVerifierVersion', 'other-B'],
+    ['channelAResultDigest', HEX('f')], ['channelBResultDigest', HEX('f')],
+  ] as const)('rejects changed %s with the original containment digest', async (field, value) => {
+    await withBoundRun(async (storage, tasks, run) => {
+      const audit = prepared(run.id).containmentAudit(run.id);
+      await expect(tasks.recordContainmentBindingIfAbsent(run.id, {
+        ...audit, binding: { ...audit.binding, [field]: value },
+      })).rejects.toMatchObject({ code: 'CONTAINMENT_EVIDENCE_CONFLICT', reason: 'MALFORMED_EVIDENCE' });
+      expect((await storage.taskRuns.get(run.id))!.metadata?.containmentAudit).toBeUndefined();
+      // Reordering JSON properties does not change identity; unchanged canonical evidence still works.
+      const reordered = { ...audit, binding: Object.fromEntries(Object.entries(audit.binding).reverse()) } as ContinuationContainmentAudit;
+      await tasks.recordContainmentBindingIfAbsent(run.id, JSON.parse(JSON.stringify(reordered)));
+      expect((await storage.taskRuns.get(run.id))!.metadata?.containmentAudit).toEqual(audit);
+    });
+  });
+});
+
+describe('R3-B2 B-2 secure terminalization cannot be bypassed by generic persistence', () => {
+  it.each(['BOUND', 'MISMATCH', 'CONTAINMENT_FAILURE', 'MODEL_DOWNLOAD_DETECTED'] as const)
+  ('blocks all generic terminal transitions for current %s evidence', async mode => {
+    await withBoundRun(async (storage, tasks, stale) => {
+      let audit = prepared(stale.id).containmentAudit(stale.id);
+      await tasks.recordContainmentBindingIfAbsent(stale.id, audit);
+      if (mode !== 'BOUND') {
+        audit = { ...audit, postAttempt: { attemptBoundaryCrossed: true,
+          postAttemptModelIntegrity: mode === 'MISMATCH' ? 'MISMATCH' : 'MATCHED',
+          failureCode: mode === 'MISMATCH' ? null : mode } };
+        await tasks.recordContainmentPostEvidenceIfAbsent(stale.id, audit);
+        for (const terminalStatus of [TaskRunStatus.SUCCEEDED, TaskRunStatus.FAILED] as const) {
+          expect((await tasks.terminalizePreservingSecurityEvidence(stale.id, { terminalStatus })).status).toBe(TaskRunStatus.STARTED);
+        }
+      }
+      const current = (await storage.taskRuns.get(stale.id))!;
+      // Both a current snapshot carrying identical evidence and a stale snapshot omitting it must fail.
+      for (const snapshot of [current, stale]) {
+        await expect(tasks.completeRun(snapshot, { artifactIds: [] }))
+          .rejects.toMatchObject({ code: 'CONTINUATION_GUARD_REQUIRED' });
+        await expect(tasks.failRun(snapshot, 'CONTINUATION_RECEIVER_FAILED'))
+          .rejects.toMatchObject({ code: 'CONTINUATION_GUARD_REQUIRED' });
+        await expect(storage.taskRuns.save({ ...snapshot, status: TaskRunStatus.CANCELED }))
+          .rejects.toMatchObject({ code: 'CONTINUATION_GUARD_REQUIRED' });
+      }
+      // Current-row evidence remains authoritative even if caller also substitutes task ownership.
+      await expect(storage.taskRuns.save({ ...stale, taskId: 'unbound-task', status: TaskRunStatus.SUCCEEDED }))
+        .rejects.toMatchObject({ code: 'CONTINUATION_GUARD_REQUIRED' });
+      expect(await storage.taskRuns.get(stale.id)).toEqual(current);
+      expect(current.status).toBe(TaskRunStatus.STARTED);
+      expect(current.metadata?.containmentAudit).toEqual(audit);
+      if (mode === 'BOUND') {
+        const terminal = await tasks.terminalizePreservingSecurityEvidence(stale.id, { terminalStatus: TaskRunStatus.SUCCEEDED });
+        expect(terminal.status).toBe(TaskRunStatus.SUCCEEDED);
+        expect(terminal.metadata?.containmentAudit).toEqual(audit);
+      }
+    });
+  });
+
+  it.each(['SUCCEEDED', 'FAILED'] as const)('preserves generic %s on continuation runs without containment', async status => {
+    await withBoundRun(async (storage, tasks, run) => {
+      const terminal = status === 'SUCCEEDED' ? await tasks.completeRun(run, { artifactIds: [] })
+        : await tasks.failRun(run, 'CONTINUATION_RECEIVER_FAILED');
+      expect(terminal.status).toBe(status);
+      expect(await storage.taskRuns.get(run.id)).toEqual(terminal);
+    });
+  });
+});
