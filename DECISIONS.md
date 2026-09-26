@@ -8383,3 +8383,69 @@ FINAL_RUNTIME_SELECTION = PENDING ; LIVE_PROVIDER = NOT AUTHORIZED
 
 No R3 implementation is claimed complete. No container/VM/Ollama/network/runtime activation and no
 production startup-guard removal were performed in R3-A.
+
+
+#### ADR-0089 amendment — R3-A containment-evidence ownership remediation (2026-09-26)
+
+**Status: Remediation implemented locally / awaiting review.** Independent exact-HEAD review of the R3-A
+implementation commit (`cb141e2e41599f6a42108ffec3d9172cd30b8b86`) returned `CHANGES_REQUIRED` with three
+blocking implementation defects (no new architecture decision required). This remediation adds exactly one
+additional local commit that closes them; the reviewed R3-A commit is preserved unamended. Still ZERO
+runtime/container/VM/Ollama/network/production activation; no R3-B/C/D/E.
+
+**B-1 — generic save must never create/mutate/remove containment evidence.** The A-1 comparator
+`containmentEvidencePreserved` intentionally permits a *semantic CAS* to create binding evidence or add
+post-attempt evidence, so it was too permissive for a *generic* `taskRuns.save()`: `current absent +
+incoming present` was allowed, letting a generic save CREATE evidence. A new strict comparator
+`containmentEvidenceIdentical(current, incoming)` — `both absent OR both present and semantically
+identical (binding identical AND post-attempt both-absent-or-identical)` — now gates generic save on a
+continuation-bound run inside the IMMEDIATE transaction. Rules (§2/§3/§4): both absent → ALLOW; both
+present & identical → ALLOW; create/remove/change → REJECT, regardless of STARTED/SUCCEEDED/FAILED.
+Evidence creation/mutation is reserved for the semantic CAS APIs only. Reason mapping: create attempt →
+`MALFORMED_EVIDENCE`, removal → `EVIDENCE_REMOVED`, change → `BINDING_DIGEST_CONFLICT`.
+
+**B-2 — terminalize must never accept caller-supplied evidence.** `terminalizePreservingSecurityEvidence`
+now rejects (does not silently strip) any `request.metadata` carrying `CONTAINMENT_AUDIT_METADATA_KEY`
+with a bounded `ContainmentEvidenceConflictError('CALLER_SUPPLIED_EVIDENCE')` — surfacing the caller
+contract violation. The ONLY source of containment evidence is the CURRENT persisted row; caller metadata,
+caller startedRun snapshot, and caller terminal payload can never create or replace it. Unrelated caller
+metadata is still merged; the current-row containment evidence is always preserved exactly.
+
+**B-3 — evidence operations require a continuation-bound run.** `recordContainmentBindingIfAbsent`,
+`recordContainmentPostEvidenceIfAbsent`, and `terminalizePreservingSecurityEvidence` now require the exact
+run to be continuation-bound, checked via the canonical continuation-binding source of truth
+(`isBound(run.taskId)`) INSIDE each op's IMMEDIATE transaction (no check-outside-then-mutate race). An
+ordinary/unbound run is rejected with `ContainmentEvidenceConflictError('RUN_NOT_CONTINUATION_BOUND')`; no
+containment audit can ever be written to an ordinary TaskRun. Ordinary/unbound `save`/`completeRun`/
+`failRun` are unchanged (no continuation-specific restriction is applied globally).
+
+**Preserved / unchanged.** `continuation-routing-audit-v1` is untouched. CAS atomicity (all semantic ops
+inside `transaction(...).immediate()`) is unchanged. The failure mapping (`CONTAINMENT_FAILURE`/
+`MODEL_DOWNLOAD_DETECTED` after attempt → UNRESOLVED; `PROVIDER_SPAWN_FAILED` phase-sensitive) is not
+regressed. SQLite verification is `:memory:` only.
+
+**Mandatory future-integration carry-forward (R3-B/C).** These are recorded here as required future work,
+NOT implemented now:
+1. `ContinuationReceiverExecutionService` still terminalizes via `completeRun`/`failRun` using the old
+   `startedRun` snapshot. Today that fails closed when containment evidence exists (the B-1 guard rejects
+   the stale terminal write). **Before contained continuation execution can become reachable,
+   `ContinuationReceiverExecutionService` terminalization MUST route through
+   `terminalizePreservingSecurityEvidence`** (current-row terminal merge). This is mandatory R3-B/C
+   integration work; expanding it now would be R3-B/C runtime restructuring and is out of R3-A scope.
+2. `postAttemptModelIntegrity = MISMATCH → UNRESOLVED` remains a contract only (no runtime producer exists
+   yet). Runtime mapping is deferred to R3-B/C integration; R3-A adds no producer.
+
+```text
+GENERIC_SAVE_CAN_CREATE_BINDING = NO
+GENERIC_SAVE_CAN_CREATE_POST_EVIDENCE = NO
+GENERIC_SAVE_CAN_REMOVE_EVIDENCE = NO
+GENERIC_SAVE_CAN_CHANGE_EVIDENCE = NO
+GENERIC_SAVE_IDENTICAL_EVIDENCE_ALLOWED = YES
+CALLER_CAN_SUPPLY_CONTAINMENT_AUDIT = NO
+TERMINALIZE_EVIDENCE_SOURCE = CURRENT_PERSISTED_ROW
+BINDING_CAS_REQUIRES_CONTINUATION_BOUND = YES
+POST_CAS_REQUIRES_CONTINUATION_BOUND = YES
+SECURITY_TERMINALIZE_REQUIRES_CONTINUATION_BOUND = YES
+ROUTING_AUDIT_V1_CHANGED = NO
+R3_B_AUTHORIZED = NO ; R3_C_PLUS_AUTHORIZED = NO ; LIVE_PROVIDER = NOT AUTHORIZED
+```

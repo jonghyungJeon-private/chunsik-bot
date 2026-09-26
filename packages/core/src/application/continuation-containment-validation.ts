@@ -194,3 +194,25 @@ export function postAttemptIdentical(a: ContainmentPostAttemptEvidence, b: Conta
     a.failureCode === b.failureCode
   );
 }
+
+/**
+ * B-1 strict generic-save equality (§2/§3/§4). Unlike {@link containmentEvidencePreserved} (the A-1
+ * comparator, which permits a semantic CAS to CREATE binding evidence or ADD post-attempt evidence), a
+ * generic `save()` on a continuation-bound run may only CARRY FORWARD the exact evidence already present.
+ * Preservation is therefore the strict equality:
+ *   both absent  → true
+ *   both present → identical binding AND identical (both-absent-or-identical) post-attempt
+ *   otherwise    → false  (creating, removing, or changing evidence is forbidden for generic save)
+ * Evidence creation/mutation is reserved for the semantic CAS APIs only.
+ */
+export function containmentEvidenceIdentical(
+  current: ContinuationContainmentAudit | null,
+  incoming: ContinuationContainmentAudit | null,
+): boolean {
+  if (current === null || incoming === null) return current === null && incoming === null;
+  if (!bindingIdentical(current.binding, incoming.binding)) return false;
+  if (current.postAttempt === undefined || incoming.postAttempt === undefined) {
+    return current.postAttempt === undefined && incoming.postAttempt === undefined;
+  }
+  return postAttemptIdentical(current.postAttempt, incoming.postAttempt);
+}

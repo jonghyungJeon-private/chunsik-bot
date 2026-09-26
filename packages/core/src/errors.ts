@@ -79,6 +79,8 @@ export class ContainmentEvidenceConflictError extends Error {
     readonly reason:
       | 'RUN_NOT_FOUND'
       | 'RUN_NOT_STARTED'
+      | 'RUN_NOT_CONTINUATION_BOUND'
+      | 'CALLER_SUPPLIED_EVIDENCE'
       | 'BINDING_DIGEST_CONFLICT'
       | 'BINDING_MISSING'
       | 'POST_ATTEMPT_CONFLICT'

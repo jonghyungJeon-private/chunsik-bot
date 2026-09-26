@@ -57,7 +57,7 @@ import {
   ContainmentEvidenceConflictError,
   CONTAINMENT_AUDIT_METADATA_KEY,
   snapshotContainmentAudit,
-  containmentEvidencePreserved,
+  containmentEvidenceIdentical,
   bindingIdentical,
   postAttemptIdentical,
 } from '@quoky/core';
@@ -350,15 +350,20 @@ class SqliteTaskRunRepository extends JsonRepository<TaskRun> implements TaskRun
           && (JSON.parse(existing.data) as TaskRun).status !== TaskRunStatus.STARTED) {
           throw new GuardedTaskRunStartError('CONTINUATION_GUARD_REQUIRED');
         }
-        // R3-A / A-1: a generic save must never remove or mutate durable containment evidence on a bound
-        // run. Compare current persisted evidence against the incoming row inside this IMMEDIATE
-        // transaction and reject any non-preserving write. Identical preservation is allowed.
+        // R3-A / B-1: a generic save on a bound run may ONLY carry forward the exact durable containment
+        // evidence already present. It must never CREATE, remove, or mutate it — evidence creation and
+        // mutation are reserved for the semantic CAS APIs (recordContainmentBinding/PostEvidenceIfAbsent).
+        // Rule (§2/§3/§4): both absent → ALLOW; both present & identical → ALLOW; anything else → REJECT.
+        // Compared inside this IMMEDIATE transaction against the current persisted row.
         const current = extractContainmentAudit(JSON.parse(existing!.data) as TaskRun);
         const incoming = extractContainmentAudit(run);
-        if (!containmentEvidencePreserved(current, incoming)) {
-          throw new ContainmentEvidenceConflictError(
-            current && incoming === null ? 'EVIDENCE_REMOVED' : 'BINDING_DIGEST_CONFLICT',
-          );
+        if (!containmentEvidenceIdentical(current, incoming)) {
+          const reason = current === null
+            ? 'MALFORMED_EVIDENCE' // current absent + incoming present: generic save may not create evidence
+            : incoming === null
+              ? 'EVIDENCE_REMOVED'
+              : 'BINDING_DIGEST_CONFLICT';
+          throw new ContainmentEvidenceConflictError(reason);
         }
       }
       this.db.prepare(
@@ -440,14 +445,23 @@ class SqliteTaskRunRepository extends JsonRepository<TaskRun> implements TaskRun
       if (request.terminalStatus !== 'SUCCEEDED' && request.terminalStatus !== 'FAILED') {
         throw new ContainmentEvidenceConflictError('MALFORMED_EVIDENCE');
       }
-      const preservedAudit = extractContainmentAudit(run); // durable evidence from the CURRENT row
+      // R3-A / B-2: the caller may NEVER create or replace containment evidence through terminal metadata.
+      // Reject any caller-supplied CONTAINMENT_AUDIT_METADATA_KEY (prefer reject over silent stripping so a
+      // caller contract violation is surfaced, not hidden). The ONLY source of truth for containment
+      // evidence is the CURRENT persisted row.
+      if (request.metadata !== undefined
+        && Object.prototype.hasOwnProperty.call(request.metadata, CONTAINMENT_AUDIT_METADATA_KEY)) {
+        throw new ContainmentEvidenceConflictError('CALLER_SUPPLIED_EVIDENCE');
+      }
+      const preservedAudit = extractContainmentAudit(run); // durable evidence from the CURRENT row only
       const mergedMetadata: Record<string, unknown> = {
         ...(run.metadata ?? {}),
         ...(request.metadata ?? {}),
       };
       // Containment evidence from the current persisted row is always preserved, never overwritten by a
-      // caller-supplied terminal metadata bag.
+      // caller-supplied terminal metadata bag. Caller metadata was already rejected above if it carried it.
       if (preservedAudit !== null) mergedMetadata[CONTAINMENT_AUDIT_METADATA_KEY] = preservedAudit;
+      else delete mergedMetadata[CONTAINMENT_AUDIT_METADATA_KEY];
       const terminal: TaskRun = {
         ...run,
         status: request.terminalStatus === 'SUCCEEDED' ? TaskRunStatus.SUCCEEDED : TaskRunStatus.FAILED,
@@ -466,11 +480,19 @@ class SqliteTaskRunRepository extends JsonRepository<TaskRun> implements TaskRun
     }).immediate());
   }
 
-  /** Load the exact run and require STARTED; fail closed with a bounded conflict otherwise. */
+  /**
+   * Load the exact run and require STARTED AND continuation-bound; fail closed with a bounded conflict
+   * otherwise. R3-A / B-3: containment evidence is continuation-specific, so every semantic evidence
+   * operation (binding CAS, post-attempt CAS, security-preserving terminalize) must reject an ordinary/
+   * unbound TaskRun. The bound check uses the canonical continuation-binding source of truth (isBound over
+   * the persisted run's own task_id) and runs INSIDE the caller's IMMEDIATE transaction, so there is no
+   * check-outside-then-mutate race.
+   */
   private loadStartedRunOrThrow(id: Id): TaskRun {
     const row = this.db.prepare('SELECT data FROM task_runs WHERE id = ?').get(id) as Row | undefined;
     if (!row) throw new ContainmentEvidenceConflictError('RUN_NOT_FOUND');
     const run = JSON.parse(row.data) as TaskRun;
+    if (!this.isBound(run.taskId)) throw new ContainmentEvidenceConflictError('RUN_NOT_CONTINUATION_BOUND');
     if (run.status !== TaskRunStatus.STARTED) throw new ContainmentEvidenceConflictError('RUN_NOT_STARTED');
     return run;
   }

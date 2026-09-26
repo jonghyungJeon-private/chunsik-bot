@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   AgentProfileRegistry, ApprovalManager, ApprovalPolicy, Capability, ContinuationExecutionEntryService,
   ContinuationExecutionService, CONTINUATION_CONTAINMENT_AUDIT_SCHEMA, createWorkHandoff, ExecutionStatus,
-  IntentType, RiskPolicy, RiskLevel, TaskManager, TaskRunStatus, WorkHandoffContinuationService, WorkItemStatus, agentProfileId,
+  IntentType, RiskPolicy, RiskLevel, TaskManager, TaskRunStatus, TaskStatus, WorkHandoffContinuationService, WorkItemStatus, agentProfileId,
 } from '@quoky/core';
 import type { ContinuationContainmentAudit, ExecutionPlan, TaskRun } from '@quoky/core';
 import { SqliteStorageProvider } from './index';
@@ -143,6 +143,179 @@ describe('R3-A containment evidence persistence (in-memory adapter)', () => {
       expect(failed.status).toBe(TaskRunStatus.FAILED);
       expect((failed.metadata as Record<string, unknown>).containmentAudit).toBeTruthy();
       expect(failed.error).toBe('CONTINUATION_RECEIVER_FAILED');
+    });
+  });
+});
+
+/** Start an ORDINARY (unbound) STARTED TaskRun: a RUNNING Task with no continuation binding. */
+async function ordinaryStartedRun(storage: SqliteStorageProvider): Promise<{ tasks: TaskManager; run: TaskRun }> {
+  const tasks = new TaskManager(storage);
+  const created = await tasks.createTask(
+    { type: IntentType.CHAT, capability: Capability.GENERAL_CHAT, confidence: 1, requiresWork: true, summary: 'ordinary' },
+    { platform: 'test', channelId: 'channel', userId: 'user' }, { actorId: 'actor', requestText: 'ordinary' });
+  const running = await storage.tasks.save({ ...created, status: TaskStatus.RUNNING });
+  const run = await storage.taskRuns.start(running, Capability.GENERAL_CHAT);
+  return { tasks, run };
+}
+
+describe('R3-A remediation — B-1 generic save evidence ownership (bound run)', () => {
+  it('bound STARTED: current no evidence, generic save adds binding → REJECT', async () => {
+    await withStorage(async storage => {
+      const { run } = await boundStartedRun(storage);
+      const forged: TaskRun = { ...run, metadata: { containmentAudit: containmentAudit(run.id) } };
+      await expect(storage.taskRuns.save(forged))
+        .rejects.toMatchObject({ code: 'CONTAINMENT_EVIDENCE_CONFLICT', reason: 'MALFORMED_EVIDENCE' });
+      // Evidence remains absent.
+      expect((await storage.taskRuns.get(run.id))!.metadata?.containmentAudit).toBeUndefined();
+    });
+  });
+
+  it('bound STARTED: current binding, generic save same binding → ALLOW', async () => {
+    await withStorage(async storage => {
+      const { run } = await boundStartedRun(storage);
+      const withBinding = await storage.taskRuns.recordContainmentBindingIfAbsent(run.id, containmentAudit(run.id));
+      await expect(storage.taskRuns.save(withBinding)).resolves.toBeTruthy();
+    });
+  });
+
+  it('bound STARTED: current binding, generic save removes binding → REJECT', async () => {
+    await withStorage(async storage => {
+      const { run } = await boundStartedRun(storage);
+      await storage.taskRuns.recordContainmentBindingIfAbsent(run.id, containmentAudit(run.id));
+      const stripped: TaskRun = { ...run, metadata: {} };
+      await expect(storage.taskRuns.save(stripped))
+        .rejects.toMatchObject({ code: 'CONTAINMENT_EVIDENCE_CONFLICT', reason: 'EVIDENCE_REMOVED' });
+    });
+  });
+
+  it('bound STARTED: current binding A, generic save binding B → REJECT', async () => {
+    await withStorage(async storage => {
+      const { run } = await boundStartedRun(storage);
+      const withBinding = await storage.taskRuns.recordContainmentBindingIfAbsent(run.id, containmentAudit(run.id));
+      const b = containmentAudit(run.id, { binding: { ...containmentAudit(run.id).binding, containmentBindingDigest: HEX('9') } });
+      const mutated: TaskRun = { ...withBinding, metadata: { containmentAudit: b } };
+      await expect(storage.taskRuns.save(mutated))
+        .rejects.toMatchObject({ code: 'CONTAINMENT_EVIDENCE_CONFLICT', reason: 'BINDING_DIGEST_CONFLICT' });
+    });
+  });
+});
+
+describe('R3-A remediation — terminal-state generic save (bound run)', () => {
+  it('bound SUCCEEDED: current binding, generic save adds postAttempt → REJECT', async () => {
+    await withStorage(async storage => {
+      const { run } = await boundStartedRun(storage);
+      await storage.taskRuns.recordContainmentBindingIfAbsent(run.id, containmentAudit(run.id));
+      const succeeded = await storage.taskRuns.terminalizePreservingSecurityEvidence(run.id, {
+        terminalStatus: 'SUCCEEDED', finishedAt: ts, artifactIds: ['artifact-1'],
+      });
+      expect(succeeded.status).toBe(TaskRunStatus.SUCCEEDED);
+      // A generic save adding post-attempt evidence to the terminal row must be rejected.
+      const withPost = containmentAudit(run.id, {
+        postAttempt: { attemptBoundaryCrossed: true, postAttemptModelIntegrity: 'MATCHED', failureCode: null },
+      });
+      const mutated: TaskRun = { ...succeeded, metadata: { ...succeeded.metadata, containmentAudit: withPost } };
+      await expect(storage.taskRuns.save(mutated))
+        .rejects.toMatchObject({ code: 'CONTAINMENT_EVIDENCE_CONFLICT', reason: 'BINDING_DIGEST_CONFLICT' });
+    });
+  });
+
+  it('bound FAILED: current binding, generic save removes/changes evidence → REJECT', async () => {
+    await withStorage(async storage => {
+      const { run } = await boundStartedRun(storage);
+      await storage.taskRuns.recordContainmentBindingIfAbsent(run.id, containmentAudit(run.id));
+      const failed = await storage.taskRuns.terminalizePreservingSecurityEvidence(run.id, {
+        terminalStatus: 'FAILED', finishedAt: ts, error: 'CONTINUATION_RECEIVER_FAILED',
+      });
+      const removed: TaskRun = { ...failed, metadata: {} };
+      await expect(storage.taskRuns.save(removed))
+        .rejects.toMatchObject({ code: 'CONTAINMENT_EVIDENCE_CONFLICT', reason: 'EVIDENCE_REMOVED' });
+      const changed: TaskRun = { ...failed, metadata: { ...failed.metadata,
+        containmentAudit: containmentAudit(run.id, { binding: { ...containmentAudit(run.id).binding, containmentBindingDigest: HEX('9') } }) } };
+      await expect(storage.taskRuns.save(changed))
+        .rejects.toMatchObject({ code: 'CONTAINMENT_EVIDENCE_CONFLICT', reason: 'BINDING_DIGEST_CONFLICT' });
+    });
+  });
+});
+
+describe('R3-A remediation — B-2 terminalize never accepts caller-supplied evidence', () => {
+  it('bound STARTED, no persisted evidence, caller metadata carries containmentAudit → REJECT', async () => {
+    await withStorage(async storage => {
+      const { run } = await boundStartedRun(storage);
+      await expect(storage.taskRuns.terminalizePreservingSecurityEvidence(run.id, {
+        terminalStatus: 'SUCCEEDED', finishedAt: ts, metadata: { containmentAudit: containmentAudit(run.id) },
+      })).rejects.toMatchObject({ code: 'CONTAINMENT_EVIDENCE_CONFLICT', reason: 'CALLER_SUPPLIED_EVIDENCE' });
+      // The run stays STARTED with no forged evidence.
+      const after = await storage.taskRuns.get(run.id);
+      expect(after!.status).toBe(TaskRunStatus.STARTED);
+      expect(after!.metadata?.containmentAudit).toBeUndefined();
+    });
+  });
+
+  it('persisted evidence exists, caller metadata includes same containmentAudit → REJECT', async () => {
+    await withStorage(async storage => {
+      const { run } = await boundStartedRun(storage);
+      await storage.taskRuns.recordContainmentBindingIfAbsent(run.id, containmentAudit(run.id));
+      await expect(storage.taskRuns.terminalizePreservingSecurityEvidence(run.id, {
+        terminalStatus: 'SUCCEEDED', finishedAt: ts, metadata: { containmentAudit: containmentAudit(run.id) },
+      })).rejects.toMatchObject({ code: 'CONTAINMENT_EVIDENCE_CONFLICT', reason: 'CALLER_SUPPLIED_EVIDENCE' });
+    });
+  });
+});
+
+describe('R3-A remediation — B-3 evidence operations require a continuation-bound run', () => {
+  it('ordinary/unbound STARTED: all three semantic evidence ops → REJECT', async () => {
+    await withStorage(async storage => {
+      const { run } = await ordinaryStartedRun(storage);
+      const audit = containmentAudit(run.id);
+      await expect(storage.taskRuns.recordContainmentBindingIfAbsent(run.id, audit))
+        .rejects.toMatchObject({ code: 'CONTAINMENT_EVIDENCE_CONFLICT', reason: 'RUN_NOT_CONTINUATION_BOUND' });
+      await expect(storage.taskRuns.recordContainmentPostEvidenceIfAbsent(run.id, audit))
+        .rejects.toMatchObject({ code: 'CONTAINMENT_EVIDENCE_CONFLICT', reason: 'RUN_NOT_CONTINUATION_BOUND' });
+      await expect(storage.taskRuns.terminalizePreservingSecurityEvidence(run.id, { terminalStatus: 'SUCCEEDED', finishedAt: ts }))
+        .rejects.toMatchObject({ code: 'CONTAINMENT_EVIDENCE_CONFLICT', reason: 'RUN_NOT_CONTINUATION_BOUND' });
+      // No containment audit was ever written to the ordinary run.
+      expect((await storage.taskRuns.get(run.id))!.metadata?.containmentAudit).toBeUndefined();
+    });
+  });
+
+  it('ordinary/unbound run still supports completeRun, failRun, and generic save', async () => {
+    await withStorage(async storage => {
+      const { tasks, run } = await ordinaryStartedRun(storage);
+      // generic save on an unbound run (no evidence) is unrestricted
+      await expect(storage.taskRuns.save({ ...run, artifactIds: ['a'] })).resolves.toMatchObject({ artifactIds: ['a'] });
+      const completed = await tasks.completeRun(run, { artifactIds: ['artifact-1'] });
+      expect(completed.status).toBe(TaskRunStatus.SUCCEEDED);
+      expect(completed.artifactIds).toEqual(['artifact-1']);
+    });
+  });
+
+  it('ordinary/unbound run supports failRun', async () => {
+    await withStorage(async storage => {
+      const { tasks, run } = await ordinaryStartedRun(storage);
+      const failed = await tasks.failRun(run, 'boom');
+      expect(failed.status).toBe(TaskRunStatus.FAILED);
+      expect(failed.error).toBe('boom');
+    });
+  });
+});
+
+describe('R3-A remediation — terminal merge preserves unrelated metadata + exact evidence', () => {
+  it('preserves foo + adds caller metadata + exact preserved containmentAudit + routingAudit', async () => {
+    await withStorage(async storage => {
+      const { run } = await boundStartedRun(storage);
+      const withBinding = await storage.taskRuns.recordContainmentBindingIfAbsent(run.id, containmentAudit(run.id));
+      const preserved = (withBinding.metadata as Record<string, unknown>).containmentAudit;
+      // Seed unrelated persisted metadata (foo=bar) alongside the containment evidence via an identical-
+      // evidence generic save (allowed): this proves unrelated metadata carried into the terminal row.
+      await storage.taskRuns.save({ ...withBinding, metadata: { ...withBinding.metadata, foo: 'bar' } });
+      const terminal = await storage.taskRuns.terminalizePreservingSecurityEvidence(run.id, {
+        terminalStatus: 'SUCCEEDED', finishedAt: ts, metadata: { another: 'value', routingAudit: { schemaVersion: 'continuation-routing-audit-v1' } },
+      });
+      const md = terminal.metadata as Record<string, unknown>;
+      expect(md.foo).toBe('bar');
+      expect(md.another).toBe('value');
+      expect(md.containmentAudit).toEqual(preserved);
+      expect(md.routingAudit).toEqual({ schemaVersion: 'continuation-routing-audit-v1' });
     });
   });
 });
